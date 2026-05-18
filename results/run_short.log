@@ -1,0 +1,61 @@
+[demo] proposer=dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1
+[demo] verifier=Qwen/Qwen3-1.7B
+[demo] device=cpu  dtype=bfloat16
+[demo] block_size=8  diffusion_steps=8
+[demo] sink=4  window=64
+[demo] max_new_tokens=32
+[demo] loading proposer ...
+[demo] proposer params: 1192.1 MB
+[demo] loading verifier ...
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 142.19it/s]
+[demo] verifier params: 3441.1 MB
+[demo] loading baseline (full-KV verifier) ...
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 146.83it/s]
+[demo] prompt: 'Reply with exactly: OK.'
+[demo] prompt token length: 30
+[demo] eos ids: [151645]
+
+[demo] === Baseline (full-KV greedy AR) ===
+[baseline] tokens: 3
+[baseline] forward calls: 3
+[baseline] peak KV: 3584.0 KB (114688.0 B/token)
+[baseline] text: 'OK.<|im_end|>'
+
+[demo] === Speculative (DLM proposer + sink+window verifier) ===
+[spec] tokens: 3
+[spec] proposer forwards: 8
+[spec] verifier forwards: 2
+[spec] verifier peak KV: 3696.0 KB
+[spec] verifier final KV slots: 33
+[spec] acceptance rate: 0.375
+[spec] per-block accepted/proposed: [(3, 8)]
+[spec] text: 'OK.<|im_end|>'
+
+========================================================================
+NBT Report (Net Bytes per Token, sink+window verifier KV)
+========================================================================
+  scenario: B=8, S=32 tokens, L_block=8, sink=4, window=64
+
+Verifier KV cache:
+  baseline (full)      total=    3.50 MB  per-token=114688.0 B
+  sink+window residual total=    3.61 MB  per-token=118272.0 B
+
+Proposer overhead (per token, amortized):
+  weights      1136.88 MB  -> 4656640.0 B/token  (weights / (B*S))
+  peak act       11.01 MB  -> 180424.0 B/token  (peak / (B*L_block))
+
+NBT = 4955336.0 B/token   (sink+window + proposer overhead)
+Baseline KV = 114688.0 B/token   (full DynamicCache)
+Compression vs baseline:   0.02x
+
+Output equivalence (greedy):
+  speculative tokens generated: 3
+  baseline    tokens generated: 3
+  shared greedy prefix length:  3
+  exact match: True
+  proposer acceptance rate:  0.375
+========================================================================
+
+[demo] wrote /workspace/results/run_short.json
+
+[demo] PASS: equivalence-regime test (sink+window covers full sequence) produced bit-identical greedy output.

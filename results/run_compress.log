@@ -1,0 +1,76 @@
+[demo] proposer=dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1
+[demo] verifier=Qwen/Qwen3-1.7B
+[demo] device=cpu  dtype=bfloat16
+[demo] block_size=16  diffusion_steps=16
+[demo] sink=4  window=24
+[demo] max_new_tokens=64
+[demo] loading proposer ...
+[demo] proposer params: 1192.1 MB
+[demo] loading verifier ...
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 113.38it/s]
+[demo] verifier params: 3441.1 MB
+[demo] loading baseline (full-KV verifier) ...
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 86.80it/s]
+[demo] prompt: 'Write a one-paragraph explanation of why prime numbers are infinite, suitable for a high school student.'
+[demo] prompt token length: 44
+[demo] eos ids: [151645]
+
+[demo] === Baseline (full-KV greedy AR) ===
+[baseline] tokens: 64
+[baseline] forward calls: 65
+[baseline] peak KV: 12096.0 KB (114688.0 B/token)
+[baseline] text: 'Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by mathematician Euclid in his famous proof, where he showed that if you assume there is a largest prime number, then multiplying all those primes together would result in'
+
+[demo] === Speculative (DLM proposer + sink+window verifier) ===
+[spec] tokens: 64
+[spec] proposer forwards: 323
+[spec] verifier forwards: 50
+[spec] verifier peak KV: 3136.0 KB
+[spec] verifier final KV slots: 28
+[spec] acceptance rate: 0.124
+[spec] per-block accepted/proposed: [(5, 16), (0, 16), (2, 16), (2, 16), (3, 16), (2, 16), (0, 16), (2, 16), (4, 16), (0, 16), (3, 16), (3, 16), (3, 16), (2, 16), (0, 16), (4, 16), (0, 13), (0, 12), (0, 11), (0, 10), (3, 9), (0, 5), (1, 4), (0, 2), (1, 1)]
+[spec] text: 'Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by the Prime Number Theorem, which states that the number of primes less than a given number n is approximately n / log(n). This means that as n increases'
+
+========================================================================
+NBT Report (Net Bytes per Token, sink+window verifier KV)
+========================================================================
+  scenario: B=64, S=108 tokens, L_block=16, sink=4, window=24
+
+Verifier KV cache:
+  baseline (full)      total=   11.81 MB  per-token=114688.0 B
+  sink+window residual total=    3.06 MB  per-token= 29733.9 B
+
+Proposer overhead (per token, amortized):
+  weights      1136.88 MB  -> 172468.1 B/token  (weights / (B*S))
+  peak act       31.30 MB  ->  32049.0 B/token  (peak / (B*L_block))
+
+NBT = 234251.1 B/token   (sink+window + proposer overhead)
+Baseline KV = 114688.0 B/token   (full DynamicCache)
+Compression vs baseline:   0.49x
+
+Output equivalence (greedy):
+  speculative tokens generated: 64
+  baseline    tokens generated: 64
+  shared greedy prefix length:  32
+  exact match: False
+  proposer acceptance rate:  0.124
+
+Projected NBT at canonical operating points:
+  (per-slot verifier KV measured =   114688 B; cache_budget = 28 slots)
+  ----------------------------------------------------------------
+     B           S     NBT B/token   compression
+  ----------------------------------------------------------------
+     1       8,192     2,197,048.0         0.05x
+     8       8,192       274,974.0         0.42x
+     8      32,768       261,037.5         0.44x
+     8     131,072       257,553.4         0.45x
+     8   1,048,576       256,537.2         0.45x
+    32     131,072        64,406.7         1.78x
+    64     131,072        32,215.6         3.56x
+    64   1,048,576        32,069.8         3.58x
+  ----------------------------------------------------------------
+========================================================================
+
+[demo] wrote /workspace/results/run_compress.json
+
+[demo] info: sink+window=28 < full_seq_len=108; some context is evicted by design — output may differ from baseline.

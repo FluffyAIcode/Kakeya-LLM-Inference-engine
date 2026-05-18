@@ -1,0 +1,6 @@
+torch>=2.4,<3.0
+transformers>=4.45,<4.60
+accelerate>=0.34
+safetensors>=0.4
+huggingface_hub>=0.24
+numpy>=1.26

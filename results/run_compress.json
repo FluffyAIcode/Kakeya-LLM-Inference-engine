@@ -1,0 +1,168 @@
+{
+  "config": {
+    "proposer_id": "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1",
+    "verifier_id": "Qwen/Qwen3-1.7B",
+    "device": "cpu",
+    "dtype": "bfloat16",
+    "max_new_tokens": 64,
+    "block_size": 16,
+    "num_diffusion_steps": 16,
+    "sink_size": 4,
+    "window_size": 24,
+    "batch_size_for_amortization": 64,
+    "prompt_index": 0,
+    "prompt": "Write a one-paragraph explanation of why prime numbers are infinite, suitable for a high school student.",
+    "results_json": "/workspace/results/run_compress.json"
+  },
+  "prompt": "Write a one-paragraph explanation of why prime numbers are infinite, suitable for a high school student.",
+  "prompt_tokens": 44,
+  "eos_ids": [
+    151645
+  ],
+  "baseline": {
+    "text": "Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by mathematician Euclid in his famous proof, where he showed that if you assume there is a largest prime number, then multiplying all those primes together would result in",
+    "n_tokens": 64,
+    "peak_kv_bytes": 12386304,
+    "final_kv_token_count": 108,
+    "forward_calls": 65
+  },
+  "speculative": {
+    "text": "Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by the Prime Number Theorem, which states that the number of primes less than a given number n is approximately n / log(n). This means that as n increases",
+    "n_tokens": 64,
+    "verifier_peak_kv_bytes": 3211264,
+    "verifier_final_kv_token_count": 28,
+    "verifier_forward_calls": 50,
+    "proposer_forward_calls": 323,
+    "acceptance_rate": 0.1238390092879257,
+    "accepted_per_block": [
+      5,
+      0,
+      2,
+      2,
+      3,
+      2,
+      0,
+      2,
+      4,
+      0,
+      3,
+      3,
+      3,
+      2,
+      0,
+      4,
+      0,
+      0,
+      0,
+      0,
+      3,
+      0,
+      1,
+      0,
+      1
+    ],
+    "proposed_per_block": [
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      13,
+      12,
+      11,
+      10,
+      9,
+      5,
+      4,
+      2,
+      1
+    ],
+    "wall_time_seconds": 55.26454125001328
+  },
+  "nbt": {
+    "sequence_length_tokens": 108,
+    "batch_size": 64,
+    "block_size": 16,
+    "sink_size": 4,
+    "window_size": 24,
+    "verifier_baseline_kv_bytes_total": 12386304,
+    "verifier_baseline_kv_bytes_per_token": 114688.0,
+    "verifier_residual_kv_bytes_total": 3211264,
+    "verifier_residual_kv_bytes_per_token": 29733.925925925927,
+    "proposer_weight_bytes_total": 1192099840,
+    "proposer_weight_bytes_per_token": 172468.14814814815,
+    "proposer_peak_activation_bytes_total": 32818176,
+    "proposer_activation_bytes_per_token": 32049.0,
+    "nbt_bytes_per_token": 234251.07407407407,
+    "baseline_bytes_per_token": 114688.0,
+    "compression_ratio": 0.48959433997614776,
+    "speculative_output_tokens": 64,
+    "baseline_output_tokens": 64,
+    "output_match_prefix_length": 32,
+    "output_exact_match": false,
+    "acceptance_rate": 0.1238390092879257,
+    "verifier_kv_bytes_per_slot": 114688.0,
+    "cache_budget_slots": 28,
+    "projection_points": [
+      [
+        1,
+        8192,
+        2197048.0,
+        0.052200953279127264
+      ],
+      [
+        8,
+        8192,
+        274974.0,
+        0.41708670637951223
+      ],
+      [
+        8,
+        32768,
+        261037.5,
+        0.43935449887468275
+      ],
+      [
+        8,
+        131072,
+        257553.375,
+        0.44529798920320884
+      ],
+      [
+        8,
+        1048576,
+        256537.171875,
+        0.44706191762292735
+      ],
+      [
+        32,
+        131072,
+        64406.71875,
+        1.7806837892979914
+      ],
+      [
+        64,
+        131072,
+        32215.609375,
+        3.5600133669673912
+      ],
+      [
+        64,
+        1048576,
+        32069.826171875,
+        3.5761964965242163
+      ]
+    ]
+  }
+}
