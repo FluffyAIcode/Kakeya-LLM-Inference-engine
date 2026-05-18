@@ -40,7 +40,7 @@
     "proposed_per_block": [
       8
     ],
-    "wall_time_seconds": 0.9121265819994733
+    "wall_time_seconds": 1.2714416310191154
   },
   "nbt": {
     "sequence_length_tokens": 32,
@@ -52,17 +52,72 @@
     "verifier_baseline_kv_bytes_per_token": 114688.0,
     "verifier_residual_kv_bytes_total": 3784704,
     "verifier_residual_kv_bytes_per_token": 118272.0,
+    "verifier_kv_bytes_per_slot": 114688.0,
+    "cache_budget_slots": 68,
+    "proposer_kv_bytes_total": 0,
+    "proposer_kv_bytes_per_token": 0.0,
     "proposer_weight_bytes_total": 1192099840,
     "proposer_weight_bytes_per_token": 4656640.0,
     "proposer_peak_activation_bytes_total": 11547136,
-    "proposer_activation_bytes_per_token": 180424.0,
-    "nbt_bytes_per_token": 4955336.0,
+    "verifier_peak_activation_bytes_total": 9116160,
+    "peak_activation_bytes_per_gpu": 11547136,
+    "nbt_kv_only_bytes_per_token": 4774912.0,
     "baseline_bytes_per_token": 114688.0,
-    "compression_ratio": 0.023144343794245233,
+    "compression_ratio": 0.024018871970834226,
     "speculative_output_tokens": 3,
     "baseline_output_tokens": 3,
     "output_match_prefix_length": 3,
     "output_exact_match": true,
-    "acceptance_rate": 0.375
+    "acceptance_rate": 0.375,
+    "projection_points": [
+      [
+        1,
+        8192,
+        146472.0,
+        0.7830028947512152
+      ],
+      [
+        8,
+        8192,
+        19142.0,
+        5.991432452199352
+      ],
+      [
+        8,
+        32768,
+        4785.5,
+        23.96572980879741
+      ],
+      [
+        8,
+        131072,
+        1196.375,
+        95.86291923518964
+      ],
+      [
+        8,
+        1048576,
+        149.546875,
+        766.9033538815171
+      ],
+      [
+        32,
+        131072,
+        343.71875,
+        333.66815165015004
+      ],
+      [
+        64,
+        131072,
+        201.609375,
+        568.8624350926141
+      ],
+      [
+        64,
+        1048576,
+        25.201171875,
+        4550.899480740913
+      ]
+    ]
   }
 }

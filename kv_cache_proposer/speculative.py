@@ -57,6 +57,7 @@ class SpeculativeRunResult:
     proposer_weight_bytes: int
     verifier_peak_kv_bytes: int
     verifier_final_kv_bytes: int
+    verifier_peak_activation_bytes: int
     verifier_weight_bytes: int
     verifier_final_kv_token_count: int
     wall_time_seconds: float
@@ -113,6 +114,7 @@ class SpeculativeDecoder:
         self.verifier.stats.forward_calls = 0
         self.verifier.stats.tokens_consumed = 0
         self.verifier.stats.peak_kv_bytes = 0
+        self.verifier.stats.peak_activation_bytes = 0
 
         self.verifier.prefill(prompt_ids)
         committed: List[int] = list(prompt_ids)
@@ -195,6 +197,7 @@ class SpeculativeDecoder:
             proposer_weight_bytes=self.proposer.stats.weight_bytes,
             verifier_peak_kv_bytes=self.verifier.stats.peak_kv_bytes,
             verifier_final_kv_bytes=final_kv_bytes,
+            verifier_peak_activation_bytes=self.verifier.stats.peak_activation_bytes,
             verifier_weight_bytes=self.verifier.stats.weight_bytes,
             verifier_final_kv_token_count=self.verifier.cache_logical_size,
             wall_time_seconds=elapsed,

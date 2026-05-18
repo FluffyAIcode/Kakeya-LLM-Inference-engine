@@ -17,39 +17,53 @@ discussion using **real, public** weights:
 > proposer's tokenizer (the prompt encodes to identical token ids — verified
 > at startup) and (b) is large enough to make KV-cache savings non-trivial.
 > Swapping in an actual Qwen 3.5/3.6 checkpoint requires only changing
-> `--verifier-id`.
+> `--verifier-id`. Note that Qwen 3.5/3.6's hybrid attention design carries
+> KV on only 16/64 layers, so its baseline KV/token would be **smaller** than
+> Qwen3-1.7B's 114 KB/token (closer to ~65 KB/token); compression *ratios*
+> against that smaller baseline would be correspondingly smaller, but the
+> framework code is unchanged.
 
-## What this code actually does
+## Memory accounting and what we measure
 
-Implements a greedy **speculative decoding** loop:
+The metric is **NBT — Net Bytes per Token**, defined as:
+
+    NBT_kv_only =  verifier_KV_per_token
+                 + proposer_KV_per_token
+                 + proposer_weight_bytes / (B * S)
+
+where `B` is concurrent-request batch size and `S` is per-request sequence
+length (both at production operating point).
+
+**Activation peak is *not* in NBT.** A transient activation tensor is
+allocated when `model(...)` starts, freed when `model(...)` returns;
+it does not accumulate across forwards and does not scale per-session.
+It is a GPU **capacity constraint** (the forward must fit in HBM), not a
+per-token cost. We report it separately.
+
+> ⚠️ **Earlier metric was wrong.** A previous version of `metrics.py`
+> amortized `peak_activation / (B * L_block)` into NBT. This conflated
+> a transient peak with persistent memory and inflated NBT by 30,000+ B/token
+> in the long-context regime, making compression appear at 3.5× when it
+> should have been ~600×. The fix is in `metrics.py` and the new report
+> shape; the design-stage formula in the project notes had the same error
+> and is corrected accordingly.
+
+## Architecture
 
 ```
-for each block:
-    proposer.propose_block(committed_prefix, L, K_diffusion_steps)   # masked-diffusion
-    verifier.forward_block(proposed_tokens)                          # one parallel forward
-    walk i=0..L-1:  accept proposed[i] iff argmax(verifier_logits[i-1]) == proposed[i]
-    cache eviction so that |cache| <= sink_size + window_size at all times
-    correction_or_bonus = argmax(prev_logits)
-    verifier.append_token(correction_or_bonus)                       # 1 forward
+┌──────────────────┐     L tokens      ┌────────────────────────┐
+│  DLM Proposer    │ ────────────────► │ AR Verifier            │
+│  Qwen3-0.6B-MDLM │                   │ Qwen3-1.7B             │
+│  K diffusion     │ ◄──────────────── │ DynamicCache trimmed   │
+│  steps / block   │  accept / reject  │ to sink+window slots   │
+└──────────────────┘                   └────────────────────────┘
 ```
 
-The verifier's KV cache is bounded to `sink + window` slots via direct
-`torch.Tensor` slicing on each `DynamicCache` layer's K and V tensors,
-StreamingLLM-style. New queries always use the **global** position id
-(so RoPE on new K/Q is rotated at the true distance); evicted tokens
-simply disappear from the attention's view, while sink/window survivors
-keep the RoPE rotation they had at their original positions.
-
-There is **no mock, no fallback, no overfit**:
-
-- Every forward pass runs real model weights downloaded from Hugging Face.
-- The cache trim slices the actual K/V tensors (and verifies the layer
-  shape matches the logical bookkeeping; raises on mismatch).
-- The "no intelligence loss" guarantee is verified by an
-  **equivalence-regime self-test**: when `sink + window >= full_seq_len`,
-  speculative output must be **bit-identical** to greedy AR (the demo
-  exits with code 2 if not).
-- No prompt-specific tuning; the same code runs every prompt.
+* `proposer.py` — masked-diffusion block generator faithful to the model card's reference (low-confidence remasking, deterministic at temperature 0). The proposer in this build re-encodes the full prefix per block; it does **not** maintain a persistent KV cache, so its persistent memory contribution to NBT is zero.
+* `verifier.py` — `SinkWindowVerifier` slices each `DynamicCache` layer's K/V tensors after every step; new queries always use the **global** RoPE position (so RoPE on new K/Q is correct), and evicted tokens drop out of attention's view (StreamingLLM-style). Layer-shape invariants raise on mismatch.
+* `speculative.py` — greedy speculative-decoding loop with rejection sampling. When `sink + window >= full_seq_len`, output is **bit-equivalent** to greedy AR — verified at runtime; the demo exits with code 2 on mismatch.
+* `baseline.py` — reference greedy AR with full `DynamicCache`.
+* `metrics.py` — KV byte counting; NBT_kv_only formula; capacity-constraint report; projection table to canonical operating points.
 
 ## Project layout
 
@@ -59,7 +73,7 @@ kv_cache_proposer/
 ├── verifier.py        # AR Verifier with sink+window DynamicCache
 ├── speculative.py     # Greedy speculative-decoding loop
 ├── baseline.py        # Reference greedy AR with full DynamicCache
-├── metrics.py         # KV byte counting, NBT formula, projection table
+├── metrics.py         # KV byte counting + NBT_kv_only + projection table
 ├── run_demo.py        # End-to-end demo + JSON results
 └── __init__.py
 scripts/
@@ -125,56 +139,69 @@ prompt   : "Write a one-paragraph explanation of why prime numbers are infinite 
 config   : sink=4, window=24, block_size=16, K=16, B=64 (for amortization)
 S        : 108 tokens (44 prompt + 64 generated)
 
-verifier KV (full DynamicCache, baseline)  =  12.10 MB total = 114,688 B/token
-verifier KV (sink+window,  speculative)    =   3.06 MB total =  29,734 B/token
-                                             ── 3.86x verifier-side compression
-proposer weights amortized at B=64,S=108   = 172,468 B/token  (dominates here)
-proposer peak activation amortized B=64,L=16 = 32,049 B/token (logits buffer)
+Persistent (in NBT):
+  verifier KV (full DynamicCache, baseline) =  12.10 MB total =  114,688 B/token
+  verifier KV (sink+window,  speculative)   =   3.06 MB total =   29,734 B/token
+                                                                 ── 3.86x verifier-side
+  proposer KV                               =   0 B            (recomputed per block)
+  proposer weights amortized at B=64,S=108  = 172,468 B/token  (small-S dominates here)
+  NBT_kv_only at this scale                 = 202,202 B/token  (compression 0.57x)
 
-NBT (this scenario, B=64 S=108) = 234,251 B/token   (compression  0.49x)
+Capacity (separate, NOT in NBT):
+  proposer peak activation (single forward) =  31.30 MB
+  verifier peak activation (single forward) =  12.75 MB
 ```
 
-The proposer-overhead terms dominate at this small scale — which is exactly
-the operating-regime caveat the design predicted. The framework also
-reports projected NBT at production-realistic operating points using the
-empirically measured per-slot KV bytes:
+NBT < baseline only kicks in once `B*S` is large enough that proposer
+weights amortize away. The framework reports projected NBT at canonical
+operating points using the **empirically measured per-slot KV** and
+**actual measured weight bytes** (no extrapolation beyond reusing the
+slot constant):
 
 ```
-   B           S     NBT B/token   compression
-   1       8,192     2,197,048.0         0.05x
-   8       8,192       274,974.0         0.42x
-   8     131,072       257,553.4         0.45x
-  32     131,072        64,406.7         1.78x
-  64     131,072        32,215.6         3.56x
-  64   1,048,576        32,069.8         3.58x
+  per-slot verifier KV measured = 114,688 B; cache_budget = 28 slots; proposer KV = 0
+  ----------------------------------------------------------------
+     B           S     NBT B/token   compression
+  ----------------------------------------------------------------
+     1       8,192       145,912.0         0.79x   ← single-request, weights dominate
+     8       8,192        18,582.0         6.17x
+     8      32,768         4,645.5        24.69x
+     8     131,072         1,161.4        98.75x
+     8   1,048,576           145.2       790.02x
+    32     131,072           308.7       371.50x
+    64     131,072           166.6      688.36x   ← B=64, S=128k production point
+    64   1,048,576            20.8     5506.92x   ← B=64, S=1M
+  ----------------------------------------------------------------
 ```
 
-`B*S ≈ 1M` is the empirical break-even — exactly matching the analytical
-prediction that proposer-weight amortization governs the regime where the
-architecture pays off.
+These numbers are consistent with the design analysis: at small `B*S` the
+proposer's weight bytes dominate; at large `B*S` the only persistent cost
+is the bounded `sink+window` KV (28 slots × 114,688 B = 3.06 MB total,
+amortized over `S` tokens → ≈25 B/token at S=128k).
 
-## Honest caveats — what these numbers do and don't claim
+## Honest caveats
 
-1. **Verifier model**: the included demo uses `Qwen/Qwen3-1.7B` because no
-   public Qwen-3.6 checkpoint exists yet. The Qwen 3.5/3.6 hybrid-attention
-   architecture has only 16/64 layers carrying KV instead of 28/28 in
-   Qwen3-1.7B, so the *baseline* per-token KV would be smaller and the
-   compression ratio likely smaller as well. The framework code does not
-   change.
+1. **Verifier model**: Qwen3-1.7B (28 layers, all carrying KV) stands in
+   for the still-unreleased Qwen 3.6 (16 of 64 layers carrying KV). Against
+   a real Qwen 3.5/3.6 baseline of ~65 KB/token, the *absolute* compression
+   ratios above would be lower by a factor of about 1.75; the framework
+   code is unchanged.
 2. **Acceptance rate is low (~0.12)**. The proposer was trained with masked
    diffusion on Nemotron-SFT-Code by a different research group; it is *not*
    Repr-Align-aligned to Qwen3-1.7B's representation geometry. With a same-
-   family Repr-Align proposer (the design's recommended choice), acceptance
-   rates of 0.6–0.85 are reported in the literature. Low acceptance does not
-   break correctness — it just means the verifier issues more correction
-   tokens, which costs throughput, not memory.
+   family Repr-Align proposer (the design's recommended choice), reported
+   acceptance rates are 0.6–0.85. **Low acceptance does not break
+   correctness** — it costs throughput, not memory.
 3. **Proposer activation memory** is dominated by the dense logits buffer
    (`[1, T, V_vocab]`). The included implementation does not use the standard
    "compute logits only at masked positions" optimization — its peak is
-   `T * V * 2` bytes per forward pass. The projection table reuses the
-   activation peak measured at S=108; long-context activation projections
-   therefore *implicitly assume* the sparse-logits optimization. Adding it
-   is a few-line change but was kept out of this drop for transparency.
+   `T * V * 2` bytes per forward. At long contexts this would not fit in
+   HBM and the optimization is mandatory; **the activation peak we report
+   is therefore the value of `T * V * 2` at the run's actual context
+   length, not a long-context projection**. The capacity number is real for
+   what we ran; engineering for S=128k requires the masked-positions
+   optimization (a few-line change). The NBT numbers are independent of
+   this optimization (activation is not in NBT).
 4. **CPU runs**. The repository runs end-to-end on a 4-core, 15 GB-RAM CPU
    environment in tens of seconds. GPU runs would just change wall-clock,
    not byte accounting; the NBT numbers are deterministic functions of
@@ -186,10 +213,11 @@ architecture pays off.
 
 ## What is and isn't being demonstrated
 
-- **Demonstrated**: KV-cache memory bound is enforced and measured; the
-  speculative loop is greedily distribution-equivalent to the verifier (in
-  the equivalence regime); the NBT trade-off curve crosses unity at the
-  predicted operating regime.
+- **Demonstrated**: KV-cache memory bound is enforced and measured (the
+  cache really stays at sink+window=28 slots throughout 108-token
+  generation); the speculative loop is greedily distribution-equivalent to
+  the verifier (in the equivalence regime); the NBT trade-off curve crosses
+  unity at the predicted operating regime.
 - **Not demonstrated** (out of scope for a single CPU runnable demo):
   multi-target verifier routing (Qwen / Gemma / DeepSeek), session-affinity
   scheduling, OTA, federated self-learning. Those are platform-level

@@ -7,10 +7,10 @@
 [demo] loading proposer ...
 [demo] proposer params: 1192.1 MB
 [demo] loading verifier ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 113.38it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 132.24it/s]
 [demo] verifier params: 3441.1 MB
 [demo] loading baseline (full-KV verifier) ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 86.80it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 130.49it/s]
 [demo] prompt: 'Write a one-paragraph explanation of why prime numbers are infinite, suitable for a high school student.'
 [demo] prompt token length: 44
 [demo] eos ids: [151645]
@@ -19,7 +19,7 @@
 [baseline] tokens: 64
 [baseline] forward calls: 65
 [baseline] peak KV: 12096.0 KB (114688.0 B/token)
-[baseline] text: 'Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by mathematician Euclid in his famous proof, where he showed that if you assume there is a largest prime number, then multiplying all those primes together would result in'
+[baseline] text: 'Prime numbers are infinite because, no matter how large a number you choose, there is always a larger prime number that comes after it. This was proven by the ancient Greek mathematician Euclid, who showed that if you assume there is a largest prime number, then multiplying all the primes together would result in a number that'
 
 [demo] === Speculative (DLM proposer + sink+window verifier) ===
 [spec] tokens: 64
@@ -31,45 +31,56 @@
 [spec] per-block accepted/proposed: [(5, 16), (0, 16), (2, 16), (2, 16), (3, 16), (2, 16), (0, 16), (2, 16), (4, 16), (0, 16), (3, 16), (3, 16), (3, 16), (2, 16), (0, 16), (4, 16), (0, 13), (0, 12), (0, 11), (0, 10), (3, 9), (0, 5), (1, 4), (0, 2), (1, 1)]
 [spec] text: 'Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by the Prime Number Theorem, which states that the number of primes less than a given number n is approximately n / log(n). This means that as n increases'
 
-========================================================================
-NBT Report (Net Bytes per Token, sink+window verifier KV)
-========================================================================
+============================================================================
+NBT Report — KV-only definition (activation reported separately)
+============================================================================
   scenario: B=64, S=108 tokens, L_block=16, sink=4, window=24
 
-Verifier KV cache:
-  baseline (full)      total=   11.81 MB  per-token=114688.0 B
-  sink+window residual total=    3.06 MB  per-token= 29733.9 B
+Persistent memory (per token, amortized):
+  Verifier KV cache:
+    baseline (full DynamicCache)   total=   11.81 MB  per-token= 114688.0 B
+    sink+window residual (peak)    total=    3.06 MB  per-token=  29733.9 B
+    per-slot KV constant              114688 B/slot   (cache_budget = 28 slots)
 
-Proposer overhead (per token, amortized):
-  weights      1136.88 MB  -> 172468.1 B/token  (weights / (B*S))
-  peak act       31.30 MB  ->  32049.0 B/token  (peak / (B*L_block))
+  Proposer KV cache:
+    0 B total  -> 0.0 B/token  (this build recomputes the proposer per block, so persistent proposer KV = 0)
 
-NBT = 234251.1 B/token   (sink+window + proposer overhead)
-Baseline KV = 114688.0 B/token   (full DynamicCache)
-Compression vs baseline:   0.49x
+  Proposer weights (model parameters, GPU-shared, amortized over B*S):
+    total= 1136.88 MB   ->  172468.1 B/token  (weights / (B=64 * S=108))
+
+  NBT_kv_only =  202202.1 B/token   (verifier_KV + proposer_KV + weights/(B*S))
+  Baseline KV =  114688.0 B/token   (full DynamicCache)
+  Compression vs baseline:    0.57x
+
+Transient memory (capacity constraint, NOT in NBT):
+  Proposer peak activation (single forward):    31.30 MB
+  Verifier peak activation (single forward):    12.75 MB
+  Peak activation per GPU = max(both)      :    31.30 MB
+  (this is the maximum HBM occupancy seen during any single model(...) call;
+   it is freed when that call returns and does not accumulate across forwards.)
 
 Output equivalence (greedy):
-  speculative tokens generated: 64
-  baseline    tokens generated: 64
-  shared greedy prefix length:  32
-  exact match: False
-  proposer acceptance rate:  0.124
+  speculative tokens generated:  64
+  baseline    tokens generated:  64
+  shared greedy prefix length:   16
+  exact match:                   False
+  proposer acceptance rate:       0.124
 
-Projected NBT at canonical operating points:
-  (per-slot verifier KV measured =   114688 B; cache_budget = 28 slots)
+Projected NBT_kv_only at canonical operating points:
+  (per-slot verifier KV measured =   114688 B; cache_budget = 28 slots; proposer KV = 0)
   ----------------------------------------------------------------
      B           S     NBT B/token   compression
   ----------------------------------------------------------------
-     1       8,192     2,197,048.0         0.05x
-     8       8,192       274,974.0         0.42x
-     8      32,768       261,037.5         0.44x
-     8     131,072       257,553.4         0.45x
-     8   1,048,576       256,537.2         0.45x
-    32     131,072        64,406.7         1.78x
-    64     131,072        32,215.6         3.56x
-    64   1,048,576        32,069.8         3.58x
+     1       8,192       145,912.0         0.79x
+     8       8,192        18,582.0         6.17x
+     8      32,768         4,645.5        24.69x
+     8     131,072         1,161.4        98.75x
+     8   1,048,576           145.2       790.02x
+    32     131,072           308.7       371.50x
+    64     131,072           166.6       688.36x
+    64   1,048,576            20.8      5506.92x
   ----------------------------------------------------------------
-========================================================================
+============================================================================
 
 [demo] wrote /workspace/results/run_compress.json
 

@@ -45,6 +45,13 @@ class VerifierStats:
     tokens_consumed: int = 0
     peak_kv_bytes: int = 0
     weight_bytes: int = 0
+    peak_activation_bytes: int = 0
+    """Largest single-forward activation footprint observed.
+
+    We approximate activation peak by the size of the logits buffer
+    (`[B, T, V_vocab]`), which is the dominant transient tensor of a
+    Qwen3 forward at long contexts. Other intermediates (Q, attn probs,
+    MLP buffers) are smaller per layer and overlapping in lifetime."""
 
 
 class SinkWindowVerifier:
@@ -105,6 +112,7 @@ class SinkWindowVerifier:
         self.next_global_position = L
         self.next_token_logits = outputs.logits[0, -1].clone()
 
+        self._record_peak_activation(outputs.logits)
         self._trim_cache_in_place()
         self._record_peak_kv()
         self.stats.forward_calls += 1
@@ -145,6 +153,7 @@ class SinkWindowVerifier:
         self.cache = outputs.past_key_values
         # Cache provisionally has cache_start + L slots until commit/truncate.
         self.cache_logical_size = cache_start + L
+        self._record_peak_activation(outputs.logits)
         self.stats.forward_calls += 1
         self.stats.tokens_consumed += L
         # Don't trim yet — caller decides how many tokens were accepted.
@@ -247,3 +256,8 @@ class SinkWindowVerifier:
             if layer.values is not None:
                 total += layer.values.numel() * layer.values.element_size()
         self.stats.peak_kv_bytes = max(self.stats.peak_kv_bytes, total)
+
+    def _record_peak_activation(self, logits: torch.Tensor) -> None:
+        bytes_ = int(logits.numel() * logits.element_size())
+        if bytes_ > self.stats.peak_activation_bytes:
+            self.stats.peak_activation_bytes = bytes_

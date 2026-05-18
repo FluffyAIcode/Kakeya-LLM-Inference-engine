@@ -229,6 +229,7 @@ def main() -> int:
         window_size=args.window_size,
         block_size=args.block_size,
         batch_size=args.batch_size_for_amortization,
+        verifier_peak_activation_bytes=spec_result.verifier_peak_activation_bytes,
     )
     print()
     print(report.render())
