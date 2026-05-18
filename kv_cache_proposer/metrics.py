@@ -1,4 +1,4 @@
-"""KV cache and NBT (Net Bytes per Token) accounting.
+"""KV cache and Net-Bytes-per-Token accounting.
 
 Memory taxonomy (production GPU inference, single GPU):
 
@@ -20,9 +20,10 @@ capacity constraint* (the forward must fit in HBM), not a per-token cost.
 
 Definitions used by this module:
 
-    NBT_kv_only =  verifier_KV_per_token
-                 + proposer_KV_per_token
-                 + proposer_weight_bytes / (B * S)
+    Net Bytes per Token (KV-only) =
+            verifier_KV_per_token
+          + proposer_KV_per_token
+          + proposer_weight_bytes / (B * S)
 
     peak_activation_per_gpu = max activation bytes observed during any
                               single forward call (proposer + verifier
@@ -69,7 +70,9 @@ def measure_proposer_weight_bytes(proposer) -> int:
 
 
 @dataclass
-class NBTReport:
+class NetBytesPerTokenReport:
+    """Report bundle for the KV-only Net-Bytes-per-Token metric."""
+
     # Inputs / scenario
     sequence_length_tokens: int
     batch_size: int
@@ -93,13 +96,13 @@ class NBTReport:
     proposer_weight_bytes_total: int
     proposer_weight_bytes_per_token: float  # = weight / (B * S)
 
-    # Transient capacity constraint (NOT in NBT)
+    # Transient capacity constraint (NOT in Net Bytes per Token)
     proposer_peak_activation_bytes_total: int
     verifier_peak_activation_bytes_total: int
     peak_activation_bytes_per_gpu: int  # max(proposer, verifier)
 
-    # Aggregated NBT (kv_only) and compression
-    nbt_kv_only_bytes_per_token: float
+    # Aggregated metric and compression
+    net_bytes_per_token_kv_only: float
     baseline_bytes_per_token: float
     compression_ratio: float
 
@@ -111,7 +114,7 @@ class NBTReport:
     acceptance_rate: float
 
     projection_points: List[Tuple[int, int, float, float]] = field(default_factory=list)
-    """Each entry: (B, S, projected_nbt_kv_only_bytes_per_token, compression_ratio)."""
+    """Each entry: (B, S, projected_net_bytes_per_token_kv_only, compression_ratio)."""
 
     @classmethod
     def compute(
@@ -123,7 +126,7 @@ class NBTReport:
         block_size: int,
         batch_size: int,
         verifier_peak_activation_bytes: int = 0,
-    ) -> "NBTReport":
+    ) -> "NetBytesPerTokenReport":
         seq_len = max(baseline.final_kv_token_count, 1)
 
         # ---- Verifier KV ----
@@ -146,12 +149,12 @@ class NBTReport:
             speculative.proposer_weight_bytes / max(batch_size * seq_len, 1)
         )
 
-        # ---- NBT_kv_only ----
-        nbt_kv_only = (
+        # ---- Net Bytes per Token (KV-only) ----
+        net_bytes_per_token = (
             residual_per_token + proposer_kv_per_token + weight_per_token
         )
 
-        # ---- Activation peaks (capacity, NOT in NBT) ----
+        # ---- Activation peaks (capacity, NOT in metric) ----
         peak_act_gpu = max(
             speculative.proposer_peak_activation_bytes,
             verifier_peak_activation_bytes,
@@ -168,7 +171,7 @@ class NBTReport:
                 break
         exact = (a == b)
 
-        # ---- Projection table (kv_only NBT, holding kv_per_slot constant) ----
+        # ---- Projection table (KV-only metric, holding kv_per_slot constant) ----
         projections: List[Tuple[int, int, float, float]] = []
         operating_points = [
             (1, 8 * 1024),
@@ -184,10 +187,10 @@ class NBTReport:
             v_kv_total = kv_per_slot * min(S, cache_budget_slots)
             v_kv_per_token = v_kv_total / S
             w_per_token = speculative.proposer_weight_bytes / (B * S)
-            nbt = v_kv_per_token + 0.0 + w_per_token  # proposer KV = 0 here
+            metric = v_kv_per_token + 0.0 + w_per_token  # proposer KV = 0 here
             base_per_token = kv_per_slot
-            ratio = base_per_token / max(nbt, 1e-9)
-            projections.append((B, S, nbt, ratio))
+            ratio = base_per_token / max(metric, 1e-9)
+            projections.append((B, S, metric, ratio))
 
         return cls(
             sequence_length_tokens=seq_len,
@@ -208,9 +211,9 @@ class NBTReport:
             proposer_peak_activation_bytes_total=speculative.proposer_peak_activation_bytes,
             verifier_peak_activation_bytes_total=verifier_peak_activation_bytes,
             peak_activation_bytes_per_gpu=peak_act_gpu,
-            nbt_kv_only_bytes_per_token=nbt_kv_only,
+            net_bytes_per_token_kv_only=net_bytes_per_token,
             baseline_bytes_per_token=baseline_per_token,
-            compression_ratio=baseline_per_token / max(nbt_kv_only, 1e-9),
+            compression_ratio=baseline_per_token / max(net_bytes_per_token, 1e-9),
             speculative_output_tokens=len(a),
             baseline_output_tokens=len(b),
             output_match_prefix_length=prefix_match,
@@ -222,9 +225,10 @@ class NBTReport:
     def render(self) -> str:
         mb = lambda b: f"{b / (1024 * 1024):8.2f} MB"
         rows = [
-            "=" * 76,
-            "NBT Report — KV-only definition (activation reported separately)",
-            "=" * 76,
+            "=" * 84,
+            "Net-Bytes-per-Token Report — KV-only definition "
+            "(activation reported separately)",
+            "=" * 84,
             f"  scenario: B={self.batch_size}, S={self.sequence_length_tokens} tokens, "
             f"L_block={self.block_size}, sink={self.sink_size}, window={self.window_size}",
             "",
@@ -246,13 +250,13 @@ class NBTReport:
             f"-> {self.proposer_weight_bytes_per_token:9.1f} B/token  "
             f"(weights / (B={self.batch_size} * S={self.sequence_length_tokens}))",
             "",
-            f"  NBT_kv_only = {self.nbt_kv_only_bytes_per_token:9.1f} B/token   "
+            f"  Net Bytes per Token (KV-only) = {self.net_bytes_per_token_kv_only:9.1f} B/token   "
             f"(verifier_KV + proposer_KV + weights/(B*S))",
-            f"  Baseline KV = {self.baseline_bytes_per_token:9.1f} B/token   "
+            f"  Baseline KV cost              = {self.baseline_bytes_per_token:9.1f} B/token   "
             f"(full DynamicCache)",
-            f"  Compression vs baseline: {self.compression_ratio:7.2f}x",
+            f"  Compression vs baseline       = {self.compression_ratio:7.2f}x",
             "",
-            "Transient memory (capacity constraint, NOT in NBT):",
+            "Transient memory (capacity constraint, NOT counted in Net Bytes per Token):",
             f"  Proposer peak activation (single forward): {mb(self.proposer_peak_activation_bytes_total)}",
             f"  Verifier peak activation (single forward): {mb(self.verifier_peak_activation_bytes_total)}",
             f"  Peak activation per GPU = max(both)      : {mb(self.peak_activation_bytes_per_gpu)}",
@@ -266,17 +270,17 @@ class NBTReport:
             f"  exact match:                   {self.output_exact_match}",
             f"  proposer acceptance rate:      {self.acceptance_rate:6.3f}",
             "",
-            "Projected NBT_kv_only at canonical operating points:",
+            "Projected Net Bytes per Token (KV-only) at canonical operating points:",
             f"  (per-slot verifier KV measured = {self.verifier_kv_bytes_per_slot:8.0f} B; "
             f"cache_budget = {self.cache_budget_slots} slots; proposer KV = 0)",
-            "  " + "-" * 64,
-            f"  {'B':>4}  {'S':>10}  {'NBT B/token':>14}  {'compression':>12}",
-            "  " + "-" * 64,
+            "  " + "-" * 74,
+            f"  {'B':>4}  {'S':>10}  {'Net Bytes per Token':>22}  {'compression':>12}",
+            "  " + "-" * 74,
         ]
-        for (B, S, nbt, ratio) in self.projection_points:
+        for (B, S, metric, ratio) in self.projection_points:
             rows.append(
-                f"  {B:>4}  {S:>10,}  {nbt:>14,.1f}  {ratio:>11.2f}x"
+                f"  {B:>4}  {S:>10,}  {metric:>22,.1f}  {ratio:>11.2f}x"
             )
-        rows.append("  " + "-" * 64)
-        rows.append("=" * 76)
+        rows.append("  " + "-" * 74)
+        rows.append("=" * 84)
         return "\n".join(rows)

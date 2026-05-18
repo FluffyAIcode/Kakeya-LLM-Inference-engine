@@ -10,7 +10,8 @@ Then prints:
   * the generated text from each path,
   * a token-level equivalence check (under greedy decoding the two outputs
     must share their prefix; with a large enough window they are identical),
-  * the NBT report (KV bytes/token, with proposer overhead accounted for).
+  * the Net-Bytes-per-Token report (KV bytes/token, with proposer overhead
+    accounted for).
 
 There is no mock and no fallback: every forward pass runs the real model
 weights, and any inconsistency raises immediately rather than silently
@@ -32,7 +33,7 @@ from kv_cache_proposer.proposer import DLMProposer, ProposerConfig
 from kv_cache_proposer.verifier import SinkWindowVerifier, VerifierConfig
 from kv_cache_proposer.baseline import BaselineDecoder, BaselineConfig
 from kv_cache_proposer.speculative import SpeculativeDecoder
-from kv_cache_proposer.metrics import NBTReport
+from kv_cache_proposer.metrics import NetBytesPerTokenReport
 
 
 PROMPTS = [
@@ -82,7 +83,7 @@ def main() -> int:
         default=1,
         help=(
             "Operating-point batch size used solely to amortize proposer "
-            "weight/activation bytes in the NBT formula."
+            "weight/activation bytes in the Net-Bytes-per-Token formula."
         ),
     )
     parser.add_argument(
@@ -221,8 +222,8 @@ def main() -> int:
     )
     print(f"[spec] text: {spec_text!r}", flush=True)
 
-    # ---------------- NBT report ---------------- #
-    report = NBTReport.compute(
+    # ---------------- Net-Bytes-per-Token report ---------------- #
+    report = NetBytesPerTokenReport.compute(
         speculative=spec_result,
         baseline=baseline_result,
         sink_size=args.sink_size,
@@ -259,7 +260,7 @@ def main() -> int:
                 "proposed_per_block": spec_result.proposed_per_block,
                 "wall_time_seconds": spec_result.wall_time_seconds,
             },
-            "nbt": asdict(report),
+            "net_bytes_per_token_report": asdict(report),
         }
         with open(args.results_json, "w") as f:
             json.dump(out, f, indent=2)

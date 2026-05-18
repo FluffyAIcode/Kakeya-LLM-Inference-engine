@@ -40,9 +40,9 @@
     "proposed_per_block": [
       8
     ],
-    "wall_time_seconds": 1.2714416310191154
+    "wall_time_seconds": 81.66231394698843
   },
-  "nbt": {
+  "net_bytes_per_token_report": {
     "sequence_length_tokens": 32,
     "batch_size": 8,
     "block_size": 8,
@@ -61,7 +61,7 @@
     "proposer_peak_activation_bytes_total": 11547136,
     "verifier_peak_activation_bytes_total": 9116160,
     "peak_activation_bytes_per_gpu": 11547136,
-    "nbt_kv_only_bytes_per_token": 4774912.0,
+    "net_bytes_per_token_kv_only": 4774912.0,
     "baseline_bytes_per_token": 114688.0,
     "compression_ratio": 0.024018871970834226,
     "speculative_output_tokens": 3,

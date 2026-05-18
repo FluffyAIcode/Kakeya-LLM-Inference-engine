@@ -25,28 +25,29 @@ discussion using **real, public** weights:
 
 ## Memory accounting and what we measure
 
-The metric is **NBT — Net Bytes per Token**, defined as:
+The metric is **Net Bytes per Token**, defined as:
 
-    NBT_kv_only =  verifier_KV_per_token
-                 + proposer_KV_per_token
-                 + proposer_weight_bytes / (B * S)
+    Net Bytes per Token (KV-only) =
+            verifier_KV_per_token
+          + proposer_KV_per_token
+          + proposer_weight_bytes / (B * S)
 
 where `B` is concurrent-request batch size and `S` is per-request sequence
 length (both at production operating point).
 
-**Activation peak is *not* in NBT.** A transient activation tensor is
-allocated when `model(...)` starts, freed when `model(...)` returns;
-it does not accumulate across forwards and does not scale per-session.
-It is a GPU **capacity constraint** (the forward must fit in HBM), not a
-per-token cost. We report it separately.
+**Activation peak is *not* in Net Bytes per Token.** A transient activation
+tensor is allocated when `model(...)` starts, freed when `model(...)`
+returns; it does not accumulate across forwards and does not scale
+per-session. It is a GPU **capacity constraint** (the forward must fit in
+HBM), not a per-token cost. We report it separately.
 
 > ⚠️ **Earlier metric was wrong.** A previous version of `metrics.py`
-> amortized `peak_activation / (B * L_block)` into NBT. This conflated
-> a transient peak with persistent memory and inflated NBT by 30,000+ B/token
-> in the long-context regime, making compression appear at 3.5× when it
-> should have been ~600×. The fix is in `metrics.py` and the new report
-> shape; the design-stage formula in the project notes had the same error
-> and is corrected accordingly.
+> amortized `peak_activation / (B * L_block)` into Net Bytes per Token.
+> This conflated a transient peak with persistent memory and inflated the
+> metric by 30,000+ B/token in the long-context regime, making compression
+> appear at 3.5× when it should have been ~600×. The fix is in
+> `metrics.py` and the new report shape; the design-stage formula in the
+> project notes had the same error and is corrected accordingly.
 
 ## Architecture
 
@@ -59,11 +60,11 @@ per-token cost. We report it separately.
 └──────────────────┘                   └────────────────────────┘
 ```
 
-* `proposer.py` — masked-diffusion block generator faithful to the model card's reference (low-confidence remasking, deterministic at temperature 0). The proposer in this build re-encodes the full prefix per block; it does **not** maintain a persistent KV cache, so its persistent memory contribution to NBT is zero.
+* `proposer.py` — masked-diffusion block generator faithful to the model card's reference (low-confidence remasking, deterministic at temperature 0). The proposer in this build re-encodes the full prefix per block; it does **not** maintain a persistent KV cache, so its persistent memory contribution to Net Bytes per Token is zero.
 * `verifier.py` — `SinkWindowVerifier` slices each `DynamicCache` layer's K/V tensors after every step; new queries always use the **global** RoPE position (so RoPE on new K/Q is correct), and evicted tokens drop out of attention's view (StreamingLLM-style). Layer-shape invariants raise on mismatch.
 * `speculative.py` — greedy speculative-decoding loop with rejection sampling. When `sink + window >= full_seq_len`, output is **bit-equivalent** to greedy AR — verified at runtime; the demo exits with code 2 on mismatch.
 * `baseline.py` — reference greedy AR with full `DynamicCache`.
-* `metrics.py` — KV byte counting; NBT_kv_only formula; capacity-constraint report; projection table to canonical operating points.
+* `metrics.py` — KV byte counting; KV-only Net-Bytes-per-Token formula; capacity-constraint report; projection table to canonical operating points.
 
 ## Project layout
 
@@ -73,7 +74,7 @@ kv_cache_proposer/
 ├── verifier.py        # AR Verifier with sink+window DynamicCache
 ├── speculative.py     # Greedy speculative-decoding loop
 ├── baseline.py        # Reference greedy AR with full DynamicCache
-├── metrics.py         # KV byte counting + NBT_kv_only + projection table
+├── metrics.py         # KV byte counting + Net-Bytes-per-Token + projection table
 ├── run_demo.py        # End-to-end demo + JSON results
 └── __init__.py
 scripts/
@@ -139,39 +140,39 @@ prompt   : "Write a one-paragraph explanation of why prime numbers are infinite 
 config   : sink=4, window=24, block_size=16, K=16, B=64 (for amortization)
 S        : 108 tokens (44 prompt + 64 generated)
 
-Persistent (in NBT):
-  verifier KV (full DynamicCache, baseline) =  12.10 MB total =  114,688 B/token
-  verifier KV (sink+window,  speculative)   =   3.06 MB total =   29,734 B/token
-                                                                 ── 3.86x verifier-side
-  proposer KV                               =   0 B            (recomputed per block)
-  proposer weights amortized at B=64,S=108  = 172,468 B/token  (small-S dominates here)
-  NBT_kv_only at this scale                 = 202,202 B/token  (compression 0.57x)
+Persistent (in Net Bytes per Token):
+  verifier KV (full DynamicCache, baseline)     =  12.10 MB total =  114,688 B/token
+  verifier KV (sink+window,  speculative)       =   3.06 MB total =   29,734 B/token
+                                                                     ── 3.86x verifier-side
+  proposer KV                                   =   0 B            (recomputed per block)
+  proposer weights amortized at B=64,S=108      = 172,468 B/token  (small-S dominates here)
+  Net Bytes per Token (KV-only) at this scale   = 202,202 B/token  (compression 0.57x)
 
-Capacity (separate, NOT in NBT):
-  proposer peak activation (single forward) =  31.30 MB
-  verifier peak activation (single forward) =  12.75 MB
+Capacity (separate, NOT counted in Net Bytes per Token):
+  proposer peak activation (single forward)     =  31.30 MB
+  verifier peak activation (single forward)     =  12.75 MB
 ```
 
-NBT < baseline only kicks in once `B*S` is large enough that proposer
-weights amortize away. The framework reports projected NBT at canonical
-operating points using the **empirically measured per-slot KV** and
-**actual measured weight bytes** (no extrapolation beyond reusing the
-slot constant):
+Net Bytes per Token < baseline only kicks in once `B*S` is large enough
+that proposer weights amortize away. The framework reports projected Net
+Bytes per Token at canonical operating points using the **empirically
+measured per-slot KV** and **actual measured weight bytes** (no
+extrapolation beyond reusing the slot constant):
 
 ```
   per-slot verifier KV measured = 114,688 B; cache_budget = 28 slots; proposer KV = 0
-  ----------------------------------------------------------------
-     B           S     NBT B/token   compression
-  ----------------------------------------------------------------
-     1       8,192       145,912.0         0.79x   ← single-request, weights dominate
-     8       8,192        18,582.0         6.17x
-     8      32,768         4,645.5        24.69x
-     8     131,072         1,161.4        98.75x
-     8   1,048,576           145.2       790.02x
-    32     131,072           308.7       371.50x
-    64     131,072           166.6      688.36x   ← B=64, S=128k production point
-    64   1,048,576            20.8     5506.92x   ← B=64, S=1M
-  ----------------------------------------------------------------
+  --------------------------------------------------------------------------
+     B           S     Net Bytes per Token   compression
+  --------------------------------------------------------------------------
+     1       8,192               145,912.0         0.79x  ← single-request, weights dominate
+     8       8,192                18,582.0         6.17x
+     8      32,768                 4,645.5        24.69x
+     8     131,072                 1,161.4        98.75x
+     8   1,048,576                   145.2       790.02x
+    32     131,072                   308.7       371.50x
+    64     131,072                   166.6       688.36x  ← B=64, S=128k production point
+    64   1,048,576                    20.8      5506.92x  ← B=64, S=1M
+  --------------------------------------------------------------------------
 ```
 
 These numbers are consistent with the design analysis: at small `B*S` the
@@ -200,12 +201,12 @@ amortized over `S` tokens → ≈25 B/token at S=128k).
    is therefore the value of `T * V * 2` at the run's actual context
    length, not a long-context projection**. The capacity number is real for
    what we ran; engineering for S=128k requires the masked-positions
-   optimization (a few-line change). The NBT numbers are independent of
-   this optimization (activation is not in NBT).
+   optimization (a few-line change). The Net-Bytes-per-Token numbers are
+   independent of this optimization (activation is not in the metric).
 4. **CPU runs**. The repository runs end-to-end on a 4-core, 15 GB-RAM CPU
    environment in tens of seconds. GPU runs would just change wall-clock,
-   not byte accounting; the NBT numbers are deterministic functions of
-   model shapes and the cache budget.
+   not byte accounting; the Net-Bytes-per-Token numbers are deterministic
+   functions of model shapes and the cache budget.
 5. **No fallback**. If anything in the pipeline becomes inconsistent
    (cache layout, tokenizer drift, mask leakage from the proposer) the
    code raises immediately. There is no path that silently degrades to
@@ -216,8 +217,8 @@ amortized over `S` tokens → ≈25 B/token at S=128k).
 - **Demonstrated**: KV-cache memory bound is enforced and measured (the
   cache really stays at sink+window=28 slots throughout 108-token
   generation); the speculative loop is greedily distribution-equivalent to
-  the verifier (in the equivalence regime); the NBT trade-off curve crosses
-  unity at the predicted operating regime.
+  the verifier (in the equivalence regime); the Net-Bytes-per-Token
+  trade-off curve crosses unity at the predicted operating regime.
 - **Not demonstrated** (out of scope for a single CPU runnable demo):
   multi-target verifier routing (Qwen / Gemma / DeepSeek), session-affinity
   scheduling, OTA, federated self-learning. Those are platform-level

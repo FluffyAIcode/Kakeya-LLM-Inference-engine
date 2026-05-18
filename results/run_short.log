@@ -7,10 +7,10 @@
 [demo] loading proposer ...
 [demo] proposer params: 1192.1 MB
 [demo] loading verifier ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  3.14it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.26it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.67it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 11.31it/s]
 [demo] verifier params: 3441.1 MB
 [demo] loading baseline (full-KV verifier) ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 130.56it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 114.73it/s]
 [demo] prompt: 'Reply with exactly: OK.'
 [demo] prompt token length: 30
 [demo] eos ids: [151645]
@@ -31,9 +31,9 @@
 [spec] per-block accepted/proposed: [(3, 8)]
 [spec] text: 'OK.<|im_end|>'
 
-============================================================================
-NBT Report — KV-only definition (activation reported separately)
-============================================================================
+====================================================================================
+Net-Bytes-per-Token Report — KV-only definition (activation reported separately)
+====================================================================================
   scenario: B=8, S=32 tokens, L_block=8, sink=4, window=64
 
 Persistent memory (per token, amortized):
@@ -48,11 +48,11 @@ Persistent memory (per token, amortized):
   Proposer weights (model parameters, GPU-shared, amortized over B*S):
     total= 1136.88 MB   -> 4656640.0 B/token  (weights / (B=8 * S=32))
 
-  NBT_kv_only = 4774912.0 B/token   (verifier_KV + proposer_KV + weights/(B*S))
-  Baseline KV =  114688.0 B/token   (full DynamicCache)
-  Compression vs baseline:    0.02x
+  Net Bytes per Token (KV-only) = 4774912.0 B/token   (verifier_KV + proposer_KV + weights/(B*S))
+  Baseline KV cost              =  114688.0 B/token   (full DynamicCache)
+  Compression vs baseline       =    0.02x
 
-Transient memory (capacity constraint, NOT in NBT):
+Transient memory (capacity constraint, NOT counted in Net Bytes per Token):
   Proposer peak activation (single forward):    11.01 MB
   Verifier peak activation (single forward):     8.69 MB
   Peak activation per GPU = max(both)      :    11.01 MB
@@ -66,21 +66,21 @@ Output equivalence (greedy):
   exact match:                   True
   proposer acceptance rate:       0.375
 
-Projected NBT_kv_only at canonical operating points:
+Projected Net Bytes per Token (KV-only) at canonical operating points:
   (per-slot verifier KV measured =   114688 B; cache_budget = 68 slots; proposer KV = 0)
-  ----------------------------------------------------------------
-     B           S     NBT B/token   compression
-  ----------------------------------------------------------------
-     1       8,192       146,472.0         0.78x
-     8       8,192        19,142.0         5.99x
-     8      32,768         4,785.5        23.97x
-     8     131,072         1,196.4        95.86x
-     8   1,048,576           149.5       766.90x
-    32     131,072           343.7       333.67x
-    64     131,072           201.6       568.86x
-    64   1,048,576            25.2      4550.90x
-  ----------------------------------------------------------------
-============================================================================
+  --------------------------------------------------------------------------
+     B           S     Net Bytes per Token   compression
+  --------------------------------------------------------------------------
+     1       8,192               146,472.0         0.78x
+     8       8,192                19,142.0         5.99x
+     8      32,768                 4,785.5        23.97x
+     8     131,072                 1,196.4        95.86x
+     8   1,048,576                   149.5       766.90x
+    32     131,072                   343.7       333.67x
+    64     131,072                   201.6       568.86x
+    64   1,048,576                    25.2      4550.90x
+  --------------------------------------------------------------------------
+====================================================================================
 
 [demo] wrote /workspace/results/run_short.json
 

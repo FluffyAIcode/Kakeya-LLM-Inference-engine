@@ -20,7 +20,7 @@ from .metrics import (
     cache_kv_bytes,
     cache_token_count,
     measure_proposer_weight_bytes,
-    NBTReport,
+    NetBytesPerTokenReport,
 )
 
 __all__ = [
@@ -33,5 +33,5 @@ __all__ = [
     "cache_kv_bytes",
     "cache_token_count",
     "measure_proposer_weight_bytes",
-    "NBTReport",
+    "NetBytesPerTokenReport",
 ]
