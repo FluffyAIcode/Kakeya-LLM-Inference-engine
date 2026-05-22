@@ -38,7 +38,7 @@ the ratio; it is a separate fitness gate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import torch
 

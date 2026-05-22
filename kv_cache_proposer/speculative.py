@@ -29,7 +29,7 @@ argmax-equality.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable, List, Optional, Set
 
 import torch
@@ -132,7 +132,11 @@ class SpeculativeDecoder:
                 num_steps=self.num_diffusion_steps,
             )
             d = proposal.tokens
-            assert len(d) == L
+            if len(d) != L:
+                raise RuntimeError(
+                    f"Proposer returned {len(d)} tokens; expected exactly {L}. "
+                    "Refusing to continue with a malformed block."
+                )
 
             block_logits = self.verifier.forward_block(d)  # [L, V]
             prev_logits = self.verifier.next_token_logits
@@ -174,8 +178,9 @@ class SpeculativeDecoder:
                 break
 
             # Commit the correction/bonus token: forward it so its K/V is in
-            # the cache and we get the logits for the next iteration.
-            self.verifier.next_token_logits = self.verifier.append_token(correction_or_bonus)
+            # the cache. `append_token` itself updates `verifier.next_token_logits`
+            # to predict the *following* position, so we don't reassign here.
+            self.verifier.append_token(correction_or_bonus)
             committed.append(correction_or_bonus)
             generated.append(correction_or_bonus)
             if correction_or_bonus in eos_set:

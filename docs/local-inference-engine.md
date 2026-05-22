@@ -11,6 +11,21 @@ explicit goals:
 2. **Extreme token throughput** — ≥ 150 tok/s single-request and ≥ 500
    tok/s aggregate on an M3 Max; ≥ 400 / ≥ 1500 on an RTX 4090.
 
+## What's already in this repo vs. what this doc describes
+
+| Already implemented (`kv_cache_proposer/`)                       | This doc describes (engine to be built on top)            |
+| ---------------------------------------------------------------- | --------------------------------------------------------- |
+| Greedy speculative decoding loop with rejection sampling         | Async two-stream proposer / verifier pipeline             |
+| Sink+window KV trimming via direct `DynamicCache` tensor slicing | Fixed-size slab pool replacing `DynamicCache` entirely    |
+| Equivalence self-test, Net-Bytes-per-Token metric                | Continuous batching scheduler + multi-session aggregation |
+| CPU + bfloat16 path running end-to-end                           | MLX (Mac) and CUDA (Linux) backends                       |
+| —                                                                | NF4 KV quantization, AWQ 4-bit weights, sparse logits     |
+| —                                                                | OpenAI-compat HTTP API + streaming                        |
+
+When this doc says "the engine does X", it means "the engine *should*
+do X once built". The repo today is the algorithmic core that the engine
+will wrap.
+
 ## 0. Why we are *not* using PagedAttention
 
 PagedAttention solves three problems that arise from "KV cache is an
@@ -24,8 +39,10 @@ unbounded, growing object of unpredictable size":
 
 In our framework, the sink+window invariant means **every session's KV
 cache is a constant-size object** (`(sink + window) × per-token-bytes`),
-e.g., 14.8 MB / session at NF4 quantization. None of the three problems
-above remain:
+e.g., ≈15 MB / session for Qwen3-1.7B at NF4 quantization with
+sink+window=516 (28 layers × 8 KV heads × 128 head_dim × 0.5 B/elem
+plus per-block fp16 scales × 516 slots × K and V). None of the three
+problems above remain:
 
 * No fragmentation, because every slab is the same size.
 * No prefix sharing, because the prefix beyond the sink (4 tokens) is
@@ -129,7 +146,7 @@ single concurrent session:
 | -------------------------------------- | ---------- | ---------------------------- |
 | Verifier weights                       | 3.40 GB    | **0.85 GB** (NF4 4-bit)      |
 | Proposer weights                       | 1.50 GB    | **0.38 GB** (NF4 4-bit)      |
-| Verifier KV cache (full)               | 14.7 GB    | **14.8 MB** (sink+W=512, NF4)|
+| Verifier KV cache (full)               | 14.7 GB    | **≈ 15 MB** (sink+W=512, NF4)|
 | Proposer persistent KV                 | n/a        | 0 (recomputed per block)     |
 | Activation peak (sparse-logits)        | n/a        | 5 MB                         |
 | Runtime buffers (attn scratch, sample) | ~200 MB    | ~200 MB                      |
@@ -254,41 +271,75 @@ backend/
 
 ## 7. Phased build plan
 
-### P0 — single-session walking skeleton (~2–3 weeks, 1 engineer)
+Phases are ordered by dependency and risk, not by calendar time. Each
+phase has a concrete acceptance test; a phase is "done" when the test
+passes on the target hardware.
 
-* MLX backend port of `kv_cache_proposer/`
-* AWQ 4-bit weight loading (verifier)
-* Fixed-slab KV pool with NF4 quantization
-* Sparse-logits proposer optimization
-* Smoke + equivalence tests pass on Mac M-series
+### P0 — single-session walking skeleton
 
-**Acceptance**: M2 Mac runs single-request Qwen3-1.7B verifier under 2 GB
-total memory, output bit-equal to baseline.
+Scope (touches only L1–L5):
 
-### P1 — multi-session + high throughput (~2 months)
+* MLX backend port of `kv_cache_proposer/` (≈ swap `torch.Tensor`
+  operations for `mx.array`; `verifier.py`'s slice-trim works the same
+  way on MLX's lazy tensors).
+* AWQ 4-bit weight loader for the verifier (linear-only quant; embedding
+  / layernorm stay bf16).
+* Fixed-slab KV pool with NF4 quantization; replaces direct
+  `DynamicCache` mutation in `verifier.py`.
+* Sparse-logits proposer optimization (compute logits only at masked
+  positions during diffusion).
 
-* Continuous-batching scheduler
-* Async proposer/verifier pipeline (two streams + lock-free queue)
-* Tree speculative decoding
-* CUDA Graph / MLX compile capture
-* Tree-mask FlashAttention integration
+Risk: NF4 KV requires a fused `dequantize → attention → quantize`
+kernel. Existing one in MLX/CUDA can be reused; if not, this becomes
+the dominant cost of P0.
 
-**Acceptance**: M3 Max ≥ 150 tok/s single, ≥ 500 tok/s aggregate; RTX
-4090 ≥ 400 / ≥ 1500.
+**Acceptance**: M2 Mac runs single-request Qwen3-1.7B verifier under
+2 GB total resident memory; output bit-equal to the bf16 baseline on
+the equivalence-regime self-test.
 
-### P2 — productization (~1 month)
+### P1 — multi-session + high throughput
 
-* OpenAI-compat HTTP API + streaming SSE
-* Session persistence (slab → CPU/disk between turns)
-* Configuration + observability dashboard
-* Signed .dmg / .deb packages
+Scope (adds L6 and rewrites L5):
 
-### P3 — polish (~ongoing)
+* Continuous-batching scheduler (custom; vLLM's scheduler doesn't
+  accommodate a DLM proposer).
+* Async proposer/verifier pipeline: two compute streams + lock-free
+  block queue + optimistic-KV rollback.
+* Tree speculative decoding: top-k tree per position, path-compatible
+  attention mask, longest-accepted-path commit.
+* CUDA Graph (Linux) and MLX `mx.compile` (Mac) capture for the hot
+  per-step kernels.
 
-* Speculative streaming (mid-block UI updates)
-* Cross-CPU/GPU offload for huge verifiers
-* Online RL fine-tuning of proposer (acceptance 0.3 → 0.7)
-* Per-session dynamic block-size controller
+Risk: optimistic-KV rollback when a block partially rejects requires
+careful slab versioning; first integration with tree-mask attention is
+the hardest single piece.
+
+**Acceptance**: M3 Max ≥ 150 tok/s single-request, ≥ 500 tok/s
+aggregate at B=8; RTX 4090 ≥ 400 / ≥ 1500.
+
+### P2 — productization
+
+Scope (adds L7 and operations):
+
+* OpenAI-compatible HTTP API with SSE streaming; `/v1/chat/completions`
+  and `/v1/completions`.
+* Session persistence (slab snapshot → CPU memory or disk between turns
+  for multi-day conversations).
+* Configuration + observability dashboard (acceptance rate, NBT,
+  throughput, queue depths).
+* Signed `.dmg` / `.deb` installers.
+
+Risk: relatively low; mostly integration work over P0/P1.
+
+**Acceptance**: serves OpenAI-compat clients (cursor, vscode plugins)
+without code changes; >24 h uninterrupted run with no leak.
+
+### P3 — polish (kept as a backlog, not a release gate)
+
+* Speculative streaming (mid-block UI updates with rollback animations).
+* Cross-CPU/GPU offload for huge verifiers (Qwen3-32B+ on 24 GB GPUs).
+* Online RL fine-tuning of proposer via accepted/rejected logs.
+* Per-session dynamic block-size controller.
 
 ## 8. Quantitative success criteria
 

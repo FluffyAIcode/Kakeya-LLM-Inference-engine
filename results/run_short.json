@@ -40,7 +40,7 @@
     "proposed_per_block": [
       8
     ],
-    "wall_time_seconds": 81.66231394698843
+    "wall_time_seconds": 67.54977990400221
   },
   "net_bytes_per_token_report": {
     "sequence_length_tokens": 32,

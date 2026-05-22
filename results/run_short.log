@@ -7,10 +7,10 @@
 [demo] loading proposer ...
 [demo] proposer params: 1192.1 MB
 [demo] loading verifier ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.67it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 11.31it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 95.31it/s]
 [demo] verifier params: 3441.1 MB
 [demo] loading baseline (full-KV verifier) ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 114.73it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 116.49it/s]
 [demo] prompt: 'Reply with exactly: OK.'
 [demo] prompt token length: 30
 [demo] eos ids: [151645]

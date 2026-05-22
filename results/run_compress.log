@@ -7,10 +7,10 @@
 [demo] loading proposer ...
 [demo] proposer params: 1192.1 MB
 [demo] loading verifier ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  6.49it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 12.94it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 126.70it/s]
 [demo] verifier params: 3441.1 MB
 [demo] loading baseline (full-KV verifier) ...
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 116.89it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 137.01it/s]
 [demo] prompt: 'Write a one-paragraph explanation of why prime numbers are infinite, suitable for a high school student.'
 [demo] prompt token length: 44
 [demo] eos ids: [151645]
@@ -19,7 +19,7 @@
 [baseline] tokens: 64
 [baseline] forward calls: 65
 [baseline] peak KV: 12096.0 KB (114688.0 B/token)
-[baseline] text: 'Prime numbers are infinite because, no matter how large a number you choose, there will always be a larger prime number that comes after it. This was proven by mathematician Euclid in his famous proof, where he showed that if you assume there is a largest prime number, then multiplying all those primes together would result in'
+[baseline] text: 'Prime numbers are infinite because, no matter how large a number you choose, there is always a larger prime number that comes after it. This was proven by the ancient Greek mathematician Euclid, who showed that if you assume there is a largest prime number, then multiplying all the primes together would result in a number that'
 
 [demo] === Speculative (DLM proposer + sink+window verifier) ===
 [spec] tokens: 64
@@ -62,7 +62,7 @@ Transient memory (capacity constraint, NOT counted in Net Bytes per Token):
 Output equivalence (greedy):
   speculative tokens generated:  64
   baseline    tokens generated:  64
-  shared greedy prefix length:   32
+  shared greedy prefix length:   16
   exact match:                   False
   proposer acceptance rate:       0.124
 

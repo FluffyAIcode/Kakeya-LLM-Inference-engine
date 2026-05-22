@@ -87,11 +87,14 @@ requirements.txt
 
 ```bash
 pip install -r requirements.txt
-# (one-time fix: the dllm-hub modeling file references the broken `dllm`
-#  package only inside an `if __name__ == "__main__":` block; we install a
-#  no-op stub so transformers' static check_imports passes)
-mkdir -p ~/.local/lib/python3.12/site-packages/dllm
-echo '' > ~/.local/lib/python3.12/site-packages/dllm/__init__.py
+# One-time fix: the dllm-hub modeling file references the broken `dllm`
+# package inside an `if __name__ == "__main__":` block; transformers'
+# static check_imports flags it. Install a no-op stub at the user's
+# site-packages directory (Python-version portable):
+python3 -c "import site, os; \
+    p = os.path.join(site.getusersitepackages(), 'dllm'); \
+    os.makedirs(p, exist_ok=True); \
+    open(os.path.join(p, '__init__.py'), 'a').close()"
 
 # Smoke test: tokenizer agreement, model loading, cache invariants
 PYTHONPATH=. python3 scripts/smoke_test.py
