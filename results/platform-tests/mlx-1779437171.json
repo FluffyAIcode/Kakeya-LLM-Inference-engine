@@ -1,0 +1,491 @@
+{
+  "backend": "mlx",
+  "exit_code": 0,
+  "host": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "junit": {
+    "tests": 78,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "cases": [
+      {
+        "classname": "tests.core.test_baseline",
+        "name": "test_baseline_loads",
+        "time": 3.022,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_baseline",
+        "name": "test_baseline_rejects_nonpositive_max_new_tokens",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_baseline",
+        "name": "test_baseline_generates_and_grows_kv",
+        "time": 4.072,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_baseline",
+        "name": "test_baseline_eos_stops_generation",
+        "time": 0.781,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_baseline",
+        "name": "test_baseline_kv_bytes_static_helper",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_cache_kv_bytes_empty_cache",
+        "time": 1.851,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_cache_kv_bytes_after_prefill",
+        "time": 2.085,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_cache_token_count_handles_no_layers",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_measure_proposer_weight_bytes",
+        "time": 2.458,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_assembles_all_fields",
+        "time": 0.002,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_detects_output_divergence",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_handles_zero_output",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_projection_table_shape",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_render_includes_key_fields",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_zero_seq_len_baseline_does_not_divide_by_zero",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_is_serializable",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_metrics",
+        "name": "test_report_default_verifier_activation_zero",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_proposer_loads_with_defaults",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_encode_chat_returns_int_list",
+        "time": 0.012,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_returns_unmasked_tokens",
+        "time": 2.518,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_clamps_steps_to_block_size",
+        "time": 0.693,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_updates_running_stats",
+        "time": 1.241,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_rejects_nonpositive_block_size[0]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_rejects_nonpositive_block_size[-1]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_rejects_nonpositive_block_size[-10]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_rejects_nonpositive_num_steps[0]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_rejects_nonpositive_num_steps[-1]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_rejects_nonpositive_num_steps[-5]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_proposer_construct_requires_mask_id",
+        "time": 2.378,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_proposer_construct_requires_pad_or_eos",
+        "time": 2.468,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_proposer_stats_dataclass_defaults",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_with_smaller_steps_than_block",
+        "time": 1.053,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_propose_block_underfill_raises",
+        "time": 1.233,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_encode_chat_rejects_non_list_return",
+        "time": 0.001,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_proposer",
+        "name": "test_encode_chat_rejects_non_int_elements",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_run_demo_integration",
+        "name": "test_run_demo_smoke",
+        "time": 12.279,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_decoder_rejects_nonpositive_block_size[0]",
+        "time": 1.884,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_decoder_rejects_nonpositive_block_size[-1]",
+        "time": 1.867,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_decoder_rejects_nonpositive_num_diffusion_steps[0]",
+        "time": 1.912,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_decoder_rejects_nonpositive_num_diffusion_steps[-1]",
+        "time": 1.87,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_rejects_nonpositive_max_new_tokens",
+        "time": 1.948,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_produces_tokens_and_stats",
+        "time": 2.162,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_with_no_proposed_tokens_returns_zero_acceptance",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_eos_in_accepted_prefix_truncates",
+        "time": 5.624,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_kv_bytes_static_helper_returns_zero_for_no_cache",
+        "time": 1.929,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_appends_correction_or_bonus",
+        "time": 5.07,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_max_new_tokens_short_circuits_after_block",
+        "time": 4.584,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_correction_token_can_be_eos",
+        "time": 3.428,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_correction_is_eos_via_rejected_proposal",
+        "time": 3.918,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_speculative",
+        "name": "test_generate_eos_in_middle_of_accepted_block_drops_trailing",
+        "time": 7.167,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_default_config_loads",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_construction_validates_window_args[-1-8-sink_size must be >= 0]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_construction_validates_window_args[4-0-window_size must be > 0]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_construction_validates_window_args[4--3-window_size must be > 0]",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_prefill_rejects_empty",
+        "time": 0.0,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_prefill_under_budget",
+        "time": 2.497,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_prefill_over_budget_triggers_trim",
+        "time": 3.186,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_prefill_zero_sink",
+        "time": 2.481,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_forward_block_requires_prefill",
+        "time": 1.868,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_forward_block_rejects_empty",
+        "time": 2.046,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_forward_block_returns_per_position_logits",
+        "time": 2.332,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_commit_validates_args",
+        "time": 2.174,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_commit_full_accept_no_drop",
+        "time": 2.277,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_commit_partial_accept_drops_tail",
+        "time": 2.286,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_commit_zero_accept_drops_all",
+        "time": 2.28,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_commit_post_trims_to_budget",
+        "time": 2.34,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_append_token_advances_state",
+        "time": 2.252,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_trim_raises_when_no_cache",
+        "time": 1.982,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_truncate_tail_raises_when_no_cache",
+        "time": 1.912,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_truncate_tail_zero_drop_is_noop",
+        "time": 2.012,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_truncate_tail_overflow_raises",
+        "time": 2.101,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_trim_detects_layout_violation",
+        "time": 2.427,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_reset_clears_state",
+        "time": 2.071,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_trim_skips_layers_with_no_keys",
+        "time": 2.509,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_truncate_skips_layers_with_no_keys",
+        "time": 2.473,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_record_peak_kv_handles_null_cache",
+        "time": 1.862,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_record_peak_kv_handles_layers_with_null_kv",
+        "time": 2.362,
+        "status": "passed"
+      },
+      {
+        "classname": "tests.core.test_verifier",
+        "name": "test_record_peak_activation_grows_only",
+        "time": 2.002,
+        "status": "passed"
+      }
+    ]
+  },
+  "coverage": {
+    "line_rate": 1.0,
+    "branch_rate": 0.0,
+    "lines_covered": 539,
+    "lines_valid": 539
+  }
+}
