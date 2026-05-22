@@ -114,6 +114,9 @@ if [[ -d "$repo_root/inference_engine/backends/$backend" ]]; then
 fi
 
 test_paths=("tests/core")
+if [[ -d "$repo_root/tests/inference_engine" ]]; then
+    test_paths+=("tests/inference_engine")
+fi
 if [[ -d "$repo_root/tests/backends/$backend" ]]; then
     test_paths+=("tests/backends/$backend")
 fi
