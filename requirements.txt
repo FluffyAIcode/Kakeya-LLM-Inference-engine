@@ -1,6 +1,21 @@
+# NOTE on transformers version pin:
+#   The proposer checkpoint dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1 ships a
+#   custom modeling file (`modeling_qwen3.py`) that depends on transformers
+#   4.x APIs (specifically `decoder_layer.attention_type`). transformers 5.x
+#   removed those APIs, so we pin to 4.x project-wide.
+#
+#   On macOS, this means using a dedicated venv (e.g. `python3 -m venv
+#   .venv`) — do NOT install into a system Python where transformers 5.x is
+#   already present. `scripts/setup_mac.sh` handles this correctly.
 torch>=2.4,<3.0
-transformers>=4.45,<4.60
+transformers>=4.45,<5.0
 accelerate>=0.34
 safetensors>=0.4
 huggingface_hub>=0.24
 numpy>=1.26
+
+# Test stack (used by tests/ and run_platform_tests.sh)
+pytest>=8.0
+pytest-cov>=5.0
+pytest-asyncio>=0.23
+pytest-timeout>=2.3

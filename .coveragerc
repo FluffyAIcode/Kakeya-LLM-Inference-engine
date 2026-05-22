@@ -1,0 +1,27 @@
+[run]
+# Use the modern Python 3.12+ sys.monitoring backend, which avoids the
+# C-trace conflict with torch's _C extension.
+core = sysmon
+parallel = false
+branch = false
+source =
+    kv_cache_proposer
+    inference_engine
+
+# CLI entry-point scripts are exercised by end-to-end demo runs (under
+# `results/`) and by an integration test that invokes them via
+# subprocess; they are intentionally not part of the unit-test coverage
+# target (their bodies are argparse plumbing + orchestration of already-
+# tested library code).
+omit =
+    kv_cache_proposer/run_demo.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+show_missing = true
+skip_empty = true
+fail_under = 100

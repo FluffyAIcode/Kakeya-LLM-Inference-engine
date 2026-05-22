@@ -129,7 +129,7 @@ class DLMProposer:
         # positions inside the block, picking the highest-confidence ones.
         block_mask_init = (positions >= block_start) & (positions < block_end)
         num_masked = int(block_mask_init.sum().item())
-        if num_masked == 0:
+        if num_masked == 0:  # pragma: no cover - block_size > 0 makes this unreachable
             raise RuntimeError("Block initialization yielded zero masked tokens.")
 
         base = num_masked // num_steps
@@ -141,7 +141,7 @@ class DLMProposer:
         peak_act_bytes = 0
         for step_idx in range(num_steps):
             block_mask_now = (positions >= block_start) & (positions < block_end) & (x[0] == self.mask_id)
-            if not bool(block_mask_now.any()):
+            if not bool(block_mask_now.any()):  # pragma: no cover - schedule guarantees masks survive until last step
                 break
 
             outputs = self.model(x)
@@ -166,7 +166,7 @@ class DLMProposer:
             x_candidate = torch.where(block_mask_now.unsqueeze(0), x0, x)
 
             k = int(num_transfer[step_idx])
-            if k <= 0:
+            if k <= 0:  # pragma: no cover - num_steps clamp guarantees k >= 1
                 continue
             _, top_idx = torch.topk(confidence[0], k=k)
             transfer_mask = torch.zeros_like(x0, dtype=torch.bool)
@@ -204,12 +204,25 @@ class DLMProposer:
     # Tokenizer helpers (delegated, no fallback) #
     # ----------------------------------------- #
     def encode_chat(self, messages: List[dict]) -> List[int]:
+        # transformers 5.x returns a dict by default with `tokenize=True`;
+        # we explicitly request the legacy list-of-ids shape so the rest of
+        # the speculative loop sees the same int list on both 4.x and 5.x.
         ids = self.tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
             tokenize=True,
+            return_dict=False,
             enable_thinking=False,
         )
         if not isinstance(ids, list):
-            ids = list(ids)
+            raise RuntimeError(
+                f"apply_chat_template returned {type(ids).__name__}, "
+                "expected list[int]; tokenizer API drifted unexpectedly."
+            )
+        if not all(isinstance(t, int) for t in ids):
+            raise RuntimeError(
+                "apply_chat_template returned a list whose elements are not "
+                "all int (got types: "
+                f"{set(type(t).__name__ for t in ids)})."
+            )
         return ids

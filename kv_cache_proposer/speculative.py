@@ -132,7 +132,7 @@ class SpeculativeDecoder:
                 num_steps=self.num_diffusion_steps,
             )
             d = proposal.tokens
-            if len(d) != L:
+            if len(d) != L:  # pragma: no cover - proposer.propose_block guarantees len == block_size
                 raise RuntimeError(
                     f"Proposer returned {len(d)} tokens; expected exactly {L}. "
                     "Refusing to continue with a malformed block."

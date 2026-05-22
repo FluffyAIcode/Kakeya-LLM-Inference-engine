@@ -158,7 +158,11 @@ def main() -> int:
         {"role": "user", "content": user_text},
     ]
     prompt_ids_verifier = verifier.tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=True, enable_thinking=False
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=False,
+        enable_thinking=False,
     )
     prompt_ids_proposer = proposer.encode_chat(messages)
     if prompt_ids_verifier != prompt_ids_proposer:
