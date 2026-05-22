@@ -223,3 +223,18 @@ amortized over `S` tokens → ≈25 B/token at S=128k).
   multi-target verifier routing (Qwen / Gemma / DeepSeek), session-affinity
   scheduling, OTA, federated self-learning. Those are platform-level
   components from the design discussion that need separate plumbing.
+
+## Where this is going — local inference engine
+
+The next layer up is a Mac/Ubuntu local inference engine that wraps the
+algorithmic core in this repo with continuous batching, async
+proposer/verifier pipelining, NF4 KV quantization, and a fixed-slab
+KV pool sized for sink+window. Architecture and phased build plan are
+in [`docs/local-inference-engine.md`](docs/local-inference-engine.md).
+
+Short version of why the engine **does not use PagedAttention**: the
+sink+window invariant turns each session's KV cache into a constant-size
+object, so all three problems PagedAttention solves (fragmentation,
+prefix sharing, non-contiguous KV) cease to apply. A 30-line fixed-slab
+pool replaces it and runs ~5–15% faster because attention kernels see
+contiguous memory.
