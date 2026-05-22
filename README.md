@@ -85,6 +85,21 @@ requirements.txt
 
 ## How to run
 
+> **Network requirement**: tests load real Qwen3 weights from the
+> HuggingFace cache. The setup scripts (`scripts/setup_mac.sh` /
+> `scripts/setup_cuda.sh`) probe `huggingface.co` and download both
+> required snapshots (~5 GB total) before tests run. **If you're in
+> mainland China or behind a firewall**, set the mirror endpoint
+> first:
+>
+> ```bash
+> export HF_ENDPOINT=https://hf-mirror.com
+> ```
+>
+> The setup scripts will then route all downloads through it. If the
+> initial connectivity probe fails, the script exits with a clear
+> remediation message rather than producing cascading test failures.
+
 ```bash
 pip install -r requirements.txt
 # One-time fix: the dllm-hub modeling file references the broken `dllm`

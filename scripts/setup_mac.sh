@@ -81,6 +81,70 @@ install_dllm_stub() {
         open(os.path.join(p, '__init__.py'), 'a').close()"
 }
 
+probe_hf_connectivity() {
+    # Determine endpoint: respect HF_ENDPOINT, else huggingface.co.
+    local ep="${HF_ENDPOINT:-https://huggingface.co}"
+    echo "[setup_mac] probing HF endpoint: $ep"
+    # Probe a tiny existing-model API endpoint with a short timeout.
+    if ! curl -fsSL --max-time 15 "$ep/api/models/Qwen/Qwen3-1.7B" \
+            -o /dev/null 2>/dev/null; then
+        cat >&2 <<EOF
+[setup_mac] cannot reach $ep within 15 s.
+[setup_mac] tests load real Qwen3 weights, so we must populate the
+[setup_mac] HuggingFace cache before running them.
+[setup_mac]
+[setup_mac] remediation:
+[setup_mac]   1. check VPN / corporate proxy
+[setup_mac]   2. if you are in mainland China, set the official mirror:
+[setup_mac]        export HF_ENDPOINT=https://hf-mirror.com
+[setup_mac]      then re-run: ./scripts/setup_mac.sh
+[setup_mac]   3. if you have the cache already on another machine, copy it to:
+[setup_mac]        ~/.cache/huggingface/hub/
+[setup_mac]      then re-run; the script will skip the download step.
+EOF
+        exit 4
+    fi
+}
+
+download_models() {
+    echo "[setup_mac] populating HF cache with Qwen3-1.7B (~3.5 GB) and"
+    echo "[setup_mac] dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1 (~1.5 GB)"
+    python - <<'PY'
+import os, sys
+from huggingface_hub import snapshot_download
+
+endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+print(f"[download] endpoint: {endpoint}")
+
+REQUIRED = [
+    "Qwen/Qwen3-1.7B",
+    "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1",
+]
+for repo in REQUIRED:
+    print(f"[download] {repo} ...")
+    try:
+        snapshot_download(repo_id=repo, allow_patterns=None)
+    except Exception as e:
+        sys.stderr.write(f"\n[download] FAILED to fetch {repo}\n")
+        sys.stderr.write(f"  {type(e).__name__}: {e}\n")
+        sys.stderr.write(f"  endpoint was: {endpoint}\n")
+        sys.exit(5)
+print("[download] all required checkpoints are present")
+PY
+}
+
+clear_offline_mode() {
+    # If the calling shell had HF_HUB_OFFLINE=1 set (which causes
+    # transformers' `local_files_only=True` to be the default), unset it
+    # for this script's process so the download succeeds. Tests run by
+    # `run_platform_tests.sh` will inherit the user's normal environment.
+    if [[ -n "${HF_HUB_OFFLINE:-}" ]] || [[ -n "${TRANSFORMERS_OFFLINE:-}" ]]; then
+        echo "[setup_mac] note: HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE were set;"
+        echo "[setup_mac]       unsetting for the duration of this script."
+        unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+    fi
+}
+
 verify_imports() {
     echo "[setup_mac] verifying imports"
     python - <<'PY'
@@ -126,6 +190,9 @@ main() {
     install_deps
     install_dllm_stub
     verify_imports
+    clear_offline_mode
+    probe_hf_connectivity
+    download_models
     echo
     echo "[setup_mac] DONE. To use:"
     echo "  source $venv_dir/bin/activate"

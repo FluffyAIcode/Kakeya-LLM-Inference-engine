@@ -122,6 +122,53 @@ install_dllm_stub() {
         open(os.path.join(p, '__init__.py'), 'a').close()"
 }
 
+clear_offline_mode() {
+    if [[ -n "${HF_HUB_OFFLINE:-}" ]] || [[ -n "${TRANSFORMERS_OFFLINE:-}" ]]; then
+        echo "[setup_cuda] note: HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE were set;"
+        echo "[setup_cuda]       unsetting for the duration of this script."
+        unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+    fi
+}
+
+probe_hf_connectivity() {
+    local ep="${HF_ENDPOINT:-https://huggingface.co}"
+    echo "[setup_cuda] probing HF endpoint: $ep"
+    if ! curl -fsSL --max-time 15 "$ep/api/models/Qwen/Qwen3-1.7B" \
+            -o /dev/null 2>/dev/null; then
+        cat >&2 <<EOF
+[setup_cuda] cannot reach $ep within 15 s.
+[setup_cuda] remediation:
+[setup_cuda]   1. check network / corporate proxy
+[setup_cuda]   2. if you are in mainland China, use the mirror:
+[setup_cuda]        export HF_ENDPOINT=https://hf-mirror.com
+[setup_cuda]      then re-run this script.
+[setup_cuda]   3. if cache is pre-populated on disk, copy it to:
+[setup_cuda]        ~/.cache/huggingface/hub/
+EOF
+        exit 4
+    fi
+}
+
+download_models() {
+    echo "[setup_cuda] populating HF cache (~5 GB total)"
+    python - <<'PY'
+import os, sys
+from huggingface_hub import snapshot_download
+endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+print(f"[download] endpoint: {endpoint}")
+for repo in ("Qwen/Qwen3-1.7B", "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1"):
+    print(f"[download] {repo} ...")
+    try:
+        snapshot_download(repo_id=repo, allow_patterns=None)
+    except Exception as e:
+        sys.stderr.write(f"\n[download] FAILED to fetch {repo}\n")
+        sys.stderr.write(f"  {type(e).__name__}: {e}\n")
+        sys.stderr.write(f"  endpoint was: {endpoint}\n")
+        sys.exit(5)
+print("[download] all required checkpoints are present")
+PY
+}
+
 verify_imports() {
     echo "[setup_cuda] verifying imports"
     python - <<'PY'
@@ -173,6 +220,9 @@ main() {
     install_quant_kernels
     install_dllm_stub
     verify_imports
+    clear_offline_mode
+    probe_hf_connectivity
+    download_models
     echo
     echo "[setup_cuda] DONE. To use:"
     echo "  source $venv_dir/bin/activate"

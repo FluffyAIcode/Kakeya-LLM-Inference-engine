@@ -65,6 +65,37 @@ case "$backend" in
         ;;
 esac
 
+# ---------- HF cache pre-flight (hard, no fallback) ----------
+# The test suite loads real Qwen3 weights from the HuggingFace cache.
+# If the cache is empty we error out IMMEDIATELY rather than let 78
+# tests cascade-fail on network errors.
+python3 - <<'PY' || exit 5
+import sys
+from huggingface_hub import try_to_load_from_cache
+import os
+required = [
+    ("Qwen/Qwen3-1.7B", "config.json"),
+    ("dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1", "config.json"),
+]
+missing = []
+for repo, fname in required:
+    p = try_to_load_from_cache(repo_id=repo, filename=fname)
+    if not p:
+        missing.append(repo)
+if missing:
+    sys.stderr.write(
+        "[runner] HF cache is missing the following repos:\n"
+    )
+    for r in missing:
+        sys.stderr.write(f"  - {r}\n")
+    sys.stderr.write(
+        "[runner] re-run ./scripts/setup_mac.sh (or setup_cuda.sh) to download.\n"
+        "[runner] if you're in mainland China, set HF_ENDPOINT=https://hf-mirror.com first.\n"
+    )
+    sys.exit(5)
+print(f"[runner] HF cache contains both required model snapshots")
+PY
+
 # ---------- pytest ----------
 # Target paths:
 #   tests/core            — platform-neutral, runs everywhere
