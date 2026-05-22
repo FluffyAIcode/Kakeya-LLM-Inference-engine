@@ -149,30 +149,80 @@ verify_imports() {
     echo "[setup_mac] verifying imports"
     python - <<'PY'
 import sys
-required = {
-    "torch":        ("2.4", None),
-    "transformers": ("4.45", "5.0"),  # hard-pin: 4.x only
-    "mlx":          ("0.20", None),
-    "huggingface_hub": ("0.24", None),
-    "safetensors":  ("0.4", None),
-    "pytest":       ("8.0", None),
-}
 import importlib
-from packaging.version import Version
-problems = []
-for name, (lo, hi) in required.items():
-    try:
-        mod = importlib.import_module(name)
-    except Exception as e:
-        problems.append(f"{name}: import failed ({e})")
-        continue
-    v = Version(getattr(mod, "__version__", "0"))
-    if Version(lo) > v:
-        problems.append(f"{name}: version {v} < required {lo}")
-    if hi is not None and v >= Version(hi):
-        problems.append(f"{name}: version {v} >= forbidden upper {hi}")
-    print(f"  {name:20s} {v}  OK")
+import importlib.metadata as md
 import platform
+from packaging.version import Version
+
+# Each entry is (import_name, optional_distribution_name, lo, hi).
+# distribution_name is the name pip uses; defaults to import_name when None.
+required = [
+    ("torch",           None,                  "2.4",   "3.0"),
+    ("transformers",    None,                  "4.45",  "5.0"),  # hard-pin to 4.x
+    ("mlx",             None,                  "0.20",  None),
+    ("mlx_lm",          "mlx-lm",              "0.18",  None),
+    ("huggingface_hub", None,                  "0.24",  None),
+    ("safetensors",     None,                  "0.4",   None),
+    ("pytest",          None,                  "8.0",   None),
+]
+
+def get_version(import_name: str, dist_name) -> str:
+    """Robust version lookup.
+
+    Order of attempts:
+      1. importlib.metadata.version(dist_name or import_name) — canonical.
+      2. importlib.metadata with `_`→`-` substitution (PEP 503 normalization).
+      3. The imported module's __version__ attribute.
+
+    `mlx` does NOT expose __version__ as a module attribute, so step 1 is
+    required. We never silently fall back to '0' (which was the prior bug
+    that misclassified mlx 0.31.1 as failing the >=0.20 floor).
+    """
+    candidates = [dist_name or import_name]
+    # importlib.metadata accepts either '_' or '-' on most Python versions,
+    # but be explicit so older 3.10 hosts work too.
+    canon = (dist_name or import_name).replace("_", "-")
+    if canon not in candidates:
+        candidates.append(canon)
+    for c in candidates:
+        try:
+            return md.version(c)
+        except md.PackageNotFoundError:
+            continue
+    # Fall back to attribute (rare; required only for editable installs
+    # where dist metadata is missing for some reason).
+    try:
+        mod = importlib.import_module(import_name)
+    except Exception as e:
+        raise RuntimeError(f"cannot import {import_name}: {e}")
+    v = getattr(mod, "__version__", None)
+    if v is None:
+        raise RuntimeError(
+            f"{import_name}: neither importlib.metadata nor module.__version__ "
+            f"yields a version (tried distributions: {candidates})"
+        )
+    return v
+
+problems = []
+for import_name, dist_name, lo, hi in required:
+    try:
+        importlib.import_module(import_name)
+    except Exception as e:
+        problems.append(f"{import_name}: import failed ({e})")
+        continue
+    try:
+        v_str = get_version(import_name, dist_name)
+    except Exception as e:
+        problems.append(f"{import_name}: version lookup failed ({e})")
+        continue
+    v = Version(v_str)
+    if Version(lo) > v:
+        problems.append(f"{import_name}: version {v} < required {lo}")
+        continue
+    if hi is not None and v >= Version(hi):
+        problems.append(f"{import_name}: version {v} >= forbidden upper {hi}")
+        continue
+    print(f"  {import_name:20s} {v}  OK")
 print(f"  Python              {platform.python_version()}  ({platform.machine()})")
 if problems:
     print("\n[setup_mac] verification FAILED:")

@@ -173,29 +173,62 @@ verify_imports() {
     echo "[setup_cuda] verifying imports"
     python - <<'PY'
 import sys, importlib, platform
+import importlib.metadata as md
 from packaging.version import Version
-required = {
-    "torch":           ("2.4", "3.0"),
-    "transformers":    ("4.45", "5.0"),
-    "huggingface_hub": ("0.24", None),
-    "safetensors":     ("0.4", None),
-    "pytest":          ("8.0", None),
-    "flash_attn":      ("2.6", "3.0"),
-    "awq":             ("0.2", None),
-}
-problems = []
-for name, (lo, hi) in required.items():
+
+required = [
+    # (import_name, dist_name_override, lo, hi)
+    ("torch",           None,           "2.4",   "3.0"),
+    ("transformers",    None,           "4.45",  "5.0"),
+    ("huggingface_hub", None,           "0.24",  None),
+    ("safetensors",     None,           "0.4",   None),
+    ("pytest",          None,           "8.0",   None),
+    ("flash_attn",      "flash-attn",   "2.6",   "3.0"),
+    ("awq",             "autoawq",      "0.2",   None),
+]
+
+def get_version(import_name, dist_name):
+    candidates = [dist_name or import_name]
+    canon = (dist_name or import_name).replace("_", "-")
+    if canon not in candidates:
+        candidates.append(canon)
+    for c in candidates:
+        try:
+            return md.version(c)
+        except md.PackageNotFoundError:
+            continue
     try:
-        mod = importlib.import_module(name)
+        mod = importlib.import_module(import_name)
     except Exception as e:
-        problems.append(f"{name}: import failed ({e})")
+        raise RuntimeError(f"cannot import {import_name}: {e}")
+    v = getattr(mod, "__version__", None)
+    if v is None:
+        raise RuntimeError(
+            f"{import_name}: neither importlib.metadata nor module.__version__ "
+            f"yields a version (tried: {candidates})"
+        )
+    return v
+
+problems = []
+for import_name, dist_name, lo, hi in required:
+    try:
+        importlib.import_module(import_name)
+    except Exception as e:
+        problems.append(f"{import_name}: import failed ({e})")
         continue
-    v = Version(getattr(mod, "__version__", "0"))
+    try:
+        v_str = get_version(import_name, dist_name)
+    except Exception as e:
+        problems.append(f"{import_name}: version lookup failed ({e})")
+        continue
+    v = Version(v_str)
     if Version(lo) > v:
-        problems.append(f"{name}: version {v} < required {lo}")
+        problems.append(f"{import_name}: version {v} < required {lo}")
+        continue
     if hi is not None and v >= Version(hi):
-        problems.append(f"{name}: version {v} >= forbidden upper {hi}")
-    print(f"  {name:20s} {v}  OK")
+        problems.append(f"{import_name}: version {v} >= forbidden upper {hi}")
+        continue
+    print(f"  {import_name:20s} {v}  OK")
 import torch
 print(f"  cuda available     {torch.cuda.is_available()}")
 print(f"  cuda devices       {torch.cuda.device_count()}")
