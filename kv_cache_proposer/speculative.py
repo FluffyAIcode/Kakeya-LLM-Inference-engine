@@ -21,6 +21,12 @@ Algorithm (per outer step):
   5. Truncate cache to ``accepted`` of the L provisional slots, then forward
      the correction/bonus through the cache so its K/V is committed too.
 
+The optional ``on_token`` callback fires once per **committed** token, in
+emission order, with the integer token id. Streaming front-ends use this to
+display partial output as it's produced rather than waiting for the whole
+generation to finish — critical for any prompt that needs more than a few
+tokens of response.
+
 This is the textbook greedy speculative decoding scheme used by DiffuSpec for
 diffusion-LM drafters; rejection sampling at temperature 0 collapses to
 argmax-equality.
@@ -30,12 +36,18 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Set
+from typing import Callable, Iterable, List, Optional, Set
 
 import torch
 
 from .proposer import DLMProposer, BlockProposal
 from .verifier import SinkWindowVerifier
+
+
+# Public type alias for streaming callbacks. The callback receives one
+# token id at a time, in output order. Returning truthy from the callback
+# requests the loop to stop (e.g. user pressed Ctrl-C in a chat client).
+TokenCallback = Callable[[int], Optional[bool]]
 
 
 @dataclass
@@ -100,10 +112,20 @@ class SpeculativeDecoder:
         prompt_ids: List[int],
         max_new_tokens: int,
         eos_token_ids: Optional[Iterable[int]] = None,
+        on_token: Optional[TokenCallback] = None,
     ) -> SpeculativeRunResult:
         if max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be > 0")
         eos_set: Set[int] = set(eos_token_ids or [])
+        # Local helper: invoke the streaming callback (if any) and return
+        # True if the caller asked us to stop early.
+        def _emit(tokens: List[int]) -> bool:
+            if on_token is None:
+                return False
+            for tok in tokens:
+                if bool(on_token(tok)):
+                    return True
+            return False
 
         t0 = time.perf_counter()
         # Reset stats so successive runs report cleanly.
@@ -172,6 +194,17 @@ class SpeculativeDecoder:
                         stop = True
                         break
                 if stop:
+                    # Emit the accepted prefix up to and including EOS,
+                    # then exit. Streaming clients see the partial answer
+                    # in real time.
+                    _emit(d[: i + 1])
+                    break
+
+            # Stream the accepted-prefix tokens (no EOS in them on this
+            # branch; callback fires before the early-exit checks below).
+            if accepted > 0:
+                if _emit(d[:accepted]):
+                    stop = True
                     break
 
             if len(generated) >= max_new_tokens:
@@ -183,6 +216,9 @@ class SpeculativeDecoder:
             self.verifier.append_token(correction_or_bonus)
             committed.append(correction_or_bonus)
             generated.append(correction_or_bonus)
+            if _emit([correction_or_bonus]):
+                stop = True
+                break
             if correction_or_bonus in eos_set:
                 stop = True
                 break

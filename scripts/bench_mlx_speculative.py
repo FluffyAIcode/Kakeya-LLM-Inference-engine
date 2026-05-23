@@ -78,9 +78,25 @@ def _run(proposer, verifier_factory, prompt_ids, max_new, block_size,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--prompt", default="Why is the sky blue?")
-    ap.add_argument("--max-new-tokens", type=int, default=32)
-    ap.add_argument("--block-size", type=int, default=8)
-    ap.add_argument("--num-diffusion-steps", type=int, default=4)
+    ap.add_argument(
+        "--max-new-tokens", type=int, default=256,
+        help=(
+            "Hard cap on generated tokens. Default raised from 32 to 256 "
+            "so EOS naturally terminates short-to-medium answers; bumped to "
+            "512+ for long-form outputs. Mid-sentence truncation at low "
+            "values is the dominant 'output looks cut off' UX issue."
+        ),
+    )
+    ap.add_argument(
+        "--block-size", type=int, default=16,
+        help="Empirical sweet spot per the param sweep on M4 (L=16, K=2).",
+    )
+    ap.add_argument(
+        "--num-diffusion-steps", type=int, default=2,
+        help="K=2 is the param-sweep optimum: acceptance is ~0.07 "
+             "regardless of K (proposer-quality limit) so doubling K "
+             "doubles wall time without buying anything.",
+    )
     ap.add_argument("--sink-size", type=int, default=4)
     ap.add_argument("--window-size", type=int, default=64)
     ap.add_argument("--report", default=None)

@@ -155,6 +155,249 @@ def test_kv_bytes_static_helper_returns_zero_for_no_cache(
     assert SpeculativeDecoder._kv_bytes(verifier) == 0
 
 
+# ---------------------------------------------------------------------------
+# Streaming callback (on_token)
+# ---------------------------------------------------------------------------
+
+def test_on_token_callback_emits_each_committed_token_in_order(
+    proposer_session: DLMProposer, fresh_verifier_factory
+) -> None:
+    """The on_token callback must fire once per committed token, in the
+    same order as result.output_token_ids."""
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    decoder = SpeculativeDecoder(
+        proposer=proposer_session, verifier=verifier,
+        block_size=4, num_diffusion_steps=4,
+    )
+    msgs = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "Reply with exactly: OK."},
+    ]
+    prompt = proposer_session.encode_chat(msgs)
+    eos = _eos_ids(verifier.tokenizer)
+    streamed: list[int] = []
+
+    def _cb(tok_id: int):
+        streamed.append(tok_id)
+        return False
+
+    result = decoder.generate(
+        prompt_ids=prompt, max_new_tokens=16,
+        eos_token_ids=eos, on_token=_cb,
+    )
+    assert streamed == result.output_token_ids
+
+
+def test_on_token_callback_can_request_early_stop(
+    proposer_session: DLMProposer, fresh_verifier_factory
+) -> None:
+    """Returning truthy from the callback halts the loop at the next
+    safe checkpoint (between blocks). The streamed tokens form a
+    *prefix* of the output sequence; generation may commit a small
+    number of additional tokens between the callback's True return and
+    the loop exit (at most one block of L tokens, plus the
+    correction/bonus token that block produces)."""
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    decoder = SpeculativeDecoder(
+        proposer=proposer_session, verifier=verifier,
+        block_size=4, num_diffusion_steps=4,
+    )
+    msgs = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "Count: one, two, three"},
+    ]
+    prompt = proposer_session.encode_chat(msgs)
+    streamed: list[int] = []
+
+    def _cb_stop_after_first(tok_id: int):
+        streamed.append(tok_id)
+        return True  # stop on the very first token
+
+    result = decoder.generate(
+        prompt_ids=prompt, max_new_tokens=64,
+        eos_token_ids=None, on_token=_cb_stop_after_first,
+    )
+    assert len(streamed) >= 1
+    # streamed is a prefix of result.output_token_ids
+    assert streamed == result.output_token_ids[: len(streamed)]
+    # Generation overshoots by at most one block + correction (block_size=4).
+    assert len(result.output_token_ids) - len(streamed) <= 4 + 1
+
+
+def test_on_token_callback_can_stop_on_accepted_token(
+    monkeypatch, proposer_session: DLMProposer, fresh_verifier_factory
+) -> None:
+    """Cover the accepted-block emit-then-stop branch explicitly.
+
+    Force the proposer to emit exactly the verifier's greedy
+    continuation (so accepted == block_size > 0 in the first block).
+    A callback that returns True on the very first emission then
+    exercises the ``_emit(d[:accepted])`` early-stop path."""
+    # Build an oracle: the verifier's own greedy first 4 tokens, used
+    # as the proposer's draft so they all get accepted.
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    msgs = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "Reply with exactly: OK."},
+    ]
+    prompt = proposer_session.encode_chat(msgs)
+    verifier.prefill(list(prompt))
+    greedy: list[int] = []
+    for _ in range(4):
+        tok = int(torch.argmax(verifier.next_token_logits).item())
+        greedy.append(tok)
+        verifier.append_token(tok)
+
+    real_propose = proposer_session.propose_block
+
+    def _oracle_propose(committed_token_ids, block_size, num_steps):
+        proposal = real_propose(committed_token_ids, block_size, num_steps)
+        return type(proposal)(
+            tokens=greedy[:block_size],
+            diffusion_steps=proposal.diffusion_steps,
+            forward_passes=proposal.forward_passes,
+            peak_activation_bytes=proposal.peak_activation_bytes,
+        )
+
+    monkeypatch.setattr(proposer_session, "propose_block", _oracle_propose)
+
+    fresh = fresh_verifier_factory(sink=4, window=64)
+    decoder = SpeculativeDecoder(
+        proposer=proposer_session, verifier=fresh,
+        block_size=4, num_diffusion_steps=4,
+    )
+    streamed: list[int] = []
+
+    def _cb(tok_id: int):
+        streamed.append(tok_id)
+        return True  # stop on the first emission
+
+    result = decoder.generate(
+        prompt_ids=list(prompt), max_new_tokens=16,
+        eos_token_ids=None, on_token=_cb,
+    )
+    # The first proposed block was 4 oracle-tokens (all accepted), so
+    # the first emission lands inside _emit(d[:accepted]) — line 206-208.
+    assert result.acceptance_rate > 0  # we verified at least one accept
+    assert len(streamed) == 1
+
+
+def test_on_token_callback_can_stop_on_correction_token(
+    monkeypatch, proposer_session: DLMProposer, fresh_verifier_factory
+) -> None:
+    """Cover the correction/bonus emit-then-stop branch explicitly.
+
+    Forcing the proposer to always emit token 0 (always wrong) means
+    every block's accepted=0 and the only emission is the correction
+    token. A callback that returns True on the first correction
+    therefore exercises the post-correction `_emit([correction_or_bonus])`
+    branch."""
+    real_propose = proposer_session.propose_block
+
+    def _always_wrong(committed_token_ids, block_size, num_steps):
+        proposal = real_propose(committed_token_ids, block_size, num_steps)
+        return type(proposal)(
+            tokens=[0] * block_size,
+            diffusion_steps=proposal.diffusion_steps,
+            forward_passes=proposal.forward_passes,
+            peak_activation_bytes=proposal.peak_activation_bytes,
+        )
+
+    monkeypatch.setattr(proposer_session, "propose_block", _always_wrong)
+
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    decoder = SpeculativeDecoder(
+        proposer=proposer_session, verifier=verifier,
+        block_size=2, num_diffusion_steps=2,
+    )
+    msgs = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "Reply with exactly: OK."},
+    ]
+    prompt = proposer_session.encode_chat(msgs)
+    streamed: list[int] = []
+
+    def _cb(tok_id: int):
+        streamed.append(tok_id)
+        return True  # stop after the first emission
+
+    result = decoder.generate(
+        prompt_ids=prompt, max_new_tokens=8,
+        eos_token_ids=None, on_token=_cb,
+    )
+    # acceptance=0 in every block (proposer is always wrong) — every
+    # emission is a correction-or-bonus token, exercising the
+    # post-correction _emit branch.
+    assert result.acceptance_rate == 0.0
+    assert len(streamed) == 1
+    assert streamed == result.output_token_ids[:1]
+
+
+def test_on_token_callback_fires_on_eos_termination(
+    proposer_session: DLMProposer, fresh_verifier_factory
+) -> None:
+    """When EOS is in the accepted prefix and ends generation, the
+    callback must still see those tokens (including the EOS)."""
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    decoder = SpeculativeDecoder(
+        proposer=proposer_session, verifier=verifier,
+        block_size=8, num_diffusion_steps=8,
+    )
+    msgs = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "Reply with exactly: OK."},
+    ]
+    prompt = proposer_session.encode_chat(msgs)
+    eos = _eos_ids(verifier.tokenizer)
+    streamed: list[int] = []
+
+    def _cb(tok_id: int):
+        streamed.append(tok_id)
+        return False
+
+    result = decoder.generate(
+        prompt_ids=prompt, max_new_tokens=64,
+        eos_token_ids=eos, on_token=_cb,
+    )
+    assert streamed == result.output_token_ids
+    # The model with this prompt EOSes quickly.
+    assert any(t in set(eos) for t in streamed)
+
+
+def test_on_token_callback_none_is_no_op(
+    proposer_session: DLMProposer, fresh_verifier_factory
+) -> None:
+    """When on_token is None, the loop runs without any callback overhead
+    and produces the exact same result as a callback-free run."""
+    verifier1 = fresh_verifier_factory(sink=4, window=64)
+    verifier2 = fresh_verifier_factory(sink=4, window=64)
+    decoder1 = SpeculativeDecoder(
+        proposer=proposer_session, verifier=verifier1,
+        block_size=4, num_diffusion_steps=4,
+    )
+    decoder2 = SpeculativeDecoder(
+        proposer=proposer_session, verifier=verifier2,
+        block_size=4, num_diffusion_steps=4,
+    )
+    msgs = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "Reply with exactly: OK."},
+    ]
+    prompt = proposer_session.encode_chat(msgs)
+    eos = _eos_ids(verifier1.tokenizer)
+
+    no_cb = decoder1.generate(
+        prompt_ids=prompt, max_new_tokens=16, eos_token_ids=eos,
+    )
+    streamed: list[int] = []
+    with_cb = decoder2.generate(
+        prompt_ids=prompt, max_new_tokens=16, eos_token_ids=eos,
+        on_token=lambda t: streamed.append(t) or False,
+    )
+    assert no_cb.output_token_ids == with_cb.output_token_ids
+    assert streamed == with_cb.output_token_ids
+
+
 def test_generate_appends_correction_or_bonus(
     proposer_session: DLMProposer, fresh_verifier_factory
 ) -> None:

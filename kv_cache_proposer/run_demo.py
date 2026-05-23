@@ -72,9 +72,25 @@ def main() -> int:
         default="bfloat16",
         choices=["bfloat16", "float16", "float32"],
     )
-    parser.add_argument("--max-new-tokens", type=int, default=64)
-    parser.add_argument("--block-size", type=int, default=16)
-    parser.add_argument("--num-diffusion-steps", type=int, default=16)
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=512,
+        help=(
+            "Hard cap on generated tokens. Set high enough that EOS, not "
+            "this cap, terminates generation; typical answers run 100-300 "
+            "tokens. The previous default of 64 caused mid-sentence "
+            "truncation on anything longer than a one-liner."
+        ),
+    )
+    parser.add_argument(
+        "--block-size", type=int, default=16,
+        help="See scripts/chat.py for empirical guidance; default 16.",
+    )
+    parser.add_argument(
+        "--num-diffusion-steps", type=int, default=2,
+        help="K=2 is the empirical sweet spot per param sweep on M4; "
+             "K>=8 is only worth it for higher-quality proposers (e.g. "
+             "Repr-Align) where acceptance is materially K-sensitive.",
+    )
     parser.add_argument("--sink-size", type=int, default=4)
     parser.add_argument("--window-size", type=int, default=64)
     parser.add_argument(
