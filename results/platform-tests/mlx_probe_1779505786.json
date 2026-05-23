@@ -1,0 +1,356 @@
+{
+  "model": {
+    "class": "Model",
+    "module": "mlx_lm.models.qwen3",
+    "repr_head": "Model(\n  (model): Qwen3Model(\n    (embed_tokens): Embedding(151936, 2048)\n    (layers.0): TransformerBlock(\n      (self_attn): Attention(\n        (q_proj): Line",
+    "public_attr_names": [
+      "apply",
+      "apply_to_modules",
+      "args",
+      "children",
+      "clear",
+      "copy",
+      "eval",
+      "filter_and_map",
+      "freeze",
+      "fromkeys",
+      "get",
+      "is_module",
+      "items",
+      "keys",
+      "layers",
+      "leaf_modules",
+      "load_weights",
+      "model_type",
+      "modules",
+      "named_modules",
+      "parameters",
+      "pop",
+      "popitem",
+      "sanitize",
+      "save_weights",
+      "set_dtype",
+      "setdefault",
+      "shard",
+      "state",
+      "train",
+      "trainable_parameter_filter",
+      "trainable_parameters",
+      "training",
+      "unfreeze",
+      "update",
+      "update_modules",
+      "valid_child_filter",
+      "valid_parameter_filter",
+      "values"
+    ]
+  },
+  "prompt": "Why is the sky blue?",
+  "env": {
+    "is_available": true,
+    "mlx_version": "0.31.2",
+    "mlx_lm_version": "0.31.3",
+    "metal_available": true,
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12",
+    "failure_reason": "",
+    "rendered": "mlx OK: mlx=0.31.2 mlx_lm=0.31.3 metal=True arch=arm64 python=3.13.12"
+  },
+  "mlx.core": {
+    "module": "mlx.core",
+    "version_attr": "0.31.2",
+    "public_attrs_count": 278,
+    "default_device": "Device(gpu, 0)",
+    "metal_is_available": true
+  },
+  "mlx.dtype": {
+    "bfloat16": "mlx.core.bfloat16",
+    "float16": "mlx.core.float16",
+    "float32": "mlx.core.float32",
+    "int32": "mlx.core.int32"
+  },
+  "mlx_lm": {
+    "version_attr": "0.31.3",
+    "public_attrs": [
+      "batch_generate",
+      "convert",
+      "generate",
+      "load",
+      "models",
+      "os",
+      "sample_utils",
+      "stream_generate",
+      "tokenizer_utils",
+      "utils"
+    ],
+    "load_signature": {
+      "signature": "(path_or_hf_repo: str, tokenizer_config: Optional[Dict[str, Any]] = None, model_config: Optional[Dict[str, Any]] = None, adapter_path: Optional[str] = None, lazy: bool = False, return_config: bool = False, revision: Optional[str] = None) -> Union[Tuple[mlx.nn.layers.base.Module, mlx_lm.tokenizer_utils.TokenizerWrapper], Tuple[mlx.nn.layers.base.Module, mlx_lm.tokenizer_utils.TokenizerWrapper, Dict[str, Any]]]",
+      "parameters": [
+        "path_or_hf_repo",
+        "tokenizer_config",
+        "model_config",
+        "adapter_path",
+        "lazy",
+        "return_config",
+        "revision"
+      ],
+      "doc": "Load the model and tokenizer from a given path or a huggingface repository.\n\nArgs:\n    path_or_hf_repo (Path): The path or the huggingface repository to load the model from.\n    tokenizer_config (dict, optional): Configuration parameters specifically for the tokenizer.\n        Defaults to an empty dictionary.\n    model_config(dict, optional): Configuration parameters specifically for the model.\n        Defaults to an empty dictionary.\n    adapter_path (str, optional): Path to the LoRA adapters. If provided, applies LoRA layers\n        to the model. Default: ``None``.\n    lazy (bool): If ``False`` eval the model parameters to make sure they are\n        loaded in memory before returning, otherwise they will be loaded\n        when needed. Default: ``False``\n    return_config (bool: If ``True`` return the model config as the last item..\n    revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.\nReturns:\n    Union[Tuple[nn.Module, TokenizerWrapper], Tuple[nn.Module, TokenizerWrapper, Dict[str, Any]]]:\n        A tuple containing the loaded model, tokenizer and, if requested, the model config.\n\nRaises:\n    FileNotFoundError: If config file or safetensors are not found.\n    ValueError: If model class or args class are not found.",
+      "module": "mlx_lm.utils",
+      "qualname": "load"
+    },
+    "generate_signature": {
+      "signature": "(model: mlx.nn.layers.base.Module, tokenizer: Union[transformers.tokenization_utils.PreTrainedTokenizer, mlx_lm.tokenizer_utils.TokenizerWrapper], prompt: Union[str, List[int]], verbose: bool = False, **kwargs) -> str",
+      "parameters": [
+        "model",
+        "tokenizer",
+        "prompt",
+        "verbose",
+        "kwargs"
+      ],
+      "doc": "Generate a complete response from the model.\n\nArgs:\n   model (nn.Module): The language model.\n   tokenizer (PreTrainedTokenizer): The tokenizer.\n   prompt (Union[str, List[int]]): The input prompt string or integer tokens.\n   verbose (bool): If ``True``, print tokens and timing information.\n       Default: ``False``.\n   kwargs: The remaining options get passed to :func:`stream_generate`.\n      See :func:`stream_generate` for more details.",
+      "module": "mlx_lm.generate",
+      "qualname": "generate"
+    }
+  },
+  "mlx_lm.models": {
+    "module_path": "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/models/__init__.py",
+    "public_attrs": [
+      "base",
+      "cache"
+    ]
+  },
+  "mlx_lm.utils": {
+    "module_path": "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/utils.py",
+    "public_attrs": [
+      "Any",
+      "Callable",
+      "Dict",
+      "List",
+      "MAX_FILE_SIZE_GB",
+      "MODEL_REMAPPING",
+      "Optional",
+      "Path",
+      "TokenizerWrapper",
+      "Tuple",
+      "Type",
+      "Union",
+      "common_prefix_len",
+      "compute_bits_per_weight",
+      "copy",
+      "create_model_card",
+      "dedent",
+      "dequantize_model",
+      "does_model_support_input_embeddings",
+      "get_total_parameters",
+      "glob",
+      "hf_repo_to_path",
+      "importlib",
+      "inspect",
+      "json",
+      "load",
+      "load_adapters",
+      "load_config",
+      "load_model",
+      "load_tokenizer",
+      "make_shards",
+      "mx",
+      "nn",
+      "os",
+      "pipeline_load",
+      "quantize_model",
+      "resource",
+      "save",
+      "save_config",
+      "save_model"
+    ]
+  },
+  "mlx_lm.tokenizer_utils": {
+    "module_path": "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/tokenizer_utils.py",
+    "public_attrs": [
+      "Any",
+      "AutoTokenizer",
+      "BPEStreamingDetokenizer",
+      "Dict",
+      "JSONDecodeError",
+      "List",
+      "NaiveStreamingDetokenizer",
+      "NewlineTokenizer",
+      "Optional",
+      "PreTrainedTokenizerFast",
+      "SPMStreamingDetokenizer",
+      "StreamingDetokenizer",
+      "TokenizerWrapper",
+      "importlib",
+      "json",
+      "load",
+      "no_bos_or_eos",
+      "partial",
+      "warnings"
+    ]
+  },
+  "mlx_lm.sample_utils": {
+    "module_path": "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/sample_utils.py",
+    "public_attrs": [
+      "Callable",
+      "Dict",
+      "List",
+      "Optional",
+      "apply_min_p",
+      "apply_top_k",
+      "apply_top_p",
+      "apply_xtc",
+      "categorical_sampling",
+      "make_frequency_penalty",
+      "make_logits_processors",
+      "make_presence_penalty",
+      "make_repetition_penalty",
+      "make_sampler",
+      "math",
+      "mx",
+      "partial"
+    ]
+  },
+  "mlx_lm.cache.error": "ModuleNotFoundError: No module named 'mlx_lm.cache'",
+  "load_time_s": 1.5430904999375343,
+  "tokenizer": {
+    "class": "TokenizerWrapper",
+    "module": "mlx_lm.tokenizer_utils",
+    "repr_head": "<mlx_lm.tokenizer_utils.TokenizerWrapper object at 0x11b6ed400>",
+    "public_attr_names": [
+      "add_eos_token",
+      "apply_chat_template",
+      "detokenizer",
+      "find_think_end",
+      "find_think_start",
+      "has_thinking",
+      "has_tool_calling",
+      "rfind_think_end",
+      "rfind_think_start",
+      "think_end",
+      "think_end_id",
+      "think_end_tokens",
+      "think_start",
+      "think_start_id",
+      "think_start_tokens",
+      "tool_call_end",
+      "tool_call_end_tokens",
+      "tool_call_start",
+      "tool_call_start_tokens",
+      "tool_parser"
+    ]
+  },
+  "model.model": {
+    "type": "Qwen3Model",
+    "module": "mlx_lm.models.qwen3",
+    "repr_head": "Qwen3Model(\n  (embed_tokens): Embedding(151936, 2048)\n  (layers.0): TransformerBlock(\n    (self_attn): Attention(\n      (q_proj): Linear(input_dims=2048, output"
+  },
+  "model.model.layers": {
+    "type": "list",
+    "module": "builtins",
+    "repr_head": "[TransformerBlock(\n  (self_attn): Attention(\n    (q_proj): Linear(input_dims=2048, output_dims=2048, bias=False)\n    (k_proj): Linear(input_dims=2048, output_di"
+  },
+  "model.model.layers.length": 28,
+  "model.model.layers[0]": {
+    "type": "TransformerBlock",
+    "public_attrs": [
+      "apply",
+      "apply_to_modules",
+      "args",
+      "children",
+      "clear",
+      "copy",
+      "eval",
+      "filter_and_map",
+      "freeze",
+      "fromkeys",
+      "get",
+      "hidden_size",
+      "is_module",
+      "items",
+      "keys",
+      "leaf_modules",
+      "load_weights",
+      "modules",
+      "named_modules",
+      "num_attention_heads",
+      "parameters",
+      "pop",
+      "popitem",
+      "save_weights",
+      "set_dtype",
+      "setdefault",
+      "state",
+      "train",
+      "trainable_parameter_filter",
+      "trainable_parameters"
+    ]
+  },
+  "model.model.embed_tokens": {
+    "type": "Embedding",
+    "module": "mlx.nn.layers.embedding",
+    "repr_head": "Embedding(151936, 2048)"
+  },
+  "model.model.norm": {
+    "type": "RMSNorm",
+    "module": "mlx.nn.layers.normalization",
+    "repr_head": "RMSNorm(2048, eps=1e-06)"
+  },
+  "cache_factory.models.cache.make_prompt_cache": {
+    "signature": "(model: mlx.nn.layers.base.Module, max_kv_size: Optional[int] = None) -> List[Any]",
+    "parameters": [
+      "model",
+      "max_kv_size"
+    ],
+    "doc": "Construct the model's cache for use in generation.\n\nThis function will defer the cache construction to the model if it has a\n``make_cache`` method, otherwise it will make a default KV cache.\n\nArgs:\n    model (nn.Module): The language model.\n    max_kv_size (Optional[int]): If provided and the model does not have a\n        ``make_cache`` method, a ``RotatingKVCache`` is used with a maximum\n        size of ``max_kv_size``",
+    "module": "mlx_lm.models.cache",
+    "qualname": "make_prompt_cache"
+  },
+  "cache_layout": {
+    "is_list": true,
+    "n_layers": 28,
+    "layer0_class": "KVCache",
+    "layer0_module": "mlx_lm.models.cache",
+    "layer0_attrs": [
+      "empty",
+      "from_state",
+      "is_trimmable",
+      "keys",
+      "make_mask",
+      "merge",
+      "meta_state",
+      "nbytes",
+      "offset",
+      "size",
+      "state",
+      "step",
+      "to_quantized",
+      "trim",
+      "update_and_fetch",
+      "values"
+    ]
+  },
+  "cache.layer0.keys": {
+    "type": "NoneType",
+    "shape": null
+  },
+  "cache.layer0.values": {
+    "type": "NoneType",
+    "shape": null
+  },
+  "cache.layer0.offset": {
+    "type": "int",
+    "shape": null
+  },
+  "prompt_tokens": 14,
+  "forward_time_s": 0.7717356253415346,
+  "forward_output": {
+    "type": "array",
+    "shape": [
+      1,
+      14,
+      151936
+    ],
+    "dtype": "mlx.core.bfloat16"
+  }
+}
