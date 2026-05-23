@@ -256,3 +256,18 @@ object, so all three problems PagedAttention solves (fragmentation,
 prefix sharing, non-contiguous KV) cease to apply. A 30-line fixed-slab
 pool replaces it and runs ~5–15% faster because attention kernels see
 contiguous memory.
+
+## Architecture Decision Records
+
+Design decisions that the rest of the codebase depends on are recorded
+in [`docs/adr/`](docs/adr/). New contributors and agents should read the
+ADR index before changing proposer / verifier / training code; the ADRs
+explain *why* a particular design was chosen and which alternatives were
+explicitly rejected.
+
+- [ADR 0001 — Proposer sizing, alignment strategy, and verifier
+  decoupling](docs/adr/0001-proposer-sizing-and-alignment.md): the
+  load-bearing decision behind why we keep the proposer in a fixed
+  0.25–1 B band, treat EAGLE-3 representation alignment as the canonical
+  training recipe, and design verifier swaps to be data-and-fine-tune
+  operations rather than re-architecture operations.

@@ -5,6 +5,13 @@ DLM-proposer + AR-verifier framework (already implemented under
 `kv_cache_proposer/`) into a production-grade serving stack with two
 explicit goals:
 
+> **Related**: the proposer's sizing band, alignment-training strategy, and
+> verifier-decoupling guarantees that this engine relies on are formalized
+> in [ADR 0001](adr/0001-proposer-sizing-and-alignment.md). This document
+> describes the *serving* layer; ADR 0001 describes the *model* layer that
+> the serving layer wraps.
+
+
 1. **Extreme memory savings** — run Qwen3-1.7B verifier + Qwen3-0.6B-MDLM
    proposer at S=128k context in **< 2 GB total memory** on consumer
    hardware.

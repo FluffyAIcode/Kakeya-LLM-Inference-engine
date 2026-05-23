@@ -1,0 +1,35 @@
+# Architecture Decision Records
+
+This directory contains Architecture Decision Records (ADRs) for the
+DLM-proposer + AR-verifier project. Each ADR captures a single architectural
+decision, the context that led to it, the alternatives considered, and the
+consequences of choosing one path over another.
+
+## Why ADRs
+
+Code shows *what* we built. ADRs show *why* — and just as importantly, *what
+we deliberately rejected and on what grounds*. Without ADRs, every new
+contributor (human or agent) re-derives the same decision tree from scratch
+and either burns time or re-opens settled debates.
+
+We follow a lightweight variant of the [Michael Nygard format][nygard]:
+**Context → Decision → Consequences**, plus an explicit **Alternatives
+considered** section because most of the value comes from showing the
+reader what was *not* chosen.
+
+[nygard]: https://github.com/joelparkerhenderson/architecture-decision-record
+
+## Conventions
+
+- File name: `NNNN-kebab-case-title.md` where `NNNN` is a four-digit zero-padded
+  monotonically increasing number.
+- Status: `Proposed` / `Accepted` / `Superseded by NNNN` / `Deprecated`.
+- Once `Accepted`, an ADR is immutable except for the `Status` field.
+  Disagreements are resolved by writing a new ADR that supersedes it.
+- Length: aim for ≤ 5 pages of rendered markdown. If longer, split.
+
+## Index
+
+| #    | Title                                                           | Status   |
+| ---- | --------------------------------------------------------------- | -------- |
+| 0001 | [Proposer sizing, alignment, and verifier decoupling](0001-proposer-sizing-and-alignment.md) | Accepted |
