@@ -4,9 +4,24 @@
 core = sysmon
 parallel = false
 branch = false
-source =
-    kv_cache_proposer
-    inference_engine
+
+# NOTE on the coverage scope:
+#
+# We do NOT set `source = ...` here. The runner script
+# (scripts/run_platform_tests.sh) sets `--cov=...` flags dynamically
+# based on which backend is being tested:
+#
+#   * `kv_cache_proposer` and the platform-neutral `inference_engine`
+#     subpackages (proposer/, memory/, scheduler/, server/) are ALWAYS
+#     covered — their tests run on every backend.
+#   * `inference_engine.backends.<selected>` is covered only when that
+#     backend is being tested. An MLX backend module sitting on a Linux
+#     CUDA host is not in scope (the host can't import mlx), and vice
+#     versa.
+#
+# This avoids the alternative — setting `source = inference_engine` —
+# which would force every backend module to be 100% covered on every
+# host, even when its dependencies (Metal / CUDA) aren't present.
 
 # CLI entry-point scripts are exercised by end-to-end demo runs (under
 # `results/`) and by an integration test that invokes them via

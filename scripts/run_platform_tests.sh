@@ -98,17 +98,25 @@ PY
 
 # ---------- pytest ----------
 # Target paths:
-#   tests/core            — platform-neutral, runs everywhere
-#   tests/backends/<bk>   — backend-specific
+#   tests/core              — platform-neutral, runs everywhere
+#   tests/inference_engine  — platform-neutral inference_engine.* subpackages
+#   tests/backends/<bk>     — backend-specific (only when on that backend)
 #
-# Coverage is enforced against `inference_engine` (when present) and the
-# legacy `kv_cache_proposer` package. We require 100% line coverage on the
-# code targeted by the current test selection.
+# Coverage scope is set DYNAMICALLY per backend so Linux VM with
+# --backend=cpu doesn't fail because MLX/CUDA modules can't be
+# imported. We require 100% line coverage on every module included
+# below.
 
 cov_targets=("--cov=kv_cache_proposer")
-if [[ -d "$repo_root/inference_engine" ]]; then
-    cov_targets+=("--cov=inference_engine")
-fi
+
+# Always-on platform-neutral subpackages of inference_engine.
+for sub in proposer memory scheduler server; do
+    if [[ -d "$repo_root/inference_engine/$sub" ]]; then
+        cov_targets+=("--cov=inference_engine.$sub")
+    fi
+done
+
+# Selected backend only.
 if [[ -d "$repo_root/inference_engine/backends/$backend" ]]; then
     cov_targets+=("--cov=inference_engine.backends.$backend")
 fi
@@ -117,8 +125,18 @@ test_paths=("tests/core")
 if [[ -d "$repo_root/tests/inference_engine" ]]; then
     test_paths+=("tests/inference_engine")
 fi
-if [[ -d "$repo_root/tests/backends/$backend" ]]; then
-    test_paths+=("tests/backends/$backend")
+
+# tests/backends/<bk>/test_env.py is platform-neutral (it monkeypatches
+# the platform check, so its branches run on every host). The
+# backend-specific test files (test_verifier.py etc.) are gated by
+# importing the backend module — they error out cleanly on hosts that
+# can't load it. We always include the directory; pytest's collection
+# is filtered by import side-effects per file.
+if [[ -d "$repo_root/tests/backends/mlx" ]]; then
+    test_paths+=("tests/backends/mlx")
+fi
+if [[ -d "$repo_root/tests/backends/cuda" ]]; then
+    test_paths+=("tests/backends/cuda")
 fi
 
 mkdir -p "$(dirname "$report")"
