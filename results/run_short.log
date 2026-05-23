@@ -1,0 +1,87 @@
+[demo] proposer=dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1
+[demo] verifier=Qwen/Qwen3-1.7B
+[demo] device=cpu  dtype=bfloat16
+[demo] block_size=8  diffusion_steps=8
+[demo] sink=4  window=64
+[demo] max_new_tokens=32
+[demo] loading proposer ...
+[demo] proposer params: 1192.1 MB
+[demo] loading verifier ...
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 95.31it/s]
+[demo] verifier params: 3441.1 MB
+[demo] loading baseline (full-KV verifier) ...
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 116.49it/s]
+[demo] prompt: 'Reply with exactly: OK.'
+[demo] prompt token length: 30
+[demo] eos ids: [151645]
+
+[demo] === Baseline (full-KV greedy AR) ===
+[baseline] tokens: 3
+[baseline] forward calls: 3
+[baseline] peak KV: 3584.0 KB (114688.0 B/token)
+[baseline] text: 'OK.<|im_end|>'
+
+[demo] === Speculative (DLM proposer + sink+window verifier) ===
+[spec] tokens: 3
+[spec] proposer forwards: 8
+[spec] verifier forwards: 2
+[spec] verifier peak KV: 3696.0 KB
+[spec] verifier final KV slots: 33
+[spec] acceptance rate: 0.375
+[spec] per-block accepted/proposed: [(3, 8)]
+[spec] text: 'OK.<|im_end|>'
+
+====================================================================================
+Net-Bytes-per-Token Report — KV-only definition (activation reported separately)
+====================================================================================
+  scenario: B=8, S=32 tokens, L_block=8, sink=4, window=64
+
+Persistent memory (per token, amortized):
+  Verifier KV cache:
+    baseline (full DynamicCache)   total=    3.50 MB  per-token= 114688.0 B
+    sink+window residual (peak)    total=    3.61 MB  per-token= 118272.0 B
+    per-slot KV constant              114688 B/slot   (cache_budget = 68 slots)
+
+  Proposer KV cache:
+    0 B total  -> 0.0 B/token  (this build recomputes the proposer per block, so persistent proposer KV = 0)
+
+  Proposer weights (model parameters, GPU-shared, amortized over B*S):
+    total= 1136.88 MB   -> 4656640.0 B/token  (weights / (B=8 * S=32))
+
+  Net Bytes per Token (KV-only) = 4774912.0 B/token   (verifier_KV + proposer_KV + weights/(B*S))
+  Baseline KV cost              =  114688.0 B/token   (full DynamicCache)
+  Compression vs baseline       =    0.02x
+
+Transient memory (capacity constraint, NOT counted in Net Bytes per Token):
+  Proposer peak activation (single forward):    11.01 MB
+  Verifier peak activation (single forward):     8.69 MB
+  Peak activation per GPU = max(both)      :    11.01 MB
+  (this is the maximum HBM occupancy seen during any single model(...) call;
+   it is freed when that call returns and does not accumulate across forwards.)
+
+Output equivalence (greedy):
+  speculative tokens generated:  3
+  baseline    tokens generated:  3
+  shared greedy prefix length:   3
+  exact match:                   True
+  proposer acceptance rate:       0.375
+
+Projected Net Bytes per Token (KV-only) at canonical operating points:
+  (per-slot verifier KV measured =   114688 B; cache_budget = 68 slots; proposer KV = 0)
+  --------------------------------------------------------------------------
+     B           S     Net Bytes per Token   compression
+  --------------------------------------------------------------------------
+     1       8,192               146,472.0         0.78x
+     8       8,192                19,142.0         5.99x
+     8      32,768                 4,785.5        23.97x
+     8     131,072                 1,196.4        95.86x
+     8   1,048,576                   149.5       766.90x
+    32     131,072                   343.7       333.67x
+    64     131,072                   201.6       568.86x
+    64   1,048,576                    25.2      4550.90x
+  --------------------------------------------------------------------------
+====================================================================================
+
+[demo] wrote /workspace/results/run_short.json
+
+[demo] PASS: equivalence-regime test (sink+window covers full sequence) produced bit-identical greedy output.

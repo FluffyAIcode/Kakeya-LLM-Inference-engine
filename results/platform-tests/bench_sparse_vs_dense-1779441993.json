@@ -1,0 +1,73 @@
+{
+  "config": {
+    "prompt": "Why is the sky blue?",
+    "max_new_tokens": 16,
+    "block_size": 4,
+    "num_diffusion_steps": 2,
+    "sink_size": 4,
+    "window_size": 64,
+    "device": "cpu",
+    "dtype": "bfloat16",
+    "report": null
+  },
+  "prompt_token_count": 30,
+  "dense": {
+    "wall_time_s": 5.089592110001831,
+    "n_tokens": 16,
+    "acceptance_rate": 0.125,
+    "proposer_forward_calls": 21,
+    "proposer_peak_activation_bytes": 13978112,
+    "verifier_forward_calls": 23,
+    "verifier_peak_kv_bytes": 5275648,
+    "output_token_ids": [
+      785,
+      12884,
+      7952,
+      6303,
+      1576,
+      315,
+      1246,
+      39020,
+      83161,
+      448,
+      279,
+      9237,
+      594,
+      16566,
+      13,
+      5692
+    ]
+  },
+  "sparse": {
+    "wall_time_s": 5.012680394997005,
+    "n_tokens": 16,
+    "acceptance_rate": 0.125,
+    "proposer_forward_calls": 21,
+    "proposer_peak_activation_bytes": 1215488,
+    "verifier_forward_calls": 23,
+    "verifier_peak_kv_bytes": 5275648,
+    "output_token_ids": [
+      785,
+      12884,
+      7952,
+      6303,
+      1576,
+      315,
+      1246,
+      39020,
+      83161,
+      448,
+      279,
+      9237,
+      594,
+      16566,
+      13,
+      5692
+    ]
+  },
+  "comparison": {
+    "outputs_identical": true,
+    "wall_time_speedup": 1.0153434308482123,
+    "activation_peak_ratio_sparse_over_dense": 0.08695652173913043
+  }
+}

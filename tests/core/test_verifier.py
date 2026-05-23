@@ -1,0 +1,331 @@
+"""Unit tests for `kv_cache_proposer.verifier.SinkWindowVerifier`.
+
+Real Qwen3-1.7B weights, no mocks. Tests cover every public method,
+every branch in the trim/truncate code paths, and every error raise.
+"""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from kv_cache_proposer.verifier import SinkWindowVerifier, VerifierConfig
+
+
+# ---------------------------------------------------------------------------
+# Construction
+# ---------------------------------------------------------------------------
+
+def test_default_config_loads(verifier_session: SinkWindowVerifier) -> None:
+    assert verifier_session.config.sink_size == 4
+    assert verifier_session.config.window_size == 64
+    assert verifier_session.cache is None  # not yet prefilled
+    assert verifier_session.next_token_logits is None
+    assert verifier_session.cache_logical_size == 0
+    assert verifier_session.next_global_position == 0
+    assert verifier_session.stats.weight_bytes > 0
+
+
+@pytest.mark.parametrize(
+    "sink,window,err",
+    [
+        (-1, 8, "sink_size must be >= 0"),
+        (4, 0, "window_size must be > 0"),
+        (4, -3, "window_size must be > 0"),
+    ],
+)
+def test_construction_validates_window_args(sink: int, window: int, err: str) -> None:
+    with pytest.raises(ValueError, match=err):
+        SinkWindowVerifier(
+            VerifierConfig(
+                dtype=torch.bfloat16,
+                device="cpu",
+                sink_size=sink,
+                window_size=window,
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# prefill
+# ---------------------------------------------------------------------------
+
+def test_prefill_rejects_empty(verifier_session: SinkWindowVerifier) -> None:
+    with pytest.raises(ValueError, match="prompt_ids must be non-empty"):
+        verifier_session.prefill([])
+
+
+def test_prefill_under_budget(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    prompt = list(range(20))
+    verifier.prefill(prompt)
+    assert verifier.cache_logical_size == 20  # below budget, no trim
+    assert verifier.next_global_position == 20
+    assert verifier.next_token_logits is not None
+    assert verifier.stats.forward_calls == 1
+
+
+def test_prefill_over_budget_triggers_trim(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=8)
+    prompt = list(range(50))
+    verifier.prefill(prompt)
+    # cache trimmed to sink+window
+    assert verifier.cache_logical_size == 12
+    # K/V tensors should match the logical size physically
+    layer0 = verifier.cache.layers[0]
+    assert layer0.keys.shape[2] == 12
+    assert layer0.values.shape[2] == 12
+
+
+def test_prefill_zero_sink(fresh_verifier_factory) -> None:
+    """Boundary: sink_size=0 must still produce a valid trimmed cache."""
+    verifier = fresh_verifier_factory(sink=0, window=8)
+    verifier.prefill(list(range(20)))
+    assert verifier.cache_logical_size == 8
+    assert verifier.cache.layers[0].keys.shape[2] == 8
+
+
+# ---------------------------------------------------------------------------
+# forward_block + commit_or_truncate
+# ---------------------------------------------------------------------------
+
+def test_forward_block_requires_prefill(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    with pytest.raises(RuntimeError, match="not prefilled"):
+        verifier.forward_block([1, 2, 3])
+
+
+def test_forward_block_rejects_empty(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.prefill([1, 2, 3])
+    with pytest.raises(ValueError, match="tokens must be non-empty"):
+        verifier.forward_block([])
+
+
+def test_forward_block_returns_per_position_logits(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    verifier.prefill(list(range(10)))
+    L = 5
+    block = list(range(100, 100 + L))
+    logits = verifier.forward_block(block)
+    assert logits.shape == (L, verifier.model.config.vocab_size)
+    # cache_logical_size grows by L (still below budget here)
+    assert verifier.cache_logical_size == 10 + L
+
+
+def test_commit_validates_args(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.prefill([1, 2, 3])
+    verifier.forward_block([4, 5, 6])
+    with pytest.raises(ValueError, match="0 <= accepted <= forwarded"):
+        verifier.commit_or_truncate(forwarded=3, accepted=-1)
+    with pytest.raises(ValueError, match="0 <= accepted <= forwarded"):
+        verifier.commit_or_truncate(forwarded=3, accepted=4)
+
+
+def test_commit_full_accept_no_drop(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    verifier.prefill(list(range(10)))
+    verifier.forward_block([100, 101, 102])
+    verifier.commit_or_truncate(forwarded=3, accepted=3)
+    assert verifier.cache_logical_size == 13
+    assert verifier.next_global_position == 13
+
+
+def test_commit_partial_accept_drops_tail(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    verifier.prefill(list(range(10)))
+    verifier.forward_block([100, 101, 102])
+    verifier.commit_or_truncate(forwarded=3, accepted=1)
+    assert verifier.cache_logical_size == 11  # prefix 10 + 1 accepted
+    assert verifier.next_global_position == 11
+    # Physical K/V tail must reflect the drop
+    assert verifier.cache.layers[0].keys.shape[2] == 11
+
+
+def test_commit_zero_accept_drops_all(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    verifier.prefill(list(range(10)))
+    verifier.forward_block([100, 101, 102])
+    verifier.commit_or_truncate(forwarded=3, accepted=0)
+    assert verifier.cache_logical_size == 10
+    assert verifier.next_global_position == 10
+
+
+def test_commit_post_trims_to_budget(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=8)  # budget=12
+    verifier.prefill(list(range(10)))
+    verifier.forward_block([100, 101, 102, 103, 104])  # cache->15 then trim
+    verifier.commit_or_truncate(forwarded=5, accepted=5)
+    assert verifier.cache_logical_size == 12  # capped at budget
+
+
+# ---------------------------------------------------------------------------
+# append_token
+# ---------------------------------------------------------------------------
+
+def test_append_token_advances_state(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    verifier.prefill(list(range(10)))
+    pre_size = verifier.cache_logical_size
+    pre_pos = verifier.next_global_position
+    logits = verifier.append_token(123)
+    assert verifier.cache_logical_size == pre_size + 1
+    assert verifier.next_global_position == pre_pos + 1
+    assert logits is verifier.next_token_logits
+    assert logits.ndim == 1
+    assert logits.shape[0] == verifier.model.config.vocab_size
+
+
+# ---------------------------------------------------------------------------
+# trim / truncate internals — error paths
+# ---------------------------------------------------------------------------
+
+def test_trim_raises_when_no_cache(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    with pytest.raises(RuntimeError, match="No cache to trim"):
+        verifier._trim_cache_in_place()
+
+
+def test_truncate_tail_raises_when_no_cache(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    with pytest.raises(RuntimeError, match="No cache to truncate"):
+        verifier._truncate_tail_in_place(1)
+
+
+def test_truncate_tail_zero_drop_is_noop(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.prefill([1, 2, 3])
+    pre = verifier.cache_logical_size
+    verifier._truncate_tail_in_place(0)
+    assert verifier.cache_logical_size == pre
+
+
+def test_truncate_tail_overflow_raises(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.prefill([1, 2, 3])
+    with pytest.raises(RuntimeError, match=r"Cannot drop \d+ tokens"):
+        verifier._truncate_tail_in_place(verifier.cache_logical_size + 1)
+
+
+def test_trim_detects_layout_violation(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=8)
+    verifier.prefill(list(range(20)))
+    # Force inconsistency between bookkeeping and tensor shape:
+    verifier.cache_logical_size = 999
+    with pytest.raises(RuntimeError, match="layout invariant violated"):
+        verifier._trim_cache_in_place()
+
+
+# ---------------------------------------------------------------------------
+# reset
+# ---------------------------------------------------------------------------
+
+def test_reset_clears_state(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.prefill([1, 2, 3])
+    verifier.reset()
+    assert verifier.next_token_logits is None
+    assert verifier.cache_logical_size == 0
+    assert verifier.next_global_position == 0
+    assert verifier.cache is not None  # reset re-creates an empty cache
+
+
+# ---------------------------------------------------------------------------
+# Defensive / invariant paths
+# ---------------------------------------------------------------------------
+
+def test_trim_skips_layers_with_no_keys(fresh_verifier_factory) -> None:
+    """If a Cache layer reports null keys/values, trimming must skip it
+    without raising. Such layers occur in hybrid-attention models that
+    declare some layers as no-cache (the layout-invariant check is run
+    only on layers that DO have populated keys)."""
+    verifier = fresh_verifier_factory(sink=4, window=8)
+    verifier.prefill(list(range(20)))  # cache trimmed to 12 already
+    # Re-trigger trim with a single null-K layer: must short-circuit cleanly.
+    layer0 = verifier.cache.layers[0]
+    saved_k, saved_v = layer0.keys, layer0.values
+    layer0.keys = None
+    layer0.values = None
+    try:
+        # Manually force the cache_logical_size and re-call trim. The
+        # null-K layer is skipped; remaining layers go through the normal
+        # invariant check, which holds because they still match
+        # cache_logical_size.
+        # First push other layers' shapes to budget+1 so trim has work to do:
+        for layer in verifier.cache.layers[1:]:
+            if layer.keys is None or layer.values is None:
+                continue
+            # Append a junk slot to push past budget.
+            extra_k = layer.keys[:, :, -1:, :].clone()
+            extra_v = layer.values[:, :, -1:, :].clone()
+            layer.keys = torch.cat([layer.keys, extra_k], dim=2)
+            layer.values = torch.cat([layer.values, extra_v], dim=2)
+        verifier.cache_logical_size = verifier._budget() + 1
+        verifier._trim_cache_in_place()
+        # All non-null layers shrank back to budget; null layer untouched.
+        assert verifier.cache_logical_size == verifier._budget()
+        for layer in verifier.cache.layers[1:]:
+            if layer.keys is None:
+                continue
+            assert layer.keys.shape[2] == verifier._budget()
+        assert verifier.cache.layers[0].keys is None
+    finally:
+        layer0.keys = saved_k
+        layer0.values = saved_v
+
+
+def test_truncate_skips_layers_with_no_keys(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory(sink=4, window=64)
+    verifier.prefill(list(range(20)))
+    layer0 = verifier.cache.layers[0]
+    saved_k, saved_v = layer0.keys, layer0.values
+    layer0.keys = None
+    layer0.values = None
+    try:
+        verifier._truncate_tail_in_place(1)  # should skip null layer cleanly
+        # Other layers shrank by 1
+        for layer in verifier.cache.layers[1:]:
+            if layer.keys is None:
+                continue
+            assert layer.keys.shape[2] == 19
+    finally:
+        layer0.keys = saved_k
+        layer0.values = saved_v
+
+
+def test_record_peak_kv_handles_null_cache(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.cache = None
+    # Should be a no-op; the peak should remain at its initial value.
+    pre = verifier.stats.peak_kv_bytes
+    verifier._record_peak_kv()
+    assert verifier.stats.peak_kv_bytes == pre
+
+
+def test_record_peak_kv_handles_layers_with_null_kv(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    verifier.prefill(list(range(8)))
+    layer0 = verifier.cache.layers[0]
+    saved_k, saved_v = layer0.keys, layer0.values
+    layer0.keys = None
+    layer0.values = None
+    try:
+        verifier._record_peak_kv()  # exercise the keys-None branch
+    finally:
+        layer0.keys = saved_k
+        layer0.values = saved_v
+
+
+def test_record_peak_activation_grows_only(fresh_verifier_factory) -> None:
+    verifier = fresh_verifier_factory()
+    a = torch.zeros((1, 4, 32), dtype=torch.bfloat16)
+    b = torch.zeros((1, 8, 32), dtype=torch.bfloat16)
+    verifier._record_peak_activation(a)
+    pa1 = verifier.stats.peak_activation_bytes
+    verifier._record_peak_activation(b)
+    pa2 = verifier.stats.peak_activation_bytes
+    assert pa1 > 0 and pa2 > pa1
+    # smaller does not regress
+    verifier._record_peak_activation(a)
+    assert verifier.stats.peak_activation_bytes == pa2
