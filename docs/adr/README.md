@@ -33,3 +33,4 @@ reader what was *not* chosen.
 | #    | Title                                                           | Status   |
 | ---- | --------------------------------------------------------------- | -------- |
 | 0001 | [Proposer sizing, alignment, and verifier decoupling](0001-proposer-sizing-and-alignment.md) | Accepted |
+| 0002 | [Verifier selection, quantization, and the open-vs-closed-weight constraint](0002-verifier-selection-and-quantization.md) | Accepted |

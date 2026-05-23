@@ -271,3 +271,9 @@ explicitly rejected.
   0.25–1 B band, treat EAGLE-3 representation alignment as the canonical
   training recipe, and design verifier swaps to be data-and-fine-tune
   operations rather than re-architecture operations.
+- [ADR 0002 — Verifier selection, quantization, and the
+  open-vs-closed-weight constraint](docs/adr/0002-verifier-selection-and-quantization.md):
+  the v1/v2 ship sequence (Qwen3-1.7B bf16 → Qwen3-8B 4-bit), the 60 %
+  memory rule for choosing bf16 vs 4-bit, and why closed-weight APIs
+  (GPT/Claude/Gemini) cannot be aligned with EAGLE-3 and are out of
+  scope for v1 / v2.
