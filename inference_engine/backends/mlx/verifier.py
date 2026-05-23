@@ -1,35 +1,35 @@
 """MLX-backed sink+window AR verifier.
 
-API parity with `kv_cache_proposer.verifier.SinkWindowVerifier`: the
-speculative decoder is unchanged when this drop-in replacement is
-used. The differences are entirely internal:
+API parity with :class:`kv_cache_proposer.verifier.SinkWindowVerifier`
+so the speculative decoder is unchanged when this drop-in replacement
+is used. Internals:
 
-  * Model is loaded via `mlx_lm.load(repo_id)` and runs on Apple's
+  * Model is loaded via ``mlx_lm.load(repo_id)`` and runs on Apple's
     unified-memory GPU via Metal.
-  * KV cache is the list returned by
-    `mlx_lm.models.cache.make_prompt_cache(model)` — one
-    `KVCache` per transformer layer.
-  * Sink+window trimming is applied via direct attribute mutation on
-    each `KVCache` (`keys`, `values`, `offset`); see `cache.py`.
-  * Returned logits are converted from `mx.array` to `torch.Tensor` at
-    the API boundary so the speculative loop's `torch.argmax` /
-    `.item()` work unchanged. The conversion is small-tensor only
-    (next-token slice or block-of-L slice), single-digit ms.
+  * KV cache is a list of
+    :class:`inference_engine.backends.mlx.cache.SinkWindowKVCache`
+    (one per transformer layer). Each cache trims itself atomically
+    inside ``update_and_fetch`` — there is no post-hoc state surgery.
+    See `cache.py`'s module docstring for why direct mutation of
+    ``mlx_lm.models.cache.KVCache`` was the source of the MLX-1b
+    divergence-after-trim bug.
+  * Returned logits are converted from ``mx.array`` to
+    ``torch.Tensor`` at the API boundary so the speculative loop's
+    ``torch.argmax`` / ``.item()`` work unchanged. The conversion is
+    small-tensor (next-token slice or block-of-L slice), single-digit
+    ms.
 
-The module imports `mlx.core` and `mlx_lm` at top level. On non-Apple-
-Silicon hosts, this import fails — that is the intended behavior. The
-backend's package `__init__` guards against accidental imports by
-exposing only `env` at the top level; callers must opt in explicitly.
+The module imports ``mlx.core`` and ``mlx_lm`` at top level. Non-Apple-
+Silicon hosts cannot load this file — that is the intended behavior.
 
 Failure modes (no fallback):
   * any forward producing logits of unexpected shape -> RuntimeError
-  * any KV cache layer with K/V seq lengths disagreeing -> RuntimeError
   * commit/truncate beyond cache contents -> RuntimeError
+  * unsupported config dtype -> ValueError
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import List, Optional
 
 import mlx.core as mx
@@ -40,6 +40,7 @@ from kv_cache_proposer.verifier import VerifierConfig, VerifierStats
 
 from . import cache as cache_ops
 from ._torch_bridge import mx_to_torch
+from .cache import SinkWindowKVCache, make_sink_window_cache
 from .env import require_environment
 
 
@@ -70,18 +71,15 @@ class MLXSinkWindowVerifier:
                              window_size=64)
         verifier = MLXSinkWindowVerifier(cfg)
 
-    The class deliberately reuses the PyTorch ``VerifierConfig`` /
-    ``VerifierStats`` dataclasses so the speculative decoder doesn't
-    need to know which backend is in use.
-
-    The ``device`` and ``dtype`` fields of the config are accepted but
-    largely ignored: MLX uses its own device + dtype model. We honor
-    ``dtype`` when it can be cast to an `mx.Dtype` (bfloat16 / float16
-    / float32) and emit a clear error otherwise.
+    Reuses ``VerifierConfig`` / ``VerifierStats`` so the speculative
+    decoder doesn't know which backend is in use. The ``device`` field
+    of the config is accepted but largely ignored (MLX uses its own
+    device model). The ``dtype`` field is honored only as a
+    diagnostic — ``mlx_lm.load`` picks the checkpoint's stored dtype.
     """
 
     def __init__(self, config: Optional[VerifierConfig] = None) -> None:
-        require_environment()  # raises if MLX/Metal not usable
+        require_environment()
         self.config = config or VerifierConfig()
         if self.config.sink_size < 0 or self.config.window_size <= 0:
             raise ValueError(
@@ -89,12 +87,13 @@ class MLXSinkWindowVerifier:
             )
 
         self.model, self.tokenizer = mlx_lm.load(self.config.model_id)
-        # Map config.dtype to an mx.Dtype for any caller that wants to
-        # know what the model loaded as (we do NOT cast — mlx_lm.load
-        # picks the checkpoint's stored dtype).
         self._mx_dtype = _map_torch_dtype_to_mx(self.config.dtype)
 
-        self.cache: Optional[List] = None
+        self.cache: Optional[List[SinkWindowKVCache]] = None
+        # Number of generated/seen tokens — same field name as the
+        # PyTorch verifier, used by the speculative decoder for
+        # bookkeeping. Distinct from per-layer cache.offset (also
+        # the global position; redundant but mirrors the PyTorch class).
         self.cache_logical_size: int = 0
         self.next_global_position: int = 0
         self.next_token_logits: Optional[torch.Tensor] = None
@@ -104,8 +103,11 @@ class MLXSinkWindowVerifier:
     # ---------------------------- public API ---------------------------- #
 
     def reset(self) -> None:
-        from mlx_lm.models.cache import make_prompt_cache
-        self.cache = make_prompt_cache(self.model)
+        self.cache = make_sink_window_cache(
+            self.model,
+            sink_size=self.config.sink_size,
+            window_size=self.config.window_size,
+        )
         self.cache_logical_size = 0
         self.next_global_position = 0
         self.next_token_logits = None
@@ -117,7 +119,6 @@ class MLXSinkWindowVerifier:
         L = len(prompt_ids)
         arr = mx.array([prompt_ids], dtype=mx.int32)
         logits_mx = self.model(arr, cache=self.cache)
-        # Force evaluation so the cache writes complete before we trim.
         mx.eval(logits_mx)
         if logits_mx.ndim != 3 or int(logits_mx.shape[0]) != 1:
             raise RuntimeError(
@@ -126,14 +127,9 @@ class MLXSinkWindowVerifier:
             )
 
         self._record_peak_activation(logits_mx)
-
-        # Convert only the last position's logits (predicting the first
-        # generated token) — that's all the speculative loop needs.
         self.next_token_logits = mx_to_torch(logits_mx[0, -1])
-        self.cache_logical_size = L
         self.next_global_position = L
-
-        self._trim_cache_in_place()
+        self.cache_logical_size = self._cache_buffer_size()
         self._record_peak_kv()
         self.stats.forward_calls += 1
         self.stats.tokens_consumed += L
@@ -155,11 +151,10 @@ class MLXSinkWindowVerifier:
             )
 
         self._record_peak_activation(logits_mx)
-        self.cache_logical_size += L
-
-        # Convert all L positions' logits (the speculative loop reads
-        # position-by-position; converting once is cheaper than L
-        # individual cross-backend trips).
+        # Persistent cache size is bounded by sink+window after the
+        # SinkWindowKVCache.update_and_fetch trim. Read directly from
+        # the cache rather than tracking it ourselves.
+        self.cache_logical_size = self._cache_buffer_size()
         block_logits = mx_to_torch(logits_mx[0])  # [L, V]
         self.stats.forward_calls += 1
         self.stats.tokens_consumed += L
@@ -170,16 +165,17 @@ class MLXSinkWindowVerifier:
             raise ValueError("accepted must satisfy 0 <= accepted <= forwarded")
         drop = forwarded - accepted
         if drop > 0:
-            cache_ops.truncate_caches_tail(
-                self.cache,
-                drop=drop,
-                # The new offset is the global position AFTER accepting
-                # `accepted` of the L forwarded tokens.
-                new_offset=self.next_global_position + accepted,
-            )
-        self.cache_logical_size -= drop
+            trims = [layer.trim(drop) for layer in self.cache]
+            # All layers must trim by exactly `drop`. If any layer has fewer
+            # than `drop` slots, that's a real cross-layer inconsistency
+            # we want surfaced (no fallback).
+            if any(t != drop for t in trims):
+                raise RuntimeError(
+                    f"per-layer trim mismatch (asked drop={drop}, got {trims}); "
+                    "SinkWindowKVCache state diverged across layers"
+                )
+        self.cache_logical_size = self._cache_buffer_size()
         self.next_global_position += accepted
-        self._trim_cache_in_place()
         self._record_peak_kv()
 
     def append_token(self, token_id: int) -> torch.Tensor:
@@ -190,21 +186,11 @@ class MLXSinkWindowVerifier:
 
     # --------------------------- internals --------------------------- #
 
-    def _budget(self) -> int:
-        return self.config.sink_size + self.config.window_size
-
-    def _trim_cache_in_place(self) -> None:
+    def _cache_buffer_size(self) -> int:
+        """Return the actual seq dim of the cache buffer (post-trim)."""
         if self.cache is None:
-            raise RuntimeError("No cache to trim.")
-        if self.cache_logical_size <= self._budget():
-            return
-        cache_ops.trim_caches_to_sink_window(
-            self.cache,
-            sink_size=self.config.sink_size,
-            window_size=self.config.window_size,
-            keep_offset=self.next_global_position,
-        )
-        self.cache_logical_size = self._budget()
+            return 0
+        return cache_ops.cache_seq_length(self.cache)
 
     def _record_peak_kv(self) -> None:
         if self.cache is None:
@@ -220,13 +206,7 @@ class MLXSinkWindowVerifier:
 
 
 def _map_torch_dtype_to_mx(dtype) -> "mx.Dtype":
-    """Best-effort mapping for diagnostic purposes only.
-
-    We don't actually cast the model's parameters — mlx_lm.load uses
-    the checkpoint's stored dtype. We only record what the caller
-    *intended* so mismatches are obvious if a user asks for fp32 and
-    sees bf16 acting.
-    """
+    """Best-effort mapping for diagnostic purposes only."""
     import torch as _torch
     table = {
         _torch.bfloat16: mx.bfloat16,

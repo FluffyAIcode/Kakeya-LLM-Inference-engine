@@ -1,215 +1,260 @@
-"""Sink+window trim helpers for `mlx_lm.models.cache.KVCache`.
+"""MLX-side sink+window KV cache.
 
-The probe (Phase MLX-1a) confirmed that `make_prompt_cache(model)`
-returns `list[KVCache]` with these per-layer attributes we need:
+Subclasses mlx_lm's ``_BaseCache`` so a list of
+``SinkWindowKVCache`` instances is a drop-in replacement for the
+``KVCache`` list returned by ``mlx_lm.models.cache.make_prompt_cache``.
 
-  * ``keys``    : ``mx.array`` of shape ``[batch, n_kv_heads, seq, head_dim]``
-                  or ``None`` before any update
-  * ``values``  : same
-  * ``offset``  : ``int`` — number of tokens the model has seen for
-                  RoPE positioning of the NEXT key
-  * ``update_and_fetch(k, v)`` : append + return concatenated K, V
+Why a custom cache class (vs. mutating mlx_lm's KVCache after the
+fact, which is what MLX-1b tried):
 
-We trim the cache by direct attribute mutation on ``keys`` / ``values``
-plus an explicit ``offset`` rewrite. mlx_lm's KVCache stores `keys` /
-`values` as plain attributes (not read-only properties), so this
-works in mlx-lm 0.31.x. If a future version makes them properties
-without setters, the `_assign_kv` helper below will raise `AttributeError`
-and we'll see that immediately on the Mac test pass — no silent
-fallback.
+  * ``KVCache`` uses step=256 buffer pre-allocation. After a write,
+    ``self.keys.shape[2]`` is rounded up to a step multiple, while the
+    *logical* size is ``self.offset``. Replacing ``self.keys`` with
+    a smaller tensor leaves the next ``update_and_fetch`` to allocate
+    a fresh buffer and copy ``self.keys[..., :prev, :]`` where
+    ``prev = self.offset`` — but ``prev`` may now exceed the new
+    buffer's seq dim, so that copy is a silent out-of-bounds. This
+    was the source of the divergence after token 34 in MLX-1b
+    (`bench_mlx_verifier_1779507043.json`, common_prefix_length=34,
+    repeated `3554` token salad after).
 
-Important RoPE invariant: after a sink+window trim, the cache holds
-sink K/V (with RoPE rotated for global positions [0, sink-1]) plus
-window K/V (rotated for [global - window, global - 1]). New queries
-are RoPE-rotated for ``cache.offset``, which we leave equal to the
-*global* sequence position (NOT the cache's physical length). This
-matches StreamingLLM-style attention sinks and is the same behavior
-our PyTorch ``SinkWindowVerifier`` enforces.
+  * The right contract is exposed by mlx_lm itself: every cache
+    has ``update_and_fetch(keys, values) -> (k, v)`` and (optionally)
+    ``make_mask(N, return_array, window_size)``. Implementing those
+    two atomically, with our trim happening *inside* update_and_fetch,
+    leaves the cache invariants self-consistent and matches the
+    interface ``mlx_lm.models.qwen3.Attention`` calls into.
 
-The module imports `mlx.core` at top level; non-arm64 hosts cannot
-import this file.
+Sink+window semantics (matching ``kv_cache_proposer/verifier.py``):
+
+  * The first ``sink_size`` tokens of the cache (the "attention sinks")
+    are never evicted.
+  * The most recent ``window_size`` tokens slide forward as new tokens
+    arrive.
+  * ``self.offset`` tracks the **global** token position (so RoPE on
+    the next query rotates at the true distance, regardless of which
+    middle tokens have been evicted). The internal buffer is bounded
+    by ``sink_size + window_size``.
+  * ``update_and_fetch(new_k, new_v)`` returns the *full*
+    ``(pre_buffer ++ new_k, pre_buffer_v ++ new_v)`` for THIS step's
+    attention — i.e. the model temporarily sees a possibly-oversized
+    K during the forward — but stores the trimmed (sink + window)
+    tensor for the NEXT step. This preserves correctness inside one
+    forward while bounding persistent memory.
+  * ``make_mask(N, ...)`` returns a causal mask whose offset reflects
+    the cache's *actual* buffer size at the start of this step (not
+    the global offset), so it lines up with the K shape returned by
+    ``update_and_fetch``.
+
+The module imports ``mlx.core`` at top level; on non-arm64 hosts that
+import fails, by design.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Optional
 
 import mlx.core as mx
 
-
-@dataclass(frozen=True)
-class TrimReport:
-    """Diagnostic snapshot of one trim pass, for tests and logs."""
-
-    layers_trimmed: int
-    layers_skipped_null: int
-    physical_size_before: int
-    physical_size_after: int
+# ``_BaseCache`` and the small helper ``create_attention_mask`` are
+# private inside mlx_lm but stable in their public submodule path. We
+# import them directly so our class behaves identically to the built-in
+# caches anywhere mlx_lm dispatches on the cache type.
+from mlx_lm.models.cache import _BaseCache, create_attention_mask
 
 
-def _kv_shape_seq(arr: "mx.array") -> int:
-    """Return the seq-length axis of a [B, H, S, D] cache array."""
-    if arr.ndim != 4:
-        raise RuntimeError(
-            f"KVCache.keys / .values is expected to be 4-D "
-            f"[batch, n_kv_heads, seq, head_dim], got ndim={arr.ndim}, "
-            f"shape={tuple(arr.shape)}"
-        )
-    return int(arr.shape[2])
-
-
-def _assign_kv(layer_cache, new_keys: "mx.array", new_values: "mx.array") -> None:
-    """Replace a layer's K/V in place.
-
-    Direct attribute write. Raises if the underlying KVCache has made
-    these read-only — which would be a real upstream API change we want
-    surfaced (no try/except fallback).
-    """
-    layer_cache.keys = new_keys
-    layer_cache.values = new_values
-
-
-def trim_caches_to_sink_window(
-    cache: List,
-    *,
-    sink_size: int,
-    window_size: int,
-    keep_offset: int,
-) -> TrimReport:
-    """Trim every layer's K/V to ``sink + window`` slots.
+class SinkWindowKVCache(_BaseCache):
+    """Sink + sliding-window KV cache.
 
     Parameters
     ----------
-    cache
-        The list returned by ``mlx_lm.models.cache.make_prompt_cache``.
     sink_size
-        Number of leading slots to retain (StreamingLLM "attention sinks").
+        Number of leading tokens to retain unconditionally.
     window_size
-        Number of trailing slots to retain.
-    keep_offset
-        Value to write back to ``layer.offset`` after trimming. We pass
-        in the *global* token count so RoPE for new queries is correct
-        regardless of how many physical slots remain.
+        Number of trailing tokens to retain (sliding window). Must be
+        positive.
 
-    The function mutates the cache list **in place**. After calling,
-    every non-null layer's `keys.shape[2] == sink_size + window_size`
-    (or smaller, if the layer hadn't accumulated enough yet).
+    Attributes
+    ----------
+    keys, values
+        ``mx.array`` of shape ``[B, n_kv_heads, S, head_dim]`` where
+        ``S <= sink_size + window_size``, or ``None`` before the first
+        update.
+    offset
+        Global token position counter. Incremented by ``L`` on each
+        ``update_and_fetch`` call. Used by ``Attention.__call__`` to
+        rotate the new queries / keys at the correct global position
+        for RoPE.
     """
-    if sink_size < 0 or window_size <= 0:
-        raise ValueError("sink_size must be >= 0 and window_size must be > 0")
-    budget = sink_size + window_size
 
-    layers_trimmed = 0
-    layers_skipped_null = 0
-    pre_total = 0
-    post_total = 0
+    step = 256  # not used internally (we always allocate fresh) but
+    # kept as an attribute for compatibility with mlx_lm code paths
+    # that read it.
 
-    for layer_cache in cache:
-        keys = getattr(layer_cache, "keys", None)
-        values = getattr(layer_cache, "values", None)
-        if keys is None or values is None:
-            layers_skipped_null += 1
-            continue
-        seq_k = _kv_shape_seq(keys)
-        seq_v = _kv_shape_seq(values)
-        if seq_k != seq_v:
+    def __init__(self, sink_size: int = 4, window_size: int = 64) -> None:
+        if sink_size < 0:
+            raise ValueError("sink_size must be >= 0")
+        if window_size <= 0:
+            raise ValueError("window_size must be > 0")
+        self.sink_size = sink_size
+        self.window_size = window_size
+        self.keys: Optional["mx.array"] = None
+        self.values: Optional["mx.array"] = None
+        self.offset: int = 0
+
+    # ------------------------------------------------------------------ #
+    # The two methods mlx_lm's Attention layer actually calls
+    # ------------------------------------------------------------------ #
+
+    def update_and_fetch(self, keys: "mx.array", values: "mx.array"):
+        """Append `(keys, values)` and return the full K, V for this step.
+
+        The returned tensors include the new keys/values in their tail,
+        so the model can attend over them this step. The *stored* state
+        (``self.keys``, ``self.values``) is trimmed to sink+window for
+        the next step.
+        """
+        if keys.ndim != 4 or values.ndim != 4:
             raise RuntimeError(
-                f"KVCache shape inconsistency: keys seq={seq_k} "
-                f"vs values seq={seq_v}"
+                "SinkWindowKVCache.update_and_fetch expects 4-D K/V "
+                f"(got K.ndim={keys.ndim}, V.ndim={values.ndim})"
             )
-        pre_total += seq_k
-        if seq_k <= budget:
-            post_total += seq_k
-            continue
-
-        sink_k = keys[:, :, :sink_size, :]
-        sink_v = values[:, :, :sink_size, :]
-        tail_k = keys[:, :, -window_size:, :]
-        tail_v = values[:, :, -window_size:, :]
-        new_keys = mx.concatenate([sink_k, tail_k], axis=2)
-        new_values = mx.concatenate([sink_v, tail_v], axis=2)
-        # Force evaluation so the slice / concat doesn't keep the
-        # full original tensor alive through a graph reference (we want
-        # the memory back).
-        mx.eval(new_keys, new_values)
-        _assign_kv(layer_cache, new_keys, new_values)
-        layer_cache.offset = keep_offset
-        post_total += budget
-        layers_trimmed += 1
-
-    return TrimReport(
-        layers_trimmed=layers_trimmed,
-        layers_skipped_null=layers_skipped_null,
-        physical_size_before=pre_total,
-        physical_size_after=post_total,
-    )
-
-
-def truncate_caches_tail(
-    cache: List,
-    *,
-    drop: int,
-    new_offset: int,
-) -> int:
-    """Drop the last ``drop`` slots from every layer (no sink-preservation).
-
-    Used by the speculative loop after a forward whose tail was
-    rejected. Returns the number of layers actually trimmed.
-
-    ``new_offset`` is the post-truncation global token count (the value
-    we want each layer's ``offset`` attribute to hold so RoPE is correct
-    on the next forward).
-    """
-    if drop < 0:
-        raise ValueError("drop must be >= 0")
-    if drop == 0:
-        return 0
-    layers_trimmed = 0
-    for layer_cache in cache:
-        keys = getattr(layer_cache, "keys", None)
-        values = getattr(layer_cache, "values", None)
-        if keys is None or values is None:
-            continue
-        seq_k = _kv_shape_seq(keys)
-        if drop > seq_k:
+        L = int(keys.shape[2])
+        if int(values.shape[2]) != L:
             raise RuntimeError(
-                f"truncate_caches_tail: requested drop={drop} but layer "
-                f"only has {seq_k} slots"
+                f"K and V have mismatched seq dims: K={keys.shape}, V={values.shape}"
             )
-        keep = seq_k - drop
-        new_keys = keys[:, :, :keep, :]
-        new_values = values[:, :, :keep, :]
-        mx.eval(new_keys, new_values)
-        _assign_kv(layer_cache, new_keys, new_values)
-        layer_cache.offset = new_offset
-        layers_trimmed += 1
-    return layers_trimmed
+
+        if self.keys is None:
+            full_k, full_v = keys, values
+        else:
+            full_k = mx.concatenate([self.keys, keys], axis=2)
+            full_v = mx.concatenate([self.values, values], axis=2)
+
+        # Advance the global counter — this is what RoPE on the NEXT
+        # forward will use as `cache.offset`.
+        self.offset += L
+
+        budget = self.sink_size + self.window_size
+        if int(full_k.shape[2]) > budget:
+            # Persistent (next-step) state: keep the sink + sliding window.
+            sink_k = full_k[:, :, : self.sink_size, :]
+            sink_v = full_v[:, :, : self.sink_size, :]
+            tail_k = full_k[:, :, -self.window_size :, :]
+            tail_v = full_v[:, :, -self.window_size :, :]
+            self.keys = mx.concatenate([sink_k, tail_k], axis=2)
+            self.values = mx.concatenate([sink_v, tail_v], axis=2)
+        else:
+            self.keys = full_k
+            self.values = full_v
+
+        # Returned tensors are the *full* concatenation for this step's
+        # attention. They may exceed budget by L_new during prefill; the
+        # persistent state stored above is bounded.
+        return full_k, full_v
+
+    def make_mask(
+        self,
+        N: int,
+        return_array: bool = False,
+        window_size: Optional[int] = None,
+    ):
+        """Build the attention mask for an upcoming forward of length N.
+
+        Called by ``mlx_lm.models.base.create_attention_mask(h, cache)``
+        BEFORE ``update_and_fetch`` runs. The mask has shape
+        ``[N, pre_len + N]`` matching the K that will be returned by
+        ``update_and_fetch``.
+        """
+        pre_len = 0 if self.keys is None else int(self.keys.shape[2])
+        # Delegate to mlx_lm's helper, supplying our pre-update buffer
+        # length as the ``offset`` argument (the helper builds a
+        # standard causal mask of shape [N, offset+N]).
+        return create_attention_mask(
+            N, offset=pre_len, return_array=return_array, window_size=window_size
+        )
+
+    # ------------------------------------------------------------------ #
+    # _BaseCache contract pieces
+    # ------------------------------------------------------------------ #
+
+    def is_trimmable(self) -> bool:
+        return True
+
+    def trim(self, n: int) -> int:
+        """Drop the last ``n`` tokens from the buffer.
+
+        Used by the speculative decoder when a forwarded block was
+        partially or fully rejected: we drop the unaccepted tail K/V so
+        the cache reflects only the committed prefix.
+        """
+        if self.keys is None:
+            return 0
+        physical = int(self.keys.shape[2])
+        n = max(0, min(physical, n))
+        if n > 0:
+            self.keys = self.keys[..., : physical - n, :]
+            self.values = self.values[..., : physical - n, :]
+            self.offset -= n
+        return n
+
+    def size(self) -> int:
+        return self.offset
+
+    def empty(self) -> bool:
+        return self.keys is None
+
+    @property
+    def nbytes(self) -> int:
+        if self.keys is None:
+            return 0
+        return self.keys.nbytes + self.values.nbytes
+
+    # ---- state / meta_state for save_prompt_cache compatibility ------- #
+
+    @property
+    def state(self):
+        return self.keys, self.values
+
+    @state.setter
+    def state(self, v):
+        self.keys, self.values = v
+
+    @property
+    def meta_state(self):
+        return tuple(
+            map(str, (self.sink_size, self.window_size, self.offset))
+        )
+
+    @meta_state.setter
+    def meta_state(self, v):
+        self.sink_size, self.window_size, self.offset = map(int, v)
 
 
-def total_kv_bytes(cache: List) -> int:
-    """Sum K/V tensor bytes across all layers; matches the PyTorch
-    `SinkWindowVerifier`'s `peak_kv_bytes` accounting."""
-    total = 0
-    for layer_cache in cache:
-        keys = getattr(layer_cache, "keys", None)
-        values = getattr(layer_cache, "values", None)
-        if keys is not None:
-            total += keys.size * keys.dtype.size
-        if values is not None:
-            total += values.size * values.dtype.size
-    return total
+def make_sink_window_cache(
+    model, *, sink_size: int, window_size: int
+) -> list:
+    """Build a per-layer list of :class:`SinkWindowKVCache`.
 
-
-def cache_seq_length(cache: List) -> int:
-    """Return the seq-length of the first non-null layer, or 0 if empty.
-
-    All layers should have the same seq length after construction; if
-    they don't (a real upstream bug), we surface it via the layout
-    check in `_kv_shape_seq` rather than here.
+    Mirrors ``mlx_lm.models.cache.make_prompt_cache`` but always returns
+    sink+window caches sized to ``(sink_size, window_size)``.
     """
-    for layer_cache in cache:
-        keys = getattr(layer_cache, "keys", None)
+    num_layers = len(model.layers)
+    return [
+        SinkWindowKVCache(sink_size=sink_size, window_size=window_size)
+        for _ in range(num_layers)
+    ]
+
+
+def total_kv_bytes(cache: list) -> int:
+    """Sum K/V byte sizes across a per-layer cache list."""
+    return sum(int(getattr(layer, "nbytes", 0)) for layer in cache)
+
+
+def cache_seq_length(cache: list) -> int:
+    """Return the seq-length of the first non-empty layer, or 0."""
+    for layer in cache:
+        keys = getattr(layer, "keys", None)
         if keys is not None:
-            return _kv_shape_seq(keys)
+            return int(keys.shape[2])
     return 0
