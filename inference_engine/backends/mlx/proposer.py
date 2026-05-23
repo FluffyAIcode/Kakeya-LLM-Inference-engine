@@ -141,7 +141,28 @@ class MLXSparseLogitsProposer(DLMProposer):
     one). Only the model and `propose_block` are MLX-native.
     """
 
-    def __init__(self, config: Optional[ProposerConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[ProposerConfig] = None,
+        *,
+        compile_backbone: bool = True,
+    ) -> None:
+        """Construct the MLX proposer.
+
+        Parameters
+        ----------
+        config
+            ProposerConfig. ``model_id`` defaults to the dllm-hub
+            checkpoint; ``device`` is ignored (MLX picks Metal).
+        compile_backbone
+            When True (default), the bidirectional backbone forward is
+            wrapped in ``mx.compile``. mx.compile caches a graph per
+            unique input shape, so the K-step diffusion loop pays JIT
+            once per (T, batch=1) pair and amortizes across all
+            subsequent steps with the same shape. Pass ``False`` to
+            run the uncompiled path — used by tests to verify
+            output-equivalence with the compiled path.
+        """
         require_environment()
         # Skip DLMProposer.__init__: it would load the full HF PyTorch
         # model (1.5 GB) just to be discarded. Instead we set up only
@@ -194,17 +215,46 @@ class MLXSparseLogitsProposer(DLMProposer):
             weight_bytes=_model_weight_bytes(self.model)
         )
 
+        # Compile the bidirectional backbone if requested. The closure
+        # captures `self._backbone` (an mlx.nn.Module). mx.compile traces
+        # the function, recording each leaf tensor op against the
+        # nn.Module's parameter mx.arrays — so the resulting compiled
+        # graph executes purely as MLX kernels (no Python in the inner
+        # loop, no per-call kernel-launch overhead).
+        self._compile_backbone = compile_backbone
+        self._backbone_forward_compiled = None
+        if compile_backbone:
+            backbone = self._backbone
+
+            def _bidirectional_impl(x: "mx.array") -> "mx.array":
+                h = backbone.embed_tokens(x)
+                for layer in backbone.layers:
+                    h = layer(h, None, None)
+                return backbone.norm(h)
+
+            self._backbone_forward_compiled = mx.compile(_bidirectional_impl)
+
     # ------------------------------------------------------------------ #
     # Bidirectional backbone forward
     # ------------------------------------------------------------------ #
     def _backbone_forward(self, x: "mx.array") -> "mx.array":
         """Run the Qwen3 backbone with a NULL (bidirectional) attention
-        mask. Returns the last hidden state of shape [1, T, hidden]."""
-        # Replicate Qwen3Model.__call__ but with mask=None instead of the
-        # causal mask the standard model would build.
+        mask. Returns the last hidden state of shape [1, T, hidden].
+
+        When constructed with ``compile_backbone=True`` (default), this
+        dispatches to the ``mx.compile``-cached implementation. The
+        compiled graph is keyed on input shape, so a stable
+        (T_prompt + L_block) pair across diffusion steps reuses the
+        same graph for K-1 of the K calls per block.
+        """
+        if self._backbone_forward_compiled is not None:
+            return self._backbone_forward_compiled(x)
+        # Uncompiled fallback path (used by the
+        # output-equivalence test below, and as a debugging aid if
+        # mx.compile interactions ever regress on a future mlx version).
         h = self._backbone.embed_tokens(x)
         for layer in self._backbone.layers:
-            h = layer(h, None, None)  # mask=None, cache=None
+            h = layer(h, None, None)
         return self._backbone.norm(h)
 
     # ------------------------------------------------------------------ #

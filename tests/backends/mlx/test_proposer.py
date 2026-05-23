@@ -160,6 +160,68 @@ def test_mlx_proposer_acceptance_by_verifier(
 # Sparse-logits structural property
 # ---------------------------------------------------------------------------
 
+def test_compiled_and_uncompiled_produce_identical_tokens(
+    short_chat_messages_proposer,
+) -> None:
+    """**Headline correctness gate for the mx.compile path.**
+
+    Build two MLX proposers — one with ``compile_backbone=True``
+    (default), one with ``compile_backbone=False`` — and run the same
+    block-proposal call on both. The compiled and uncompiled
+    backbones must produce **bit-identical** token sequences.
+
+    mx.compile traces the same op graph, so up to MLX's caching
+    semantics this should be exact. If it ever isn't (e.g. a future
+    mlx version changes reduction order in the compiled path), the
+    speculative loop would diverge silently — that's a regression we
+    want surfaced loudly.
+    """
+    from inference_engine.backends.mlx.proposer import MLXSparseLogitsProposer
+
+    proposer_compiled = MLXSparseLogitsProposer(
+        ProposerConfig(dtype=torch.bfloat16, device="cpu"),
+        compile_backbone=True,
+    )
+    proposer_uncompiled = MLXSparseLogitsProposer(
+        ProposerConfig(dtype=torch.bfloat16, device="cpu"),
+        compile_backbone=False,
+    )
+    prefix = proposer_compiled.encode_chat(short_chat_messages_proposer)
+
+    # Multiple (L, K) configurations to make sure compile correctness
+    # holds across diffusion-step counts.
+    for L, K in [(2, 2), (4, 2), (8, 2), (8, 4), (16, 2), (16, 4)]:
+        a = proposer_compiled.propose_block(
+            prefix, block_size=L, num_steps=K
+        )
+        b = proposer_uncompiled.propose_block(
+            prefix, block_size=L, num_steps=K
+        )
+        assert a.tokens == b.tokens, (
+            f"compiled vs uncompiled diverged at L={L}, K={K}:\n"
+            f"  compiled:   {a.tokens}\n"
+            f"  uncompiled: {b.tokens}"
+        )
+
+
+def test_mlx_proposer_compile_flag_round_trip(short_chat_messages_proposer) -> None:
+    """Both flags must produce a working proposer (the False branch is
+    used by the equivalence test above; this test pins down the
+    constructor's flag handling and stats wiring)."""
+    from inference_engine.backends.mlx.proposer import MLXSparseLogitsProposer
+
+    p = MLXSparseLogitsProposer(
+        ProposerConfig(dtype=torch.bfloat16, device="cpu"),
+        compile_backbone=False,
+    )
+    assert p._compile_backbone is False
+    assert p._backbone_forward_compiled is None
+    prefix = p.encode_chat(short_chat_messages_proposer)
+    proposal = p.propose_block(prefix, block_size=4, num_steps=2)
+    assert len(proposal.tokens) == 4
+    assert all(t != p.mask_id for t in proposal.tokens)
+
+
 def test_mlx_proposer_sparse_activation_smaller_than_dense_oracle(
     mlx_proposer_session, short_chat_messages_proposer
 ) -> None:
