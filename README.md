@@ -1,5 +1,16 @@
 # DLM Proposer + AR Verifier — runnable KV-cache-saving framework
 
+[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.1.0)
+[![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-lightgrey)](docs/local-inference-engine.md)
+[![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002-green)](docs/adr/)
+
+> **v0.1.0** — Kakeya inference engine for Apple Silicon. Algorithmic core
+> + MLX backend + architecture decision records. See the
+> [v0.1.0 tag](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.1.0)
+> for full release notes; alignment training and the v0.2 verifier swap
+> are tracked in [ADR 0001](docs/adr/0001-proposer-sizing-and-alignment.md)
+> and [ADR 0002](docs/adr/0002-verifier-selection-and-quantization.md).
+
 Runs the speculative-decoding architecture designed in the prior product
 discussion using **real, public** weights:
 
