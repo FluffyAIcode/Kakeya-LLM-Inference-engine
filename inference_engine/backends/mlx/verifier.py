@@ -120,7 +120,7 @@ class MLXSinkWindowVerifier:
         arr = mx.array([prompt_ids], dtype=mx.int32)
         logits_mx = self.model(arr, cache=self.cache)
         mx.eval(logits_mx)
-        if logits_mx.ndim != 3 or int(logits_mx.shape[0]) != 1:
+        if logits_mx.ndim != 3 or int(logits_mx.shape[0]) != 1:  # pragma: no cover - mlx_lm contract
             raise RuntimeError(
                 f"prefill: model returned logits of shape {tuple(logits_mx.shape)} "
                 "(expected [1, T, V])"
@@ -145,7 +145,7 @@ class MLXSinkWindowVerifier:
         mx.eval(logits_mx)
         if logits_mx.ndim != 3 or int(logits_mx.shape[0]) != 1 \
                 or int(logits_mx.shape[1]) != L:
-            raise RuntimeError(
+            raise RuntimeError(  # pragma: no cover - mlx_lm contract
                 f"forward_block: expected logits [1,{L},V], got "
                 f"{tuple(logits_mx.shape)}"
             )

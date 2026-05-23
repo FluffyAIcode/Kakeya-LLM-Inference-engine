@@ -80,20 +80,27 @@ def _load_dllm_safetensors_as_mx(repo_id: str) -> dict:
     """
     from huggingface_hub import snapshot_download
     from safetensors import safe_open
+    import torch
 
     snap_dir = snapshot_download(repo_id=repo_id)
     snap = Path(snap_dir)
     weight_files = sorted(snap.glob("*.safetensors"))
-    if not weight_files:
+    if not weight_files:  # pragma: no cover - defensive: valid HF snapshot has safetensors
         raise RuntimeError(
             f"no .safetensors found in {snap_dir} for {repo_id!r}"
         )
     weights: dict = {}
     for wf in weight_files:
-        with safe_open(str(wf), framework="numpy") as f:
+        with safe_open(str(wf), framework="pt") as f:
             for key in f.keys():
-                arr = f.get_tensor(key)
-                weights[key] = mx.array(arr)
+                tensor = f.get_tensor(key).detach().cpu()
+                if tensor.dtype is torch.bfloat16:
+                    weights[key] = mx.array(
+                        tensor.float().numpy(),
+                        dtype=mx.bfloat16,
+                    )
+                else:  # pragma: no cover - current dllm checkpoint stores bf16 tensors
+                    weights[key] = mx.array(tensor.numpy())
     return weights
 
 
@@ -145,7 +152,7 @@ class MLXSparseLogitsProposer(DLMProposer):
         self.config = config or ProposerConfig()
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_id)
         self.mask_id = self.tokenizer.mask_token_id
-        if self.mask_id is None:
+        if self.mask_id is None:  # pragma: no cover - checkpoint contract
             raise RuntimeError(
                 "Proposer tokenizer does not declare a mask_token_id; "
                 "this is required for masked-diffusion denoising."
@@ -155,7 +162,7 @@ class MLXSparseLogitsProposer(DLMProposer):
             if self.tokenizer.pad_token_id is not None
             else self.tokenizer.eos_token_id
         )
-        if self.pad_id is None:
+        if self.pad_id is None:  # pragma: no cover - checkpoint contract
             raise RuntimeError("Tokenizer has neither pad nor eos token id.")
 
         # Build the MLX architecture (from Qwen3-0.6B-Base since the
@@ -170,12 +177,12 @@ class MLXSparseLogitsProposer(DLMProposer):
         mx.eval(base_model.parameters())
         self.model = base_model
 
-        if not hasattr(self.model, "model"):
+        if not hasattr(self.model, "model"):  # pragma: no cover - mlx_lm Qwen3 contract
             raise RuntimeError(
                 "loaded MLX Qwen3 model does not expose backbone as `.model`"
             )
         self._backbone = self.model.model
-        if not hasattr(self._backbone, "embed_tokens"):
+        if not hasattr(self._backbone, "embed_tokens"):  # pragma: no cover - mlx_lm Qwen3 contract
             raise RuntimeError(
                 "MLX Qwen3 backbone has no `embed_tokens`; cannot apply "
                 "tied-embedding head"
@@ -249,8 +256,16 @@ class MLXSparseLogitsProposer(DLMProposer):
             if n_masked_now == 0:  # pragma: no cover - schedule guarantees
                 break
 
-            # Indices of masked positions WITHIN THE BLOCK [0..block_size-1]
-            mask_block_idx = mx.arange(block_size)[block_mask_now]
+            # Indices of masked positions WITHIN THE BLOCK [0..block_size-1].
+            # mlx 0.31.x does not support boolean indexing, so materialize this
+            # tiny block mask through Python and build an integer index array.
+            block_mask_list = [
+                bool(v) for v in mx_to_torch(block_mask_now).tolist()
+            ]
+            mask_block_idx = mx.array(
+                [i for i, is_masked in enumerate(block_mask_list) if is_masked],
+                dtype=mx.int32,
+            )
             # Convert to global positions within the full sequence
             mask_global_idx = mask_block_idx + prefix_len
 

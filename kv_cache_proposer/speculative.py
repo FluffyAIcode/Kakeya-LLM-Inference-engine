@@ -213,9 +213,18 @@ class SpeculativeDecoder:
         if verifier.cache is None:
             return 0
         total = 0
-        for layer in verifier.cache.layers:
-            if layer.keys is not None:
-                total += layer.keys.numel() * layer.keys.element_size()
-            if layer.values is not None:
-                total += layer.values.numel() * layer.values.element_size()
+        layers = getattr(verifier.cache, "layers", verifier.cache)
+        for layer in layers:
+            keys = getattr(layer, "keys", None)
+            values = getattr(layer, "values", None)
+            if keys is not None:
+                if hasattr(keys, "numel"):
+                    total += keys.numel() * keys.element_size()
+                else:  # pragma: no cover - MLX cache path
+                    total += int(keys.size) * int(keys.dtype.size)
+            if values is not None:
+                if hasattr(values, "numel"):
+                    total += values.numel() * values.element_size()
+                else:  # pragma: no cover - MLX cache path
+                    total += int(values.size) * int(values.dtype.size)
         return total
