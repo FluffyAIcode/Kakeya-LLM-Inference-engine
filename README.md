@@ -257,6 +257,50 @@ prefix sharing, non-contiguous KV) cease to apply. A 30-line fixed-slab
 pool replaces it and runs ~5–15% faster because attention kernels see
 contiguous memory.
 
+## HTTP serving (E2)
+
+The engine exposes an OpenAI-compatible HTTP API over Server-Sent
+Events. Routes implemented:
+
+- `GET /healthz` — liveness probe
+- `GET /v1/models` — model list
+- `POST /v1/chat/completions` — chat completions, streaming or JSON
+
+```bash
+# launch the server (MLX backend, bf16 verifier)
+PYTHONPATH=. python3 scripts/serve.py --backend mlx \
+    --verifier-id Qwen/Qwen3-1.7B \
+    --host 127.0.0.1 --port 8000
+
+# non-streaming chat completion
+curl -sS -X POST http://127.0.0.1:8000/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d '{
+        "model": "kakeya-v1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": false
+    }'
+
+# streaming (SSE)
+curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d '{
+        "model": "kakeya-v1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    }'
+```
+
+The streaming response follows the OpenAI chunk schema and terminates
+with the literal `data: [DONE]` sentinel that the OpenAI Python and
+JavaScript SDKs recognize. Sampling parameters (`temperature`,
+`top_p`, `stop`) are accepted in the request body for OpenAI-client
+compatibility but **not applied** — the underlying decoder is greedy
+temperature-0 by design ([ADR 0001 §2.2](docs/adr/0001-proposer-sizing-and-alignment.md)).
+
+Configuration is via env vars (all prefixed `KAKEYA_*`): see the
+docstring of [`inference_engine/server/config.py`](inference_engine/server/config.py).
+
 ## Architecture Decision Records
 
 Design decisions that the rest of the codebase depends on are recorded

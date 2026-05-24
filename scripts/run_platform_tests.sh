@@ -109,7 +109,10 @@ PY
 
 cov_targets=("--cov=kv_cache_proposer")
 
-# Always-on platform-neutral subpackages of inference_engine.
+# Always-on platform-neutral subpackages of inference_engine. These run
+# pure-CPU torch and have no backend-specific dependencies, so they are
+# covered on every host. The `server` subpackage (E2 HTTP API) is in
+# this list because FastAPI / httpx / pydantic are platform-neutral.
 for sub in proposer memory scheduler server; do
     if [[ -d "$repo_root/inference_engine/$sub" ]]; then
         cov_targets+=("--cov=inference_engine.$sub")
