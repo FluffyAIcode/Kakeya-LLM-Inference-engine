@@ -190,3 +190,48 @@ def test_from_env_queue_max_wait_s():
 def test_from_env_invalid_queue_wait_raises():
     with pytest.raises(ValueError, match="not a float"):
         ServerConfig.from_env(env={"KAKEYA_QUEUE_MAX_WAIT_S": "soon"})
+
+
+# ---------------------------------------------------------------------------
+# api_keys validation + env-var parsing
+# ---------------------------------------------------------------------------
+
+
+def test_api_keys_default_is_empty():
+    cfg = ServerConfig()
+    assert cfg.api_keys == frozenset()
+
+
+def test_api_keys_explicit_set():
+    cfg = ServerConfig(api_keys=frozenset({"sk-a", "sk-b"}))
+    assert cfg.api_keys == frozenset({"sk-a", "sk-b"})
+
+
+def test_api_keys_rejects_non_string():
+    with pytest.raises(ValueError, match="api_keys must be strings"):
+        ServerConfig(api_keys=frozenset({123}))  # type: ignore[arg-type]
+
+
+def test_api_keys_rejects_empty_string():
+    with pytest.raises(ValueError, match="non-empty whitespace-free"):
+        ServerConfig(api_keys=frozenset({""}))
+
+
+def test_api_keys_rejects_whitespace_in_key():
+    with pytest.raises(ValueError, match="non-empty whitespace-free"):
+        ServerConfig(api_keys=frozenset({"sk has space"}))
+
+
+def test_from_env_api_keys_csv_parsing():
+    cfg = ServerConfig.from_env(env={"KAKEYA_API_KEYS": "sk-a,sk-b,sk-c"})
+    assert cfg.api_keys == frozenset({"sk-a", "sk-b", "sk-c"})
+
+
+def test_from_env_api_keys_strips_whitespace_around_entries():
+    cfg = ServerConfig.from_env(env={"KAKEYA_API_KEYS": " sk-a , sk-b "})
+    assert cfg.api_keys == frozenset({"sk-a", "sk-b"})
+
+
+def test_from_env_api_keys_drops_empty_entries():
+    cfg = ServerConfig.from_env(env={"KAKEYA_API_KEYS": "sk-a,,sk-b,"})
+    assert cfg.api_keys == frozenset({"sk-a", "sk-b"})

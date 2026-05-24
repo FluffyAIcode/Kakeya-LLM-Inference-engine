@@ -117,6 +117,11 @@ def main() -> int:
     ap.add_argument("--queue-max-wait-s", type=float, default=None,
                     help="Only honored under --admission-policy queue. "
                          "0 (default) means wait forever.")
+    ap.add_argument("--api-key", action="append", default=None,
+                    help="Bearer-token API key required for /v1/* routes. "
+                         "Pass multiple times to authorize multiple keys. "
+                         "Omit to run without auth (single-user dev mode). "
+                         "Alternative: KAKEYA_API_KEYS env var (CSV).")
     args = ap.parse_args()
 
     from inference_engine.scheduler.config import AdmissionPolicy
@@ -147,6 +152,10 @@ def main() -> int:
             args.queue_max_wait_s
             if args.queue_max_wait_s is not None
             else base_config.queue_max_wait_s
+        ),
+        api_keys=(
+            frozenset(args.api_key) if args.api_key
+            else base_config.api_keys
         ),
     )
 

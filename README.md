@@ -336,6 +336,43 @@ policy, new requests get HTTP **429 Too Many Requests** immediately.
 Switch to `--admission-policy queue` to make them wait up to
 `--queue-max-wait-s` seconds for a slot.
 
+### Observability
+
+`GET /metrics` exposes Prometheus-compatible metrics on every running
+server instance. The scrape includes:
+
+- HTTP traffic (`http_requests_total{method,path,status}`,
+  `http_request_duration_seconds`)
+- Inference outcomes (`inference_completions_total{finish_reason}`,
+  `inference_completion_tokens`, `inference_acceptance_rate`)
+- Scheduler state (`scheduler_active_sessions`, `scheduler_pool_in_use`,
+  `scheduler_pool_total`, `scheduler_pending`, `scheduler_admission_total`)
+
+```bash
+curl -sS http://127.0.0.1:8000/metrics | head -20
+```
+
+### Authentication
+
+API-key auth is opt-in. Pass `--api-key` one or more times (or set
+the CSV env var `KAKEYA_API_KEYS`) and every `/v1/*` route requires
+a matching `Authorization: Bearer <key>` header. The public routes
+`/healthz` and `/metrics` always remain unauthenticated so liveness
+probes and Prometheus scrapers don't need credentials.
+
+```bash
+PYTHONPATH=. python3 scripts/serve.py --backend mlx \
+    --api-key sk-test-abc --api-key sk-prod-xyz
+
+curl -sS http://127.0.0.1:8000/v1/chat/completions \
+    -H 'authorization: Bearer sk-test-abc' \
+    -H 'content-type: application/json' \
+    -d '{"model":"kakeya-v1","messages":[{"role":"user","content":"hi"}]}'
+```
+
+Errors follow the OpenAI envelope (`{"error":{"message","type","code","param"}}`)
+so off-the-shelf OpenAI clients surface meaningful messages.
+
 The streaming response follows the OpenAI chunk schema and terminates
 with the literal `data: [DONE]` sentinel that the OpenAI Python and
 JavaScript SDKs recognize. Sampling parameters (`temperature`,

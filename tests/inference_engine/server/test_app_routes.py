@@ -223,7 +223,7 @@ async def test_chat_completions_returns_400_on_empty_template(short_engine):
             "messages": [{"role": "user", "content": "hi"}],
         })
     assert r.status_code == 400
-    assert "empty token sequence" in r.json()["detail"]
+    assert "empty token sequence" in r.json()["error"]["message"]
 
 
 async def test_chat_completions_handles_chat_template_failure(short_engine):
@@ -270,7 +270,7 @@ async def test_chat_completions_handles_chat_template_failure(short_engine):
             "messages": [{"role": "user", "content": "hi"}],
         })
     assert r.status_code == 400
-    assert "prompt encoding failed" in r.json()["detail"]
+    assert "prompt encoding failed" in r.json()["error"]["message"]
 
 
 async def test_chat_completions_returns_500_when_tokenizer_loses_eos(short_engine):
@@ -316,4 +316,4 @@ async def test_chat_completions_returns_500_when_tokenizer_loses_eos(short_engin
             "messages": [{"role": "user", "content": "hi"}],
         })
     assert r.status_code == 500
-    assert "EOS configuration" in r.json()["detail"]
+    assert "EOS configuration" in r.json()["error"]["message"]

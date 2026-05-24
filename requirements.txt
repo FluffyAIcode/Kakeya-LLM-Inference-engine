@@ -24,6 +24,7 @@ sse-starlette>=2.1,<3.0
 uvicorn>=0.32,<1.0
 pydantic>=2.7,<3.0
 httpx>=0.27,<1.0
+prometheus-client>=0.20,<1.0
 
 # Test stack (used by tests/ and run_platform_tests.sh)
 pytest>=8.0

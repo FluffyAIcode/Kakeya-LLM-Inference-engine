@@ -244,6 +244,7 @@ async def test_stream_via_scheduler_finish_reason_stop_on_cancel(tokenizer):
     branch fires and finish_reason='stop' is emitted."""
     from tests.inference_engine.server.conftest import DeterministicEngine
     from inference_engine.server.app import _stream_via_scheduler
+    from inference_engine.server.metrics import Metrics
 
     ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
     slow_engine = DeterministicEngine(
@@ -264,6 +265,7 @@ async def test_stream_via_scheduler_finish_reason_stop_on_cancel(tokenizer):
         engine=slow_engine,
         completion_id="testid",
         created=12345,
+        metrics=Metrics.build(),
         disconnect_poll_interval_s=0.005,
     ):
         chunks.append(chunk)
@@ -278,6 +280,7 @@ async def test_stream_via_scheduler_finish_reason_length_when_max_tokens(tokeniz
     """No disconnect, max_tokens cap → finish_reason='length'."""
     from tests.inference_engine.server.conftest import DeterministicEngine
     from inference_engine.server.app import _stream_via_scheduler
+    from inference_engine.server.metrics import Metrics
 
     ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
     engine = DeterministicEngine(
@@ -297,6 +300,7 @@ async def test_stream_via_scheduler_finish_reason_length_when_max_tokens(tokeniz
         engine=engine,
         completion_id="testid",
         created=12345,
+        metrics=Metrics.build(),
     ):
         chunks.append(chunk)
 
@@ -309,6 +313,7 @@ async def test_stream_via_scheduler_finish_reason_stop_on_eos(tokenizer):
     """Engine emits EOS before max_tokens → finish_reason='stop'."""
     from tests.inference_engine.server.conftest import DeterministicEngine
     from inference_engine.server.app import _stream_via_scheduler
+    from inference_engine.server.metrics import Metrics
 
     hello = tokenizer._intern("hello")
     engine = DeterministicEngine(
@@ -324,6 +329,7 @@ async def test_stream_via_scheduler_finish_reason_stop_on_eos(tokenizer):
     async for chunk in _stream_via_scheduler(
         scheduler=scheduler, session=session, request=request,
         engine=engine, completion_id="x", created=1,
+        metrics=Metrics.build(),
     ):
         chunks.append(chunk)
     payloads = [json.loads(c["data"]) for c in chunks[:-1]]
@@ -352,6 +358,7 @@ async def test_stream_via_scheduler_swallows_error_and_emits_terminal(tokenizer)
     """Engine raises mid-stream; SSE must still emit a terminal chunk
     + [DONE] (you cannot send a 500 once SSE has started)."""
     from inference_engine.server.app import _stream_via_scheduler
+    from inference_engine.server.metrics import Metrics
 
     engine = _RaisingEngine(tokenizer)
     scheduler = _build_scheduler_with_engine(engine)
@@ -363,6 +370,7 @@ async def test_stream_via_scheduler_swallows_error_and_emits_terminal(tokenizer)
     async for chunk in _stream_via_scheduler(
         scheduler=scheduler, session=session, request=request,
         engine=engine, completion_id="x", created=1,
+        metrics=Metrics.build(),
     ):
         chunks.append(chunk)
     # Should have at least the role chunk, the terminal chunk, and [DONE].
