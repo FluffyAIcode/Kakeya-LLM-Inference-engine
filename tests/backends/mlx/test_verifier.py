@@ -288,6 +288,34 @@ def test_model_weight_bytes_positive(mlx_verifier_session) -> None:
     assert bytes_ > 1_000_000_000
 
 
+def test_verifier_exposes_quantization_attribute(mlx_verifier_session) -> None:
+    """The verifier records its quantization info on construction.
+
+    For the bf16 baseline this is ``is_quantized=False`` plus a
+    sensible total_weight_bytes; for a 4-bit checkpoint (not exercised
+    here — it would require a separate fixture pulling from
+    mlx-community) it would carry bits / group_size / effective bits.
+    Either way, the attribute exists and is consistent with stats.
+    """
+    info = mlx_verifier_session.quantization
+    assert info is not None
+    assert info.is_quantized is False
+    assert info.total_weight_bytes > 1_000_000_000
+    assert info.full_precision_weight_bytes == info.total_weight_bytes
+    assert info.quantized_weight_bytes == 0
+
+
+def test_verifier_stats_weight_bytes_matches_quantization_total(
+    mlx_verifier_session,
+) -> None:
+    """The legacy ``stats.weight_bytes`` is the same number as the
+    quantization-aware ``quantization.total_weight_bytes``. Both
+    reporting paths must agree exactly so existing dashboards keep
+    working."""
+    v = mlx_verifier_session
+    assert v.stats.weight_bytes == v.quantization.total_weight_bytes
+
+
 @pytest.mark.parametrize(
     "torch_dtype,mx_dtype",
     [

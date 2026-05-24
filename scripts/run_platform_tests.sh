@@ -69,14 +69,25 @@ esac
 # The test suite loads real Qwen3 weights from the HuggingFace cache.
 # If the cache is empty we error out IMMEDIATELY rather than let 78
 # tests cascade-fail on network errors.
+#
+# The required-models list is overridable via KAKEYA_REQUIRED_MODELS
+# (CSV of HF repo ids). The default — proposer + bf16 verifier — is
+# the v0.1.0 baseline that the platform-neutral tests assume. Users
+# running 4-bit-only test slices can override; CI uses the default.
 python3 - <<'PY' || exit 5
-import sys
+import os, sys
 from huggingface_hub import try_to_load_from_cache
-import os
-required = [
+
+DEFAULT_REQUIRED = [
     ("Qwen/Qwen3-1.7B", "config.json"),
     ("dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1", "config.json"),
 ]
+override = os.environ.get("KAKEYA_REQUIRED_MODELS", "").strip()
+if override:
+    required = [(item.strip(), "config.json") for item in override.split(",") if item.strip()]
+else:
+    required = DEFAULT_REQUIRED
+
 missing = []
 for repo, fname in required:
     p = try_to_load_from_cache(repo_id=repo, filename=fname)
@@ -91,9 +102,10 @@ if missing:
     sys.stderr.write(
         "[runner] re-run ./scripts/setup_mac.sh (or setup_cuda.sh) to download.\n"
         "[runner] if you're in mainland China, set HF_ENDPOINT=https://hf-mirror.com first.\n"
+        "[runner] override the required list with KAKEYA_REQUIRED_MODELS='repo1,repo2,...'\n"
     )
     sys.exit(5)
-print(f"[runner] HF cache contains both required model snapshots")
+print(f"[runner] HF cache contains all {len(required)} required model snapshots")
 PY
 
 # ---------- pytest ----------

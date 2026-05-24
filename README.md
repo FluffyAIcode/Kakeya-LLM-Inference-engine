@@ -23,6 +23,38 @@ discussion using **real, public** weights:
 > against that smaller baseline would be correspondingly smaller, but the
 > framework code is unchanged.
 
+### Quantized verifiers (4-bit MLX)
+
+Per [ADR 0002](docs/adr/0002-verifier-selection-and-quantization.md), the
+engine selects bf16 below 4 B params and 4-bit MLX above. The current
+v0.1.0 baseline is `Qwen/Qwen3-1.7B` at bf16; the 4-bit path is opt-in
+and works without code changes — just point the verifier id at a
+quantized checkpoint:
+
+```bash
+# 4-bit Qwen3-1.7B (~1 GB resident vs ~3.4 GB at bf16)
+PYTHONPATH=. python3 scripts/chat.py --backend mlx \
+    --verifier-id mlx-community/Qwen3-1.7B-4bit
+
+# bf16 vs 4-bit side-by-side bench (writes JSON to results/)
+PYTHONPATH=. python3 scripts/bench_mlx_verifier_quant.py
+```
+
+Pre-download quantized checkpoints by exporting `KAKEYA_VERIFIER_IDS`
+before running setup:
+
+```bash
+export KAKEYA_VERIFIER_IDS="mlx-community/Qwen3-1.7B-4bit,mlx-community/Qwen3-8B-4bit"
+./scripts/setup_mac.sh
+```
+
+`MLXSinkWindowVerifier.quantization` exposes a `QuantizationInfo` record
+(bits, group_size, effective bits per parameter, byte breakdown) for any
+loaded model; bench scripts and future engine telemetry consume it. See
+the module docstring of
+[`inference_engine/backends/mlx/quantization.py`](inference_engine/backends/mlx/quantization.py)
+for the detection algorithm.
+
 ## Memory accounting and what we measure
 
 The metric is **Net Bytes per Token**, defined as:

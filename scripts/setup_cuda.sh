@@ -150,13 +150,37 @@ EOF
 }
 
 download_models() {
-    echo "[setup_cuda] populating HF cache (~5 GB total)"
-    python - <<'PY'
+    # Same KAKEYA_VERIFIER_IDS extension protocol as setup_mac.sh; see
+    # that script's download_models() comment block for full details.
+    # CUDA users typically opt into AWQ/GPTQ 4-bit verifiers (when those
+    # checkpoints exist on HuggingFace) by setting:
+    #
+    #   export KAKEYA_VERIFIER_IDS="Qwen/Qwen3-1.7B-AWQ"
+    local extra_ids="${KAKEYA_VERIFIER_IDS:-}"
+    echo "[setup_cuda] populating HF cache (~5 GB total) for the base set:"
+    echo "[setup_cuda]   - Qwen/Qwen3-1.7B"
+    echo "[setup_cuda]   - dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1"
+    if [[ -n "$extra_ids" ]]; then
+        echo "[setup_cuda] plus KAKEYA_VERIFIER_IDS extras: $extra_ids"
+    fi
+    KAKEYA_VERIFIER_IDS="$extra_ids" python - <<'PY'
 import os, sys
 from huggingface_hub import snapshot_download
 endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
 print(f"[download] endpoint: {endpoint}")
-for repo in ("Qwen/Qwen3-1.7B", "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1"):
+
+REQUIRED = [
+    "Qwen/Qwen3-1.7B",
+    "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1",
+]
+extra_csv = os.environ.get("KAKEYA_VERIFIER_IDS", "").strip()
+if extra_csv:
+    for item in extra_csv.split(","):
+        item = item.strip()
+        if item and item not in REQUIRED:
+            REQUIRED.append(item)
+
+for repo in REQUIRED:
     print(f"[download] {repo} ...")
     try:
         snapshot_download(repo_id=repo, allow_patterns=None)

@@ -42,25 +42,19 @@ from . import cache as cache_ops
 from ._torch_bridge import mx_to_torch
 from .cache import SinkWindowKVCache, make_sink_window_cache
 from .env import require_environment
+from .quantization import QuantizationInfo, detect_quantization
 
 
 def _model_weight_bytes(model) -> int:
-    """Sum bytes across a flat tree of mlx parameters."""
-    total = 0
+    """Sum bytes across a flat tree of mlx parameters.
 
-    def _accum(obj):
-        nonlocal total
-        if isinstance(obj, mx.array):
-            total += obj.size * obj.dtype.size
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                _accum(v)
-        elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                _accum(v)
-
-    _accum(model.parameters())
-    return total
+    Thin wrapper retained for backward compatibility with
+    :mod:`inference_engine.backends.mlx.proposer` and existing tests.
+    Equivalent to ``detect_quantization(model).total_weight_bytes``;
+    new code should call :func:`detect_quantization` directly to also
+    get bits / group_size / per-region byte breakdown.
+    """
+    return detect_quantization(model).total_weight_bytes
 
 
 class MLXSinkWindowVerifier:
@@ -98,7 +92,8 @@ class MLXSinkWindowVerifier:
         self.next_global_position: int = 0
         self.next_token_logits: Optional[torch.Tensor] = None
 
-        self.stats = VerifierStats(weight_bytes=_model_weight_bytes(self.model))
+        self.quantization: QuantizationInfo = detect_quantization(self.model)
+        self.stats = VerifierStats(weight_bytes=self.quantization.total_weight_bytes)
 
     # ---------------------------- public API ---------------------------- #
 

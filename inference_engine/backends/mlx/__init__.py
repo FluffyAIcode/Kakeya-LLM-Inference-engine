@@ -18,7 +18,9 @@ Submodule import contract:
   * `env`             — pure stdlib, importable everywhere
   * `_torch_bridge`   — imports `mlx.core`, Mac-only
   * `cache`           — imports `mlx.core`, Mac-only
+  * `quantization`    — imports `mlx.core`, Mac-only
   * `verifier`        — imports `mlx.core` and `mlx_lm`, Mac-only
+  * `proposer`        — imports `mlx.core` and `mlx_lm`, Mac-only
 """
 
 from .env import (
