@@ -116,6 +116,15 @@ for sub in proposer memory scheduler server; do
     fi
 done
 
+# Always-on platform-neutral training subpackages. These run pure-CPU
+# torch and have no backend-specific dependencies, so they are covered
+# on every host.
+for sub in repr_align; do
+    if [[ -d "$repo_root/training/$sub" ]]; then
+        cov_targets+=("--cov=training.$sub")
+    fi
+done
+
 # Selected backend only.
 if [[ -d "$repo_root/inference_engine/backends/$backend" ]]; then
     cov_targets+=("--cov=inference_engine.backends.$backend")
@@ -124,6 +133,9 @@ fi
 test_paths=("tests/core")
 if [[ -d "$repo_root/tests/inference_engine" ]]; then
     test_paths+=("tests/inference_engine")
+fi
+if [[ -d "$repo_root/tests/training" ]]; then
+    test_paths+=("tests/training")
 fi
 
 # tests/backends/<bk>/test_env.py is platform-neutral (it monkeypatches
