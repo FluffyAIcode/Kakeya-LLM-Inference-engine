@@ -193,14 +193,12 @@ async def test_stream_validation_error_returns_422(app):
 
 
 # ---------------------------------------------------------------------------
-# Direct unit tests on _stream_chat_chunks helper
+# Direct unit tests on _stream_via_scheduler helper
 #
 # These cover the disconnect/cancellation branches that ASGI transport
-# does not reliably propagate from the test client (httpx's
-# ASGITransport doesn't emit disconnect frames as eagerly as a real
-# uvicorn worker would). Direct invocation with a fake-request object
-# whose is_disconnected returns True exercises the cancelled-by-
-# disconnect branch deterministically.
+# does not reliably propagate from the test client. Direct invocation
+# with a fake-request object whose is_disconnected returns True
+# exercises the cancelled-by-disconnect branch deterministically.
 # ---------------------------------------------------------------------------
 
 
@@ -219,64 +217,156 @@ class _FakeRequest:
         return False
 
 
-async def test_stream_chat_chunks_finish_reason_stop_on_cancel(tokenizer):
-    """Drive _stream_chat_chunks directly; force is_disconnected to
+def _build_scheduler_with_engine(engine, max_concurrent=1):
+    """Build (scheduler, pool) wrapping ``engine`` for direct-helper tests."""
+    import torch
+    from inference_engine.memory.pool import SlabPool
+    from inference_engine.memory.slab import SlabConfig
+    from inference_engine.scheduler.config import SchedulerConfig
+    from inference_engine.scheduler.scheduler import Scheduler
+
+    pool = SlabPool(
+        num_slabs=max_concurrent,
+        slab_config=SlabConfig(
+            num_layers=1, num_heads=1, sink_size=0, window_size=1,
+            head_dim=1, dtype=torch.bfloat16,
+        ),
+    )
+    return Scheduler(
+        engine=engine, pool=pool,
+        config=SchedulerConfig(max_concurrent=max_concurrent),
+    )
+
+
+async def test_stream_via_scheduler_finish_reason_stop_on_cancel(tokenizer):
+    """Drive _stream_via_scheduler directly; force is_disconnected to
     return True after a few polls so the cancelled-by-disconnect
     branch fires and finish_reason='stop' is emitted."""
     from tests.inference_engine.server.conftest import DeterministicEngine
-    from inference_engine.server.app import _stream_chat_chunks
+    from inference_engine.server.app import _stream_via_scheduler
 
     ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
     slow_engine = DeterministicEngine(
         fixed_tokens=ids, tokenizer=tokenizer,
         model_id_label="slow", per_token_delay_s=0.02,
     )
+    scheduler = _build_scheduler_with_engine(slow_engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=20, eos_token_ids=[0],
+    )
 
     request = _FakeRequest([False, False, True])
     chunks = []
-    async for chunk in _stream_chat_chunks(
-        engine=slow_engine,
+    async for chunk in _stream_via_scheduler(
+        scheduler=scheduler,
+        session=session,
         request=request,
-        prompt_ids=[1],
-        max_new_tokens=20,
-        eos_token_ids=[0],
+        engine=slow_engine,
         completion_id="testid",
         created=12345,
-        prompt_token_count=1,
+        disconnect_poll_interval_s=0.005,
     ):
         chunks.append(chunk)
 
-    # Last chunk is "[DONE]"; the one before it carries the finish_reason.
     assert chunks[-1]["data"] == "[DONE]"
     payloads = [json.loads(c["data"]) for c in chunks[:-1]]
     assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
     assert request.calls > 0
 
 
-async def test_stream_chat_chunks_finish_reason_length_when_max_tokens(tokenizer):
+async def test_stream_via_scheduler_finish_reason_length_when_max_tokens(tokenizer):
     """No disconnect, max_tokens cap → finish_reason='length'."""
     from tests.inference_engine.server.conftest import DeterministicEngine
-    from inference_engine.server.app import _stream_chat_chunks
+    from inference_engine.server.app import _stream_via_scheduler
 
     ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
     engine = DeterministicEngine(
         fixed_tokens=ids, tokenizer=tokenizer, model_id_label="m",
     )
+    scheduler = _build_scheduler_with_engine(engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=3, eos_token_ids=[0],
+    )
 
     request = _FakeRequest([])  # never disconnects
     chunks = []
-    async for chunk in _stream_chat_chunks(
-        engine=engine,
+    async for chunk in _stream_via_scheduler(
+        scheduler=scheduler,
+        session=session,
         request=request,
-        prompt_ids=[1],
-        max_new_tokens=3,
-        eos_token_ids=[0],
+        engine=engine,
         completion_id="testid",
         created=12345,
-        prompt_token_count=1,
     ):
         chunks.append(chunk)
 
     assert chunks[-1]["data"] == "[DONE]"
     payloads = [json.loads(c["data"]) for c in chunks[:-1]]
     assert payloads[-1]["choices"][0]["finish_reason"] == "length"
+
+
+async def test_stream_via_scheduler_finish_reason_stop_on_eos(tokenizer):
+    """Engine emits EOS before max_tokens → finish_reason='stop'."""
+    from tests.inference_engine.server.conftest import DeterministicEngine
+    from inference_engine.server.app import _stream_via_scheduler
+
+    hello = tokenizer._intern("hello")
+    engine = DeterministicEngine(
+        fixed_tokens=[hello, tokenizer.eos_token_id],
+        tokenizer=tokenizer, model_id_label="m",
+    )
+    scheduler = _build_scheduler_with_engine(engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=10, eos_token_ids=[0],
+    )
+    request = _FakeRequest([])
+    chunks = []
+    async for chunk in _stream_via_scheduler(
+        scheduler=scheduler, session=session, request=request,
+        engine=engine, completion_id="x", created=1,
+    ):
+        chunks.append(chunk)
+    payloads = [json.loads(c["data"]) for c in chunks[:-1]]
+    assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+class _RaisingEngine:
+    """Engine that raises mid-generate; used for graceful-stream-on-error test."""
+
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+
+    @property
+    def tokenizer(self):
+        return self._tokenizer
+
+    @property
+    def model_id_label(self):
+        return "raising"
+
+    def generate(self, prompt_ids, max_new_tokens, eos_token_ids, on_token=None):
+        raise RuntimeError("synthetic engine failure")
+
+
+async def test_stream_via_scheduler_swallows_error_and_emits_terminal(tokenizer):
+    """Engine raises mid-stream; SSE must still emit a terminal chunk
+    + [DONE] (you cannot send a 500 once SSE has started)."""
+    from inference_engine.server.app import _stream_via_scheduler
+
+    engine = _RaisingEngine(tokenizer)
+    scheduler = _build_scheduler_with_engine(engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=10, eos_token_ids=[0],
+    )
+    request = _FakeRequest([])
+    chunks = []
+    async for chunk in _stream_via_scheduler(
+        scheduler=scheduler, session=session, request=request,
+        engine=engine, completion_id="x", created=1,
+    ):
+        chunks.append(chunk)
+    # Should have at least the role chunk, the terminal chunk, and [DONE].
+    assert chunks[-1]["data"] == "[DONE]"
+    payloads = [json.loads(c["data"]) for c in chunks[:-1]]
+    # finish_reason exists (FAILED branch maps to 'stop' conservatively).
+    assert payloads[-1]["choices"][0]["finish_reason"] == "stop"

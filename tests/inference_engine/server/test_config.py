@@ -114,3 +114,79 @@ def test_frozen_dataclass_rejects_mutation():
     cfg = ServerConfig()
     with pytest.raises(Exception):
         cfg.port = 9000  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-related fields (added when E2 ↔ E4 integrated)
+# ---------------------------------------------------------------------------
+
+
+def test_default_max_concurrent_is_one():
+    cfg = ServerConfig()
+    assert cfg.max_concurrent == 1
+
+
+def test_default_admission_policy_is_reject():
+    from inference_engine.scheduler.config import AdmissionPolicy
+    cfg = ServerConfig()
+    assert cfg.admission_policy is AdmissionPolicy.REJECT
+
+
+def test_default_queue_wait_is_zero():
+    cfg = ServerConfig()
+    assert cfg.queue_max_wait_s == 0.0
+
+
+@pytest.mark.parametrize("n", [0, -1, -100])
+def test_non_positive_max_concurrent_raises(n):
+    with pytest.raises(ValueError, match="max_concurrent must be positive"):
+        ServerConfig(max_concurrent=n)
+
+
+@pytest.mark.parametrize("w", [-0.1, -1.0])
+def test_negative_queue_wait_raises(w):
+    with pytest.raises(ValueError, match="queue_max_wait_s must be >= 0"):
+        ServerConfig(queue_max_wait_s=w)
+
+
+def test_from_env_max_concurrent():
+    cfg = ServerConfig.from_env(env={"KAKEYA_MAX_CONCURRENT": "8"})
+    assert cfg.max_concurrent == 8
+
+
+def test_from_env_invalid_max_concurrent_raises():
+    with pytest.raises(ValueError, match="not an integer"):
+        ServerConfig.from_env(env={"KAKEYA_MAX_CONCURRENT": "many"})
+
+
+def test_from_env_admission_policy_reject():
+    from inference_engine.scheduler.config import AdmissionPolicy
+    cfg = ServerConfig.from_env(env={"KAKEYA_ADMISSION_POLICY": "reject"})
+    assert cfg.admission_policy is AdmissionPolicy.REJECT
+
+
+def test_from_env_admission_policy_queue():
+    from inference_engine.scheduler.config import AdmissionPolicy
+    cfg = ServerConfig.from_env(env={"KAKEYA_ADMISSION_POLICY": "queue"})
+    assert cfg.admission_policy is AdmissionPolicy.QUEUE
+
+
+def test_from_env_admission_policy_case_insensitive():
+    from inference_engine.scheduler.config import AdmissionPolicy
+    cfg = ServerConfig.from_env(env={"KAKEYA_ADMISSION_POLICY": "  QUEUE  "})
+    assert cfg.admission_policy is AdmissionPolicy.QUEUE
+
+
+def test_from_env_invalid_admission_policy_raises():
+    with pytest.raises(ValueError, match="not a valid AdmissionPolicy"):
+        ServerConfig.from_env(env={"KAKEYA_ADMISSION_POLICY": "drop"})
+
+
+def test_from_env_queue_max_wait_s():
+    cfg = ServerConfig.from_env(env={"KAKEYA_QUEUE_MAX_WAIT_S": "5.5"})
+    assert cfg.queue_max_wait_s == 5.5
+
+
+def test_from_env_invalid_queue_wait_raises():
+    with pytest.raises(ValueError, match="not a float"):
+        ServerConfig.from_env(env={"KAKEYA_QUEUE_MAX_WAIT_S": "soon"})

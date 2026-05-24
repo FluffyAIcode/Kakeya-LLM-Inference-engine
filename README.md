@@ -289,20 +289,28 @@ prefix sharing, non-contiguous KV) cease to apply. A 30-line fixed-slab
 pool replaces it and runs ~5–15% faster because attention kernels see
 contiguous memory.
 
-## HTTP serving (E2)
+## HTTP serving (E2 + E4 integrated)
 
 The engine exposes an OpenAI-compatible HTTP API over Server-Sent
-Events. Routes implemented:
+Events. Every request flows through the
+[continuous batching scheduler](inference_engine/scheduler/) for
+admission control, fair queuing, and per-session lifecycle tracking.
+
+Routes:
 
 - `GET /healthz` — liveness probe
 - `GET /v1/models` — model list
 - `POST /v1/chat/completions` — chat completions, streaming or JSON
 
 ```bash
-# launch the server (MLX backend, bf16 verifier)
+# launch the server (MLX backend, bf16 verifier, single-user mode)
 PYTHONPATH=. python3 scripts/serve.py --backend mlx \
     --verifier-id Qwen/Qwen3-1.7B \
     --host 127.0.0.1 --port 8000
+
+# multi-user mode: 4 concurrent sessions with FIFO queue
+PYTHONPATH=. python3 scripts/serve.py --backend mlx \
+    --max-concurrent 4 --admission-policy queue --queue-max-wait-s 30
 
 # non-streaming chat completion
 curl -sS -X POST http://127.0.0.1:8000/v1/chat/completions \
@@ -323,12 +331,21 @@ curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
     }'
 ```
 
+When the scheduler's slab pool is full under the default `reject`
+policy, new requests get HTTP **429 Too Many Requests** immediately.
+Switch to `--admission-policy queue` to make them wait up to
+`--queue-max-wait-s` seconds for a slot.
+
 The streaming response follows the OpenAI chunk schema and terminates
 with the literal `data: [DONE]` sentinel that the OpenAI Python and
 JavaScript SDKs recognize. Sampling parameters (`temperature`,
 `top_p`, `stop`) are accepted in the request body for OpenAI-client
 compatibility but **not applied** — the underlying decoder is greedy
 temperature-0 by design ([ADR 0001 §2.2](docs/adr/0001-proposer-sizing-and-alignment.md)).
+
+The FastAPI lifespan handler calls `scheduler.shutdown()` on
+SIGTERM / SIGINT, which cancels active sessions, rejects queued
+admissions, and releases all slabs before the process exits.
 
 Configuration is via env vars (all prefixed `KAKEYA_*`): see the
 docstring of [`inference_engine/server/config.py`](inference_engine/server/config.py).
