@@ -386,3 +386,53 @@ def test_is_full_true_at_capacity(cfg):
     for _ in range(cfg.capacity):
         s.append(*_step(cfg, 1, fill=1.0))
     assert s.is_full is True
+
+
+# ---------------------------------------------------------------------------
+# live_kv_bytes_override (ADR 0003 intermediate step)
+# ---------------------------------------------------------------------------
+
+
+def test_live_kv_bytes_override_default_is_none(cfg):
+    s = KVSlab(cfg)
+    assert s.live_kv_bytes_override is None
+
+
+def test_live_kv_bytes_returns_override_when_set(cfg):
+    s = KVSlab(cfg)
+    s.append(*_step(cfg, 1, fill=1.0))
+    intrinsic = s.live_kv_bytes
+    s.live_kv_bytes_override = 12345
+    assert s.live_kv_bytes == 12345
+    assert s.live_kv_bytes != intrinsic
+
+
+def test_live_kv_bytes_override_handles_zero(cfg):
+    s = KVSlab(cfg)
+    s.append(*_step(cfg, 1, fill=1.0))
+    s.live_kv_bytes_override = 0
+    # 0 is a meaningful value (a fresh override saying "actual is 0").
+    # We must NOT fall back to the intrinsic computation here; treating
+    # 0 as "unset" would silently mis-report.
+    assert s.live_kv_bytes == 0
+
+
+def test_reset_clears_live_kv_bytes_override(cfg):
+    s = KVSlab(cfg)
+    s.append(*_step(cfg, 1, fill=1.0))
+    s.live_kv_bytes_override = 9999
+    s.reset()
+    assert s.live_kv_bytes_override is None
+    assert s.live_kv_bytes == 0  # logical_size == 0 -> 0
+
+
+def test_pool_release_clears_override(cfg):
+    """SlabPool.release() reset()s the slab, which in turn clears the
+    override. Critical so a fresh acquirer sees a clean slate."""
+    from inference_engine.memory.pool import SlabPool
+
+    pool = SlabPool(num_slabs=2, slab_config=cfg)
+    s = pool.acquire()
+    s.live_kv_bytes_override = 5000
+    pool.release(s)
+    assert s.live_kv_bytes_override is None

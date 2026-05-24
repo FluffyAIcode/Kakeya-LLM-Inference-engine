@@ -461,3 +461,10 @@ explicitly rejected.
   memory rule for choosing bf16 vs 4-bit, and why closed-weight APIs
   (GPT/Claude/Gemini) cannot be aligned with EAGLE-3 and are out of
   scope for v1 / v2.
+- [ADR 0003 — Verifier ↔ slab pool integration: deferred refactor +
+  intermediate step](docs/adr/0003-verifier-slab-pool-integration.md):
+  why the full "slab tensors hold the real KV" refactor is deferred
+  to v0.3 (correctness fragility without a bit-equivalence harness)
+  and what intermediate step ships in v0.2 — `PooledVerifier`
+  wrapper that makes pool memory accounting accurate without
+  touching the model forward.

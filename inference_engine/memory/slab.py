@@ -110,6 +110,12 @@ class KVSlab:
         self.keys = torch.zeros(shape, dtype=config.dtype, device=config.device)
         self.values = torch.zeros(shape, dtype=config.dtype, device=config.device)
         self.logical_size = 0
+        # Override for live_kv_bytes when this slab is a placeholder
+        # (e.g. used for admission control while the real KV lives in
+        # transformers' DynamicCache). PooledVerifier sets this from
+        # the verifier's actual cache size after every forward, so
+        # /metrics reports real numbers. See ADR 0003.
+        self.live_kv_bytes_override: int | None = None
 
     # ------------------------------------------------------------------
     # Mutators
@@ -187,9 +193,12 @@ class KVSlab:
         """Empty the slab; underlying buffers are kept allocated.
 
         Called by the pool on release so the slab is ready to serve
-        a fresh session without re-allocating tensors.
+        a fresh session without re-allocating tensors. Also clears
+        any ``live_kv_bytes_override`` so a fresh acquirer doesn't
+        inherit stale accounting from the previous session.
         """
         self.logical_size = 0
+        self.live_kv_bytes_override = None
         # We do not zero the buffers; logical_size is the truth.
         # Callers must respect logical_size when reading.
 
@@ -236,9 +245,17 @@ class KVSlab:
     def live_kv_bytes(self) -> int:
         """Bytes for the live region only (logical_size, not capacity).
 
-        Useful for reporting "how much KV is currently in use" vs the
-        physical footprint reported by :attr:`kv_bytes`.
+        If ``live_kv_bytes_override`` is set (typically by
+        :class:`PooledVerifier` from the verifier's real
+        ``DynamicCache`` size), that value is returned verbatim. This
+        lets a placeholder-tensor slab report accurate memory
+        accounting for the actual cache it tracks. See ADR 0003.
+
+        Otherwise this is computed from the slab's own tensors:
+        ``num_layers * num_heads * logical_size * head_dim * 2``.
         """
+        if self.live_kv_bytes_override is not None:
+            return int(self.live_kv_bytes_override)
         if self.logical_size == 0:
             return 0
         elem = self.keys.element_size()
