@@ -53,12 +53,21 @@ def _eos_ids(tokenizer):
 
 
 def _build_decoder(backend: str, sink: int, window: int, block_size: int,
-                   num_diffusion_steps: int):
+                   num_diffusion_steps: int, verifier_id: str):
     """Construct (decoder, tokenizer) for the chosen backend.
 
+    The proposer uses ``dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1``
+    (fixed for now — alignment-trained variants will be selectable in
+    later phases). The verifier model id is parameterized via
+    ``verifier_id``; in MLX backend this can be any HuggingFace repo
+    that ``mlx_lm.load`` understands, including 4-bit quantized
+    checkpoints such as ``mlx-community/Qwen3-1.7B-4bit``. In CPU
+    backend it must be a regular bf16 PyTorch checkpoint (4-bit AWQ
+    is not yet supported by ``SinkWindowVerifier``).
+
     Verifier-side tokenizer is the source of truth for chat templating
-    and EOS id resolution; both verifiers (CPU PyTorch, MLX) load from
-    Qwen/Qwen3-1.7B which has the same Qwen3 tokenizer.
+    and EOS id resolution; the speculative decoder asserts that the
+    proposer and verifier share a tokenizer at startup.
     """
     from kv_cache_proposer.proposer import ProposerConfig
     from kv_cache_proposer.speculative import SpeculativeDecoder
@@ -66,6 +75,7 @@ def _build_decoder(backend: str, sink: int, window: int, block_size: int,
 
     proposer_cfg = ProposerConfig(dtype=torch.bfloat16, device="cpu")
     verifier_cfg = VerifierConfig(
+        model_id=verifier_id,
         dtype=torch.bfloat16, device="cpu",
         sink_size=sink, window_size=window,
     )
@@ -221,13 +231,24 @@ def main() -> int:
     )
     ap.add_argument("--system", default=_DEFAULT_SYSTEM,
                     help="System prompt; default tells model to be concise + EOS naturally.")
+    ap.add_argument(
+        "--verifier-id", default="Qwen/Qwen3-1.7B",
+        help="HuggingFace repo id of the verifier checkpoint. In --backend mlx "
+             "this may be a 4-bit MLX-community release such as "
+             "'mlx-community/Qwen3-1.7B-4bit' or 'mlx-community/Qwen3-8B-4bit' "
+             "(see ADR 0002). In --backend cpu / mixed it must be a bf16 "
+             "PyTorch repo (e.g. 'Qwen/Qwen3-1.7B'). The chosen checkpoint "
+             "must share the dllm-hub proposer's tokenizer; the speculative "
+             "decoder asserts this at startup.",
+    )
     ap.add_argument("--once", action="store_true",
                     help="Read a single prompt from stdin, generate, exit. "
                          "If interactive stdin (no pipe) this is the same as "
                          "running interactively for one turn.")
     args = ap.parse_args()
 
-    print(f"[chat] backend={args.backend}  max_new_tokens={args.max_new_tokens}",
+    print(f"[chat] backend={args.backend}  verifier={args.verifier_id}  "
+          f"max_new_tokens={args.max_new_tokens}",
           file=sys.stderr, flush=True)
     print(f"[chat] block_size={args.block_size}  K={args.num_diffusion_steps}  "
           f"sink={args.sink_size}  window={args.window_size}",
@@ -239,6 +260,7 @@ def main() -> int:
         window=args.window_size,
         block_size=args.block_size,
         num_diffusion_steps=args.num_diffusion_steps,
+        verifier_id=args.verifier_id,
     )
     eos_set = _eos_ids(tokenizer)
     print(f"[chat] ready. eos_ids={eos_set}", file=sys.stderr, flush=True)

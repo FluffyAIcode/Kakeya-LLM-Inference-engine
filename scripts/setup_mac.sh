@@ -107,9 +107,27 @@ EOF
 }
 
 download_models() {
-    echo "[setup_mac] populating HF cache with Qwen3-1.7B (~3.5 GB) and"
-    echo "[setup_mac] dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1 (~1.5 GB)"
-    python - <<'PY'
+    # Defaults match the v0.1.0 baseline:
+    #   * dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1 — proposer (always required)
+    #   * Qwen/Qwen3-1.7B                          — bf16 verifier (always required)
+    #
+    # ADR 0002 v2 also requires `mlx-community/Qwen3-8B-4bit`. Users
+    # opting into the 4-bit verifier path (whether 1.7B-4bit for v1 or
+    # 8B-4bit for v2) should set:
+    #
+    #   export KAKEYA_VERIFIER_IDS="mlx-community/Qwen3-1.7B-4bit"
+    #
+    # which APPENDS to the required list. Multiple ids are comma-
+    # separated. The proposer + bf16 verifier are kept in the required
+    # set unconditionally because tests (`tests/core/`) consume them.
+    local extra_ids="${KAKEYA_VERIFIER_IDS:-}"
+    echo "[setup_mac] populating HF cache with the required base set:"
+    echo "[setup_mac]   - Qwen/Qwen3-1.7B (~3.5 GB)"
+    echo "[setup_mac]   - dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1 (~1.5 GB)"
+    if [[ -n "$extra_ids" ]]; then
+        echo "[setup_mac] plus KAKEYA_VERIFIER_IDS extras: $extra_ids"
+    fi
+    KAKEYA_VERIFIER_IDS="$extra_ids" python - <<'PY'
 import os, sys
 from huggingface_hub import snapshot_download
 
@@ -120,6 +138,13 @@ REQUIRED = [
     "Qwen/Qwen3-1.7B",
     "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1",
 ]
+extra_csv = os.environ.get("KAKEYA_VERIFIER_IDS", "").strip()
+if extra_csv:
+    for item in extra_csv.split(","):
+        item = item.strip()
+        if item and item not in REQUIRED:
+            REQUIRED.append(item)
+
 for repo in REQUIRED:
     print(f"[download] {repo} ...")
     try:
