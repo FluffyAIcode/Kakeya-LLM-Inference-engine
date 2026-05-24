@@ -1,0 +1,59 @@
+# Keep the Docker build context small — anything not needed at runtime
+# is excluded so layer caches don't churn on test/result/CI changes.
+
+# Tests and per-test artifacts.
+tests/
+.pytest_cache/
+.coverage
+coverage.xml
+junit.xml
+htmlcov/
+
+# Benchmark + platform-test outputs (committed to the repo for history,
+# not needed inside the image).
+results/
+
+# Source control + CI definitions.
+.git/
+.gitignore
+.github/
+.gitattributes
+
+# Python build artifacts.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# Editor and IDE droppings.
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual environments.
+.venv/
+venv/
+env/
+
+# Docs that aren't needed at runtime — keep README + LICENSE
+# (explicitly COPY'd in the Dockerfile) but skip the rest.
+docs/
+
+# Docker plumbing — don't ship Dockerfile inside its own image.
+Dockerfile
+.dockerignore
+
+# Local environment scripts.
+.envrc
+.env
+.env.*
+
+# OS metadata.
+.DS_Store
+Thumbs.db

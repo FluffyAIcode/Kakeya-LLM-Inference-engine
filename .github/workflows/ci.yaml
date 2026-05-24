@@ -140,3 +140,38 @@ jobs:
             import inference_engine.backends.mlx.env; \
             import training.repr_align; \
             print('all imports succeeded')"
+
+  docker-build:
+    name: docker build + import smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          tags: kakeya:ci-${{ github.sha }}
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test image (import only — weights would require HF cache)
+        run: |
+          # Confirm the package imports inside the image without
+          # touching HF cache.
+          docker run --rm \
+            --entrypoint python \
+            kakeya:ci-${{ github.sha }} \
+            -c "import inference_engine.server.app; print('image imports clean')"
+          # Confirm the server CLI parses (--help exits 0 before any
+          # model load, so we don't need HF cache).
+          docker run --rm \
+            kakeya:ci-${{ github.sha }} \
+            --help

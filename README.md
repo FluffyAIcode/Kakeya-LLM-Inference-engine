@@ -392,6 +392,35 @@ admissions, and releases all slabs before the process exits.
 Configuration is via env vars (all prefixed `KAKEYA_*`): see the
 docstring of [`inference_engine/server/config.py`](inference_engine/server/config.py).
 
+## Docker
+
+A CPU-only Docker image is published from the [`Dockerfile`](Dockerfile)
+at the repo root. Apple Silicon contributors should run locally
+(MLX does not work in Linux containers); CUDA users should mount
+their NVIDIA toolkit and use a separate `Dockerfile.cuda` (deferred
+to a future PR per ADR 0002).
+
+```bash
+# build
+docker build -t kakeya:latest .
+
+# run with HF cache mounted so weights persist across restarts
+docker run --rm -p 8000:8000 \
+    -v "$HOME/.cache/huggingface:/home/kakeya/.cache/huggingface" \
+    kakeya:latest
+
+# pass extra serve.py flags after the image name
+docker run --rm -p 8000:8000 \
+    -v "$HOME/.cache/huggingface:/home/kakeya/.cache/huggingface" \
+    kakeya:latest \
+    --max-concurrent 4 --admission-policy queue --queue-max-wait-s 30
+```
+
+The image runs as non-root user `kakeya` (uid 10001), exposes
+port 8000, and registers `/healthz` as a Docker `HEALTHCHECK` so
+orchestrators detect a hung process without parsing logs. CI builds
+the image on every push to verify the Dockerfile stays buildable.
+
 ## Continuous integration
 
 Every push to `main` and every PR runs the platform-neutral test
