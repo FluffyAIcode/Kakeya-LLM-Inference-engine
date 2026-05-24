@@ -110,7 +110,7 @@ PY
 cov_targets=("--cov=kv_cache_proposer")
 
 # Always-on platform-neutral subpackages of inference_engine.
-for sub in proposer memory scheduler server; do
+for sub in proposer memory scheduler server pipeline; do
     if [[ -d "$repo_root/inference_engine/$sub" ]]; then
         cov_targets+=("--cov=inference_engine.$sub")
     fi
