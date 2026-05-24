@@ -44,7 +44,8 @@ on a developer's laptop without any flags or env vars:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import FrozenSet
 
 from inference_engine.scheduler.config import AdmissionPolicy
 
@@ -67,6 +68,10 @@ class ServerConfig:
     max_concurrent: int = 1
     admission_policy: AdmissionPolicy = AdmissionPolicy.REJECT
     queue_max_wait_s: float = 0.0
+    # API-key auth. Empty set (default) = no auth required.
+    # When non-empty, every /v1/* request must carry
+    # Authorization: Bearer <key> with one of these values.
+    api_keys: FrozenSet[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         if not 1 <= self.port <= 65535:
@@ -96,6 +101,20 @@ class ServerConfig:
             raise ValueError(
                 f"queue_max_wait_s must be >= 0, got {self.queue_max_wait_s}"
             )
+        # api_keys validation: each key must be a non-empty string with
+        # no embedded whitespace (whitespace would render the key
+        # unparseable from an Authorization: Bearer header). The set
+        # itself can be empty (no-auth mode); each contained key must
+        # be a clean token.
+        for key in self.api_keys:
+            if not isinstance(key, str):
+                raise ValueError(
+                    f"api_keys must be strings; got {type(key).__name__}"
+                )
+            if not key or any(ch.isspace() for ch in key):
+                raise ValueError(
+                    "api_keys entries must be non-empty whitespace-free strings"
+                )
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "ServerConfig":
@@ -161,6 +180,12 @@ class ServerConfig:
             kwargs["queue_max_wait_s"] = _parse_float(
                 source["KAKEYA_QUEUE_MAX_WAIT_S"], "KAKEYA_QUEUE_MAX_WAIT_S"
             )
+        if "KAKEYA_API_KEYS" in source:
+            raw = source["KAKEYA_API_KEYS"]
+            keys = frozenset(
+                k.strip() for k in raw.split(",") if k.strip()
+            )
+            kwargs["api_keys"] = keys
         return cls(**kwargs)
 
 

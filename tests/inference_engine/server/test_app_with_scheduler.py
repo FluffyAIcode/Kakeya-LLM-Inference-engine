@@ -172,7 +172,7 @@ async def test_pool_full_under_reject_policy_returns_429(tokenizer):
             "max_tokens": 10,
         })
         assert second.status_code == 429
-        assert "slab pool exhausted" in second.json()["detail"]
+        assert "slab pool exhausted" in second.json()["error"]["message"]
         # Drain first.
         first_resp = await first
         assert first_resp.status_code == 200
@@ -289,7 +289,7 @@ async def test_non_streaming_500_when_engine_raises(tokenizer):
             "messages": [{"role": "user", "content": "hi"}],
         })
     assert r.status_code == 500
-    assert "engine error" in r.json()["detail"]
+    assert "engine error" in r.json()["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

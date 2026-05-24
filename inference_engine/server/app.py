@@ -62,9 +62,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, List, Optional
 
 import torch
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from inference_engine.memory.pool import SlabPool
 from inference_engine.memory.slab import SlabConfig
@@ -75,8 +78,15 @@ from inference_engine.scheduler.scheduler import (
 )
 from inference_engine.scheduler.session import Session, SessionState
 
+from .auth import verify_api_key
 from .config import ServerConfig
 from .engine import Engine
+from .errors import (
+    http_exception_handler,
+    request_validation_exception_handler,
+    unhandled_exception_handler,
+)
+from .metrics import Metrics
 from .schemas import (
     ChatCompletionChoice,
     ChatCompletionChunk,
@@ -139,6 +149,10 @@ def create_app(
             queue_max_wait_s=config.queue_max_wait_s,
         ),
     )
+    metrics = Metrics.build()
+    metrics.snapshot_scheduler(
+        active=0, pool_in_use=0, pool_total=pool.total_count, pending=0,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -165,8 +179,79 @@ def create_app(
     app.state.config = config
     app.state.scheduler = scheduler
     app.state.pool = pool
+    app.state.metrics = metrics
+
+    # OpenAI-shape error envelopes for HTTPException + 422 + 500.
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(
+        RequestValidationError, request_validation_exception_handler,
+    )
+    app.add_exception_handler(Exception, unhandled_exception_handler)
+
+    # API-key auth (no-op when config.api_keys is empty).
+    app.add_middleware(_AuthMiddleware, valid_keys=config.api_keys)
+    # Per-request timing + counter.
+    app.add_middleware(_MetricsMiddleware, metrics=metrics)
+
     _register_routes(app)
     return app
+
+
+class _AuthMiddleware(BaseHTTPMiddleware):
+    """Bearer-token gate for ``/v1/*`` routes when api_keys is non-empty."""
+
+    def __init__(self, app, *, valid_keys) -> None:
+        super().__init__(app)
+        self._valid_keys = frozenset(valid_keys)
+
+    async def dispatch(self, request, call_next):
+        try:
+            verify_api_key(request, valid_keys=self._valid_keys)
+        except StarletteHTTPException as exc:
+            # Re-route through the registered handler so the response
+            # carries the OpenAI envelope.
+            return await http_exception_handler(request, exc)
+        return await call_next(request)
+
+
+class _MetricsMiddleware(BaseHTTPMiddleware):
+    """Records ``http_requests_total`` + duration histogram per request.
+
+    The path label is the matched route's path template (e.g.
+    ``/v1/chat/completions``) when available, otherwise the raw URL
+    path. We deliberately avoid recording dynamic path segments
+    (e.g. session ids) to prevent label-cardinality blow-up.
+    """
+
+    def __init__(self, app, *, metrics: Metrics) -> None:
+        super().__init__(app)
+        self._metrics = metrics
+
+    async def dispatch(self, request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+        path = self._safe_path(request)
+        self._metrics.record_http_request(
+            method=request.method,
+            path=path,
+            status=response.status_code,
+            duration_s=duration,
+        )
+        return response
+
+    @staticmethod
+    def _safe_path(request) -> str:
+        """Return the route template if matched, else the raw path.
+
+        Starlette stores the matched route on ``request.scope["route"]``
+        when available; we fall back to the raw URL for unmatched
+        requests (404s).
+        """
+        route = request.scope.get("route")
+        if route is not None and hasattr(route, "path"):
+            return route.path
+        return request.url.path
 
 
 def _build_placeholder_pool(num_slabs: int) -> SlabPool:
@@ -197,6 +282,25 @@ def _register_routes(app: FastAPI) -> None:
         engine: Engine = app.state.engine
         return HealthResponse(status="ok", model=engine.model_id_label)
 
+    @app.get("/metrics")
+    async def metrics_endpoint() -> Response:
+        metrics: Metrics = app.state.metrics
+        scheduler: Scheduler = app.state.scheduler
+        pool: SlabPool = app.state.pool
+        # Refresh scheduler-state gauges on every scrape so the
+        # exposition reflects "now" rather than the last
+        # admission/completion event.
+        metrics.snapshot_scheduler(
+            active=scheduler.active_count,
+            pool_in_use=pool.in_use_count,
+            pool_total=pool.total_count,
+            pending=scheduler.pending_count,
+        )
+        return PlainTextResponse(
+            content=metrics.render(),
+            media_type=metrics.content_type,
+        )
+
     @app.get("/v1/models", response_model=ListModelsResponse)
     async def list_models() -> ListModelsResponse:
         engine: Engine = app.state.engine
@@ -214,6 +318,7 @@ def _register_routes(app: FastAPI) -> None:
         engine: Engine = app.state.engine
         scheduler: Scheduler = app.state.scheduler
         config: ServerConfig = app.state.config
+        metrics: Metrics = app.state.metrics
 
         try:
             prompt_ids = _encode_prompt(engine, req)
@@ -244,10 +349,12 @@ def _register_routes(app: FastAPI) -> None:
                 eos_token_ids=eos_token_ids,
             )
         except RequestRejected as exc:
+            metrics.record_admission(admitted=False)
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=str(exc),
             ) from exc
+        metrics.record_admission(admitted=True)
 
         if req.stream:
             return EventSourceResponse(
@@ -258,6 +365,7 @@ def _register_routes(app: FastAPI) -> None:
                     engine=engine,
                     completion_id=completion_id,
                     created=created,
+                    metrics=metrics,
                 ),
                 media_type="text/event-stream",
             )
@@ -290,6 +398,12 @@ def _register_routes(app: FastAPI) -> None:
             finish_reason = "stop"
         else:
             finish_reason = "length"
+
+        metrics.record_completion(
+            finish_reason=finish_reason,
+            n_tokens=len(output_token_ids),
+            acceptance_rate=_session_acceptance_rate(scheduler, session),
+        )
 
         return JSONResponse(
             content=ChatCompletionResponse(
@@ -340,6 +454,21 @@ def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> List[int]:
     return prompt_ids
 
 
+def _session_acceptance_rate(
+    scheduler: Scheduler, session: Session,
+) -> Optional[float]:
+    """Best-effort per-session acceptance rate.
+
+    The scheduler does not currently track per-session acceptance
+    (the underlying decoder's ``GenerationResult`` is consumed by the
+    scheduler worker but not surfaced on the session). Until that
+    plumbing lands, return None — the metrics module treats None as
+    "do not record this completion in the histogram".
+    """
+    _ = scheduler, session
+    return None
+
+
 async def _stream_via_scheduler(
     *,
     scheduler: Scheduler,
@@ -348,6 +477,7 @@ async def _stream_via_scheduler(
     engine: Engine,
     completion_id: str,
     created: int,
+    metrics: Metrics,
     disconnect_poll_interval_s: float = 0.05,
 ) -> AsyncIterator[dict]:
     """SSE async generator that drains :meth:`Scheduler.iter_tokens`.
@@ -429,5 +559,10 @@ async def _stream_via_scheduler(
 
     yield envelope(
         content_delta=None, role_delta=None, finish_reason=finish_reason,
+    )
+    metrics.record_completion(
+        finish_reason=finish_reason,
+        n_tokens=len(session.output_token_ids),
+        acceptance_rate=_session_acceptance_rate(scheduler, session),
     )
     yield {"data": "[DONE]"}
