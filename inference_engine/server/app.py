@@ -1,21 +1,18 @@
 """FastAPI app factory and route handlers.
 
 The app is constructed by :func:`create_app` from a fully-initialized
-:class:`Engine` (and a :class:`ServerConfig`). Routes are registered
-inside the factory rather than at module level so tests can spin up
-multiple isolated apps with different engines / configs in the same
-process.
+:class:`Engine` (and a :class:`ServerConfig`). All inference flows
+through a :class:`Scheduler` constructed inside the factory: routes
+never call ``engine.generate`` directly. This is the integration that
+makes admission control, fair queuing, slab-pool occupancy, and
+graceful shutdown observable / consistent regardless of single-user
+or multi-user deployment.
 
 Routes implemented in this commit:
 
     GET  /healthz
     GET  /v1/models
     POST /v1/chat/completions
-
-We deliberately do not implement ``POST /v1/completions`` (the
-legacy text-completion endpoint). It would duplicate
-``/v1/chat/completions`` for our generation model and clients in
-2026 universally use the chat endpoint; we keep the surface narrow.
 
 OpenAI compatibility notes
 --------------------------
@@ -26,25 +23,57 @@ OpenAI compatibility notes
 * Sampling parameters (``temperature``, ``top_p``, ``stop``) are
   accepted in the request schema but not applied — the underlying
   decoder is greedy temperature-0 by design (see ADR 0001 §2.2 for
-  the rationale: speculative decoding's correctness proof requires
-  greedy or aligned-distribution sampling). Acceptance of the
-  parameters keeps off-the-shelf clients happy; ignoring them
-  preserves the algorithmic correctness contract.
-* ``finish_reason`` is ``"stop"`` if EOS terminated generation,
-  ``"length"`` if ``max_tokens`` did. We do not yet emit
-  ``"content_filter"`` or ``"function_call"``.
+  the rationale).
+* ``finish_reason`` is ``"stop"`` if EOS terminated generation OR
+  if the client cancelled, ``"length"`` if ``max_tokens`` did. We
+  do not yet emit ``"content_filter"`` or ``"function_call"``.
+
+Error mapping
+-------------
+
+* Pydantic validation errors: 422 (FastAPI default).
+* Tokenizer chat-template rejection: 400.
+* Tokenizer with no EOS: 500 (defense in depth; engine constructor
+  is supposed to catch this earlier).
+* Scheduler rejects (pool full under REJECT policy, queue timeout
+  under QUEUE policy): 429 with a JSON body following OpenAI's
+  error shape.
+* Engine raises mid-generate: 500 (non-streaming) or terminal SSE
+  chunk with ``finish_reason="stop"`` (streaming — the SSE
+  contract has no graceful way to surface a 500 once the response
+  has started; the session error is swallowed at the wire after
+  any partial output).
+
+Lifespan
+--------
+
+The app registers a FastAPI lifespan context that calls
+``scheduler.shutdown()`` when the server stops. Active sessions are
+cancelled, queued admissions are rejected, slabs are released. The
+HTTP layer becomes externally indistinguishable from "no server here"
+within one poll interval after the lifespan exits.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
-from typing import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, List, Optional
 
+import torch
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
+
+from inference_engine.memory.pool import SlabPool
+from inference_engine.memory.slab import SlabConfig
+from inference_engine.scheduler.config import SchedulerConfig
+from inference_engine.scheduler.scheduler import (
+    RequestRejected,
+    Scheduler,
+)
+from inference_engine.scheduler.session import Session, SessionState
 
 from .config import ServerConfig
 from .engine import Engine
@@ -61,11 +90,20 @@ from .schemas import (
     ListModelsResponse,
     ModelInfo,
 )
-from .streaming import iter_token_deltas, run_blocking
+from .streaming import _StreamingDetokenizer
 from .tokenizer import resolve_eos_ids
 
 
-def create_app(engine: Engine, config: ServerConfig) -> FastAPI:
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
+
+
+def create_app(
+    engine: Engine,
+    config: ServerConfig,
+    pool: Optional[SlabPool] = None,
+) -> FastAPI:
     """Build a FastAPI app bound to a specific engine + config.
 
     Parameters
@@ -75,9 +113,44 @@ def create_app(engine: Engine, config: ServerConfig) -> FastAPI:
         a :class:`SpeculativeEngine`; in tests it is a deterministic
         test double.
     config:
-        Process-wide :class:`ServerConfig`. Stored on the app state
-        for routes to read; never re-read from env at request time.
+        Process-wide :class:`ServerConfig`. The scheduler-related
+        fields (``max_concurrent``, ``admission_policy``,
+        ``queue_max_wait_s``) drive the internal :class:`Scheduler`.
+    pool:
+        Optional pre-built :class:`SlabPool`. If ``None``, we build a
+        minimal placeholder pool sized for ``config.max_concurrent``
+        slots — these slots are pure admission-control bookkeeping
+        until a future commit wires the verifier itself to consume
+        slabs from the pool. The placeholder slab tensors are
+        deliberately tiny (a few bytes per slab) since they are not
+        currently read by attention kernels.
     """
+    pool = pool if pool is not None else _build_placeholder_pool(config.max_concurrent)
+    if pool.total_count != config.max_concurrent:
+        raise ValueError(
+            f"pool.total_count={pool.total_count} does not match "
+            f"config.max_concurrent={config.max_concurrent}"
+        )
+    scheduler = Scheduler(
+        engine=engine, pool=pool,
+        config=SchedulerConfig(
+            max_concurrent=config.max_concurrent,
+            admission_policy=config.admission_policy,
+            queue_max_wait_s=config.queue_max_wait_s,
+        ),
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Startup: nothing to do; scheduler is already constructed and
+        # ready to admit. We yield without doing anything here so unit
+        # tests that exercise the route via ASGITransport without
+        # explicit lifespan handling still work.
+        try:
+            yield
+        finally:
+            await scheduler.shutdown()
+
     app = FastAPI(
         title="Kakeya Inference Engine",
         description=(
@@ -86,11 +159,31 @@ def create_app(engine: Engine, config: ServerConfig) -> FastAPI:
             "Kakeya-LLM-Inference-engine for source and ADRs."
         ),
         version="0.2.0-dev",
+        lifespan=lifespan,
     )
     app.state.engine = engine
     app.state.config = config
+    app.state.scheduler = scheduler
+    app.state.pool = pool
     _register_routes(app)
     return app
+
+
+def _build_placeholder_pool(num_slabs: int) -> SlabPool:
+    """Construct a minimal :class:`SlabPool` for admission-control bookkeeping.
+
+    Slab tensors are 1-element bf16 (2 bytes per K + 2 per V × num_slabs).
+    Total memory cost for the default ``num_slabs=1`` pool is ~4 bytes,
+    plus Python object overhead. When the verifier-side refactor lands
+    that actually consumes slabs as KV storage, callers will pass a
+    properly-sized pool to ``create_app`` and this placeholder will
+    become unnecessary in production paths.
+    """
+    cfg = SlabConfig(
+        num_layers=1, num_heads=1, sink_size=0, window_size=1,
+        head_dim=1, dtype=torch.bfloat16,
+    )
+    return SlabPool(num_slabs=num_slabs, slab_config=cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -119,11 +212,9 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatCompletionRequest, request: Request):
         engine: Engine = app.state.engine
+        scheduler: Scheduler = app.state.scheduler
         config: ServerConfig = app.state.config
 
-        # Encode prompt via the tokenizer. Unrecognized exceptions
-        # propagate as 500; bad requests (rejected templates) come
-        # back as 400 with an explanatory message.
         try:
             prompt_ids = _encode_prompt(engine, req)
         except ValueError as exc:
@@ -134,7 +225,6 @@ def _register_routes(app: FastAPI) -> None:
 
         eos_token_ids = resolve_eos_ids(engine.tokenizer)
         if not eos_token_ids:
-            # Should be caught at engine construction; defense in depth.
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="server tokenizer has no EOS configuration",
@@ -145,28 +235,62 @@ def _register_routes(app: FastAPI) -> None:
         created = int(time.time())
         prompt_token_count = len(prompt_ids)
 
+        # Submit to the scheduler. Admission failures surface as 429
+        # — the canonical OpenAI status for capacity exhaustion.
+        try:
+            session = await scheduler.submit(
+                prompt_ids=prompt_ids,
+                max_new_tokens=max_new_tokens,
+                eos_token_ids=eos_token_ids,
+            )
+        except RequestRejected as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(exc),
+            ) from exc
+
         if req.stream:
             return EventSourceResponse(
-                _stream_chat_chunks(
-                    engine=engine,
+                _stream_via_scheduler(
+                    scheduler=scheduler,
+                    session=session,
                     request=request,
-                    prompt_ids=prompt_ids,
-                    max_new_tokens=max_new_tokens,
-                    eos_token_ids=eos_token_ids,
+                    engine=engine,
                     completion_id=completion_id,
                     created=created,
-                    prompt_token_count=prompt_token_count,
                 ),
                 media_type="text/event-stream",
             )
 
-        result = await run_blocking(
-            engine, prompt_ids, max_new_tokens, eos_token_ids
-        )
+        # Non-streaming: drain the session synchronously.
+        output_token_ids: List[int] = []
+        try:
+            async for tok in scheduler.iter_tokens(session):
+                output_token_ids.append(int(tok))
+        except BaseException as exc:
+            # Engine raised mid-generate; surface as 500.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"engine error: {exc}",
+            ) from exc
+
         completion_text = engine.tokenizer.decode(
-            result.output_token_ids, skip_special_tokens=True
+            output_token_ids, skip_special_tokens=True
         )
-        finish_reason = "stop" if result.stopped_on_eos else "length"
+        # finish_reason: COMPLETED + last token in eos_set => "stop";
+        # otherwise (cap, cancellation, or anything else) => "length"
+        # for non-streaming. Cancellation in non-streaming should not
+        # happen via this path (no cancel hook on JSON responses), but
+        # we keep the conservative mapping.
+        if (
+            session.state is SessionState.COMPLETED
+            and output_token_ids
+            and output_token_ids[-1] in set(eos_token_ids)
+        ):
+            finish_reason = "stop"
+        else:
+            finish_reason = "length"
+
         return JSONResponse(
             content=ChatCompletionResponse(
                 id=completion_id,
@@ -183,8 +307,8 @@ def _register_routes(app: FastAPI) -> None:
                 ],
                 usage=ChatCompletionUsage(
                     prompt_tokens=prompt_token_count,
-                    completion_tokens=len(result.output_token_ids),
-                    total_tokens=prompt_token_count + len(result.output_token_ids),
+                    completion_tokens=len(output_token_ids),
+                    total_tokens=prompt_token_count + len(output_token_ids),
                 ),
             ).model_dump()
         )
@@ -195,13 +319,8 @@ def _register_routes(app: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> list[int]:
-    """Apply the tokenizer's chat template to the request messages.
-
-    Returns a flat list of int token ids. Raises ``ValueError`` if
-    the tokenizer rejects the messages — caller wraps this into a
-    400 response.
-    """
+def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> List[int]:
+    """Apply the tokenizer's chat template to the request messages."""
     messages = [m.model_dump() for m in req.messages]
     prompt_ids = engine.tokenizer.apply_chat_template(
         messages,
@@ -210,7 +329,9 @@ def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> list[int]:
         return_dict=False,
         enable_thinking=False,
     )
-    if not isinstance(prompt_ids, list) or not all(isinstance(t, int) for t in prompt_ids):
+    if not isinstance(prompt_ids, list) or not all(
+        isinstance(t, int) for t in prompt_ids
+    ):
         raise ValueError(
             f"chat template returned {type(prompt_ids).__name__}, expected list[int]"
         )
@@ -219,35 +340,32 @@ def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> list[int]:
     return prompt_ids
 
 
-async def _stream_chat_chunks(
+async def _stream_via_scheduler(
     *,
-    engine: Engine,
+    scheduler: Scheduler,
+    session: Session,
     request: Request,
-    prompt_ids: list[int],
-    max_new_tokens: int,
-    eos_token_ids: list[int],
+    engine: Engine,
     completion_id: str,
     created: int,
-    prompt_token_count: int,
+    disconnect_poll_interval_s: float = 0.05,
 ) -> AsyncIterator[dict]:
-    """Async generator yielding OpenAI-compat SSE event payloads.
+    """SSE async generator that drains :meth:`Scheduler.iter_tokens`.
 
-    The first event sets ``role: assistant`` (no content). Each
-    subsequent event carries a ``content`` delta. The final event
-    carries ``finish_reason`` and an empty delta. After the iterator
-    exits, ``EventSourceResponse`` emits the literal ``[DONE]``
-    sentinel that OpenAI clients expect.
+    Implements the OpenAI streaming chunk protocol on top of a
+    scheduler-managed session. Polls ``request.is_disconnected()`` on
+    a wall-clock interval; on disconnect, calls
+    ``scheduler.cancel_session`` to short-circuit generation.
 
-    Yields dicts shaped like ``{"data": "<json-encoded chunk>"}`` —
-    that's the format ``EventSourceResponse`` consumes. We don't use
-    the simpler "yield string" form because we want the JSON encoded
-    by the same serializer as non-streaming (pydantic), to keep field
-    ordering and types identical.
+    The generator yields ``{"data": "<json>"}`` envelopes (the format
+    sse-starlette consumes), terminated by ``{"data": "[DONE]"}``.
     """
-    model_label = engine.model_id_label
+    import asyncio
 
-    def envelope(content_delta: str | None, role_delta: str | None,
-                 finish_reason: str | None) -> dict:
+    model_label = engine.model_id_label
+    detok = _StreamingDetokenizer(engine.tokenizer)
+
+    def envelope(content_delta, role_delta, finish_reason) -> dict:
         chunk = ChatCompletionChunk(
             id=completion_id,
             created=created,
@@ -266,35 +384,50 @@ async def _stream_chat_chunks(
 
     yield envelope(content_delta=None, role_delta="assistant", finish_reason=None)
 
-    async def is_disconnected_callable() -> bool:
-        return await request.is_disconnected()
+    last_disconnect_check = time.monotonic()
+    cancelled_by_disconnect = False
+    try:
+        async for tok in scheduler.iter_tokens(session):
+            delta = detok.feed(int(tok))
+            if delta:
+                yield envelope(
+                    content_delta=delta, role_delta=None, finish_reason=None,
+                )
+            now = time.monotonic()
+            if (now - last_disconnect_check) >= disconnect_poll_interval_s:
+                last_disconnect_check = now
+                if await request.is_disconnected():
+                    cancelled_by_disconnect = True
+                    await scheduler.cancel_session(session)
+                    # Drain remaining tokens (will exit shortly because
+                    # the on_token callback inside the scheduler now
+                    # returns True).
+    except BaseException:  # noqa: BLE001 — surface as terminal chunk
+        # Engine errors mid-stream end the SSE stream gracefully; the
+        # client sees a finish_reason="stop" with no further content.
+        # We deliberately do NOT raise here — once SSE has started,
+        # there is no way to send a 500 status; the OpenAI clients
+        # also expect graceful termination on errors.
+        pass
 
-    async for delta_text, is_final, session in iter_token_deltas(
-        engine=engine,
-        prompt_ids=prompt_ids,
-        max_new_tokens=max_new_tokens,
-        eos_token_ids=eos_token_ids,
-        is_disconnected=is_disconnected_callable,
-    ):
-        if not is_final:
-            yield envelope(
-                content_delta=delta_text, role_delta=None, finish_reason=None
-            )
-            continue
-
-        # Terminal chunk — populate finish_reason from session.result.
-        result = session.result.engine_result
-        if session.result.cancelled_by_disconnect:
-            finish_reason = "stop"
-        elif result is not None and result.stopped_on_eos:
+    # Terminal chunk: derive finish_reason from session state.
+    if cancelled_by_disconnect or session.state is SessionState.CANCELLED:
+        finish_reason = "stop"
+    elif session.state is SessionState.COMPLETED:
+        # Did we end on EOS or hit max_tokens?
+        if (
+            session.output_token_ids
+            and session.output_token_ids[-1]
+            in set(session.eos_token_ids)
+        ):
             finish_reason = "stop"
         else:
             finish_reason = "length"
-        yield envelope(
-            content_delta=None, role_delta=None, finish_reason=finish_reason,
-        )
+    else:
+        # FAILED or some other terminal — be conservative.
+        finish_reason = "stop"
 
-    # OpenAI clients expect a literal "[DONE]" terminator so they know
-    # the stream is finished. sse-starlette will frame this as
-    # `data: [DONE]\n\n` like any other event.
+    yield envelope(
+        content_delta=None, role_delta=None, finish_reason=finish_reason,
+    )
     yield {"data": "[DONE]"}

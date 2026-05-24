@@ -27,12 +27,26 @@ on a developer's laptop without any flags or env vars:
                                           override this to expose
                                           something meaningful to
                                           OpenAI-compatible clients.
+    max_concurrent      ``1``          — number of concurrent inference
+                                          sessions the scheduler admits.
+                                          1 = single-user (default,
+                                          matches the v0.1.0 behavior
+                                          before the integration).
+                                          Bump on multi-user deployments.
+    admission_policy    ``"reject"``   — REJECT returns HTTP 429 when
+                                          the pool is full. QUEUE makes
+                                          the request wait up to
+                                          ``queue_max_wait_s``.
+    queue_max_wait_s    ``0.0``        — only honored under QUEUE policy;
+                                          0 means wait forever.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+
+from inference_engine.scheduler.config import AdmissionPolicy
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,10 @@ class ServerConfig:
     request_timeout_s: float = 120.0
     model_id_label: str = "kakeya-v1"
     log_level: str = "info"
+    # Scheduler tuning (see inference_engine.scheduler.config).
+    max_concurrent: int = 1
+    admission_policy: AdmissionPolicy = AdmissionPolicy.REJECT
+    queue_max_wait_s: float = 0.0
 
     def __post_init__(self) -> None:
         if not 1 <= self.port <= 65535:
@@ -70,6 +88,14 @@ class ServerConfig:
                 f"log_level must be one of trace/debug/info/warning/error/critical, "
                 f"got {self.log_level!r}"
             )
+        if self.max_concurrent <= 0:
+            raise ValueError(
+                f"max_concurrent must be positive, got {self.max_concurrent}"
+            )
+        if self.queue_max_wait_s < 0:
+            raise ValueError(
+                f"queue_max_wait_s must be >= 0, got {self.queue_max_wait_s}"
+            )
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "ServerConfig":
@@ -87,6 +113,9 @@ class ServerConfig:
             KAKEYA_REQUEST_TIMEOUT_S     -> request_timeout_s (float)
             KAKEYA_MODEL_ID_LABEL        -> model_id_label
             KAKEYA_LOG_LEVEL             -> log_level
+            KAKEYA_MAX_CONCURRENT        -> max_concurrent (int)
+            KAKEYA_ADMISSION_POLICY      -> admission_policy ("reject" or "queue")
+            KAKEYA_QUEUE_MAX_WAIT_S      -> queue_max_wait_s (float)
 
         Defaults match the dataclass field defaults above.
 
@@ -115,6 +144,23 @@ class ServerConfig:
             kwargs["model_id_label"] = source["KAKEYA_MODEL_ID_LABEL"]
         if "KAKEYA_LOG_LEVEL" in source:
             kwargs["log_level"] = source["KAKEYA_LOG_LEVEL"]
+        if "KAKEYA_MAX_CONCURRENT" in source:
+            kwargs["max_concurrent"] = _parse_int(
+                source["KAKEYA_MAX_CONCURRENT"], "KAKEYA_MAX_CONCURRENT"
+            )
+        if "KAKEYA_ADMISSION_POLICY" in source:
+            raw = source["KAKEYA_ADMISSION_POLICY"].strip().lower()
+            try:
+                kwargs["admission_policy"] = AdmissionPolicy(raw)
+            except ValueError as exc:
+                raise ValueError(
+                    f"environment variable KAKEYA_ADMISSION_POLICY={raw!r} "
+                    "is not a valid AdmissionPolicy (expected 'reject' or 'queue')"
+                ) from exc
+        if "KAKEYA_QUEUE_MAX_WAIT_S" in source:
+            kwargs["queue_max_wait_s"] = _parse_float(
+                source["KAKEYA_QUEUE_MAX_WAIT_S"], "KAKEYA_QUEUE_MAX_WAIT_S"
+            )
         return cls(**kwargs)
 
 

@@ -106,7 +106,20 @@ def main() -> int:
     ap.add_argument("--model-id-label", default=None,
                     help="OpenAI-API ``model`` field returned by /v1/models. "
                          "Defaults to the verifier id.")
+    ap.add_argument("--max-concurrent", type=int, default=None,
+                    help="Maximum concurrent inference sessions admitted by "
+                         "the scheduler. Defaults to 1 (single-user mode).")
+    ap.add_argument("--admission-policy", choices=["reject", "queue"],
+                    default=None,
+                    help="reject (default) returns HTTP 429 immediately when "
+                         "the scheduler is full; queue blocks for up to "
+                         "--queue-max-wait-s seconds.")
+    ap.add_argument("--queue-max-wait-s", type=float, default=None,
+                    help="Only honored under --admission-policy queue. "
+                         "0 (default) means wait forever.")
     args = ap.parse_args()
+
+    from inference_engine.scheduler.config import AdmissionPolicy
 
     base_config = ServerConfig.from_env()
     config = ServerConfig(
@@ -120,6 +133,21 @@ def main() -> int:
             or base_config.model_id_label
         ),
         log_level=args.log_level or base_config.log_level,
+        max_concurrent=(
+            args.max_concurrent
+            if args.max_concurrent is not None
+            else base_config.max_concurrent
+        ),
+        admission_policy=(
+            AdmissionPolicy(args.admission_policy)
+            if args.admission_policy is not None
+            else base_config.admission_policy
+        ),
+        queue_max_wait_s=(
+            args.queue_max_wait_s
+            if args.queue_max_wait_s is not None
+            else base_config.queue_max_wait_s
+        ),
     )
 
     print(
