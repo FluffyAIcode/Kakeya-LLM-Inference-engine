@@ -1,5 +1,10 @@
 # DLM Proposer + AR Verifier — runnable KV-cache-saving framework
 
+[![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.1.0)
+[![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-lightgrey)](docs/local-inference-engine.md)
+[![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002-green)](docs/adr/)
+
 Runs the speculative-decoding architecture designed in the prior product
 discussion using **real, public** weights:
 
@@ -386,6 +391,26 @@ admissions, and releases all slabs before the process exits.
 
 Configuration is via env vars (all prefixed `KAKEYA_*`): see the
 docstring of [`inference_engine/server/config.py`](inference_engine/server/config.py).
+
+## Continuous integration
+
+Every push to `main` and every PR runs the platform-neutral test
+suite on GitHub Actions ([`.github/workflows/ci.yaml`](.github/workflows/ci.yaml)),
+enforcing **100% line coverage** on the shipping library modules:
+
+```
+inference_engine.server  inference_engine.memory  inference_engine.scheduler
+inference_engine.pipeline  inference_engine.proposer  training.repr_align
+```
+
+Tests that need real Qwen3 weights (`tests/core/`, `tests/system/`,
+`tests/inference_engine/proposer/`) are run locally on hosts with the
+HuggingFace cache populated; backend-specific suites
+(`tests/backends/mlx/test_{verifier,proposer,cache,torch_bridge}.py`)
+run on Apple Silicon contributors' machines via
+`scripts/run_platform_tests.sh --backend mlx`. The CI workflow
+guards the platform-neutral surface so a regression there cannot
+land on `main`.
 
 ## Architecture Decision Records
 
