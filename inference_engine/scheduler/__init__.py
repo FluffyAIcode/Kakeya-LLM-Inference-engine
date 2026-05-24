@@ -26,11 +26,13 @@ Submodules:
 """
 
 from .config import AdmissionPolicy, SchedulerConfig
+from .pooled_verifier import PooledVerifier
 from .scheduler import RequestRejected, Scheduler
 from .session import Session, SessionState
 
 __all__ = [
     "AdmissionPolicy",
+    "PooledVerifier",
     "RequestRejected",
     "Scheduler",
     "SchedulerConfig",
