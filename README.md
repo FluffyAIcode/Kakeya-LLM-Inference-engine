@@ -286,6 +286,8 @@ algorithmic core in this repo with continuous batching, async
 proposer/verifier pipelining, NF4 KV quantization, and a fixed-slab
 KV pool sized for sink+window. Architecture and phased build plan are
 in [`docs/local-inference-engine.md`](docs/local-inference-engine.md).
+The memory-computability design baseline is captured in
+[`docs/memory-computable-guide.md`](docs/memory-computable-guide.md).
 
 Short version of why the engine **does not use PagedAttention**: the
 sink+window invariant turns each session's KV cache into a constant-size
