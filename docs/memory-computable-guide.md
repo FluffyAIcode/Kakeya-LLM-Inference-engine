@@ -1,262 +1,137 @@
 # Memory Computable Guide
 
-This guide captures the current design baseline for memory computability in
-the Kakeya inference engine. It deliberately starts from the three laws of
-attention and memory computation, then translates them into a trainable memory
-operator. It does not assume proposer cross-training.
+本文档只定义 Memory Computation Operator 的设计基线。
 
-## Three laws
+## 保留的三定律
 
-### 1. Alignment object law
+### 对齐对象定律
 
-Attention aligns to the output token distribution; memory aligns to stored
-records.
+注意力对齐输出分布，记忆力对齐存储记录。
 
-- Attention computation is constrained by generation targets such as
-  `P(y_t | x, y_<t)`.
-- Memory computation is constrained by already stored records such as user
-  history, interaction traces, documents, logs, or persistent system state.
+### 稀疏化定律
 
-In short:
+注意力和记忆力都需要稀疏化分类；注意力在生成分布约束下稀疏化，更适合自回归；记忆力在既存记录约束下主题稀疏化，更适合 diffusion 式重构。
 
-```text
-attention alignment = distribution alignment
-memory alignment    = record alignment
-```
+### 相互内嵌定律
 
-### 2. Sparsification law
+注意力中有记忆存储，记忆中有注意力 forward；二者不是对立模块，而是相互内嵌的计算过程。
 
-Both attention and memory need sparse classification, but under different
-constraints.
+## 新设计起点
 
-- Attention sparsifies under a generation-distribution constraint and is a
-  natural fit for autoregressive token generation.
-- Memory sparsifies by topic under an existing-record constraint and is a
-  natural fit for diffusion-style reconstruction.
+### 目标
 
-The important distinction is not "short term vs long term". It is whether the
-sparse choice is judged against a token distribution or against stored records.
+设计一个 Memory Computation Operator，它不是普通检索，也不是输出分布拟合，而是：
 
-### 3. Mutual embedding law
+> 在 Transformer 框架中，把注意力计算扩展为面向存储记录的可微分记忆力计算。
 
-Attention contains memory storage; memory contains attention forward. They are
-not opposing modules, but mutually embedded computation processes.
+### 核心定义
 
-For this guide, "memory contains attention forward" means that the current
-Transformer computation predicts a memory support distribution. It is not a
-claim that attention forward has already read a verified memory fact.
+记忆力计算可定义为：
 
-## Memory computation definition
+> 由当前计算状态触发，通过 attention forward 预测相关记忆支撑，并在既存存储记录约束下完成主题稀疏化与 diffusion 式重构的过程。
 
-Memory computation is the extension of attention computation from output
-distribution alignment to stored-record alignment:
-
-```text
-current Transformer state
-  -> memory attention forward
-  -> memory support prediction
-  -> record-aligned support objective
-  -> sparse topic support
-  -> diffusion-style denoising convergence
-  -> record-aligned memory state
-```
-
-The core operator is:
+形式化：
 
 ```text
 M(q, R) -> z_M
 ```
 
-where:
+其中：
 
-- `q` is the current Transformer computation state.
-- `R = {r_i}` is the set of stored records.
-- `M` is the memory computation operator.
-- `z_M` is the resulting memory state.
+- `q`：当前 Transformer 计算状态；
+- `R`：既存存储记录；
+- `M`：记忆力计算算子；
+- `z_M`：重构后的 memory state。
 
-The required constraint is:
-
-```text
-z_M ~= E(R_relevant)
-```
-
-where `R_relevant` is the stored-record support that should be relevant for
-the current computation.
-
-## Operator boundaries
-
-### Memory attention forward predicts support
-
-Memory attention forward produces a support prediction:
+### 最小架构
 
 ```text
-pi = P(record/topic | q, R)
+Transformer Current State
+        ↓
+Memory Attention Forward
+        ↓
+Memory Support Prediction
+        ↓
+Record Alignment Objective
+        ↓
+Sparse Topic Support
+        ↓
+Diffusion-style Memory Reconstruction
+        ↓
+Record-aligned Memory State
 ```
 
-This is a prediction over records or topic clusters. It is not a verified read.
-The support prediction must be aligned to stored records during training.
+## 三个关键算子
 
-### Record alignment is the memory requirement
+### 1. Memory Attention Forward
 
-Record alignment is not an optional external check. It is the core training
-requirement that makes the support prediction a memory computation rather than
-a generic retrieval or generation bias.
+作用不是“读取事实”，而是：
 
-The model must learn:
+> 预测当前计算需要哪些记忆支撑。
+
+输出：
 
 ```text
-predicted support ~= relevant stored records
+π = P(record/topic | q, R)
 ```
 
-If this alignment fails, later denoising can stabilize or amplify the wrong
-topic.
+即对存储记录或主题簇的稀疏预测分布。
 
-### Diffusion denoising converges within support
+### 2. Record Alignment
 
-Diffusion-style reconstruction does not change the predicted topic support.
-It only denoises and converges inside the support produced by memory attention
-forward.
+这是记忆力计算的核心约束：
 
 ```text
-z_T -> z_0 ~= E(R_relevant)
+π, z_M ≈ R_relevant
 ```
 
-Therefore diffusion is useful only after the support prediction is record
-aligned. If the support is noisy or wrong, diffusion can make that wrong memory
-state more stable rather than correcting it.
+目标是让 memory support prediction 和 memory state 都对齐既存记录。
 
-## Minimal neural operators
+### 3. Diffusion Memory Reconstruction
 
-### 1. Transformer state adapter
+Diffusion 不负责改变主题，只负责：
 
-Maps the current Transformer computation state into a memory query:
+> 在已对齐的 memory support 内进行去噪、收敛和重构。
+
+即：
 
 ```text
-q_M = Phi(q)
+z_T -> z_0 ≈ E(R_relevant)
 ```
 
-The adapter can consume hidden states, residual states, attention summaries,
-or other current-forward state summaries.
-
-### 2. Record encoder
-
-Maps stored records into the memory space:
-
-```text
-r_i -> e_i
-```
-
-The output can be grouped into record embeddings, topic embeddings, or
-record-topic blocks.
-
-### 3. Memory attention forward
-
-Predicts a sparse support distribution over records or topics:
-
-```text
-score_i = sim(q_M, e_i)
-pi = sparsemax(score)  # or entmax / top-k routing
-```
-
-### 4. Support alignment head
-
-Trains `pi` against the known relevant support:
-
-```text
-L_support = CE(pi, support_label)
-```
-
-or a contrastive support objective:
-
-```text
-L_support = -log exp(sim(q_M, e_pos) / tau)
-                  / sum_j exp(sim(q_M, e_j) / tau)
-```
-
-### 5. Diffusion memory denoiser
-
-Denoises a memory latent inside the predicted support:
-
-```text
-L_denoise = || eps - eps_theta(z_t, q_M, pi, R, t) ||^2
-```
-
-The denoiser should be evaluated only with support-quality metrics attached,
-because denoising quality is meaningless if the support is wrong.
-
-## Training objective
-
-The memory operator can be trained with:
+## 训练目标
 
 ```text
 L_memory =
-    L_support_alignment
-  + lambda_record * L_record_alignment
-  + lambda_sparse * L_sparse_topic
-  + lambda_denoise * L_diffusion_reconstruction
-  + lambda_cf * L_counterfactual_record
+  L_support_alignment
++ λ L_record_alignment
++ μ L_sparse_topic
++ ν L_diffusion_reconstruction
 ```
 
-Where:
+其中：
 
-- `L_support_alignment` trains memory attention forward to predict the correct
-  record or topic support.
-- `L_record_alignment` trains the final memory state to align with the stored
-  records.
-- `L_sparse_topic` encourages a small active topic set.
-- `L_diffusion_reconstruction` trains denoising convergence inside the support.
-- `L_counterfactual_record` verifies that changing stored records changes the
-  predicted support and memory state.
+- `L_support_alignment`：预测的 memory support 是否对应真实相关记录；
+- `L_record_alignment`：最终 memory state 是否对齐存储记录；
+- `L_sparse_topic`：主题选择是否足够稀疏；
+- `L_diffusion_reconstruction`：是否能在正确支撑内完成去噪重构。
 
-## H200 training target
+## 判断是否真的有记忆力计算
 
-The first H200 training milestone should validate the memory operator itself,
-not proposer integration.
+核心不是看模型是否“用过历史数据”，而是看：
 
-Recommended sample shape:
+> 当前 memory prediction 和 memory state 是否被既存存储记录约束。
 
-```text
-(q, R_positive, R_negative, R_counterfactual, support_label)
-```
+关键指标：
 
-The run should report both model-quality and system-efficiency metrics.
+- support precision；
+- support recall；
+- record alignment accuracy；
+- sparse topic entropy；
+- reconstruction quality；
+- counterfactual record sensitivity；
+- update/delete consistency。
 
-### Quality metrics
+## 新设计一句话
 
-- Support precision: predicted support records are relevant.
-- Support recall: relevant records are covered by the predicted support.
-- Record alignment accuracy: `z_M` matches the correct stored record state.
-- Sparse topic entropy: routing remains sparse rather than diffuse.
-- Denoising gain on clean support: diffusion improves a correct support state.
-- Noise amplification rate: diffusion does not stabilize wrong support.
-- Counterfactual flip rate: replacing records changes support and `z_M`.
-- Update/delete consistency: changed or deleted records stop influencing
-  memory output.
-
-### H200 system metrics
-
-- Samples per second.
-- Records per second.
-- HBM usage.
-- Routing latency.
-- Denoising latency.
-- End-to-end memory-operator latency.
-
-## Acceptance criteria
-
-The memory operator should be considered valid only if:
-
-1. Support prediction aligns to stored records with high precision and recall.
-2. Diffusion denoising improves record-aligned states on clean support.
-3. Diffusion does not amplify noisy or wrong support beyond an allowed budget.
-4. Counterfactual record changes cause corresponding memory state changes.
-5. Record update/delete tests stop stale records from influencing output.
-6. The H200 latency and memory overhead are small enough to justify later
-   inference-engine integration.
-
-## Design summary
-
-Memory computability is not proven by training on historical data. It is proven
-when the current computation predicts a sparse memory support, that support is
-aligned to stored records, and diffusion-style denoising converges only inside
-the aligned support.
+记忆力计算是注意力计算从“输出分布对齐”向“存储记录对齐”的扩展：它通过 memory attention forward 预测记忆支撑，通过记录对齐约束校正支撑分布，再通过 diffusion 式重构形成可用的 memory state。
