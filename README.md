@@ -1,7 +1,7 @@
 # DLM Proposer + AR Verifier — runnable KV-cache-saving framework
 
 [![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
-[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.1.0)
+[![Release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.2.0)
 [![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-lightgrey)](docs/local-inference-engine.md)
 [![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002%20%7C%200003%20%7C%200004%20%7C%200006-green)](docs/adr/)
 
