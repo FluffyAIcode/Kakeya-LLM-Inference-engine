@@ -112,6 +112,27 @@ class SlabPool:
         """Sum of physical KV bytes across all slabs (capacity, not live)."""
         return sum(s.kv_bytes for s in self._all_slabs)
 
+    @property
+    def live_kv_bytes(self) -> int:
+        """Sum of *live* KV bytes across slabs currently in use.
+
+        This is what we want to expose as a Prometheus gauge for the
+        long-session memory-stability claim (ADR 0006 §2.3): it's the
+        actual KV memory consumed by active sessions right now, not
+        the pool's pre-allocated capacity. Free slabs contribute 0
+        (their ``logical_size`` is reset on release).
+
+        :class:`~inference_engine.scheduler.pooled_verifier.PooledVerifier`
+        keeps each slab's ``live_kv_bytes_override`` synced with the
+        real verifier KV size, so this aggregate matches the verifier
+        backend's actual memory footprint.
+        """
+        with self._lock:
+            in_use_set = set(self._in_use)
+        return sum(
+            self._all_slabs[i].live_kv_bytes for i in sorted(in_use_set)
+        )
+
     def acquire_optional(self) -> Optional[KVSlab]:
         """Acquire a slab if available, else return ``None`` instead of raising.
 

@@ -105,6 +105,7 @@ class Metrics:
     scheduler_pool_in_use: Gauge
     scheduler_pool_total: Gauge
     scheduler_pending: Gauge
+    scheduler_kv_live_bytes: Gauge
     scheduler_admission_total: Counter
 
     @classmethod
@@ -169,6 +170,14 @@ class Metrics:
                 "Submissions queued for admission under QUEUE policy.",
                 registry=registry,
             ),
+            scheduler_kv_live_bytes=Gauge(
+                "scheduler_kv_live_bytes",
+                "Bytes of KV cache currently live across all active "
+                "sessions. Bounded by the per-session sink+window "
+                "configuration; verifies the ADR 0006 §2.3 long-session "
+                "memory-stability claim.",
+                registry=registry,
+            ),
             scheduler_admission_total=Counter(
                 "scheduler_admission_total",
                 "Total admission attempts, by result.",
@@ -207,11 +216,13 @@ class Metrics:
             )
 
     def snapshot_scheduler(self, *, active: int, pool_in_use: int,
-                           pool_total: int, pending: int) -> None:
+                           pool_total: int, pending: int,
+                           kv_live_bytes: int = 0) -> None:
         self.scheduler_active_sessions.set(active)
         self.scheduler_pool_in_use.set(pool_in_use)
         self.scheduler_pool_total.set(pool_total)
         self.scheduler_pending.set(pending)
+        self.scheduler_kv_live_bytes.set(kv_live_bytes)
 
     # ------------------------------------------------------------------
     # Exposition
