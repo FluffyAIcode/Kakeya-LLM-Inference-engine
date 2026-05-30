@@ -212,6 +212,118 @@ async def _scrape_metrics(
     return _parse_prom_text(r.text)
 
 
+class _PeakMetricsCollector:
+    """Polls ``/metrics`` while a turn is in flight, recording peaks.
+
+    The post-turn ``/metrics`` scrape always reads zeroes because by
+    the time the chat-completion HTTP response returns the slab is
+    already released back to the pool, ``live_kv_bytes_override`` has
+    been cleared, and ``logical_size`` is reset. To verify the ADR
+    0006 §2.3 KV-bounded claim we need to sample **during** generation,
+    when the slab actually holds KV state.
+
+    This was discovered the hard way during the 2026-05-30 30-min
+    short test: every turn recorded ``kv_live_bytes = 0.0`` even
+    though the orphan-session fix was working correctly. The bench
+    was scraping AFTER the turn finished. See
+    ``results/platform-tests/bench_long_session_mac_short_1780146230.*``.
+
+    Usage::
+
+        collector = _PeakMetricsCollector(client, metrics_path, timeout_s,
+                                          poll_interval_s=0.25)
+        async with collector:
+            response = await client.post(...)
+        peak = collector.peak  # max value seen for each metric
+                               # during the turn
+
+    The collector polls concurrently on the same ``httpx.AsyncClient``
+    used for the chat request — concurrent requests on a single
+    httpx client are supported. The ``/metrics`` endpoint does not
+    acquire a slab so it cannot deadlock against the in-flight POST.
+    """
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        metrics_path: str,
+        timeout_s: float,
+        poll_interval_s: float = 0.25,
+    ) -> None:
+        if poll_interval_s <= 0:
+            raise ValueError(
+                f"poll_interval_s must be > 0, got {poll_interval_s}"
+            )
+        self._client = client
+        self._metrics_path = metrics_path
+        self._timeout_s = timeout_s
+        self._poll_interval_s = poll_interval_s
+        self._peak: dict[str, float] = {name: 0.0 for name in _METRIC_NAMES}
+        self._last: Optional[dict[str, float]] = None
+        self._sample_count: int = 0
+        self._task: Optional[asyncio.Task] = None
+        self._stop_event: Optional[asyncio.Event] = None
+
+    async def __aenter__(self) -> "_PeakMetricsCollector":
+        self._stop_event = asyncio.Event()
+        self._task = asyncio.create_task(self._run())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        assert self._stop_event is not None  # __aenter__ ran
+        assert self._task is not None
+        self._stop_event.set()
+        try:
+            await self._task
+        except Exception:  # pragma: no cover - defensive
+            if exc_type is None:
+                raise
+
+    async def _run(self) -> None:
+        assert self._stop_event is not None
+        while not self._stop_event.is_set():
+            sample = await _scrape_metrics(
+                self._client,
+                metrics_path=self._metrics_path,
+                timeout_s=self._timeout_s,
+            )
+            if sample is not None:
+                self._sample_count += 1
+                self._last = sample
+                for name in _METRIC_NAMES:
+                    val = sample.get(name)
+                    if val is not None and val > self._peak[name]:
+                        self._peak[name] = float(val)
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self._poll_interval_s,
+                )
+            except asyncio.TimeoutError:
+                continue
+
+    @property
+    def peak(self) -> dict[str, float]:
+        """Highest value of each scheduler_* metric seen during the turn.
+
+        Always returns a dict with all expected keys, defaulting to
+        ``0.0`` for any metric never observed (e.g. if every poll
+        failed). Callers can therefore treat this as schema-stable.
+        """
+        return dict(self._peak)
+
+    @property
+    def sample_count(self) -> int:
+        """Number of successful ``/metrics`` scrapes during the turn."""
+        return self._sample_count
+
+    @property
+    def last_sample(self) -> Optional[dict[str, float]]:
+        """The most recent successful sample, or None if every poll failed."""
+        return None if self._last is None else dict(self._last)
+
+
 # ---------------------------------------------------------------------------
 # Long-session driver
 # ---------------------------------------------------------------------------
@@ -225,31 +337,55 @@ async def _do_one_turn(
     history: list[dict[str, str]],
     max_tokens: int,
     timeout_s: float,
-) -> tuple[Optional[str], int, Optional[str]]:
-    """Send one chat-completions request. Returns (text, n_compl, err)."""
-    try:
-        r = await client.post(
-            "/v1/chat/completions",
-            headers=headers,
-            json={
-                "model": model,
-                "messages": history,
-                "max_tokens": max_tokens,
-                "stream": False,
-            },
-            timeout=timeout_s,
-        )
-    except (httpx.RequestError, asyncio.TimeoutError) as exc:
-        return None, 0, f"transport: {type(exc).__name__}: {exc}"
+    metrics_path: str,
+    metrics_poll_interval_s: float,
+) -> tuple[Optional[str], int, Optional[str], dict[str, float], int]:
+    """Send one chat-completions request and concurrently sample
+    ``/metrics`` to capture peak scheduler state during generation.
+
+    Returns ``(text, n_completion_tokens, error, peak_metrics,
+    metrics_sample_count)``. ``peak_metrics`` is always a fully-
+    populated dict (zeros for any metric never observed).
+    """
+    collector = _PeakMetricsCollector(
+        client,
+        metrics_path=metrics_path,
+        timeout_s=timeout_s,
+        poll_interval_s=metrics_poll_interval_s,
+    )
+    async with collector:
+        try:
+            r = await client.post(
+                "/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": history,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                },
+                timeout=timeout_s,
+            )
+        except (httpx.RequestError, asyncio.TimeoutError) as exc:
+            return (
+                None, 0, f"transport: {type(exc).__name__}: {exc}",
+                collector.peak, collector.sample_count,
+            )
     if r.status_code != 200:
-        return None, 0, f"http {r.status_code}: {r.text[:200]}"
+        return (
+            None, 0, f"http {r.status_code}: {r.text[:200]}",
+            collector.peak, collector.sample_count,
+        )
     body = r.json()
     try:
         text = body["choices"][0]["message"]["content"]
         n_compl = int(body["usage"]["completion_tokens"])
     except (KeyError, IndexError) as exc:  # pragma: no cover - server contract
-        return None, 0, f"unexpected response shape: {exc}"
-    return text, n_compl, None
+        return (
+            None, 0, f"unexpected response shape: {exc}",
+            collector.peak, collector.sample_count,
+        )
+    return text, n_compl, None, collector.peak, collector.sample_count
 
 
 async def run_long_session(
@@ -264,6 +400,7 @@ async def run_long_session(
     timeout_s: float,
     progress_every_s: float,
     checkpoint_path: Optional[Path],
+    metrics_poll_interval_s: float = 0.25,
 ) -> dict[str, Any]:
     """Drive a single agent session for ``duration_s`` seconds."""
     headers = {"content-type": "application/json"}
@@ -296,13 +433,19 @@ async def run_long_session(
                 break
 
             t_turn = time.perf_counter()
-            text, n_compl, err = await _do_one_turn(
+            text, n_compl, err, metrics_peak, n_samples = await _do_one_turn(
                 client, headers=headers, model=model,
                 history=history, max_tokens=max_tokens,
                 timeout_s=timeout_s,
+                metrics_path=metrics_path,
+                metrics_poll_interval_s=metrics_poll_interval_s,
             )
             latency = time.perf_counter() - t_turn
-            metrics = await _scrape_metrics(
+            # Post-turn idle scrape — useful as a sanity check
+            # (pool_in_use should always be 0 here, since the slab is
+            # released back to the pool the instant the response
+            # leaves the route handler).
+            metrics_idle = await _scrape_metrics(
                 client, metrics_path=metrics_path, timeout_s=timeout_s,
             )
             rss = _client_rss_bytes()
@@ -325,7 +468,9 @@ async def run_long_session(
                 "latency_s": latency,
                 "completion_tokens": n_compl,
                 "tokens_per_s": (n_compl / latency) if latency > 0 else 0.0,
-                "metrics": metrics,
+                "metrics_peak": metrics_peak,
+                "metrics_samples": n_samples,
+                "metrics_idle": metrics_idle,
                 "client_rss_bytes": rss,
             })
             history.append({"role": "assistant", "content": text})
@@ -337,7 +482,8 @@ async def run_long_session(
 
             now = time.perf_counter()
             if now - last_progress >= progress_every_s:
-                _print_progress(elapsed, turn_idx, turns, errors, metrics)
+                _print_progress(elapsed, turn_idx, turns, errors,
+                                metrics_peak, n_samples)
                 last_progress = now
             if checkpoint_path is not None and now - last_checkpoint >= 60:
                 _atomic_write_json(
@@ -369,16 +515,18 @@ def _print_progress(
     turn_idx: int,
     turns: list[dict[str, Any]],
     errors: list[dict[str, Any]],
-    metrics: Optional[dict[str, float]],
+    metrics_peak: Optional[dict[str, float]],
+    n_samples: int = 0,
 ) -> None:
     last = turns[-1] if turns else None
     last_lat = f"{last['latency_s']:.2f}s" if last else "-"
-    kv = (metrics or {}).get("scheduler_kv_live_bytes")
-    kv_str = f"{kv / (1024 * 1024):.1f} MiB" if kv is not None else "?"
+    kv = (metrics_peak or {}).get("scheduler_kv_live_bytes", 0.0)
+    kv_str = f"{kv / (1024 * 1024):.1f} MiB" if kv else "0.0 MiB"
     print(
         f"[bench] t={elapsed/60:6.1f} min | turns={turn_idx:5d} "
         f"| ok={len(turns):5d} | err={len(errors):3d} "
-        f"| last_lat={last_lat} | kv_live={kv_str}",
+        f"| last_lat={last_lat} | kv_peak={kv_str} "
+        f"| samples={n_samples}",
         flush=True,
     )
 
@@ -396,6 +544,16 @@ def _percentile(values: list[float], q: float) -> float:
     return s[k]
 
 
+def _peak_kv_for_turn(turn: dict[str, Any]) -> Optional[float]:
+    """Read the in-flight peak ``scheduler_kv_live_bytes`` for a turn,
+    or ``None`` if no successful sample was collected."""
+    peak = turn.get("metrics_peak") or {}
+    if turn.get("metrics_samples", 0) <= 0:
+        return None
+    val = peak.get("scheduler_kv_live_bytes")
+    return None if val is None else float(val)
+
+
 def _bucketize(
     turns: list[dict[str, Any]],
     bucket_s: float,
@@ -411,10 +569,7 @@ def _bucketize(
     for idx in sorted(buckets):
         bucket_turns = buckets[idx]
         latencies = [b["latency_s"] for b in bucket_turns]
-        kv_vals = [
-            (b["metrics"] or {}).get("scheduler_kv_live_bytes")
-            for b in bucket_turns
-        ]
+        kv_vals = [_peak_kv_for_turn(b) for b in bucket_turns]
         kv_vals_clean = [v for v in kv_vals if v is not None]
         out.append({
             "bucket_index": idx,
@@ -443,16 +598,30 @@ def _aggregate(
             "duration_s": duration_s,
         }
     latencies = [t["latency_s"] for t in turns]
-    kv_series = [
-        (t["metrics"] or {}).get("scheduler_kv_live_bytes")
-        for t in turns
-    ]
+    # In-flight peaks (real KV usage during a turn).
+    kv_series = [_peak_kv_for_turn(t) for t in turns]
     kv_clean = [v for v in kv_series if v is not None]
     pool_in_use_series = [
-        (t["metrics"] or {}).get("scheduler_pool_in_use")
+        (t.get("metrics_peak") or {}).get("scheduler_pool_in_use")
+        if t.get("metrics_samples", 0) > 0 else None
         for t in turns
     ]
     pool_in_use_clean = [v for v in pool_in_use_series if v is not None]
+    # Idle-state pool snapshot — "did the slab get released between
+    # turns?". This is what the orphan-session fix unblocks: a
+    # broken server holds pool_in_use=1 forever after the first
+    # client disconnect.
+    idle_pool_in_use_series = [
+        (t.get("metrics_idle") or {}).get("scheduler_pool_in_use")
+        for t in turns
+    ]
+    idle_pool_clean = [v for v in idle_pool_in_use_series if v is not None]
+
+    # Total samples collected during all turns.
+    total_samples = sum(int(t.get("metrics_samples", 0)) for t in turns)
+    turns_without_samples = sum(
+        1 for t in turns if int(t.get("metrics_samples", 0)) == 0
+    )
 
     # Per-bucket aggregates for drift analysis. Default 600s (10 min).
     buckets = _bucketize(turns, 600.0)
@@ -478,6 +647,8 @@ def _aggregate(
         "p50_latency_s": statistics.median(latencies),
         "p95_latency_s": _percentile(latencies, 0.95),
         "mean_latency_s": statistics.mean(latencies),
+        "in_flight_metric_samples_total": total_samples,
+        "turns_without_metric_samples": turns_without_samples,
         "min_kv_live_bytes": min(kv_clean) if kv_clean else None,
         "max_kv_live_bytes": max(kv_clean) if kv_clean else None,
         "mean_kv_live_bytes":
@@ -486,11 +657,11 @@ def _aggregate(
             None if not kv_clean
             else (max(kv_clean) - min(kv_clean)) / max(min(kv_clean), 1.0) < 0.10
         ),
-        "pool_in_use_max":
+        "pool_in_use_peak_max":
             max(pool_in_use_clean) if pool_in_use_clean else None,
-        "pool_in_use_settles_to_zero": (
-            None if not pool_in_use_clean
-            else min(pool_in_use_clean) == 0
+        "idle_pool_in_use_settles_to_zero": (
+            None if not idle_pool_clean
+            else min(idle_pool_clean) == 0 and max(idle_pool_clean) == 0
         ),
         "latency_drift_p50_s": latency_drift_s,
         "kv_drift_bytes": kv_drift_bytes,
@@ -544,13 +715,19 @@ def render_summary(payload: dict[str, Any]) -> str:
         f"  p50 turn latency               = {agg['p50_latency_s']:.3f} s",
         f"  p95 turn latency               = {agg['p95_latency_s']:.3f} s",
         f"  mean turn latency              = {agg['mean_latency_s']:.3f} s",
-        f"  KV live bytes  min / mean / max= "
+        f"  in-flight metric samples total = "
+        f"{agg.get('in_flight_metric_samples_total', 0)}",
+        f"  turns w/o any metric sample    = "
+        f"{agg.get('turns_without_metric_samples', 0)}",
+        f"  KV peak (in-flight) min/mean/max = "
         f"{_fmt_bytes(agg['min_kv_live_bytes'])} / "
         f"{_fmt_bytes(agg['mean_kv_live_bytes'])} / "
         f"{_fmt_bytes(agg['max_kv_live_bytes'])}",
         f"  KV bounded (<10% spread)       = {agg['kv_bounded']}",
-        f"  pool_in_use settles to zero    = {agg['pool_in_use_settles_to_zero']}",
-        f"  pool_in_use max                = {agg['pool_in_use_max']}",
+        f"  idle pool_in_use settles to 0  = "
+        f"{agg.get('idle_pool_in_use_settles_to_zero')}",
+        f"  pool_in_use peak (in-flight)   = "
+        f"{agg.get('pool_in_use_peak_max')}",
         f"  latency drift (last-first p50) = {agg['latency_drift_p50_s']:+.3f} s",
         f"  KV drift (last-first 10-min)   = "
         f"{(agg['kv_drift_bytes'] or 0) / (1024 * 1024):+.2f} MiB",
@@ -601,6 +778,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--max-tokens", type=int, default=64)
     ap.add_argument("--timeout-s", type=float, default=120.0)
     ap.add_argument("--progress-every-s", type=float, default=60.0)
+    ap.add_argument("--metrics-poll-interval-s", type=float, default=0.25,
+                    help="how often to scrape /metrics during an in-flight "
+                         "turn for peak KV / pool_in_use measurement "
+                         "(default: %(default)s s). Smaller = more precise "
+                         "but more HTTP overhead.")
     ap.add_argument("--report", default=None)
     ap.add_argument("--checkpoint", default=None,
                     help="path for partial-result checkpoints written every "
@@ -657,6 +839,7 @@ def main() -> int:
         timeout_s=args.timeout_s,
         progress_every_s=args.progress_every_s,
         checkpoint_path=checkpoint,
+        metrics_poll_interval_s=args.metrics_poll_interval_s,
     ))
 
     summary = render_summary(payload)
