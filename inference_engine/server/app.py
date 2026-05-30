@@ -56,6 +56,7 @@ within one poll interval after the lifespan exits.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -370,12 +371,20 @@ def _register_routes(app: FastAPI) -> None:
                 media_type="text/event-stream",
             )
 
-        # Non-streaming: drain the session synchronously.
-        output_token_ids: List[int] = []
         try:
-            async for tok in scheduler.iter_tokens(session):
-                output_token_ids.append(int(tok))
+            output_token_ids = await _collect_non_streaming_tokens(
+                scheduler=scheduler,
+                session=session,
+                request=request,
+            )
+        except asyncio.CancelledError:
+            # Client timed out/disconnected while the JSON response was
+            # draining. Without explicit cancellation the worker can keep
+            # occupying the only slab, causing later queued requests to 429.
+            await scheduler.cancel_session(session)
+            raise
         except BaseException as exc:
+            await scheduler.cancel_session(session)
             # Engine raised mid-generate; surface as 500.
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -467,6 +476,32 @@ def _session_acceptance_rate(
     """
     _ = scheduler, session
     return None
+
+
+async def _collect_non_streaming_tokens(
+    *,
+    scheduler: Scheduler,
+    session: Session,
+    request: Request,
+    disconnect_poll_interval_s: float = 0.05,
+) -> List[int]:
+    """Drain a non-streaming session while honoring client disconnects.
+
+    Streaming responses already poll ``request.is_disconnected()`` and
+    cancel their scheduler session. JSON responses need the same cleanup:
+    a timed-out client otherwise leaves the scheduler worker running until
+    generation finishes, which can monopolize a single-slot server.
+    """
+    output_token_ids: List[int] = []
+    last_disconnect_check = time.monotonic()
+    async for tok in scheduler.iter_tokens(session):
+        output_token_ids.append(int(tok))
+        now = time.monotonic()
+        if (now - last_disconnect_check) >= disconnect_poll_interval_s:
+            last_disconnect_check = now
+            if await request.is_disconnected():
+                await scheduler.cancel_session(session)
+    return output_token_ids
 
 
 async def _stream_via_scheduler(
