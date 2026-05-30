@@ -276,6 +276,38 @@ async def test_stream_via_scheduler_finish_reason_stop_on_cancel(tokenizer):
     assert request.calls > 0
 
 
+async def test_collect_non_streaming_tokens_cancels_on_disconnect(tokenizer):
+    """The JSON response path must cancel its scheduler session when the
+    client disconnects, otherwise one timed-out request can monopolize a
+    single-slot server and turn later queued requests into 429s."""
+    from tests.inference_engine.server.conftest import DeterministicEngine
+    from inference_engine.scheduler.session import SessionState
+    from inference_engine.server.app import _collect_non_streaming_tokens
+
+    ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
+    slow_engine = DeterministicEngine(
+        fixed_tokens=ids, tokenizer=tokenizer,
+        model_id_label="slow", per_token_delay_s=0.02,
+    )
+    scheduler = _build_scheduler_with_engine(slow_engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=20, eos_token_ids=[0],
+    )
+
+    request = _FakeRequest([True])
+    tokens = await _collect_non_streaming_tokens(
+        scheduler=scheduler,
+        session=session,
+        request=request,
+        disconnect_poll_interval_s=0.0,
+    )
+
+    assert tokens
+    assert request.calls >= 1
+    assert session.state is SessionState.CANCELLED
+    assert scheduler.active_count == 0
+
+
 async def test_stream_via_scheduler_finish_reason_length_when_max_tokens(tokenizer):
     """No disconnect, max_tokens cap → finish_reason='length'."""
     from tests.inference_engine.server.conftest import DeterministicEngine
