@@ -39,6 +39,7 @@ def test_build_registers_all_documented_metrics(metrics):
         "scheduler_pool_in_use",
         "scheduler_pool_total",
         "scheduler_pending",
+        "scheduler_kv_live_bytes",
         "scheduler_admission_total",
     }
     found = set()
@@ -170,22 +171,38 @@ def test_record_completion_clamps_acceptance(metrics):
 def test_snapshot_scheduler_sets_gauges(metrics):
     metrics.snapshot_scheduler(
         active=2, pool_in_use=2, pool_total=4, pending=3,
+        kv_live_bytes=12345,
     )
     assert _get_metric_value(metrics, "scheduler_active_sessions") == 2.0
     assert _get_metric_value(metrics, "scheduler_pool_in_use") == 2.0
     assert _get_metric_value(metrics, "scheduler_pool_total") == 4.0
     assert _get_metric_value(metrics, "scheduler_pending") == 3.0
+    assert _get_metric_value(metrics, "scheduler_kv_live_bytes") == 12345.0
 
 
 def test_snapshot_scheduler_overwrites_previous(metrics):
     metrics.snapshot_scheduler(
         active=5, pool_in_use=5, pool_total=8, pending=10,
+        kv_live_bytes=99999,
     )
     metrics.snapshot_scheduler(
         active=0, pool_in_use=0, pool_total=8, pending=0,
+        kv_live_bytes=0,
     )
     assert _get_metric_value(metrics, "scheduler_active_sessions") == 0.0
     assert _get_metric_value(metrics, "scheduler_pending") == 0.0
+    assert _get_metric_value(metrics, "scheduler_kv_live_bytes") == 0.0
+
+
+def test_snapshot_scheduler_kv_live_bytes_default_zero(metrics):
+    """Calling snapshot_scheduler without kv_live_bytes still sets the
+    gauge — to 0 — so a /metrics scrape never sees a stale prior
+    value."""
+    metrics.scheduler_kv_live_bytes.set(123456)
+    metrics.snapshot_scheduler(
+        active=1, pool_in_use=1, pool_total=2, pending=0,
+    )
+    assert _get_metric_value(metrics, "scheduler_kv_live_bytes") == 0.0
 
 
 # ---------------------------------------------------------------------------

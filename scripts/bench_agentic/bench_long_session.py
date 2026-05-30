@@ -15,10 +15,11 @@ For each completed turn we record:
   * completion tokens (from ``usage.completion_tokens``)
   * tokens/s for that turn
   * server-side KV pool state, scraped from ``/metrics``::
-        inference_engine_scheduler_active_sessions
-        inference_engine_scheduler_pool_in_use
-        inference_engine_scheduler_pool_size
-        inference_engine_scheduler_kv_live_bytes
+        scheduler_active_sessions
+        scheduler_pool_in_use
+        scheduler_pool_total
+        scheduler_pending
+        scheduler_kv_live_bytes
   * client-side RSS (best-effort; uses /proc/self/status on Linux,
     psutil if installed, otherwise ``None``)
 
@@ -34,6 +35,28 @@ unbounded-context servers (``mlx_lm.server`` and friends) is that
 **Kakeya's KV bytes per session are bounded by sink+window**, so a
 session can run for hours without OOM. A single agent driven for
 4 hours is therefore the cleanest evidence.
+
+A note on what this bench measures and what it doesn't (per the
+analysis of the 2026-05-30 Mac M4 run, ``bench_long_session_mac_
+1780130542.aborted.json``):
+
+  * **KV memory** stays bounded across hours (the §2.3 claim). The
+    ``scheduler_kv_live_bytes`` gauge is what proves it.
+  * **Per-turn latency** does NOT stay bounded. The OpenAI
+    chat-completions protocol is stateless: every turn the client
+    sends the full history, the server tokenizes it from scratch
+    and the verifier prefills the entire prompt, so prefill cost
+    grows linearly with history length. Sink+window only bounds
+    *generation-phase* memory, not prefill cost. A 30-min run on
+    Mac M4 showed p50 turn latency growing from ~15 s to ~55 s as
+    history grew from ~50 to ~3700 tokens. This is a **protocol-
+    level limitation**, not a memory-stability failure. Cross-
+    request KV reuse (a v0.4 feature) is the eventual fix; until
+    then, agent applications should manage prompt length via
+    summarization or sliding windows.
+
+The bench reports both metrics independently — KV bounded check is
+a hard claim, latency drift is a measurement, not a gate.
 
 Usage
 -----
@@ -131,11 +154,16 @@ def _client_rss_bytes() -> Optional[int]:
         return None
 
 
+# Names match the ones registered by inference_engine.server.metrics
+# (Prometheus-client does NOT add a service prefix). Changing any of
+# these breaks the bench's KV-bounded check; if you rename a metric on
+# the server, update both ends in the same commit.
 _METRIC_NAMES = (
-    "inference_engine_scheduler_active_sessions",
-    "inference_engine_scheduler_pool_in_use",
-    "inference_engine_scheduler_pool_size",
-    "inference_engine_scheduler_kv_live_bytes",
+    "scheduler_active_sessions",
+    "scheduler_pool_in_use",
+    "scheduler_pool_total",
+    "scheduler_pending",
+    "scheduler_kv_live_bytes",
 )
 
 
@@ -345,7 +373,7 @@ def _print_progress(
 ) -> None:
     last = turns[-1] if turns else None
     last_lat = f"{last['latency_s']:.2f}s" if last else "-"
-    kv = (metrics or {}).get("inference_engine_scheduler_kv_live_bytes")
+    kv = (metrics or {}).get("scheduler_kv_live_bytes")
     kv_str = f"{kv / (1024 * 1024):.1f} MiB" if kv is not None else "?"
     print(
         f"[bench] t={elapsed/60:6.1f} min | turns={turn_idx:5d} "
@@ -384,7 +412,7 @@ def _bucketize(
         bucket_turns = buckets[idx]
         latencies = [b["latency_s"] for b in bucket_turns]
         kv_vals = [
-            (b["metrics"] or {}).get("inference_engine_scheduler_kv_live_bytes")
+            (b["metrics"] or {}).get("scheduler_kv_live_bytes")
             for b in bucket_turns
         ]
         kv_vals_clean = [v for v in kv_vals if v is not None]
@@ -416,12 +444,12 @@ def _aggregate(
         }
     latencies = [t["latency_s"] for t in turns]
     kv_series = [
-        (t["metrics"] or {}).get("inference_engine_scheduler_kv_live_bytes")
+        (t["metrics"] or {}).get("scheduler_kv_live_bytes")
         for t in turns
     ]
     kv_clean = [v for v in kv_series if v is not None]
     pool_in_use_series = [
-        (t["metrics"] or {}).get("inference_engine_scheduler_pool_in_use")
+        (t["metrics"] or {}).get("scheduler_pool_in_use")
         for t in turns
     ]
     pool_in_use_clean = [v for v in pool_in_use_series if v is not None]

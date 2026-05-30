@@ -152,6 +152,7 @@ def create_app(
     metrics = Metrics.build()
     metrics.snapshot_scheduler(
         active=0, pool_in_use=0, pool_total=pool.total_count, pending=0,
+        kv_live_bytes=0,
     )
 
     @asynccontextmanager
@@ -295,6 +296,7 @@ def _register_routes(app: FastAPI) -> None:
             pool_in_use=pool.in_use_count,
             pool_total=pool.total_count,
             pending=scheduler.pending_count,
+            kv_live_bytes=pool.live_kv_bytes,
         )
         return PlainTextResponse(
             content=metrics.render(),

@@ -88,6 +88,23 @@ async def test_metrics_pool_total_gauge_reflects_config(short_engine):
     assert "scheduler_pool_total 4.0" in r.text
 
 
+async def test_metrics_kv_live_bytes_gauge_present_and_zero_at_idle(
+    short_engine,
+):
+    """The KV-live-bytes gauge must be exposed and read 0 on an idle
+    pool (every slab has logical_size == 0). This is the gauge that
+    bench_long_session.py scrapes to verify the ADR 0006 §2.3
+    KV-bounded claim, so its presence is part of the public contract.
+    """
+    app = create_app(short_engine, ServerConfig(max_concurrent=2))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://t") as c:
+        r = await c.get("/metrics")
+    text = r.text
+    assert "# HELP scheduler_kv_live_bytes" in text
+    assert "scheduler_kv_live_bytes 0.0" in text
+
+
 # ---------------------------------------------------------------------------
 # OpenAI error envelope
 # ---------------------------------------------------------------------------
