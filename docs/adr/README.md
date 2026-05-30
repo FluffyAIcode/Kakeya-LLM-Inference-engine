@@ -35,12 +35,12 @@ reader what was *not* chosen.
 | 0001 | [Proposer sizing, alignment, and verifier decoupling](0001-proposer-sizing-and-alignment.md) | Accepted |
 | 0002 | [Verifier selection, quantization, and the open-vs-closed-weight constraint](0002-verifier-selection-and-quantization.md) | Accepted |
 | 0003 | [Verifier ↔ slab pool integration: deferred refactor + intermediate step](0003-verifier-slab-pool-integration.md) | Accepted |
-| 0004 | Alignment training data preparation policy (Nemotron-informed) | In flight (PR #18) |
+| 0004 | [Alignment training data preparation policy (Nemotron-informed)](0004-alignment-training-data-preparation-policy.md) | Accepted |
 | 0005 | Personal layer / personal data store                            | Planned  |
 | 0006 | [Project positioning as local agent infrastructure](0006-local-agent-infrastructure-positioning.md) | Accepted |
 
 Note: ADR numbering is monotonically increasing; in-flight or
-planned numbers (0004, 0005) appear in the index so readers can
+planned numbers (0005) appear in the index so readers can
 see the planned shape of the decision tree even before those ADRs
 are written. When an ADR moves from "Planned" to "In flight" it
 gets a PR link; when it merges, the row updates to "Accepted"

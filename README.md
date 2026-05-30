@@ -3,7 +3,7 @@
 [![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
 [![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.1.0)
 [![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-lightgrey)](docs/local-inference-engine.md)
-[![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002%20%7C%200003%20%7C%200006-green)](docs/adr/)
+[![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002%20%7C%200003%20%7C%200004%20%7C%200006-green)](docs/adr/)
 
 Runs the speculative-decoding architecture designed in the prior product
 discussion using **real, public** weights:
@@ -468,6 +468,15 @@ explicitly rejected.
   and what intermediate step ships in v0.2 — `PooledVerifier`
   wrapper that makes pool memory accounting accurate without
   touching the model forward.
+- [ADR 0004 — Alignment training data preparation policy
+  (Nemotron-informed)](docs/adr/0004-alignment-training-data-preparation-policy.md):
+  the v0.3 alignment training data + LoRA + masking + per-slice
+  evaluation policy, locked in before implementation begins.
+  Adopts NVIDIA Nemotron-Labs-Diffusion's `o_proj`-only LoRA
+  configuration (rank 128, α 512) pending an A/B/C validation
+  experiment, plus 7-domain prompt pool, block-aligned hidden
+  state capture, position-dependent masking, and per-slice
+  acceptance gates.
 - [ADR 0006 — Project positioning as local agent
   infrastructure](docs/adr/0006-local-agent-infrastructure-positioning.md):
   the strategic positioning decision that Kakeya is **local agent
