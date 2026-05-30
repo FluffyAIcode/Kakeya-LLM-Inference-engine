@@ -3,7 +3,7 @@
 [![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
 [![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.1.0)
 [![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-lightgrey)](docs/local-inference-engine.md)
-[![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002-green)](docs/adr/)
+[![ADRs](https://img.shields.io/badge/ADRs-0001%20%7C%200002%20%7C%200003%20%7C%200006-green)](docs/adr/)
 
 Runs the speculative-decoding architecture designed in the prior product
 discussion using **real, public** weights:
@@ -468,3 +468,13 @@ explicitly rejected.
   and what intermediate step ships in v0.2 — `PooledVerifier`
   wrapper that makes pool memory accounting accurate without
   touching the model forward.
+- [ADR 0006 — Project positioning as local agent
+  infrastructure](docs/adr/0006-local-agent-infrastructure-positioning.md):
+  the strategic positioning decision that Kakeya is **local agent
+  infrastructure for Mac**, not a generic chat-acceleration engine.
+  Reframes v0.3+ release notes around multi-agent / long-session /
+  personalized usage, commits to shipping `docs/integrations/`
+  examples (LangChain / CrewAI / AutoGen / Cursor) and an agentic
+  benchmark suite (`scripts/bench_agentic/`), and explicitly declines
+  to compete with llama.cpp on chat speedup or with vLLM on
+  data-center serving.
