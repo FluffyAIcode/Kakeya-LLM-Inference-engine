@@ -199,6 +199,70 @@ class MLXSinkWindowVerifier:
         self._record_peak_kv()
         self._assert_cache_invariant_1()
 
+    def path_select(self, prompt: List[int]) -> "PathPlan":
+        """Select between continuation and new-session paths for ``prompt``.
+
+        Same contract as the CPU verifier; see
+        :meth:`kv_cache_proposer.verifier.SinkWindowVerifier.path_select`
+        for full semantics. Implements ADR 0007 §2.4 and asserts
+        INV-2 (§2.9).
+        """
+        from kv_cache_proposer.path_plan import (  # avoid circular
+            ContinuationPlan,
+            NewSession,
+        )
+
+        if not prompt:
+            raise ValueError("prompt must be non-empty")
+        prompt_list = list(prompt)
+
+        if self.cache is None or self.cache_logical_size == 0:
+            return NewSession(prompt=prompt_list)
+
+        cache_end = self.next_global_position
+        if len(prompt_list) < cache_end:
+            return NewSession(prompt=prompt_list)
+        if not self._prompt_matches_cached_positions(prompt_list):
+            return NewSession(prompt=prompt_list)
+
+        skip_n = cache_end
+        new_tokens = prompt_list[skip_n:]
+
+        if skip_n != self.next_global_position:
+            raise AssertionError(
+                f"INV-2 violated (position monotonicity): planned "
+                f"skip_n={skip_n} but next_global_position="
+                f"{self.next_global_position}. Continuation must "
+                f"extend exactly from the cache's logical end. This "
+                f"is a bug in path_select; ADR 0007 §2.9 forbids "
+                f"silent recovery. cache_logical_size="
+                f"{self.cache_logical_size}, "
+                f"cached_token_sequence_len="
+                f"{len(self.cached_token_sequence)}."
+            )
+
+        return ContinuationPlan(skip_n=skip_n, new_tokens=new_tokens)
+
+    def prefill_incremental(self, new_tokens: List[int]) -> None:
+        """Run incremental prefill on ``new_tokens``, reusing cached state.
+
+        Same contract as the CPU verifier; see
+        :meth:`kv_cache_proposer.verifier.SinkWindowVerifier.prefill_incremental`.
+        """
+        if self.cache is None:
+            raise RuntimeError(
+                "prefill_incremental called before any prefill; cache "
+                "is None. Call path_select first and route NewSession "
+                "to prefill() instead."
+            )
+        if not new_tokens:
+            return
+        block_logits = self.forward_block(list(new_tokens))
+        self.commit_or_truncate(
+            forwarded=len(new_tokens), accepted=len(new_tokens)
+        )
+        self.next_token_logits = block_logits[-1].clone()
+
     def append_token(self, token_id: int) -> torch.Tensor:
         logits = self.forward_block([token_id])
         self.commit_or_truncate(forwarded=1, accepted=1)
@@ -212,6 +276,42 @@ class MLXSinkWindowVerifier:
         if self.cache is None:
             return 0
         return cache_ops.cache_seq_length(self.cache)
+
+    def _cached_global_positions(self) -> List[int]:
+        """Global token positions currently held in the cache.
+
+        See :meth:`kv_cache_proposer.verifier.SinkWindowVerifier._cached_global_positions`
+        for semantics.
+        """
+        n = self.next_global_position
+        if n == 0:
+            return []
+        budget = self.config.sink_size + self.config.window_size
+        if n <= budget:
+            return list(range(n))
+        sink_positions = list(range(self.config.sink_size))
+        window_start = n - self.config.window_size
+        window_positions = list(range(window_start, n))
+        return sink_positions + window_positions
+
+    def _prompt_matches_cached_positions(self, prompt: List[int]) -> bool:
+        """Token-id-level check for ADR 0007 §2.4.a.2."""
+        positions = self._cached_global_positions()
+        if len(positions) != len(self.cached_token_sequence):
+            raise AssertionError(
+                f"_prompt_matches_cached_positions: position list of "
+                f"length {len(positions)} disagrees with parallel "
+                f"sequence of length {len(self.cached_token_sequence)}; "
+                f"INV-1 should have caught this earlier"
+            )
+        for cache_idx, global_pos in enumerate(positions):
+            if global_pos >= len(prompt):
+                return False
+            if int(prompt[global_pos]) != int(
+                self.cached_token_sequence[cache_idx]
+            ):
+                return False
+        return True
 
     def _sink_window_slice(self, sequence: List[int]) -> List[int]:
         """Return ``sequence`` after the sink+window trim that the K/V

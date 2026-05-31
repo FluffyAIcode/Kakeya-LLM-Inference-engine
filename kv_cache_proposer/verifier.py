@@ -216,6 +216,110 @@ class SinkWindowVerifier:
         self._record_peak_kv()
         self._assert_cache_invariant_1()
 
+    def path_select(self, prompt: List[int]) -> "PathPlan":
+        """Select between continuation and new-session paths for ``prompt``.
+
+        Implements the deterministic two-path selection from ADR 0007
+        §2.4. Returns ``ContinuationPlan`` when the new prompt extends
+        the cached state monotonically (§2.4.a), or ``NewSession``
+        otherwise (§2.4.b).
+
+        This is **not** a fallback. Both paths are first-class correct
+        actions for their respective input classes.
+
+        Asserts ADR 0007 §2.9 INV-2 (position monotonicity within a
+        session): a ``ContinuationPlan`` always has
+        ``skip_n == self.next_global_position``. Violation indicates a
+        bug in the path-selection algorithm and raises rather than
+        falling back.
+        """
+        from .path_plan import ContinuationPlan, NewSession  # avoid circular
+
+        if not prompt:
+            raise ValueError("prompt must be non-empty")
+        prompt_list = list(prompt)
+
+        # Cold start (§2.4.b case 1)
+        if self.cache is None or self.cache_logical_size == 0:
+            return NewSession(prompt=prompt_list)
+
+        cache_end = self.next_global_position
+
+        # Shorter history (§2.4.b case 2): the new prompt cannot extend
+        # the cached state because it ends before the cache's logical
+        # end. This is a different conversation from the client's side.
+        if len(prompt_list) < cache_end:
+            return NewSession(prompt=prompt_list)
+
+        # Diverging history (§2.4.b case 3): the cached tokens disagree
+        # with the new prompt at any cached logical position.
+        if not self._prompt_matches_cached_positions(prompt_list):
+            return NewSession(prompt=prompt_list)
+
+        # Continuation precondition satisfied.
+        skip_n = cache_end
+        new_tokens = prompt_list[skip_n:]
+
+        # INV-2 (ADR 0007 §2.9): structural invariant — skip_n must
+        # equal next_global_position. If it doesn't, the planning logic
+        # above is buggy; surface as a critical error per §2.9.
+        if skip_n != self.next_global_position:
+            raise AssertionError(
+                f"INV-2 violated (position monotonicity): planned "
+                f"skip_n={skip_n} but next_global_position="
+                f"{self.next_global_position}. Continuation must "
+                f"extend exactly from the cache's logical end. This "
+                f"is a bug in path_select; ADR 0007 §2.9 forbids "
+                f"silent recovery. cache_logical_size="
+                f"{self.cache_logical_size}, "
+                f"cached_token_sequence_len="
+                f"{len(self.cached_token_sequence)}."
+            )
+
+        return ContinuationPlan(skip_n=skip_n, new_tokens=new_tokens)
+
+    @torch.no_grad()
+    def prefill_incremental(self, new_tokens: List[int]) -> None:
+        """Run incremental prefill on ``new_tokens``, reusing cached state.
+
+        Counterpart to :meth:`prefill`: where ``prefill`` resets and
+        rebuilds the cache from scratch, ``prefill_incremental`` keeps
+        the existing cache and only forwards the new tokens. Used by
+        the continuation path of ADR 0007 §2.4.a.
+
+        ``new_tokens`` is the suffix returned by ``path_select`` in
+        ``ContinuationPlan.new_tokens``; the caller must have verified
+        the continuation precondition before calling.
+
+        After this call, ``next_token_logits`` reflects the verifier's
+        prediction for the token immediately after ``new_tokens[-1]``,
+        same contract as :meth:`prefill`.
+
+        Edge case: if ``new_tokens`` is empty (the rare exact-match
+        case where the new prompt equals the cached state in length
+        and content), this is a no-op — ``next_token_logits`` is
+        whatever the previous call left it as, which is still the
+        correct prediction at that position.
+        """
+        if self.cache is None:
+            raise RuntimeError(
+                "prefill_incremental called before any prefill; cache "
+                "is None. Call path_select first and route NewSession "
+                "to prefill() instead."
+            )
+        if not new_tokens:
+            return  # no-op; cache state is already correct
+        # Forward the new tokens; treat all as accepted (this is prompt,
+        # not speculative draft). forward_block + commit_or_truncate
+        # already maintain cached_token_sequence and INV-1 in lockstep.
+        block_logits = self.forward_block(list(new_tokens))
+        self.commit_or_truncate(
+            forwarded=len(new_tokens), accepted=len(new_tokens)
+        )
+        # next_token_logits = the prediction for the token AFTER the
+        # last incrementally prefilled token.
+        self.next_token_logits = block_logits[-1].clone()
+
     @torch.no_grad()
     def append_token(self, token_id: int) -> torch.Tensor:
         """Forward a single token (e.g., correction or bonus) into the cache.
@@ -285,6 +389,60 @@ class SinkWindowVerifier:
                 continue
             layer.keys = keys[:, :, :keep, :].contiguous()
             layer.values = values[:, :, :keep, :].contiguous()
+
+    def _cached_global_positions(self) -> List[int]:
+        """Return the global token positions currently held in the cache.
+
+        The cache holds positions as a sink+window window over global
+        positions. Concretely:
+
+          - If ``next_global_position <= sink + window``: positions
+            ``[0, 1, ..., next_global_position - 1]`` (everything
+            still fits, no eviction yet).
+          - Otherwise: positions ``[0..sink-1]`` (the sink prefix) +
+            ``[next_global_position - window..next_global_position -
+            1]`` (the sliding window).
+
+        Length always equals ``len(self.cached_token_sequence)``
+        (which equals the K/V cache seq dim, by INV-1).
+        """
+        n = self.next_global_position
+        if n == 0:
+            return []
+        budget = self.config.sink_size + self.config.window_size
+        if n <= budget:
+            return list(range(n))
+        sink_positions = list(range(self.config.sink_size))
+        window_start = n - self.config.window_size
+        window_positions = list(range(window_start, n))
+        return sink_positions + window_positions
+
+    def _prompt_matches_cached_positions(self, prompt: List[int]) -> bool:
+        """Token-id-level check for ADR 0007 §2.4.a.2.
+
+        Returns True iff, for every global position ``p`` currently
+        held in the cache, ``prompt[p]`` equals the cached token id
+        at the matching slot. False on any mismatch (caller routes
+        to NewSession path).
+        """
+        positions = self._cached_global_positions()
+        if len(positions) != len(self.cached_token_sequence):
+            # INV-1 should make this impossible; if it triggers,
+            # it's a critical bug in the cache-mutation layer.
+            raise AssertionError(
+                f"_prompt_matches_cached_positions: position list of "
+                f"length {len(positions)} disagrees with parallel "
+                f"sequence of length {len(self.cached_token_sequence)}; "
+                f"INV-1 should have caught this earlier"
+            )
+        for cache_idx, global_pos in enumerate(positions):
+            if global_pos >= len(prompt):
+                return False
+            if int(prompt[global_pos]) != int(
+                self.cached_token_sequence[cache_idx]
+            ):
+                return False
+        return True
 
     def _cache_seq_length(self) -> int:
         """Return the seq dim of the cache K/V tensors, or 0 if empty.
