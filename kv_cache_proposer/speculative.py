@@ -138,7 +138,21 @@ class SpeculativeDecoder:
         self.verifier.stats.peak_kv_bytes = 0
         self.verifier.stats.peak_activation_bytes = 0
 
-        self.verifier.prefill(prompt_ids)
+        # ADR 0007 §2.4: dispatch on path-selection. ContinuationPlan
+        # reuses cached prefix; NewSession runs full prefill (the
+        # v0.3.0-rc1 behavior). Output is bit-identical between the
+        # two paths for the same input (§2.7); the only difference
+        # is the prefill cost.
+        from .path_plan import ContinuationPlan, NewSession
+        plan = self.verifier.path_select(prompt_ids)
+        if isinstance(plan, ContinuationPlan):
+            self.verifier.prefill_incremental(plan.new_tokens)
+        else:
+            assert isinstance(plan, NewSession), (
+                f"path_select must return ContinuationPlan or NewSession, "
+                f"got {type(plan).__name__}"
+            )
+            self.verifier.prefill(plan.prompt)
         committed: List[int] = list(prompt_ids)
         generated: List[int] = []
         accepted_per_block: List[int] = []
