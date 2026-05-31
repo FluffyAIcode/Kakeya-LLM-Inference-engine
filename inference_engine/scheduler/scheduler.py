@@ -359,7 +359,11 @@ class Scheduler:
                 )
 
             # Out of engine lock — finalize state.
-            _ = result  # tokens were already streamed via on_token
+            # Stash the engine result on the session so route handlers
+            # can read path-selection observability fields (ADR 0007
+            # §2.10) and acceptance rate. tokens were already streamed
+            # via on_token.
+            session.engine_result = result
             if session.state == SessionState.CANCELLED:
                 # Already counted by cancel_session caller; we just
                 # observe the terminal state here.

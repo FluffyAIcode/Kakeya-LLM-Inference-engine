@@ -41,6 +41,11 @@ def test_build_registers_all_documented_metrics(metrics):
         "scheduler_pending",
         "scheduler_kv_live_bytes",
         "scheduler_admission_total",
+        # ADR 0007 §2.10
+        "path_selection_total",
+        "continuation_tokens_skipped_total",
+        "verifier_prefill_duration_seconds",
+        "cache_invariant_violations_total",
     }
     found = set()
     for collector in metrics.registry._collector_to_names.values():
@@ -250,3 +255,107 @@ def _get_metric_value(
             if all(sample.labels.get(k) == v for k, v in target_labels.items()):
                 return float(sample.value)
     return 0.0
+
+
+# ---------------------------------------------------------------------------
+# ADR 0007 §2.10 — path_selection observability (PR 7-4)
+# ---------------------------------------------------------------------------
+
+
+def test_record_path_selection_continuation_increments_counter(metrics):
+    metrics.record_path_selection(
+        path="continuation", tokens_skipped=42, prefill_duration_s=0.05,
+    )
+    assert _get_metric_value(
+        metrics, "path_selection_total", labels={"path": "continuation"},
+    ) == 1.0
+
+
+def test_record_path_selection_new_session_increments_counter(metrics):
+    metrics.record_path_selection(
+        path="new_session", tokens_skipped=0, prefill_duration_s=2.5,
+    )
+    assert _get_metric_value(
+        metrics, "path_selection_total", labels={"path": "new_session"},
+    ) == 1.0
+
+
+def test_record_path_selection_continuation_increments_tokens_skipped(metrics):
+    metrics.record_path_selection(
+        path="continuation", tokens_skipped=100, prefill_duration_s=0.01,
+    )
+    metrics.record_path_selection(
+        path="continuation", tokens_skipped=50, prefill_duration_s=0.01,
+    )
+    assert _get_metric_value(
+        metrics, "continuation_tokens_skipped_total",
+    ) == 150.0
+
+
+def test_record_path_selection_new_session_does_not_increment_tokens_skipped(
+    metrics,
+):
+    """New-session path has tokens_skipped=0 by construction; we
+    only count continuation savings."""
+    metrics.record_path_selection(
+        path="new_session", tokens_skipped=0, prefill_duration_s=5.0,
+    )
+    assert _get_metric_value(
+        metrics, "continuation_tokens_skipped_total",
+    ) == 0.0
+
+
+def test_record_path_selection_observes_prefill_duration_histogram(metrics):
+    metrics.record_path_selection(
+        path="continuation", tokens_skipped=0, prefill_duration_s=0.05,
+    )
+    count = _get_metric_value(
+        metrics, "verifier_prefill_duration_seconds_count",
+        labels={"path": "continuation"},
+    )
+    assert count == 1.0
+
+
+def test_record_path_selection_partitions_histogram_by_path(metrics):
+    """Continuation and new-session paths must appear in separate
+    histogram label groups so per-path cost profiles are visible."""
+    metrics.record_path_selection(
+        path="continuation", tokens_skipped=10, prefill_duration_s=0.01,
+    )
+    metrics.record_path_selection(
+        path="new_session", tokens_skipped=0, prefill_duration_s=2.0,
+    )
+    assert _get_metric_value(
+        metrics, "verifier_prefill_duration_seconds_count",
+        labels={"path": "continuation"},
+    ) == 1.0
+    assert _get_metric_value(
+        metrics, "verifier_prefill_duration_seconds_count",
+        labels={"path": "new_session"},
+    ) == 1.0
+
+
+def test_record_cache_invariant_violation_inv1(metrics):
+    metrics.record_cache_invariant_violation(kind="inv1")
+    assert _get_metric_value(
+        metrics, "cache_invariant_violations_total", labels={"kind": "inv1"},
+    ) == 1.0
+
+
+def test_record_cache_invariant_violation_inv2(metrics):
+    metrics.record_cache_invariant_violation(kind="inv2")
+    assert _get_metric_value(
+        metrics, "cache_invariant_violations_total", labels={"kind": "inv2"},
+    ) == 1.0
+
+
+def test_cache_invariant_violations_default_zero(metrics):
+    """Should always read 0 in healthy operation. Serves as a
+    'page-on-non-zero' alert target for operators."""
+    # Don't call record_cache_invariant_violation. Counter stays at 0.
+    assert _get_metric_value(
+        metrics, "cache_invariant_violations_total", labels={"kind": "inv1"},
+    ) == 0.0
+    assert _get_metric_value(
+        metrics, "cache_invariant_violations_total", labels={"kind": "inv2"},
+    ) == 0.0
