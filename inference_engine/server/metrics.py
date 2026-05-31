@@ -172,10 +172,13 @@ class Metrics:
             ),
             scheduler_kv_live_bytes=Gauge(
                 "scheduler_kv_live_bytes",
-                "Bytes of KV cache currently live across all active "
-                "sessions. Bounded by the per-session sink+window "
-                "configuration; verifies the ADR 0006 §2.3 long-session "
-                "memory-stability claim.",
+                "Bytes of KV cache attributable to in-flight sessions. "
+                "Reads 0 when no session is active (the verifier may "
+                "still hold residual cache between turns, but that "
+                "carry-over is reset on the next prefill, so it does "
+                "not count as 'live' usage). Verifies the ADR 0006 §2.3 "
+                "long-session memory-stability claim: bounded by the "
+                "per-session sink+window configuration.",
                 registry=registry,
             ),
             scheduler_admission_total=Counter(
