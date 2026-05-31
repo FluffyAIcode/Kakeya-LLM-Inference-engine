@@ -92,9 +92,9 @@ async def test_metrics_kv_live_bytes_gauge_present_and_zero_at_idle(
     short_engine,
 ):
     """The KV-live-bytes gauge must be exposed and read 0 on an idle
-    pool (every slab has logical_size == 0). This is the gauge that
-    bench_long_session.py scrapes to verify the ADR 0006 §2.3
-    KV-bounded claim, so its presence is part of the public contract.
+    engine. This is the gauge that bench_long_session.py scrapes to
+    verify the ADR 0006 §2.3 KV-bounded claim, so its presence is
+    part of the public contract.
     """
     app = create_app(short_engine, ServerConfig(max_concurrent=2))
     async with AsyncClient(transport=ASGITransport(app=app),
@@ -103,6 +103,47 @@ async def test_metrics_kv_live_bytes_gauge_present_and_zero_at_idle(
     text = r.text
     assert "# HELP scheduler_kv_live_bytes" in text
     assert "scheduler_kv_live_bytes 0.0" in text
+
+
+async def test_metrics_kv_live_bytes_reflects_engine_kv_state(tokenizer):
+    """The /metrics handler must read KV bytes from the engine on
+    every scrape (not from the pool). This is the v0.3 wiring that
+    makes bench_long_session.py's in-flight scrape produce a
+    non-zero number on real hardware — without it the gauge
+    unconditionally reads 0 because no production code path sets
+    the slab's live_kv_bytes_override.
+
+    The 2026-05-30 short test #2 (results/.../bench_long_session_mac_short2_
+    1780196477.json) recorded 7313 in-flight samples across 58 turns
+    with pool_in_use=1 throughout, yet kv_live_bytes was 0.0 in every
+    sample. This regression test pins the fix.
+    """
+    from tests.inference_engine.server.conftest import DeterministicEngine
+
+    class _KVAwareEngine(DeterministicEngine):
+        def __init__(self, *args, kv_value: int, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._kv_value = kv_value
+
+        def kv_state(self) -> int:
+            return self._kv_value
+
+    eos = tokenizer.eos_token_id
+    assert eos is not None
+    hello = tokenizer._intern("hi")
+    eng = _KVAwareEngine(
+        fixed_tokens=[hello, eos],
+        tokenizer=tokenizer,
+        model_id_label="kv-aware",
+        kv_value=12345678,
+    )
+    app = create_app(eng, ServerConfig(max_concurrent=1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://t") as c:
+        r = await c.get("/metrics")
+    assert r.status_code == 200
+    assert "scheduler_kv_live_bytes 1.2345678e+07" in r.text or \
+           "scheduler_kv_live_bytes 12345678" in r.text
 
 
 # ---------------------------------------------------------------------------

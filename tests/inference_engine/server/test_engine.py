@@ -58,13 +58,19 @@ class _DecoderDouble:
     """
 
     def __init__(self, fixed_tokens: List[int], acceptance: float = 0.5,
-                 proposer_calls: int = 7, verifier_calls: int = 3) -> None:
+                 proposer_calls: int = 7, verifier_calls: int = 3,
+                 verifier=None) -> None:
         self._fixed_tokens = list(fixed_tokens)
         self._acceptance = acceptance
         self._proposer_calls = proposer_calls
         self._verifier_calls = verifier_calls
         self.call_count = 0
         self.last_kwargs: Optional[dict] = None
+        # The engine adapter reads ``decoder.verifier.live_kv_bytes()``
+        # via ``kv_state``. A double object exposing the same one-method
+        # surface is enough for the engine adapter; SpeculativeDecoder
+        # itself has a ``.verifier`` attribute so duck typing matches.
+        self.verifier = verifier
 
     def generate(
         self,
@@ -254,3 +260,62 @@ def test_generate_rejects_empty_eos_token_ids(tokenizer):
     engine = SpeculativeEngine(decoder=decoder, tokenizer=tokenizer, model_id_label="m")
     with pytest.raises(ValueError, match="eos_token_ids must be non-empty"):
         engine.generate(prompt_ids=[1], max_new_tokens=5, eos_token_ids=[])
+
+
+# ---------------------------------------------------------------------------
+# kv_state — read live KV bytes from the underlying verifier
+# ---------------------------------------------------------------------------
+
+
+class _VerifierDouble:
+    """Real concrete verifier surface that exposes ``live_kv_bytes``.
+
+    Mirrors the production verifiers' (CPU + MLX) public method
+    without loading any model. The engine adapter walks
+    ``decoder.verifier.live_kv_bytes()`` via duck typing.
+    """
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+        self.calls = 0
+
+    def live_kv_bytes(self) -> int:
+        self.calls += 1
+        return self._value
+
+
+class _LegacyVerifierDouble:
+    """Older verifier shape that does NOT expose live_kv_bytes.
+
+    Used to verify the engine adapter degrades to 0 (rather than
+    raising) when wrapping a verifier without the optional method.
+    """
+
+
+def test_kv_state_reads_from_verifier_live_kv_bytes(tokenizer):
+    verifier = _VerifierDouble(value=4096)
+    decoder = _DecoderDouble(fixed_tokens=[10], verifier=verifier)
+    engine = SpeculativeEngine(decoder=decoder, tokenizer=tokenizer,
+                               model_id_label="m")
+    assert engine.kv_state() == 4096
+    assert verifier.calls == 1
+
+
+def test_kv_state_returns_zero_when_verifier_has_no_method(tokenizer):
+    decoder = _DecoderDouble(fixed_tokens=[10], verifier=_LegacyVerifierDouble())
+    engine = SpeculativeEngine(decoder=decoder, tokenizer=tokenizer,
+                               model_id_label="m")
+    assert engine.kv_state() == 0
+
+
+def test_kv_state_called_each_invocation(tokenizer):
+    """The /metrics handler calls kv_state on every scrape — must
+    re-read the verifier each time, not cache."""
+    verifier = _VerifierDouble(value=100)
+    decoder = _DecoderDouble(fixed_tokens=[10], verifier=verifier)
+    engine = SpeculativeEngine(decoder=decoder, tokenizer=tokenizer,
+                               model_id_label="m")
+    engine.kv_state()
+    engine.kv_state()
+    engine.kv_state()
+    assert verifier.calls == 3

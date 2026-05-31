@@ -189,6 +189,11 @@ class DeterministicEngine:
     def model_id_label(self) -> str:
         return self._model_id_label
 
+    def kv_state(self) -> int:
+        """Test double has no real KV cache — 0 by default. Tests that
+        want to drive a non-zero gauge value override this."""
+        return 0
+
     def generate(
         self,
         prompt_ids: List[int],

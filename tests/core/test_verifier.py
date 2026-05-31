@@ -317,6 +317,48 @@ def test_record_peak_kv_handles_layers_with_null_kv(fresh_verifier_factory) -> N
         layer0.values = saved_v
 
 
+def test_live_kv_bytes_zero_before_prefill(fresh_verifier_factory) -> None:
+    """Before any prefill, ``live_kv_bytes()`` must read 0. Required
+    by the /metrics scrape contract: the gauge has a stable value at
+    process startup."""
+    verifier = fresh_verifier_factory()
+    assert verifier.live_kv_bytes() == 0
+
+
+def test_live_kv_bytes_nonzero_after_prefill(fresh_verifier_factory) -> None:
+    """After prefill the cache holds tensors; live_kv_bytes returns
+    the sum of bytes across all layers' keys + values. This is the
+    gauge value the bench scrapes during in-flight generation."""
+    verifier = fresh_verifier_factory()
+    verifier.prefill(list(range(16)))
+    n = verifier.live_kv_bytes()
+    assert n > 0
+    # Round-trip: peak_kv_bytes is set from the same source so they
+    # must agree right after prefill.
+    assert verifier.stats.peak_kv_bytes == n
+
+
+def test_live_kv_bytes_returns_zero_when_layer_kv_is_null(
+    fresh_verifier_factory,
+) -> None:
+    """The keys-None branch is taken on cleared layers and must not
+    raise — live_kv_bytes simply skips them in the sum."""
+    verifier = fresh_verifier_factory()
+    verifier.prefill(list(range(4)))
+    layer0 = verifier.cache.layers[0]
+    saved_k, saved_v = layer0.keys, layer0.values
+    layer0.keys = None
+    layer0.values = None
+    try:
+        # Must not raise. Returns the sum across the *remaining*
+        # non-null layers (potentially less than the full prefill total).
+        n = verifier.live_kv_bytes()
+        assert n >= 0
+    finally:
+        layer0.keys = saved_k
+        layer0.values = saved_v
+
+
 def test_record_peak_activation_grows_only(fresh_verifier_factory) -> None:
     verifier = fresh_verifier_factory()
     a = torch.zeros((1, 4, 32), dtype=torch.bfloat16)
