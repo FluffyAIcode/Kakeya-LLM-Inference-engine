@@ -187,10 +187,26 @@ class MLXSinkWindowVerifier:
             return 0
         return cache_ops.cache_seq_length(self.cache)
 
-    def _record_peak_kv(self) -> None:
+    def live_kv_bytes(self) -> int:
+        """Return the current size of the verifier's live KV cache in bytes.
+
+        This is the *now* size, not a peak. Reads from any thread:
+        ``cache_ops.total_kv_bytes`` walks the per-layer
+        :class:`SinkWindowKVCache` instances and sums
+        ``keys.size * keys.dtype.size`` + same for values, all of
+        which are integer attributes that don't tear under a
+        concurrent reader. The HTTP ``/metrics`` handler relies on
+        this property to scrape KV usage during in-flight generation.
+
+        Returns 0 when the cache has not been allocated yet (between
+        ``reset()`` and the next ``prefill()``).
+        """
         if self.cache is None:
-            return
-        total = cache_ops.total_kv_bytes(self.cache)
+            return 0
+        return cache_ops.total_kv_bytes(self.cache)
+
+    def _record_peak_kv(self) -> None:
+        total = self.live_kv_bytes()
         if total > self.stats.peak_kv_bytes:
             self.stats.peak_kv_bytes = total
 

@@ -64,6 +64,13 @@ class Engine(Protocol):
             returns ``True``, generation stops at that token boundary.
             The callback is the only way streaming routes inject
             cancellation signals (e.g. client disconnect).
+        kv_state
+            Return the engine's current verifier KV-cache size in
+            bytes, or 0 if the engine has no real KV cache (test
+            doubles). Read on every ``/metrics`` scrape to populate
+            the ``scheduler_kv_live_bytes`` gauge so the ADR 0006
+            §2.3 long-session memory-stability claim is verifiable
+            in production.
     """
 
     @property
@@ -81,6 +88,9 @@ class Engine(Protocol):
         eos_token_ids: List[int],
         on_token: Optional[Callable[[int], bool]] = None,
     ) -> EngineResult:
+        ...  # pragma: no cover - Protocol body, never executed
+
+    def kv_state(self) -> int:
         ...  # pragma: no cover - Protocol body, never executed
 
 
@@ -175,3 +185,20 @@ class SpeculativeEngine:
             verifier_forward_calls=int(result.verifier_forward_calls),
             stopped_on_eos=stopped_on_eos,
         )
+
+    def kv_state(self) -> int:
+        """Live KV cache bytes from the underlying verifier.
+
+        Reads ``self._decoder.verifier.live_kv_bytes()`` if the
+        verifier exposes that method (both the CPU and MLX
+        verifiers in this repository do). Returns 0 if the verifier
+        is older / a stub that does not. Called from the
+        ``/metrics`` handler on every scrape and must be safe to
+        call concurrently with the worker thread that is mutating
+        the verifier's cache (see verifier docstrings for the
+        thread-safety argument).
+        """
+        live = getattr(self._decoder.verifier, "live_kv_bytes", None)
+        if live is None:
+            return 0
+        return int(live())

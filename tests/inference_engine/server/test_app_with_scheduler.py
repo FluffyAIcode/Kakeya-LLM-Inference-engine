@@ -275,6 +275,9 @@ class _RaisingEngine:
     def model_id_label(self):
         return "raising"
 
+    def kv_state(self) -> int:
+        return 0
+
     def generate(self, prompt_ids, max_new_tokens, eos_token_ids, on_token=None):
         raise RuntimeError("synthetic engine failure")
 

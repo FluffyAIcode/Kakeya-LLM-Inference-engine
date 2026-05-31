@@ -292,12 +292,21 @@ def _register_routes(app: FastAPI) -> None:
         # Refresh scheduler-state gauges on every scrape so the
         # exposition reflects "now" rather than the last
         # admission/completion event.
+        engine_for_kv: Engine = app.state.engine
+        # Read KV bytes directly from the engine's verifier rather
+        # than from pool.live_kv_bytes. Rationale: in v0.3 the slab
+        # is a session ticket (acquired/released per request) — the
+        # verifier holds the real KV cache tensors and is the
+        # canonical source of truth. Pool-side accounting only
+        # populates once PooledVerifier is wired (a post-v0.3.0
+        # change) and otherwise reads 0 even while the verifier
+        # cache is several MiB.
         metrics.snapshot_scheduler(
             active=scheduler.active_count,
             pool_in_use=pool.in_use_count,
             pool_total=pool.total_count,
             pending=scheduler.pending_count,
-            kv_live_bytes=pool.live_kv_bytes,
+            kv_live_bytes=int(engine_for_kv.kv_state()),
         )
         return PlainTextResponse(
             content=metrics.render(),
