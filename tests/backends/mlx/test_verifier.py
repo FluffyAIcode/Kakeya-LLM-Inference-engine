@@ -255,6 +255,24 @@ def test_record_peak_kv_handles_null_cache() -> None:
     assert v.stats.peak_kv_bytes == pre
 
 
+def test_live_kv_bytes_zero_before_prefill() -> None:
+    """The /metrics gauge must read 0 before any prefill."""
+    v = _build_mlx_verifier()
+    assert v.live_kv_bytes() == 0
+
+
+def test_live_kv_bytes_nonzero_after_prefill() -> None:
+    """During in-flight generation the gauge must read the actual
+    bytes — this is what bench_long_session.py polls on each turn
+    to verify the ADR 0006 §2.3 KV-bounded claim."""
+    v = _build_mlx_verifier()
+    v.prefill(list(range(16)))
+    n = v.live_kv_bytes()
+    assert n > 0
+    # Right after prefill, peak == live.
+    assert v.stats.peak_kv_bytes == n
+
+
 def test_record_peak_activation_grows_only() -> None:
     v = _build_mlx_verifier()
     a = mx.zeros((1, 4, 32), dtype=mx.bfloat16)

@@ -246,15 +246,32 @@ class SinkWindowVerifier:
             layer.keys = keys[:, :, :keep, :].contiguous()
             layer.values = values[:, :, :keep, :].contiguous()
 
-    def _record_peak_kv(self) -> None:
+    def live_kv_bytes(self) -> int:
+        """Return the current size of the verifier's live KV cache in bytes.
+
+        This is the *now* size, not a peak. Reads cleanly from any
+        thread (no locks): in CPython, walking ``self.cache.layers``
+        and reading ``Tensor.numel()`` / ``element_size()`` on each
+        is safe even while the worker thread is mutating the cache —
+        a concurrent write produces a value somewhere between the
+        two adjacent stable states, never garbage. The HTTP
+        ``/metrics`` handler relies on this property.
+
+        Returns 0 when the cache has not been allocated yet (between
+        ``reset()`` and the next ``prefill()``).
+        """
         if self.cache is None:
-            return
+            return 0
         total = 0
         for layer in self.cache.layers:
             if layer.keys is not None:
                 total += layer.keys.numel() * layer.keys.element_size()
             if layer.values is not None:
                 total += layer.values.numel() * layer.values.element_size()
+        return total
+
+    def _record_peak_kv(self) -> None:
+        total = self.live_kv_bytes()
         self.stats.peak_kv_bytes = max(self.stats.peak_kv_bytes, total)
 
     def _record_peak_activation(self, logits: torch.Tensor) -> None:
