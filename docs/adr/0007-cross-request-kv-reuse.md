@@ -168,47 +168,97 @@ asst_1_edited, user_2_edited]. Two paths:
 cached state monotonically, reset. Edge case rare enough that the
 conservative path is correct.
 
-### 2.4 Reset criteria (when prefix matching fails)
+### 2.4 Path selection: continuation vs new-session
 
-**Decision**: the verifier resets and runs full prefill in any of:
+**Decision**: every request takes exactly one of two deterministic
+paths. Both paths are first-class correct actions for their input
+class. There is no "fallback" semantic — the project's engineering
+principles forbid fallback as a design pattern (alongside no-mock
+and no-overfit), and this section's split between continuation and
+new-session reflects that prohibition.
 
-1. The cache is empty (first request after server start).
-2. `find_reusable_prefix` returns 0 (no overlap with cache).
-3. The matched prefix length is below a threshold (default 4 tokens):
-   the savings of skipping 1–3 tokens of prefill don't justify the
-   logic complexity, just reset.
-4. `cache_position_start > 0` (cache has already evicted earlier
-   tokens) AND `len(new_prompt) < cache_position_start`: the new
-   prompt is too short to overlap with what the cache currently
-   holds.
-5. The new request's `system` message differs from the system
-   message that was active when the cache state was built (covered
-   by automatic mismatch in matching, but called out for clarity).
+#### 2.4.a Continuation path
 
-**Open question 2.4.a**: should we add a `force_reset=True` request-
-level escape hatch? Default no — automatic prefix matching is correct
-in 100% of cases (mismatch → fall back to reset). An escape hatch
-adds protocol surface for marginal benefit. Revisit in v0.4 if a real
-user-facing need surfaces.
+Triggered when the new request's prompt is a strict monotonic
+extension of the cached state. Formally, both must hold:
 
-### 2.5 Cache eviction policy (single-tenant scope)
+- `len(new_prompt) >= cache_position_start + len(cached_token_sequence)`
+  (the new prompt extends at or past the cached region's logical end), AND
+- `new_prompt[cache_position_start : cache_position_start + len(cached_token_sequence)]
+  == cached_token_sequence` (every cached position matches the new
+  prompt at the same logical position).
 
-**Decision** for v0.3: **the cache lives as long as the server
-process**. There is exactly one cache state at any time
-(`max_concurrent=1`), and it gets replaced via the prefix-match
-algorithm on every request. No idle timeout, no LRU, no explicit
-eviction.
+Action: skip prefill of the matched logical positions; run
+incremental prefill on
+`new_prompt[cache_position_start + len(cached_token_sequence):]`.
 
-**Rationale**: with a single cache slot and prefix-match-based reuse,
-"eviction" happens implicitly: if a new request doesn't match, the
-cache resets. Adding idle timeout machinery for v0.3 is premature
-optimization.
+#### 2.4.b New-session path
 
-**Forward-compatibility**: in v0.4 (multi-tenant), eviction becomes
-a real concern (many sessions, finite memory). v0.4's ADR will
-specify LRU + idle timeout. The session abstraction we introduce
-here is structured so v0.4 can extend it without rewriting the v0.3
-core.
+Triggered when the request is **not** a continuation, i.e. fails
+either of the §2.4.a conditions. Concrete sub-cases:
+
+1. **Cold start**: the cache is empty (first request after server
+   boot, or after the previous request's incremental path
+   completed and truncated the cache to empty by trim).
+2. **Shorter history**: the new prompt is shorter than the cached
+   state's logical end. Caused by the client deliberately
+   shortening conversation history (e.g., the user opened a new
+   chat tab in the agent UI).
+3. **Diverging history**: the cached state's tokens disagree with
+   the new prompt at one or more cached logical positions. Caused
+   by the client switching to a different conversation that may
+   share an early prefix (e.g., the same system prompt) but
+   diverges before the cache window's end.
+
+Action: reset the verifier and run full prefill on `new_prompt`. The
+cache state is replaced with the new session's state.
+
+#### 2.4.c Path semantics
+
+Both paths produce **bit-identical** output for the same input
+prompt (per §2.7). The only difference is computational cost: the
+continuation path skips already-prefilled tokens.
+
+Selecting the new-session path is **not** a degradation of the
+continuation path; it is the **correct** action when the input
+does not satisfy the continuation precondition. A new conversation
+genuinely requires a fresh prefill — there is no shortcut, and
+choosing to fresh-prefill is not a "fall back to a worse path".
+
+The two-path structure exhausts the input space: every valid input
+prompt satisfies the continuation precondition or it does not. The
+selection function is total. There is no third path. Inputs that
+violate the path's preconditions at runtime cannot exist by
+construction; if such an input appears, it is an anomaly invariant
+violation per §2.9, which is a bug not a fallback.
+
+### 2.5 Cache state lifecycle (single-tenant scope)
+
+**Decision** for v0.3: **the cache holds exactly one state at any
+time, lives as long as the server process, and is overwritten via
+the path-selection function on every request.** There is no LRU,
+no idle timeout, no explicit eviction call.
+
+**Rationale**: with a single cache slot (`max_concurrent=1`), the
+state lifecycle is fully described by §2.4's two paths:
+
+- Continuation path: cache state is **extended** with the
+  incremental tokens.
+- New-session path: cache state is **replaced** with the fresh
+  prefill's output.
+
+Both transitions are deterministic correct actions per §2.4.c. No
+state is left "stale" — the state at any moment reflects whichever
+session was most recently observed. Adding idle-timeout machinery
+for v0.3 single-tenant is premature optimization without a
+concrete user need.
+
+**Forward-compatibility**: in v0.4 (multi-tenant), the cache space
+holds N states (one per concurrent session), and the lifecycle
+includes eviction (LRU + idle timeout) because the state count is
+bounded but the request stream is not. v0.4's ADR will specify
+those policies. The session abstraction this ADR introduces is
+structured so v0.4 can extend it without rewriting the v0.3 core.
 
 ### 2.6 Concurrency: explicit single-tenant scope for v0.3
 
@@ -261,43 +311,151 @@ mandatory before v0.3.0 GA.
 **Open question 2.7.a**: numerical determinism on Apple Metal —
 mlx_lm sometimes produces tiny floating-point differences across
 runs even with greedy decoding. If the bit-identical test is too
-strict on Mac M4, fall back to "logits agree to within float16
-ULPs" and document the relaxation.
+strict on Mac M4, the test gate should be **relaxed once,
+explicitly, in this ADR** to "logits agree to within float16 ULPs"
+— with the relaxation written down here, not silently applied at
+test runtime. A test that adapts its strictness based on whether
+the strict path passes is a fallback in disguise.
 
-### 2.8 Backward compatibility: graceful degradation
+### 2.8 Backward compatibility: path totality
 
 **Decision**: cross-request reuse is **transparent and automatic**;
-there is no opt-out. If a request comes in that doesn't share a
-prefix with the cache (e.g. a totally new conversation, or
-multi-tenant traffic in v0.4), the server falls back to reset +
-full prefill. Behavior is then identical to v0.3.0-rc1.
+there is no opt-out. The path-selection function (§2.4) is total
+over all valid inputs. There is no fallback semantic.
 
-**Rationale**: removing the opt-out keeps the protocol surface
-small. The fallback path is the v0.3.0-rc1 behavior, which is
-already tested and shipped.
+**Rationale**:
 
-### 2.9 Observability
+- A client whose request happens to satisfy the continuation
+  precondition (the dominant case for an agent in a multi-turn
+  loop) takes the continuation path. The server's behavior on its
+  output is bit-identical to v0.3.0-rc1's per-turn-reset behavior.
+- A client whose request does not satisfy the continuation
+  precondition (cold start, new chat, edited history) takes the
+  new-session path. The server's behavior on its output is **also**
+  bit-identical to v0.3.0-rc1's per-turn-reset behavior — because
+  full prefill is exactly what v0.3.0-rc1 always did.
+
+Therefore the upgrade is observably indistinguishable from
+v0.3.0-rc1 on output (same tokens, same `usage` block, same
+`/healthz`), with the single observable change being **per-turn
+latency**: continuation path turns are O(new tokens), new-session
+path turns are O(history length, same as v0.3.0-rc1).
+
+The phrase "graceful degradation" is deliberately not used.
+Degradation implies a primary correct path and a less-correct
+backup. Both paths here are equally correct for their input
+classes, just with different cost profiles. This framing is
+required by the project's no-fallback principle (alongside no-mock
+and no-overfit).
+
+### 2.9 Anomaly invariants (these are bugs, not states)
+
+The path-selection function (§2.4) is total over the input space,
+but the verifier's internal state has invariants that the
+implementation is responsible for maintaining. Their violation is
+a **bug**, not a path. Violations must surface immediately as
+runtime errors; the implementation must not silently recover, retry,
+or take an alternate path.
+
+**Required invariants**:
+
+- **INV-1: parallel-sequence consistency.** For every layer's
+  `SinkWindowKVCache`,
+  `len(cached_token_sequence) == cache.cache_seq_length()` must
+  hold after every cache mutation (`update_and_fetch`, `trim`,
+  `reset`). The parallel token sequence must never drift from the
+  K/V tensor sequence dimension.
+- **INV-2: position monotonicity within a session.** During a
+  continuation chain (consecutive continuation-path requests for
+  the same session), `cache_position_start` is monotonically non-
+  decreasing across requests. A continuation that decreases
+  `cache_position_start` indicates a cache-management bug.
+- **INV-3: continuation-path determinism.** For inputs that satisfy
+  the continuation precondition (§2.4.a), the incremental-prefill
+  output must be bit-identical (or float-precision-equivalent per
+  §2.7) to the full-prefill output for the same input. This is the
+  contract that makes §2.4.c's "both paths correct for their
+  inputs" claim hold.
+
+**Detection and response**:
+
+- INV-1 is checked at every cache mutation via Python `assert`
+  statements (cheap, in-process). Violation raises `AssertionError`
+  to the route handler, which surfaces as an HTTP 500 with the
+  OpenAI error envelope and a unique error id for log correlation.
+- INV-2 is checked when path selection runs; violation raises
+  `RuntimeError` with the offending values for the bug report.
+- INV-3 is checked offline via the §2.7 determinism gate test
+  (mandatory before merge). It is not a runtime check because the
+  comparison requires running both paths on the same input, which
+  is too expensive in production.
+
+A violation of any of these is a **critical bug**. The
+implementation does not retry, does not fall back, does not silently
+choose the new-session path to "recover". It raises. Operators
+encountering an INV-1 or INV-2 violation should file a bug report
+and restart the server. The next request after restart takes the
+cold-start sub-case of the new-session path (§2.4.b case 1), which
+is correct in its own right — but the assertion that surfaced the
+bug must be investigated, never papered over.
+
+The OpenAI error envelope returned for INV-1 and INV-2 violations
+follows the convention from PR #13:
+
+```json
+{
+  "error": {
+    "message": "internal cache invariant violation; bug id <UUID>",
+    "type": "internal_error",
+    "code": "kv_cache_inv_violation"
+  }
+}
+```
+
+The bug id is a UUID logged alongside the assertion stack trace so
+the report can be correlated with server logs.
+
+### 2.10 Observability
 
 **Decision**: extend Prometheus metrics with:
 
-- `cross_request_kv_reuse_decisions_total{outcome="hit|partial|miss"}`
-  — counter of per-request decisions: `hit` (full reuse, prefill
-  bypassed), `partial` (some prefix reused), `miss` (full reset).
-- `cross_request_kv_reuse_tokens_skipped_total` — counter of cumulative
-  prompt tokens that did not need to be prefilled because of prefix
-  match.
-- `verifier_prefill_duration_seconds` — histogram of prefill wall
-  time per request, for observing the win.
+- `path_selection_total{path="continuation|new_session"}` —
+  counter of per-request path-selection decisions. Both labels are
+  first-class outcomes; neither is an "error" or "fallback". The
+  ratio `continuation / (continuation + new_session)` over a long
+  session indicates how well the upstream client preserves
+  prefix-extending history.
+- `continuation_tokens_skipped_total` — counter of cumulative
+  prompt tokens that the continuation path did not need to
+  re-prefill across the lifetime of the server. Concretely
+  measures the win.
+- `verifier_prefill_duration_seconds{path="continuation|new_session"}`
+  — histogram of prefill wall time per request, partitioned by
+  path. Continuation-path histogram should center around the
+  per-incremental-token cost; new-session-path histogram tracks
+  full-prefill cost.
+- `cache_invariant_violations_total{kind="inv1|inv2"}` — counter
+  of INV-1 / INV-2 anomaly detections (per §2.9). Should always
+  be 0. Any non-zero value is a critical alert.
 
 These are net additions; existing `scheduler_kv_live_bytes` and
 friends keep their semantics.
 
-**Operational use**: in production, an operator should see hit-rate
-≥ 95% for a healthy long-session agent. A drop to < 50% means
-either (a) prompt-management code on the client side is breaking
-the prefix (e.g. inserting timestamps) or (b) different sessions are
-multiplexed onto one server (a v0.4 deployment running under v0.3
-infrastructure).
+**Operational use**:
+
+- **Healthy long-session agent**: continuation rate is high (e.g.
+  ≥ 95% of requests for a multi-turn LangChain conversation).
+- **Healthy mixed workload**: continuation rate may be lower —
+  agents spawning short-lived conversations, multiple parallel
+  threads, or system-prompt rotation will all legitimately
+  generate new-session-path requests. A "low" continuation rate
+  by itself is not a problem; it is a workload characterization.
+- **Critical alert**: any non-zero `cache_invariant_violations_total`.
+  This is a bug, not a degraded state. Page on this metric.
+- **Performance regression alert**: a previously-high continuation
+  rate dropping unexpectedly. This indicates an upstream change
+  (client started inserting timestamps in history, framework
+  upgrade changed message format) that broke the prefix.
 
 ## 3. Alternatives Considered
 
@@ -451,12 +609,12 @@ tests. PR breakdown in §5 below.
 
 | # | PR | Scope | Coverage gate |
 |---|---|---|---|
-| 7-1 | `SinkWindowKVCache` + parallel token sequence (MLX + CPU) | logical_token_sequence + logical_position_start, update/trim invariants, unit tests | 100% on touched modules |
-| 7-2 | `Verifier.find_reusable_prefix` + `prefill_incremental` (MLX + CPU) | the prefix-match algorithm + the incremental prefill path; unit tests with synthetic verifier | 100% |
-| 7-3 | `SpeculativeDecoder` integration | accept reusable-prefix hint; route between full-prefill and incremental-prefill paths | 100% |
-| 7-4 | `SpeculativeEngine` route-handler integration | call find_reusable_prefix before delegating to decoder.generate; emit decision to metrics | 100% |
-| 7-5 | Determinism gate test | bit-identical comparison between reuse path and always-reset path on a 30-turn synthetic conversation | mandatory before merge |
-| 7-6 | bench_long_session_v2 + 4h Mac re-run | bench observes per-turn cost stable at O(new_message) and §2.3.a still holds | 4h Mac evidence |
+| 7-1 | `SinkWindowKVCache` + parallel token sequence (MLX + CPU) | `logical_token_sequence` + `logical_position_start`; `update_and_fetch` / `trim` / `reset` paths sync the parallel sequence; **INV-1 assert at every mutation site**; unit tests | 100% on touched modules |
+| 7-2 | `Verifier.path_select(prompt) -> ContinuationPlan \| NewSession` + `prefill_incremental(skip_n)` (MLX + CPU) | the path-selection function (§2.4) + the incremental prefill path; **INV-2 assert in path-select**; unit tests with synthetic verifier covering both paths' inputs explicitly | 100% |
+| 7-3 | `SpeculativeDecoder` integration | accept the path-selection result; route between full-prefill and incremental-prefill paths | 100% |
+| 7-4 | `SpeculativeEngine` route-handler integration | call verifier.path_select before delegating to decoder.generate; emit `path_selection_total` metric; route INV violations to OpenAI error envelope per §2.9 | 100% |
+| 7-5 | Determinism gate test (§2.7 + INV-3) | bit-identical comparison between continuation path and always-reset path on a 30-turn synthetic conversation; covers all path-selection branches; mandatory before merge | mandatory before merge |
+| 7-6 | bench_long_session_v2 + 4h Mac re-run | bench observes per-turn cost stable at O(new_message); §2.3.a still holds; INV violations counter is 0 over 4h | 4h Mac evidence |
 | 7-7 | ADR 0006 §2.3.b deletion + §2.3.a expansion | delete the no-longer-valid caveat; expand §2.3.a with v2 bench evidence | doc-only |
 
 Estimated: 7 PRs total. Each independently reviewable. PRs 7-1 →
@@ -468,20 +626,28 @@ validation + docs.
 This ADR is considered validated when:
 
 1. All 7 implementation PRs land on main.
-2. The §2.7 determinism gate passes: bit-identical (or float16-ULP-
-   identical on Metal) output between reuse and always-reset paths
-   over a 30-turn synthetic test.
-3. A 4-hour Mac M4 run with `bench_long_session_v2.py` produces
+2. The §2.7 determinism gate passes: bit-identical (or
+   float16-ULP-identical on Metal, per the §2.7 OQ resolution) output
+   between continuation path and always-reset path over a 30-turn
+   synthetic test. **The relaxation, if any, is recorded in this
+   ADR before the gate is changed — never silently relaxed at test
+   runtime.**
+3. INV-1 and INV-2 (§2.9) assertions never fire during the §6
+   validation runs. The `cache_invariant_violations_total` counter
+   stays at 0 across the determinism test, the synthetic suite, and
+   the 4h Mac M4 run. Any non-zero value is a release blocker.
+4. A 4-hour Mac M4 run with `bench_long_session_v2.py` produces
    ≥ 200 successful turns (vs the 58 turns of v0.3.0-rc1's 4h run)
    with `agg.kv_bounded == True` and `agg.n_errors < 5`.
-4. Per-turn p50 latency drift over the 4-hour run is ≤ 5 seconds
+5. Per-turn p50 latency drift over the 4-hour run is ≤ 5 seconds
    (vs the +39.74 s drift of v0.3.0-rc1).
-5. ADR 0006 §2.3.b is deleted and replaced with a paragraph in §2.3.a
+6. ADR 0006 §2.3.b is deleted and replaced with a paragraph in §2.3.a
    citing this ADR's evidence.
-6. `cross_request_kv_reuse_decisions_total{outcome="hit"}` reports
-   ≥ 95% hit rate on the 4h bench.
+7. `path_selection_total{path="continuation"}` reports ≥ 95% of
+   total path selections on the 4h bench.
 
-Items 2-4 are GA gates; v0.3.0 cannot promote to GA without them.
+Items 2–5 are GA gates; v0.3.0 cannot promote to GA without all of
+them.
 
 ## 7. Open questions (require decision before implementation)
 
