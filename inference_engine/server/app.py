@@ -301,12 +301,32 @@ def _register_routes(app: FastAPI) -> None:
         # populates once PooledVerifier is wired (a post-v0.3.0
         # change) and otherwise reads 0 even while the verifier
         # cache is several MiB.
+        #
+        # Gauge semantics: "KV bytes attributable to in-flight
+        # sessions". Between turns, the verifier's ``self.cache``
+        # still holds the previous turn's tensors — the next
+        # prefill calls ``reset()`` which replaces them, but until
+        # then ``engine.kv_state()`` reports non-zero residual
+        # bytes. Reporting that as "live" misleads observers
+        # and breaks the §2.3 KV-bounded check (residual carries
+        # forward at the previous turn's peak, never trimmed). We
+        # therefore gate the gauge on ``active_count > 0``: an
+        # idle server reports 0, a server with an active session
+        # reports the verifier's true KV size. This is also how
+        # the gauge will naturally behave once PooledVerifier is
+        # wired post-v0.3 (the pool aggregation is 0 when no slab
+        # is in use).
+        kv_live = (
+            int(engine_for_kv.kv_state())
+            if scheduler.active_count > 0
+            else 0
+        )
         metrics.snapshot_scheduler(
             active=scheduler.active_count,
             pool_in_use=pool.in_use_count,
             pool_total=pool.total_count,
             pending=scheduler.pending_count,
-            kv_live_bytes=int(engine_for_kv.kv_state()),
+            kv_live_bytes=kv_live,
         )
         return PlainTextResponse(
             content=metrics.render(),

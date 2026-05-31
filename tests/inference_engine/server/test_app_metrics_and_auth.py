@@ -105,22 +105,30 @@ async def test_metrics_kv_live_bytes_gauge_present_and_zero_at_idle(
     assert "scheduler_kv_live_bytes 0.0" in text
 
 
-async def test_metrics_kv_live_bytes_reflects_engine_kv_state(tokenizer):
+async def test_metrics_kv_live_bytes_reads_from_engine_during_active_session(
+    tokenizer,
+):
     """The /metrics handler must read KV bytes from the engine on
-    every scrape (not from the pool). This is the v0.3 wiring that
-    makes bench_long_session.py's in-flight scrape produce a
-    non-zero number on real hardware — without it the gauge
-    unconditionally reads 0 because no production code path sets
-    the slab's live_kv_bytes_override.
+    every scrape during an in-flight session.
+
+    This is the v0.3 wiring that makes bench_long_session.py's
+    in-flight scrape produce a non-zero number on real hardware —
+    without it the gauge unconditionally reads 0 because no
+    production code path sets the slab's live_kv_bytes_override.
 
     The 2026-05-30 short test #2 (results/.../bench_long_session_mac_short2_
     1780196477.json) recorded 7313 in-flight samples across 58 turns
     with pool_in_use=1 throughout, yet kv_live_bytes was 0.0 in every
-    sample. This regression test pins the fix.
+    sample. This regression test pins the fix end-to-end through real
+    ASGI: spawn an in-flight chat-completion in a Task, race a /metrics
+    scrape against it, assert the scrape sees the engine's kv_state.
     """
     from tests.inference_engine.server.conftest import DeterministicEngine
 
-    class _KVAwareEngine(DeterministicEngine):
+    class _KVAwareSlowEngine(DeterministicEngine):
+        """KV-reporting engine that pauses each token long enough for
+        a /metrics scrape to race the chat-completion task."""
+
         def __init__(self, *args, kv_value: int, **kwargs):
             super().__init__(*args, **kwargs)
             self._kv_value = kv_value
@@ -130,20 +138,68 @@ async def test_metrics_kv_live_bytes_reflects_engine_kv_state(tokenizer):
 
     eos = tokenizer.eos_token_id
     assert eos is not None
-    hello = tokenizer._intern("hi")
-    eng = _KVAwareEngine(
-        fixed_tokens=[hello, eos],
+    ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
+    eng = _KVAwareSlowEngine(
+        fixed_tokens=ids + [eos],
         tokenizer=tokenizer,
-        model_id_label="kv-aware",
+        model_id_label="kv-aware-slow",
+        per_token_delay_s=0.05,
         kv_value=12345678,
     )
     app = create_app(eng, ServerConfig(max_concurrent=1))
     async with AsyncClient(transport=ASGITransport(app=app),
-                           base_url="http://t") as c:
+                           base_url="http://t", timeout=30.0) as c:
+        post_task = asyncio.create_task(c.post(
+            "/v1/chat/completions",
+            json={"model": "m",
+                  "messages": [{"role": "user", "content": "hi"}],
+                  "max_tokens": 20},
+        ))
+        # Let the scheduler admit and the worker start
+        await asyncio.sleep(0.1)
         r = await c.get("/metrics")
+        await post_task
     assert r.status_code == 200
     assert "scheduler_kv_live_bytes 1.2345678e+07" in r.text or \
            "scheduler_kv_live_bytes 12345678" in r.text
+
+
+async def test_metrics_kv_live_bytes_zero_when_no_active_session(tokenizer):
+    """Between turns the verifier may hold residual KV (next prefill
+    will reset it, but until then it sits in self.cache). Reporting
+    that as 'live' breaks observability and breaks the §2.3 KV-bounded
+    check — the residual would carry forward at the previous turn's
+    peak forever. The gauge must therefore gate on
+    ``scheduler.active_count > 0``: idle scrape reads 0 even if
+    engine.kv_state() is non-zero.
+    """
+    from tests.inference_engine.server.conftest import DeterministicEngine
+
+    class _AlwaysHoldingEngine(DeterministicEngine):
+        """Engine whose verifier permanently holds 8 MiB of cache —
+        simulates the post-turn residual state where the verifier has
+        not yet been reset by a follow-up prefill."""
+
+        def kv_state(self) -> int:
+            return 8 * 1024 * 1024
+
+    eos = tokenizer.eos_token_id
+    assert eos is not None
+    hello = tokenizer._intern("hi")
+    eng = _AlwaysHoldingEngine(
+        fixed_tokens=[hello, eos], tokenizer=tokenizer,
+        model_id_label="residual-holder",
+    )
+    app = create_app(eng, ServerConfig(max_concurrent=1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://t") as c:
+        # No in-flight request → active_count == 0 → gauge gated to 0
+        r = await c.get("/metrics")
+    assert r.status_code == 200
+    assert "scheduler_kv_live_bytes 0.0" in r.text
+    # Crucially, the engine's residual is NOT exposed on the gauge:
+    assert "scheduler_kv_live_bytes 8388608" not in r.text
+    assert "scheduler_kv_live_bytes 8.388608e+06" not in r.text
 
 
 # ---------------------------------------------------------------------------
