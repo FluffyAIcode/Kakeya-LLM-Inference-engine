@@ -273,6 +273,122 @@ def test_live_kv_bytes_nonzero_after_prefill() -> None:
     assert v.stats.peak_kv_bytes == n
 
 
+# ---------------------------------------------------------------------------
+# ADR 0007 §2.2 + §2.9 — cached_token_sequence + INV-1
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_cached_token_sequence_empty_after_construction() -> None:
+    v = _build_mlx_verifier()
+    assert v.cached_token_sequence == []
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_cached_token_sequence_populated_after_short_prefill() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    prompt = list(range(5))  # 5 < sink+window = 10
+    v.prefill(prompt)
+    assert v.cached_token_sequence == prompt
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_cached_token_sequence_trimmed_after_long_prefill() -> None:
+    v = _build_mlx_verifier(sink=2, window=4)
+    prompt = list(range(20))  # 20 > sink+window = 6
+    v.prefill(prompt)
+    expected = prompt[:2] + prompt[-4:]
+    assert v.cached_token_sequence == expected
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_cached_token_sequence_extends_on_forward_block() -> None:
+    """``forward_block`` extends the cache; the parallel sequence
+    extends in lockstep, then the same sink+window slice that the
+    K/V tensors apply is applied here too."""
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([0, 1, 2, 3])
+    v.forward_block([4, 5])
+    # 6 entries, all under budget=10
+    assert v.cached_token_sequence == [0, 1, 2, 3, 4, 5]
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_cached_token_sequence_drops_rejected_tail_on_partial_accept() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([0, 1, 2, 3])
+    v.forward_block([4, 5, 6])
+    v.commit_or_truncate(forwarded=3, accepted=1)
+    assert v.cached_token_sequence == [0, 1, 2, 3, 4]
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_cached_token_sequence_after_append_token() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([0, 1, 2, 3])
+    v.append_token(99)
+    assert v.cached_token_sequence == [0, 1, 2, 3, 99]
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_cached_token_sequence_cleared_on_reset() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([0, 1, 2, 3])
+    assert v.cached_token_sequence != []
+    v.reset()
+    assert v.cached_token_sequence == []
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_inv_1_violation_raises_assertion_error() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([0, 1, 2, 3])
+    v.cached_token_sequence = v.cached_token_sequence + [999]
+    with pytest.raises(AssertionError, match="INV-1 violated"):
+        v._assert_cache_invariant_1()
+
+
+def test_mlx_inv_1_assertion_message_carries_diagnostic_state() -> None:
+    """The error message must expose actual vs expected lengths plus
+    the verifier's logical-position counters so a bug report can be
+    triaged from the message alone."""
+    v = _build_mlx_verifier()
+    v.prefill([0, 1, 2, 3])
+    v.cached_token_sequence = v.cached_token_sequence + [42, 43]
+    with pytest.raises(AssertionError) as exc:
+        v._assert_cache_invariant_1()
+    msg = str(exc.value)
+    assert "INV-1" in msg
+    assert "cached_token_sequence" in msg
+    assert "cache_logical_size=" in msg
+    assert "next_global_position=" in msg
+
+
+def test_mlx_inv_1_holds_when_cache_is_none() -> None:
+    """The pre-prefill state (cache None, sequence []) is the trivial
+    INV-1 satisfaction — must not raise."""
+    v = _build_mlx_verifier()
+    assert v.cache is None
+    assert v.cached_token_sequence == []
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_sink_window_slice_below_budget_returns_input_unchanged() -> None:
+    """The internal helper short-circuits when sequence fits in
+    sink+window."""
+    v = _build_mlx_verifier(sink=2, window=4)
+    seq = [10, 20, 30]
+    out = v._sink_window_slice(seq)
+    assert out == seq
+    assert out is not seq  # returns a copy
+
+
+def test_mlx_sink_window_slice_above_budget_keeps_sink_plus_tail() -> None:
+    v = _build_mlx_verifier(sink=2, window=4)
+    seq = list(range(20))
+    out = v._sink_window_slice(seq)
+    assert out == seq[:2] + seq[-4:]
+
+
 def test_record_peak_activation_grows_only() -> None:
     v = _build_mlx_verifier()
     a = mx.zeros((1, 4, 32), dtype=mx.bfloat16)
