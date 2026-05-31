@@ -58,12 +58,20 @@ For comparison, the same requirements against `mlx_lm.server`
 | Requirement                                | mlx_lm.server  | Kakeya v0.2.0      | Kakeya v0.4 (planned) |
 | ------------------------------------------ | -------------- | ------------------ | --------------------- |
 | Multiple concurrent agents                  | Single-tenant  | Multi-tenant       | Multi-tenant          |
-| Long-session memory stability                | KV grows linearly | sink+window bounded | sink+window bounded     |
+| Long-session **memory** stability             | KV grows linearly | sink+window bounded | sink+window bounded     |
+| Long-session **latency** stability            | grows linearly with history | grows linearly with history (stateless API) | bounded via cross-request KV reuse |
 | Cross-session memory                        | None           | Schema in ADR 0005 | Personal data store   |
 | Per-user personalization                   | None           | Stage 1 surgery    | Personal LoRA layer   |
 | Production metrics                          | None           | Prometheus         | Prometheus            |
 | API key auth                                | None           | Bearer token       | Bearer token          |
 | Mid-stream cancel                           | Basic          | Full lifecycle     | Full lifecycle        |
+
+The "memory stability" and "latency stability" rows are deliberately
+separated. Sink+window bounds **memory** at the verifier level, but
+the OpenAI chat-completions protocol is stateless — every turn the
+client re-sends the full chat history and the server re-prefills it
+end-to-end. v0.3 makes no claim that per-turn latency stays bounded
+across a long session; cross-request KV reuse is a v0.4 feature.
 
 For single-user, single-agent, short-session use, `mlx_lm.server`
 is a better fit (simpler, more model selection). For
@@ -90,11 +98,16 @@ scripts):
 
 > Kakeya v0.3 is a production-grade **local agent infrastructure
 > for Mac**. It runs multiple concurrent agents on a single
-> machine with bounded per-session memory, learns per-user
-> codebase and workflow patterns through on-device alignment
-> training, retains conversation history across sessions, and
-> exposes Prometheus metrics + API-key auth for long-running
-> deployment.
+> machine with **per-session KV memory bounded by sink+window**
+> (verified to the byte against the theoretical limit on Mac M4 —
+> see §2.3.a), learns per-user codebase and workflow patterns
+> through on-device alignment training, retains conversation
+> history across sessions, and exposes Prometheus metrics +
+> API-key auth for long-running deployment.
+>
+> Per-turn latency is not bounded across long sessions in v0.3
+> because the OpenAI chat-completions protocol is stateless;
+> cross-request KV reuse is a v0.4 feature (see §2.3.b).
 
 The technical detail (acceptance rate, alignment training,
 speculative speedup) becomes implementation evidence, not the
@@ -181,11 +194,61 @@ release evidence. Specifically, the v0.3.0 release notes claim
 must be backed by:
 
 - "3 concurrent agents on M4 24GB" → measured by `bench_multi_agent.py`
-- "4-hour session without OOM" → measured by `bench_long_session.py`
+- "Per-session KV bounded across long sessions" → measured by
+  `bench_long_session.py` (the §2.3.a sub-claim below)
 - "100% tool-call JSON validity" → measured by `bench_tool_call_reliability.py`
 
 If any benchmark fails to back its claim, the release notes
 adjust the claim, not the benchmark.
+
+The long-session benchmark validates **two distinct sub-claims**;
+v0.3 makes only the first:
+
+#### 2.3.a Memory bounded across long sessions (v0.3 claim)
+
+Per-session KV cache stays bounded by the configured sink+window
+regardless of session duration or generated-token count. This is
+the §2.3 headline `bench_long_session.py` exists to measure.
+
+**Status (v0.3.0-rc1)**: VERIFIED. 30-min × 58-turn run on Mac M4
+with Qwen3-1.7B (sink_size=4, window_size=64) recorded a per-turn
+KV peak of exactly **7,798,784 bytes in 58/58 turns** — spread
+0.00%, drift 0.00 MiB across the full run. The observed value
+matches the theoretical sink+window bound to the byte:
+
+```
+68 tokens × (28 layers × 2 (K+V) × 8 KV-heads × 128 head_dim × 2 bytes) = 7,798,784
+```
+
+See `results/platform-tests/bench_long_session_mac_short3_1780208693.json`
+for the full per-turn series.
+
+#### 2.3.b Latency bounded across long sessions (NOT a v0.3 claim)
+
+Per-turn latency does **not** stay bounded as chat history grows.
+The OpenAI chat-completions protocol is stateless: every turn the
+server re-tokenizes and re-prefills the full conversation history
+end-to-end. Sink+window only bounds the generation-phase KV
+footprint, not prefill compute.
+
+**Status (v0.3.0-rc1)**: NOT achieved by sink+window alone. The
+same 30-min run shows p50 latency drifting 15.5 s (0–10 min)
+→ 38.6 s (10–20 min) → 55.3 s (20–30 min) as the chat history
+grows from ~50 to ~3,700 tokens.
+
+**Mitigation in v0.3**: client-side prompt management (summarization,
+sliding windows, history truncation) is the user-side fix.
+Acceptable for short-turn tool-use agents; insufficient for
+hours-long single-session workloads.
+
+**v0.4 plan**: cross-request KV reuse via session affinity — a
+follow-up ADR will design the protocol extension and the engine
+support for it. See ADR 0006 §2.5 for prioritization context.
+
+The v0.3 release framing must therefore say "long-session
+**memory** stability", not "long-session stability". Bench
+reports always carry the latency-drift series alongside the
+KV-bounded series so the trade-off is transparent to operators.
 
 ### 2.4 Establish a "what we are not" stance
 
@@ -357,13 +420,27 @@ This ADR is considered validated when:
 3. The agentic benchmark suite (§2.3) has at least
    `bench_multi_agent.py` and `bench_long_session.py` shipped
    with v0.3.0, with comparison numbers vs `mlx_lm.server`.
-4. Any post-v0.3.0 release positioning that contradicts §2.4
+4. **The §2.3.a memory-bounded sub-claim is validated by an
+   on-device measurement that matches the theoretical sink+window
+   bound to within 1% across at least 30 minutes of continuous
+   single-session traffic.** First validation run (v0.3.0-rc1) on
+   Mac M4 with Qwen3-1.7B: observed/expected = 100.00% (exact byte
+   match) over 58/58 turns. See
+   `results/platform-tests/bench_long_session_mac_short3_1780208693.json`.
+5. **The §2.3.b latency-not-bounded caveat is documented in v0.3.0
+   release notes**, README, and bench script docstrings — readers
+   must not infer "long-session stability" without seeing the
+   memory-vs-latency split.
+6. Any post-v0.3.0 release positioning that contradicts §2.4
    (the "what we are not" stance) requires a follow-up ADR
    superseding this one — not a unilateral marketing decision.
 
 If item 1 is satisfied but items 2-3 are not, the v0.3.0 release
 notes acknowledge the gap and identify which integrations /
-benchmarks are deferred to v0.3.1.
+benchmarks are deferred to v0.3.1. Items 4 and 5 are GA gates —
+v0.3.0 cannot promote from rc to GA without the §2.3.a validation
+landing in `results/` and the §2.3.b caveat appearing in release
+notes.
 
 ## 6. References
 
