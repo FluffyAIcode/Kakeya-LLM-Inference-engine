@@ -1,6 +1,6 @@
 # ADR 0007 — Cross-request KV cache reuse for long sessions
 
-- **Status**: Proposed (in flight, blocking v0.3.0 GA)
+- **Status**: Accepted (2026-05-31, blocking v0.3.0 GA)
 - **Date**: 2026-05-31
 - **Decision drivers**: ADR 0006 §2.3.b empirical evidence (4-hour Mac M4
   run); the gap between the "local agent infrastructure" framing and the
@@ -649,36 +649,55 @@ This ADR is considered validated when:
 Items 2–5 are GA gates; v0.3.0 cannot promote to GA without all of
 them.
 
-## 7. Open questions (require decision before implementation)
+## 7. Open questions — resolved 2026-05-31
 
-These are decisions the ADR author is *not* taking unilaterally and
-need explicit approval before PR 7-1 starts:
+All five OQs were resolved with the recommended-default answers
+on 2026-05-31. The ADR moved from Proposed to Accepted on the
+same date. The original questions and resolutions are recorded
+below for traceability:
 
-- **OQ-1**: System-prompt change handling. What if the user's system
-  prompt rotates mid-session (an agent's "tool" message inserted
-  ahead of the conversation history)? This shifts every position by
-  N, breaking the prefix. Default proposal: treat as a full reset.
-  Alternative: detect the system-prompt shift specifically and
-  handle. **Recommend default until production data shows otherwise.**
-- **OQ-2**: Numerical determinism strictness on Mac M4. Strict
-  bit-identical or relaxed-to-ULP-equivalent? **Recommend strict
-  first, relax only if tests fail.**
-- **OQ-3**: Should the `--no-cross-request-reuse` server flag exist
-  for debugging? **Recommend no — keep the protocol surface
-  minimal. Operators debugging can compare old behavior by checking
-  out v0.3.0-rc1.**
-- **OQ-4**: Should we also expose the matched-prefix length as a
-  per-response field (in the `usage` block)? **Recommend no for
-  v0.3** — it leaks server implementation detail. Add only if a
-  user need surfaces.
-- **OQ-5**: Eviction in v0.3 is "implicit replacement" (next
-  non-matching request resets). Is that adequate, or do we need a
-  "stale cache idle timeout" even in single-tenant? **Recommend
-  no idle timeout for v0.3** — single-tenant servers are usually
-  long-running with one client.
+- **OQ-1 (RESOLVED, default accepted)**: System-prompt change
+  handling. What if the user's system prompt rotates mid-session
+  (an agent's "tool" message inserted ahead of the conversation
+  history)? This shifts every position by N, breaking the prefix.
+  **Resolution**: take the new-session path uniformly. Do not
+  attempt to detect "system prompt only changed" specifically.
+  Revisit only if production data shows the simpler behavior is
+  costly enough to justify the detection logic.
 
-Each OQ has a recommended default. If you accept all defaults, this
-ADR is ready to move from `Proposed` to `Accepted` and PR 7-1 starts.
+- **OQ-2 (RESOLVED, default accepted, strengthened)**: Numerical
+  determinism strictness on Mac M4. **Resolution**: bit-identical
+  by default. If a future test cycle shows the strict gate is
+  unreachable on Metal, the relaxation must be **written into this
+  ADR explicitly** (as an amendment) before the gate is changed.
+  Tests that auto-relax based on whether the strict path passes
+  are explicitly forbidden — that pattern is a fallback in
+  disguise.
+
+- **OQ-3 (RESOLVED, default accepted)**: Should the
+  `--no-cross-request-reuse` server flag exist for debugging?
+  **Resolution**: no. Path selection (§2.4) is total; there is
+  no failure mode that requires a runtime toggle. Operators who
+  want to compare against pre-cross-request-reuse behavior can
+  check out the v0.3.0-rc1 tag.
+
+- **OQ-4 (RESOLVED, default accepted)**: Expose matched-prefix
+  length in the `usage` block of the response? **Resolution**: no
+  for v0.3. `usage` is a public OpenAI-compatible field; adding
+  Kakeya-specific keys leaks implementation detail to clients
+  that don't need it. The same information is available via
+  Prometheus metrics (§2.10) for operators. Revisit only if a
+  user-facing need surfaces.
+
+- **OQ-5 (RESOLVED, default accepted)**: Eviction in v0.3 is
+  "implicit replacement" (next non-matching request takes the
+  new-session path and overwrites the cache). Adequate, or need a
+  "stale cache idle timeout" in single-tenant scope?
+  **Resolution**: no idle timeout for v0.3. Single-tenant servers
+  are typically long-running with one client; stale-cache-on-idle
+  has no concrete operational benefit at this scope. v0.4
+  multi-tenant ADR will define LRU + idle-timeout policy at that
+  scope.
 
 ## 8. References
 
