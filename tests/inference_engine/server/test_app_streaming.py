@@ -16,6 +16,7 @@ The tests verify:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import AsyncIterator, List
 
@@ -274,6 +275,155 @@ async def test_stream_via_scheduler_finish_reason_stop_on_cancel(tokenizer):
     payloads = [json.loads(c["data"]) for c in chunks[:-1]]
     assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
     assert request.calls > 0
+
+
+async def test_collect_non_streaming_tokens_cancels_on_disconnect(tokenizer):
+    """The JSON response path must cancel its scheduler session when the
+    client disconnects, otherwise one timed-out request can monopolize a
+    single-slot server and turn later queued requests into 429s."""
+    from tests.inference_engine.server.conftest import DeterministicEngine
+    from inference_engine.scheduler.session import SessionState
+    from inference_engine.server.app import _collect_non_streaming_tokens
+
+    ids = [tokenizer._intern(f"tok{i}") for i in range(20)]
+    slow_engine = DeterministicEngine(
+        fixed_tokens=ids, tokenizer=tokenizer,
+        model_id_label="slow", per_token_delay_s=0.02,
+    )
+    scheduler = _build_scheduler_with_engine(slow_engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=20, eos_token_ids=[0],
+    )
+
+    request = _FakeRequest([True])
+    tokens = await _collect_non_streaming_tokens(
+        scheduler=scheduler,
+        session=session,
+        request=request,
+        disconnect_poll_interval_s=0.0,
+    )
+
+    assert tokens
+    assert request.calls >= 1
+    assert session.state is SessionState.CANCELLED
+    assert scheduler.active_count == 0
+
+
+async def test_collect_non_streaming_tokens_propagates_cancel_and_cleans_up(
+    tokenizer,
+):
+    """When the awaiting task is externally cancelled (e.g. uvicorn
+    shutdown or a request transport timeout cancels the route handler
+    task), the asyncio.CancelledError must propagate up so the route
+    handler's ``except asyncio.CancelledError`` branch fires and
+    cancels the scheduler session — otherwise the slab stays held
+    forever and downstream requests 429.
+
+    This test exercises the cancellation propagation contract on the
+    helper itself (the helper does NOT swallow CancelledError) plus
+    verifies that calling ``cancel_session`` after a CancelledError
+    correctly releases the slab — which is exactly what the route
+    handler's CancelledError catch does at line 384 of app.py.
+    """
+    from tests.inference_engine.server.conftest import DeterministicEngine
+    from inference_engine.scheduler.session import SessionState
+    from inference_engine.server.app import _collect_non_streaming_tokens
+
+    ids = [tokenizer._intern(f"tok{i}") for i in range(50)]
+    slow_engine = DeterministicEngine(
+        fixed_tokens=ids, tokenizer=tokenizer,
+        model_id_label="slow", per_token_delay_s=0.05,
+    )
+    scheduler = _build_scheduler_with_engine(slow_engine)
+    session = await scheduler.submit(
+        prompt_ids=[1], max_new_tokens=50, eos_token_ids=[0],
+    )
+
+    # never disconnects; we cancel via task.cancel() instead
+    request = _FakeRequest([])
+
+    async def _drain():
+        return await _collect_non_streaming_tokens(
+            scheduler=scheduler,
+            session=session,
+            request=request,
+            disconnect_poll_interval_s=10.0,  # don't fire disconnect path
+        )
+
+    task = asyncio.create_task(_drain())
+    # Let the helper start awaiting the queue
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The route handler's `except asyncio.CancelledError` catch performs
+    # exactly this sequence. We assert it works correctly: cancel_session
+    # is idempotent for already-cancelled sessions, and the slab is
+    # released afterwards.
+    await scheduler.cancel_session(session)
+    # Allow the worker to observe the CANCELLED state and tear down
+    await asyncio.sleep(0.2)
+
+    assert session.state is SessionState.CANCELLED
+    assert scheduler.active_count == 0
+
+
+async def test_route_handler_cancelled_error_branch_releases_slab(tokenizer):
+    """End-to-end via httpx.ASGITransport: cancel the in-flight POST
+    request task and verify the slab is released so the next request
+    is admitted (i.e. the route handler's CancelledError catch ran
+    and released the slab via cancel_session).
+
+    This is the integration counterpart to
+    ``test_collect_non_streaming_tokens_propagates_cancel_and_cleans_up``
+    — covers ``app.py`` line 384 (``await scheduler.cancel_session``
+    inside the ``except asyncio.CancelledError`` branch) through the
+    real route handler closure.
+    """
+    from tests.inference_engine.server.conftest import DeterministicEngine
+    from inference_engine.server.app import create_app
+    from inference_engine.server.config import ServerConfig
+
+    ids = [tokenizer._intern(f"tok{i}") for i in range(50)]
+    slow_engine = DeterministicEngine(
+        fixed_tokens=ids, tokenizer=tokenizer,
+        model_id_label="slow", per_token_delay_s=0.05,
+    )
+    app = create_app(slow_engine, ServerConfig(max_concurrent=1))
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://t", timeout=30.0,
+    ) as c:
+        post_task = asyncio.create_task(c.post(
+            "/v1/chat/completions", json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 50,
+            },
+        ))
+        # Let scheduler admit and start producing tokens
+        await asyncio.sleep(0.1)
+        post_task.cancel()
+        with pytest.raises((asyncio.CancelledError, Exception)):
+            await post_task
+        # Allow worker to observe cancel and release slab
+        await asyncio.sleep(0.3)
+        # If the route handler's CancelledError branch ran, the slab
+        # is back in the pool and a follow-up request gets admitted
+        # (no 429). If it didn't run, the slab is still held.
+        followup = await c.post(
+            "/v1/chat/completions", json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi2"}],
+                "max_tokens": 5,
+            },
+        )
+    assert followup.status_code == 200, (
+        f"follow-up request got {followup.status_code}; "
+        f"expected 200 because the cancelled request should have "
+        f"released the slab via the CancelledError cleanup branch"
+    )
 
 
 async def test_stream_via_scheduler_finish_reason_length_when_max_tokens(tokenizer):

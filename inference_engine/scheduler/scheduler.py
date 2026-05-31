@@ -343,9 +343,13 @@ class Scheduler:
                     if session.state == SessionState.CANCELLED:
                         return True
                     session.output_token_ids.append(int(tok_id))
-                    asyncio.run_coroutine_threadsafe(
+                    enqueue = asyncio.run_coroutine_threadsafe(
                         session.token_queue.put(int(tok_id)), loop
                     )
+                    # Preserve token-before-sentinel ordering. The worker
+                    # runs in a thread, while the terminal sentinel is pushed
+                    # back on the event loop after generate() returns.
+                    enqueue.result()
                     return False
 
                 result = await asyncio.to_thread(
