@@ -91,6 +91,14 @@ class MLXSinkWindowVerifier:
         self.cache_logical_size: int = 0
         self.next_global_position: int = 0
         self.next_token_logits: Optional[torch.Tensor] = None
+        # Parallel record of the token id at every K/V cache slot, in
+        # the same physical order as ``self.cache[*].keys``. See the CPU
+        # verifier for the full motivation; in short, this is required
+        # by ADR 0007 §2.2 (path-selection needs token-id-level
+        # comparison against the cache) and §2.9 INV-1 (parallel-
+        # sequence consistency). Maintained synchronously with the
+        # K/V tensors by every cache mutation method below.
+        self.cached_token_sequence: List[int] = []
 
         self.quantization: QuantizationInfo = detect_quantization(self.model)
         self.stats = VerifierStats(weight_bytes=self.quantization.total_weight_bytes)
@@ -106,6 +114,8 @@ class MLXSinkWindowVerifier:
         self.cache_logical_size = 0
         self.next_global_position = 0
         self.next_token_logits = None
+        self.cached_token_sequence = []
+        self._assert_cache_invariant_1()
 
     def prefill(self, prompt_ids: List[int]) -> None:
         if not prompt_ids:
@@ -125,9 +135,16 @@ class MLXSinkWindowVerifier:
         self.next_token_logits = mx_to_torch(logits_mx[0, -1])
         self.next_global_position = L
         self.cache_logical_size = self._cache_buffer_size()
+        # Compute the post-trim parallel token sequence directly. The
+        # MLX SinkWindowKVCache trims inside update_and_fetch on every
+        # forward, so by the time we get here the per-layer K/V tensors
+        # already hold the sink+window slice of ``prompt_ids``. We
+        # mirror that slice on cached_token_sequence so INV-1 holds.
+        self.cached_token_sequence = self._sink_window_slice(prompt_ids)
         self._record_peak_kv()
         self.stats.forward_calls += 1
         self.stats.tokens_consumed += L
+        self._assert_cache_invariant_1()
 
     def forward_block(self, tokens: List[int]) -> torch.Tensor:
         if self.cache is None:
@@ -150,9 +167,15 @@ class MLXSinkWindowVerifier:
         # SinkWindowKVCache.update_and_fetch trim. Read directly from
         # the cache rather than tracking it ourselves.
         self.cache_logical_size = self._cache_buffer_size()
+        # Mirror the same trim on the parallel sequence: take the
+        # current sequence concatenated with the new tokens and apply
+        # the sink+window slice.
+        extended = self.cached_token_sequence + list(tokens)
+        self.cached_token_sequence = self._sink_window_slice(extended)
         block_logits = mx_to_torch(logits_mx[0])  # [L, V]
         self.stats.forward_calls += 1
         self.stats.tokens_consumed += L
+        self._assert_cache_invariant_1()
         return block_logits
 
     def commit_or_truncate(self, forwarded: int, accepted: int) -> None:
@@ -169,9 +192,12 @@ class MLXSinkWindowVerifier:
                     f"per-layer trim mismatch (asked drop={drop}, got {trims}); "
                     "SinkWindowKVCache state diverged across layers"
                 )
+            # Mirror the tail truncation on the parallel sequence.
+            self.cached_token_sequence = self.cached_token_sequence[:-drop]
         self.cache_logical_size = self._cache_buffer_size()
         self.next_global_position += accepted
         self._record_peak_kv()
+        self._assert_cache_invariant_1()
 
     def append_token(self, token_id: int) -> torch.Tensor:
         logits = self.forward_block([token_id])
@@ -186,6 +212,46 @@ class MLXSinkWindowVerifier:
         if self.cache is None:
             return 0
         return cache_ops.cache_seq_length(self.cache)
+
+    def _sink_window_slice(self, sequence: List[int]) -> List[int]:
+        """Return ``sequence`` after the sink+window trim that the K/V
+        cache applies.
+
+        Mirrors ``SinkWindowKVCache.update_and_fetch``'s trim logic at
+        the token-id level: if the input length exceeds the budget,
+        keep the first ``sink_size`` entries and the last
+        ``window_size`` entries; otherwise return unchanged.
+        """
+        budget = self.config.sink_size + self.config.window_size
+        if len(sequence) <= budget:
+            return list(sequence)
+        return (
+            list(sequence[: self.config.sink_size])
+            + list(sequence[-self.config.window_size :])
+        )
+
+    def _assert_cache_invariant_1(self) -> None:
+        """ADR 0007 §2.9 INV-1: parallel-sequence consistency.
+
+        After every cache mutation, ``len(self.cached_token_sequence)``
+        must equal the K/V tensor sequence dimension. Violation
+        indicates a bug in the verifier's cache-mutation path; per ADR
+        0007 §2.9 the implementation must raise — never silently
+        recover, never fall back, never re-sync.
+        """
+        actual = len(self.cached_token_sequence)
+        expected = self._cache_buffer_size()
+        if actual != expected:
+            raise AssertionError(
+                f"INV-1 violated (parallel-sequence consistency): "
+                f"cached_token_sequence has {actual} entries but K/V "
+                f"cache seq dim is {expected}. This is a bug in the "
+                f"verifier's cache-mutation path; per ADR 0007 §2.9 it "
+                f"must surface as a critical error rather than be "
+                f"silently recovered. cache_logical_size="
+                f"{self.cache_logical_size}, "
+                f"next_global_position={self.next_global_position}."
+            )
 
     def live_kv_bytes(self) -> int:
         """Return the current size of the verifier's live KV cache in bytes.

@@ -350,13 +350,152 @@ def test_live_kv_bytes_returns_zero_when_layer_kv_is_null(
     layer0.keys = None
     layer0.values = None
     try:
-        # Must not raise. Returns the sum across the *remaining*
-        # non-null layers (potentially less than the full prefill total).
         n = verifier.live_kv_bytes()
         assert n >= 0
     finally:
         layer0.keys = saved_k
         layer0.values = saved_v
+
+
+# ---------------------------------------------------------------------------
+# ADR 0007 §2.2 + §2.9 — cached_token_sequence + INV-1
+# ---------------------------------------------------------------------------
+
+
+def test_cached_token_sequence_empty_after_construction(
+    fresh_verifier_factory,
+) -> None:
+    """A freshly-constructed verifier has no cache yet, so the
+    parallel sequence is empty and INV-1 is satisfied trivially."""
+    verifier = fresh_verifier_factory()
+    assert verifier.cached_token_sequence == []
+    verifier._assert_cache_invariant_1()
+
+
+def test_cached_token_sequence_populated_after_short_prefill(
+    fresh_verifier_factory,
+) -> None:
+    """When the prompt is shorter than sink+window, the entire
+    prompt is held in the cache and the parallel sequence equals
+    the prompt verbatim."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    prompt = list(range(5))  # 5 < sink+window = 10
+    verifier.prefill(prompt)
+    assert verifier.cached_token_sequence == prompt
+    verifier._assert_cache_invariant_1()
+
+
+def test_cached_token_sequence_trimmed_after_long_prefill(
+    fresh_verifier_factory,
+) -> None:
+    """When the prompt exceeds sink+window, the parallel sequence
+    holds the first sink_size + last window_size token ids — exactly
+    the same shape the K/V tensors hold post-trim."""
+    verifier = fresh_verifier_factory(sink=2, window=4)
+    prompt = list(range(20))  # 20 > sink+window = 6
+    verifier.prefill(prompt)
+    expected = prompt[:2] + prompt[-4:]
+    assert verifier.cached_token_sequence == expected
+    verifier._assert_cache_invariant_1()
+
+
+def test_cached_token_sequence_extends_on_forward_block(
+    fresh_verifier_factory,
+) -> None:
+    """``forward_block`` provisionally extends the cache with the new
+    tokens; the parallel sequence must extend in lockstep so INV-1
+    holds."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([0, 1, 2, 3])
+    verifier.forward_block([4, 5])
+    # Cache now holds [0,1,2,3,4,5] (6 entries, all under budget 10)
+    assert verifier.cached_token_sequence == [0, 1, 2, 3, 4, 5]
+    verifier._assert_cache_invariant_1()
+
+
+def test_cached_token_sequence_drops_rejected_tail_on_partial_accept(
+    fresh_verifier_factory,
+) -> None:
+    """``commit_or_truncate(forwarded=K, accepted=A)`` drops the last
+    K-A tokens from both the K/V tensors and the parallel sequence."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([0, 1, 2, 3])
+    verifier.forward_block([4, 5, 6])
+    # Accept only the first of the 3 forwarded tokens
+    verifier.commit_or_truncate(forwarded=3, accepted=1)
+    # The two unaccepted tokens (5, 6) should be dropped
+    assert verifier.cached_token_sequence == [0, 1, 2, 3, 4]
+    verifier._assert_cache_invariant_1()
+
+
+def test_cached_token_sequence_after_append_token(
+    fresh_verifier_factory,
+) -> None:
+    """``append_token`` is forward_block + full-accept; sequence
+    grows by exactly one token."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([0, 1, 2, 3])
+    verifier.append_token(99)
+    assert verifier.cached_token_sequence == [0, 1, 2, 3, 99]
+    verifier._assert_cache_invariant_1()
+
+
+def test_cached_token_sequence_cleared_on_reset(
+    fresh_verifier_factory,
+) -> None:
+    """``reset`` empties the parallel sequence in lockstep with
+    clearing the K/V tensors."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([0, 1, 2, 3])
+    assert verifier.cached_token_sequence != []
+    verifier.reset()
+    assert verifier.cached_token_sequence == []
+    verifier._assert_cache_invariant_1()
+
+
+def test_inv_1_violation_raises_assertion_error(
+    fresh_verifier_factory,
+) -> None:
+    """If the parallel sequence is forced out of sync with the K/V
+    tensors, the next mutation site detects the divergence and
+    raises. This is the §2.9 contract: bugs surface, never silently
+    recover."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([0, 1, 2, 3])
+    # Corrupt the parallel sequence by force.
+    verifier.cached_token_sequence = verifier.cached_token_sequence + [999]
+    with pytest.raises(AssertionError, match="INV-1 violated"):
+        verifier._assert_cache_invariant_1()
+
+
+def test_inv_1_assertion_message_carries_diagnostic_state(
+    fresh_verifier_factory,
+) -> None:
+    """The error message exposes the actual vs expected lengths and
+    the verifier's logical-position counters so the bug report can
+    be triaged without re-running the workload."""
+    verifier = fresh_verifier_factory()
+    verifier.prefill([0, 1, 2, 3])
+    verifier.cached_token_sequence = verifier.cached_token_sequence + [42, 43]
+    with pytest.raises(AssertionError) as exc:
+        verifier._assert_cache_invariant_1()
+    msg = str(exc.value)
+    assert "INV-1" in msg
+    assert "cached_token_sequence" in msg
+    assert "cache_logical_size=" in msg
+    assert "next_global_position=" in msg
+
+
+def test_inv_1_holds_when_cache_is_none(fresh_verifier_factory) -> None:
+    """An empty cache + empty parallel sequence is the trivial INV-1
+    satisfaction. No mutation has happened, but the assert path must
+    still accept this state."""
+    verifier = fresh_verifier_factory()
+    # Construction leaves cache=None and sequence=[]
+    assert verifier.cache is None
+    assert verifier.cached_token_sequence == []
+    # Should NOT raise
+    verifier._assert_cache_invariant_1()
 
 
 def test_record_peak_activation_grows_only(fresh_verifier_factory) -> None:
