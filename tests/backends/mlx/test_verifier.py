@@ -389,6 +389,118 @@ def test_mlx_sink_window_slice_above_budget_keeps_sink_plus_tail() -> None:
     assert out == seq[:2] + seq[-4:]
 
 
+# ---------------------------------------------------------------------------
+# ADR 0007 §2.4 — MLX path_select + prefill_incremental + INV-2
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_path_select_cold_start_returns_new_session() -> None:
+    from kv_cache_proposer.path_plan import NewSession
+    v = _build_mlx_verifier()
+    plan = v.path_select([1, 2, 3])
+    assert isinstance(plan, NewSession)
+    assert plan.prompt == [1, 2, 3]
+
+
+def test_mlx_path_select_extends_returns_continuation() -> None:
+    from kv_cache_proposer.path_plan import ContinuationPlan
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30, 40, 50])
+    plan = v.path_select([10, 20, 30, 40, 50, 60, 70])
+    assert isinstance(plan, ContinuationPlan)
+    assert plan.skip_n == 5
+    assert plan.new_tokens == [60, 70]
+
+
+def test_mlx_path_select_shorter_history_returns_new_session() -> None:
+    from kv_cache_proposer.path_plan import NewSession
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30, 40, 50])
+    plan = v.path_select([10, 20])
+    assert isinstance(plan, NewSession)
+
+
+def test_mlx_path_select_diverging_history_returns_new_session() -> None:
+    from kv_cache_proposer.path_plan import NewSession
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30, 40, 50])
+    plan = v.path_select([10, 20, 30, 99, 50])
+    assert isinstance(plan, NewSession)
+
+
+def test_mlx_path_select_with_long_prefill_only_compares_cached_positions() -> None:
+    from kv_cache_proposer.path_plan import ContinuationPlan
+    v = _build_mlx_verifier(sink=2, window=4)
+    long_prompt = list(range(100, 120))
+    v.prefill(long_prompt)
+    extended = long_prompt + [200, 201, 202]
+    plan = v.path_select(extended)
+    assert isinstance(plan, ContinuationPlan)
+    assert plan.skip_n == 20
+
+
+def test_mlx_path_select_rejects_empty_prompt() -> None:
+    v = _build_mlx_verifier()
+    with pytest.raises(ValueError, match="prompt must be non-empty"):
+        v.path_select([])
+
+
+def test_mlx_prefill_incremental_extends_cache_state() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30])
+    v.prefill_incremental([40, 50])
+    assert v.next_global_position == 5
+    assert v.cached_token_sequence == [10, 20, 30, 40, 50]
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_prefill_incremental_empty_new_tokens_is_noop() -> None:
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30])
+    pos_before = v.next_global_position
+    seq_before = list(v.cached_token_sequence)
+    logits_before = v.next_token_logits.clone()
+    v.prefill_incremental([])
+    assert v.next_global_position == pos_before
+    assert v.cached_token_sequence == seq_before
+    assert torch.equal(v.next_token_logits, logits_before)
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_prefill_incremental_before_any_prefill_raises() -> None:
+    v = _build_mlx_verifier()
+    assert v.cache is None
+    with pytest.raises(RuntimeError, match="prefill_incremental called before"):
+        v.prefill_incremental([1, 2, 3])
+
+
+def test_mlx_inv_2_position_monotonic_across_continuation_chain() -> None:
+    """Mirror of the CPU INV-2 contract test (no contrived
+    assertion firing — the guard is defensively coded and
+    structurally unreachable; we verify the behavioral contract)."""
+    from kv_cache_proposer.path_plan import ContinuationPlan
+    v = _build_mlx_verifier(sink=2, window=8)
+    history = [10, 20, 30]
+    v.prefill(history)
+    last_position = v.next_global_position
+    for new_token in [40, 50, 60, 70, 80]:
+        history.append(new_token)
+        plan = v.path_select(history)
+        assert isinstance(plan, ContinuationPlan)
+        v.prefill_incremental(plan.new_tokens)
+        assert v.next_global_position >= last_position
+        last_position = v.next_global_position
+    assert v.next_global_position == len(history)
+
+
+def test_mlx_inv_1_internal_check_in_match_helper_catches_drift() -> None:
+    v = _build_mlx_verifier(sink=2, window=4)
+    v.prefill(list(range(100, 110)))
+    v.cached_token_sequence = v.cached_token_sequence + [999]
+    with pytest.raises(AssertionError, match="INV-1 should have caught this"):
+        v._prompt_matches_cached_positions(list(range(100, 110)) + [200])
+
+
 def test_record_peak_activation_grows_only() -> None:
     v = _build_mlx_verifier()
     a = mx.zeros((1, 4, 32), dtype=mx.bfloat16)
