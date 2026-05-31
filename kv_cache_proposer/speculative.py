@@ -73,6 +73,11 @@ class SpeculativeRunResult:
     verifier_weight_bytes: int
     verifier_final_kv_token_count: int
     wall_time_seconds: float
+    # ADR 0007 §2.10 path-selection observability. Populated by
+    # SpeculativeDecoder.generate based on the path it dispatched to.
+    path_selection: str = "new_session"  # "continuation" | "new_session"
+    tokens_skipped: int = 0  # ContinuationPlan.skip_n if continuation, 0 else
+    prefill_duration_seconds: float = 0.0
 
     @property
     def total_proposed(self) -> int:
@@ -142,17 +147,25 @@ class SpeculativeDecoder:
         # reuses cached prefix; NewSession runs full prefill (the
         # v0.3.0-rc1 behavior). Output is bit-identical between the
         # two paths for the same input (§2.7); the only difference
-        # is the prefill cost.
+        # is the prefill cost. We record the decision + the prefill
+        # wall time on the result so the route handler can populate
+        # the §2.10 observability metrics.
         from .path_plan import ContinuationPlan, NewSession
         plan = self.verifier.path_select(prompt_ids)
+        prefill_t0 = time.perf_counter()
         if isinstance(plan, ContinuationPlan):
             self.verifier.prefill_incremental(plan.new_tokens)
+            path_selection = "continuation"
+            tokens_skipped = int(plan.skip_n)
         else:
             assert isinstance(plan, NewSession), (
                 f"path_select must return ContinuationPlan or NewSession, "
                 f"got {type(plan).__name__}"
             )
             self.verifier.prefill(plan.prompt)
+            path_selection = "new_session"
+            tokens_skipped = 0
+        prefill_duration_seconds = time.perf_counter() - prefill_t0
         committed: List[int] = list(prompt_ids)
         generated: List[int] = []
         accepted_per_block: List[int] = []
@@ -256,6 +269,9 @@ class SpeculativeDecoder:
             verifier_weight_bytes=self.verifier.stats.weight_bytes,
             verifier_final_kv_token_count=self.verifier.cache_logical_size,
             wall_time_seconds=elapsed,
+            path_selection=path_selection,
+            tokens_skipped=tokens_skipped,
+            prefill_duration_seconds=prefill_duration_seconds,
         )
 
     @staticmethod

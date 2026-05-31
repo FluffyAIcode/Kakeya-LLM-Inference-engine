@@ -164,6 +164,45 @@ async def test_metrics_kv_live_bytes_reads_from_engine_during_active_session(
            "scheduler_kv_live_bytes 12345678" in r.text
 
 
+async def test_metrics_path_selection_metrics_present_on_idle_metrics_scrape(
+    short_engine,
+):
+    """ADR 0007 §2.10: the new path-selection metrics must be
+    exposed on /metrics. At idle (no requests have completed) the
+    counters are 0 and the histogram has no observations — the
+    contract is just that they exist."""
+    app = create_app(short_engine, ServerConfig(max_concurrent=1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://t") as c:
+        r = await c.get("/metrics")
+    assert r.status_code == 200
+    text = r.text
+    assert "# HELP path_selection_total" in text
+    assert "# HELP continuation_tokens_skipped_total" in text
+    assert "# HELP verifier_prefill_duration_seconds" in text
+    assert "# HELP cache_invariant_violations_total" in text
+    # Counter starts at 0; no completion has happened yet.
+    assert "continuation_tokens_skipped_total 0.0" in text
+
+
+async def test_metrics_path_selection_recorded_after_completion(short_engine):
+    """End-to-end: a completed chat-completions request emits the
+    path_selection metric. The DeterministicEngine test double
+    defaults path_selection to 'new_session' (its EngineResult uses
+    the dataclass defaults), so we expect new_session to be
+    incremented."""
+    app = create_app(short_engine, ServerConfig(max_concurrent=1))
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://t") as c:
+        await c.post("/v1/chat/completions", json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        r = await c.get("/metrics")
+    text = r.text
+    assert 'path_selection_total{path="new_session"} 1.0' in text
+
+
 async def test_metrics_kv_live_bytes_zero_when_no_active_session(tokenizer):
     """Between turns the verifier may hold residual KV (next prefill
     will reset it, but until then it sits in self.cache). Reporting
