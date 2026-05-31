@@ -175,3 +175,33 @@ def test_total_kv_bytes_is_sum_across_slabs(pool, cfg):
     one = KVSlab(cfg)
     expected = 3 * one.kv_bytes
     assert pool.total_kv_bytes == expected
+
+
+# ---------------------------------------------------------------------------
+# live_kv_bytes
+# ---------------------------------------------------------------------------
+
+
+def test_live_kv_bytes_zero_when_empty(pool):
+    """Idle pool reports 0 live KV bytes (every free slab has
+    logical_size==0)."""
+    assert pool.live_kv_bytes == 0
+
+
+def test_live_kv_bytes_counts_only_in_use_slabs(pool):
+    """Only acquired slabs contribute to live_kv_bytes; free slabs
+    contribute 0 because their logical_size is reset on release."""
+    s = pool.acquire()
+    # Simulate the verifier reporting 1024 KV bytes for this session.
+    s.live_kv_bytes_override = 1024
+    assert pool.live_kv_bytes == 1024
+    pool.release(s)
+    assert pool.live_kv_bytes == 0
+
+
+def test_live_kv_bytes_aggregates_across_multiple_in_use(pool):
+    a = pool.acquire()
+    b = pool.acquire()
+    a.live_kv_bytes_override = 100
+    b.live_kv_bytes_override = 250
+    assert pool.live_kv_bytes == 350
