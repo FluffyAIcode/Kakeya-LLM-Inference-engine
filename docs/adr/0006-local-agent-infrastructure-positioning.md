@@ -210,18 +210,30 @@ Per-session KV cache stays bounded by the configured sink+window
 regardless of session duration or generated-token count. This is
 the §2.3 headline `bench_long_session.py` exists to measure.
 
-**Status (v0.3.0-rc1)**: VERIFIED. 30-min × 58-turn run on Mac M4
-with Qwen3-1.7B (sink_size=4, window_size=64) recorded a per-turn
-KV peak of exactly **7,798,784 bytes in 58/58 turns** — spread
-0.00%, drift 0.00 MiB across the full run. The observed value
-matches the theoretical sink+window bound to the byte:
+**Status (v0.3.0-rc1)**: VERIFIED on two independent runs:
+
+| Run | Wall time | Successful turns | KV peak per turn | Spread |
+|---|---|---|---|---|
+| 30-min short test #3 | 1,800 s | 58 | 7,798,784 bytes (×58) | 0.00% |
+| 4-hour run | 14,400 s | 58 (first 30 min) | 7,798,784 bytes (×58) | 0.00% |
+
+Both runs were on Mac M4 with Qwen3-1.7B and `sink_size=4
+window_size=64`. Both recorded a per-turn KV peak of exactly
+**7,798,784 bytes** — drift 0.00 MiB, observed/expected = 100.0000%
+to the byte. The 4-hour run additionally confirmed the
+orphan-session fix invariant (PR #25) over 4 hours: `idle
+pool_in_use` stayed at 0 throughout, even while the run was
+processing 182 timeout/429 cycles in the §2.3.b regime.
+
+The observed value matches the theoretical sink+window bound:
 
 ```
 68 tokens × (28 layers × 2 (K+V) × 8 KV-heads × 128 head_dim × 2 bytes) = 7,798,784
 ```
 
-See `results/platform-tests/bench_long_session_mac_short3_1780208693.json`
-for the full per-turn series.
+Evidence files:
+- `results/platform-tests/bench_long_session_mac_short3_1780208693.json`
+- `results/platform-tests/bench_long_session_mac_4h_1780211323.json`
 
 #### 2.3.b Latency bounded across long sessions (NOT a v0.3 claim)
 
@@ -231,10 +243,26 @@ server re-tokenizes and re-prefills the full conversation history
 end-to-end. Sink+window only bounds the generation-phase KV
 footprint, not prefill compute.
 
-**Status (v0.3.0-rc1)**: NOT achieved by sink+window alone. The
-same 30-min run shows p50 latency drifting 15.5 s (0–10 min)
-→ 38.6 s (10–20 min) → 55.3 s (20–30 min) as the chat history
-grows from ~50 to ~3,700 tokens.
+**Status (v0.3.0-rc1)**: NOT achieved by sink+window alone, and
+empirically observed:
+
+- Short test #3 (30 min): p50 latency drifted 15.5 s (0–10 min)
+  → 38.6 s (10–20 min) → 55.3 s (20–30 min) as the chat history
+  grew from ~50 to ~3,700 tokens.
+- 4-hour run: completed only 58 turns of useful work (matching
+  the 30-min run exactly), then accumulated 182 errors over the
+  remaining 3.5 hours. Error breakdown: 96 client-side
+  ReadTimeouts (per-turn latency exceeded the bench's
+  `timeout_s=120`) interleaved with 86 HTTP 429s (the timed-out
+  request's slab still held while the server worker thread
+  finished its prefill). This is exactly the §2.3.b pattern:
+  prefill cost grew past the bench's fixed timeout, and the
+  long-session degraded into a timeout/recovery loop.
+
+**Practical envelope on Mac M4 / Qwen3-1.7B with `--max-tokens 64
+--turn-spacing-s 5 --timeout-s 120`**: useful work for ~30 min /
+~60 multi-turn turns of a single continuous session. Past that,
+client-side prompt management is required.
 
 **Mitigation in v0.3**: client-side prompt management (summarization,
 sliding windows, history truncation) is the user-side fix.
@@ -423,10 +451,15 @@ This ADR is considered validated when:
 4. **The §2.3.a memory-bounded sub-claim is validated by an
    on-device measurement that matches the theoretical sink+window
    bound to within 1% across at least 30 minutes of continuous
-   single-session traffic.** First validation run (v0.3.0-rc1) on
-   Mac M4 with Qwen3-1.7B: observed/expected = 100.00% (exact byte
-   match) over 58/58 turns. See
-   `results/platform-tests/bench_long_session_mac_short3_1780208693.json`.
+   single-session traffic.** Validated by two independent
+   v0.3.0-rc1 runs on Mac M4 with Qwen3-1.7B:
+   - 30-min short test #3 — 58/58 turns at exactly 7,798,784 bytes
+     (`bench_long_session_mac_short3_1780208693.json`)
+   - 4-hour run — same 58 turns at the same 7,798,784 bytes,
+     plus orphan-session invariant verified for 4 hours of
+     continuous server uptime
+     (`bench_long_session_mac_4h_1780211323.json`)
+   Both runs: observed/expected = 100.0000% to the byte.
 5. **The §2.3.b latency-not-bounded caveat is documented in v0.3.0
    release notes**, README, and bench script docstrings — readers
    must not infer "long-session stability" without seeing the
