@@ -493,12 +493,60 @@ def test_mlx_inv_2_position_monotonic_across_continuation_chain() -> None:
     assert v.next_global_position == len(history)
 
 
-def test_mlx_inv_1_internal_check_in_match_helper_catches_drift() -> None:
+# ---------------------------------------------------------------------------
+# MLX regression: partial-accept state (PR 7-2 bug, 2026-05-31 smoke)
+# Real-flow reproduction (CPU's _trim pulls back to budget on every
+# commit, so this state is unreachable there; MLX trims per-layer
+# during forward and naturally drops below budget after partial accept).
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_cached_global_positions_after_partial_accept() -> None:
+    """Reproduces the smoke-test failure mode through real flow.
+
+    Pre-fix: this state caused _cached_global_positions to return
+    a list of length budget=6 even though cache had shrunk below.
+    Post-fix: positions list length matches actual cache size.
+    """
     v = _build_mlx_verifier(sink=2, window=4)
-    v.prefill(list(range(100, 110)))
-    v.cached_token_sequence = v.cached_token_sequence + [999]
-    with pytest.raises(AssertionError, match="INV-1 should have caught this"):
-        v._prompt_matches_cached_positions(list(range(100, 110)) + [200])
+    v.prefill(list(range(50, 56)))
+    v.forward_block([70, 80])
+    v.commit_or_truncate(forwarded=2, accepted=2)
+    v.forward_block([90, 91, 92])
+    v.commit_or_truncate(forwarded=3, accepted=1)
+    cache_size = len(v.cached_token_sequence)
+    positions = v._cached_global_positions()
+    assert len(positions) == cache_size
+    v._assert_cache_invariant_1()
+
+
+def test_mlx_path_select_after_partial_accept_does_not_raise() -> None:
+    """End-to-end MLX reproduction: after partial-accept, path_select
+    produces a valid plan instead of raising the smoke-test error."""
+    from kv_cache_proposer.path_plan import ContinuationPlan
+    v = _build_mlx_verifier(sink=2, window=4)
+    v.prefill(list(range(50, 56)))
+    v.forward_block([70, 80])
+    v.commit_or_truncate(forwarded=2, accepted=2)
+    v.forward_block([90, 91, 92])
+    v.commit_or_truncate(forwarded=3, accepted=1)
+    cache_size = len(v.cached_token_sequence)
+    n = v.next_global_position
+    sink_eff = min(v.config.sink_size, cache_size)
+    window_eff = cache_size - sink_eff
+    history = [-1] * n
+    for i in range(sink_eff):
+        history[i] = v.cached_token_sequence[i]
+    for j, global_pos in enumerate(range(n - window_eff, n)):
+        history[global_pos] = v.cached_token_sequence[sink_eff + j]
+    for i in range(n):
+        if history[i] == -1:
+            history[i] = 7777
+    extended = history + [200, 201]
+    plan = v.path_select(extended)
+    assert isinstance(plan, ContinuationPlan)
+    assert plan.skip_n == n
+    assert plan.new_tokens == [200, 201]
 
 
 def test_record_peak_activation_grows_only() -> None:

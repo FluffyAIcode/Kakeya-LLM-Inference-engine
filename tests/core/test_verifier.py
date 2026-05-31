@@ -718,20 +718,120 @@ def test_inv_2_position_monotonic_across_continuation_chain(
     assert verifier.next_global_position == len(history)
 
 
-def test_inv_1_internal_check_in_match_helper_catches_drift(
+# ---------------------------------------------------------------------------
+# Regression: _cached_global_positions length mirrors cache_size, not budget
+# (PR 7-2 bug from 2026-05-31 Mac M4 smoke test —
+#  bench_long_session_mac_v2_smoke_1780236903.json)
+# ---------------------------------------------------------------------------
+
+
+def test_cached_global_positions_uses_actual_cache_size_not_budget(
     fresh_verifier_factory,
 ) -> None:
-    """``_prompt_matches_cached_positions`` defensively re-checks
-    INV-1 (positions list length vs parallel sequence length) and
-    raises if they disagree. Force the disagreement to exercise the
-    guard."""
+    """The original PR 7-2 implementation derived position-list
+    length from ``min(next_global_position, sink+window)``, which is
+    wrong whenever the cache has shrunk below the budget (e.g. after
+    a partial-accept commit_or_truncate on the MLX backend).
+
+    Smoke-test failure mode (2026-05-31 Mac M4): the engine raised
+    ``position list of length 68 disagrees with parallel sequence
+    of length 55`` on every turn after the first. The fix derives
+    length from the actual ``len(cached_token_sequence)``.
+
+    This test exercises the helper directly with synthetic state —
+    the buggy state is reachable on MLX through normal flow but not
+    on CPU (CPU's ``_trim_cache_in_place`` always pulls cache back
+    up to budget after commit).
+    """
+    verifier = fresh_verifier_factory(sink=2, window=4)  # budget = 6
+    # Synthetic post-partial-accept state: cache holds 5 entries
+    # (3 sink-relative + 2 window-relative would be conceptually
+    # incorrect; use a realistic shape: 2 sink + 3 window).
+    # Manually set the parallel sequence to simulate what the cache
+    # would look like after a partial-accept commit on MLX.
+    verifier.cached_token_sequence = [10, 20, 100, 101, 102]
+    verifier.next_global_position = 20  # past budget
+    positions = verifier._cached_global_positions()
+    # Expected: sink=[0,1] (sink_size=2 entries) + window=[17,18,19]
+    # (5 - 2 = 3 window entries ending at 19)
+    assert positions == [0, 1, 17, 18, 19]
+    # Length matches the actual cache size, not the budget.
+    assert len(positions) == len(verifier.cached_token_sequence)
+
+
+def test_cached_global_positions_with_cache_below_sink_size(
+    fresh_verifier_factory,
+) -> None:
+    """If somehow only 1 entry remains and sink_size=4, the helper
+    must not fabricate non-existent positions. All slots are
+    sink-classified."""
+    verifier = fresh_verifier_factory(sink=4, window=8)
+    verifier.cached_token_sequence = [99]
+    verifier.next_global_position = 50
+    positions = verifier._cached_global_positions()
+    assert positions == [0]
+    assert len(positions) == len(verifier.cached_token_sequence)
+
+
+def test_cached_global_positions_with_full_budget_no_eviction(
+    fresh_verifier_factory,
+) -> None:
+    """When cache_size == sink + window and next_global_position is
+    well past budget, the helper returns a contiguous-sink-plus-
+    sliding-window layout."""
+    verifier = fresh_verifier_factory(sink=2, window=4)  # budget = 6
+    verifier.cached_token_sequence = list(range(6))
+    verifier.next_global_position = 100
+    positions = verifier._cached_global_positions()
+    assert positions == [0, 1, 96, 97, 98, 99]
+    assert len(positions) == 6
+
+
+def test_cached_global_positions_short_history_no_window_yet(
+    fresh_verifier_factory,
+) -> None:
+    """When n < budget, the cache holds [0..n-1] contiguously
+    (no eviction has happened yet)."""
     verifier = fresh_verifier_factory(sink=2, window=4)
-    verifier.prefill([10, 20, 30, 40, 50, 60])
-    # Corrupt the parallel sequence so its length disagrees with
-    # what _cached_global_positions would compute.
-    verifier.cached_token_sequence = verifier.cached_token_sequence + [999]
-    with pytest.raises(AssertionError, match="INV-1 should have caught this"):
-        verifier._prompt_matches_cached_positions([10, 20, 30, 40, 50, 60, 70])
+    verifier.cached_token_sequence = [10, 20, 30]
+    verifier.next_global_position = 3
+    positions = verifier._cached_global_positions()
+    assert positions == [0, 1, 2]
+
+
+def test_prompt_matches_cached_positions_with_post_partial_accept_state(
+    fresh_verifier_factory,
+) -> None:
+    """End-to-end: the helper that path_select consults internally
+    (``_prompt_matches_cached_positions``) returns True for a
+    prompt that agrees at the cached positions, even when the
+    cache is in the post-partial-accept state.
+
+    Tests the helper directly because constructing the K/V tensor
+    state to match a synthetic cached_token_sequence is not
+    practical without going through real prefill — and prefill on
+    CPU never produces this state. MLX's natural-flow reproduction
+    is in tests/backends/mlx/test_verifier.py.
+    """
+    verifier = fresh_verifier_factory(sink=2, window=4)
+    # Synthetic post-partial-accept state.
+    verifier.cached_token_sequence = [10, 20, 100, 101, 102]
+    verifier.next_global_position = 20
+    # Build a prompt that agrees at the cached positions
+    # (sink: 0, 1; window: 17, 18, 19).
+    history = [7777] * 20
+    history[0], history[1] = 10, 20
+    history[17], history[18], history[19] = 100, 101, 102
+    extended = history + [200, 201]
+    # Match: True (no raise).
+    assert verifier._prompt_matches_cached_positions(extended) is True
+    # Prompt that diverges at a cached position (window middle).
+    diverging = list(extended)
+    diverging[18] = 999
+    assert verifier._prompt_matches_cached_positions(diverging) is False
+    # Prompt that's too short to cover the cached positions.
+    too_short = history[:10]  # only covers position 0..9
+    assert verifier._prompt_matches_cached_positions(too_short) is False
 
 
 def test_record_peak_activation_grows_only(fresh_verifier_factory) -> None:

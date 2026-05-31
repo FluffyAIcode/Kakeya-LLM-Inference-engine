@@ -281,29 +281,32 @@ class MLXSinkWindowVerifier:
         """Global token positions currently held in the cache.
 
         See :meth:`kv_cache_proposer.verifier.SinkWindowVerifier._cached_global_positions`
-        for semantics.
+        for the full design rationale. Length is derived from the
+        actual ``cached_token_sequence`` size — NOT from
+        ``next_global_position`` capped at sink+window — to handle
+        the post-partial-accept state where the cache has shrunk
+        below the budget.
         """
+        cache_size = len(self.cached_token_sequence)
         n = self.next_global_position
-        if n == 0:
+        if cache_size == 0 or n == 0:
             return []
-        budget = self.config.sink_size + self.config.window_size
-        if n <= budget:
-            return list(range(n))
-        sink_positions = list(range(self.config.sink_size))
-        window_start = n - self.config.window_size
-        window_positions = list(range(window_start, n))
+        sink_eff = min(self.config.sink_size, cache_size)
+        window_eff = cache_size - sink_eff
+        sink_positions = list(range(sink_eff))
+        if window_eff <= 0:
+            return sink_positions
+        window_positions = list(range(n - window_eff, n))
         return sink_positions + window_positions
 
     def _prompt_matches_cached_positions(self, prompt: List[int]) -> bool:
-        """Token-id-level check for ADR 0007 §2.4.a.2."""
+        """Token-id-level check for ADR 0007 §2.4.a.2.
+
+        See :meth:`kv_cache_proposer.verifier.SinkWindowVerifier._prompt_matches_cached_positions`
+        for the design rationale on why no defensive length recheck
+        is needed here.
+        """
         positions = self._cached_global_positions()
-        if len(positions) != len(self.cached_token_sequence):
-            raise AssertionError(
-                f"_prompt_matches_cached_positions: position list of "
-                f"length {len(positions)} disagrees with parallel "
-                f"sequence of length {len(self.cached_token_sequence)}; "
-                f"INV-1 should have caught this earlier"
-            )
         for cache_idx, global_pos in enumerate(positions):
             if global_pos >= len(prompt):
                 return False

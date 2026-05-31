@@ -393,28 +393,37 @@ class SinkWindowVerifier:
     def _cached_global_positions(self) -> List[int]:
         """Return the global token positions currently held in the cache.
 
-        The cache holds positions as a sink+window window over global
-        positions. Concretely:
+        The cache holds a sink prefix + a sliding window. Concretely:
 
-          - If ``next_global_position <= sink + window``: positions
-            ``[0, 1, ..., next_global_position - 1]`` (everything
-            still fits, no eviction yet).
-          - Otherwise: positions ``[0..sink-1]`` (the sink prefix) +
-            ``[next_global_position - window..next_global_position -
-            1]`` (the sliding window).
+          - sink: the first ``min(sink_size, cache_size)`` positions
+            of the conversation (positions 0, 1, ..., sink_eff - 1).
+          - window: the most recent ``cache_size - sink_eff`` positions
+            ending at ``next_global_position - 1``.
 
-        Length always equals ``len(self.cached_token_sequence)``
-        (which equals the K/V cache seq dim, by INV-1).
+        Length **always** equals ``len(self.cached_token_sequence)``
+        (which equals the K/V cache seq dim, by INV-1). Crucially we
+        derive the layout from the actual cache size, not from
+        ``next_global_position``: after a
+        ``commit_or_truncate(forwarded, accepted)`` with
+        ``accepted < forwarded``, the cache shrinks below
+        ``sink+window`` even when ``next_global_position`` is well past
+        the budget. Computing positions from the budget alone in that
+        state produces a list that is longer than the cache, which is
+        the v0.3.0 PR 7-2 bug surfaced in the 2026-05-31 Mac M4 smoke
+        test (``bench_long_session_mac_v2_smoke_1780236903.json``).
         """
+        cache_size = len(self.cached_token_sequence)
         n = self.next_global_position
-        if n == 0:
+        if cache_size == 0 or n == 0:
             return []
-        budget = self.config.sink_size + self.config.window_size
-        if n <= budget:
-            return list(range(n))
-        sink_positions = list(range(self.config.sink_size))
-        window_start = n - self.config.window_size
-        window_positions = list(range(window_start, n))
+        sink_eff = min(self.config.sink_size, cache_size)
+        window_eff = cache_size - sink_eff
+        sink_positions = list(range(sink_eff))
+        if window_eff <= 0:
+            return sink_positions
+        # Window ends at the most recent global position; spans
+        # `window_eff` slots backwards from there.
+        window_positions = list(range(n - window_eff, n))
         return sink_positions + window_positions
 
     def _prompt_matches_cached_positions(self, prompt: List[int]) -> bool:
@@ -424,17 +433,14 @@ class SinkWindowVerifier:
         held in the cache, ``prompt[p]`` equals the cached token id
         at the matching slot. False on any mismatch (caller routes
         to NewSession path).
+
+        Length consistency between the position list and the parallel
+        token sequence is guaranteed by construction in
+        ``_cached_global_positions`` (it derives length from
+        ``len(self.cached_token_sequence)``), so no defensive
+        recheck is needed here.
         """
         positions = self._cached_global_positions()
-        if len(positions) != len(self.cached_token_sequence):
-            # INV-1 should make this impossible; if it triggers,
-            # it's a critical bug in the cache-mutation layer.
-            raise AssertionError(
-                f"_prompt_matches_cached_positions: position list of "
-                f"length {len(positions)} disagrees with parallel "
-                f"sequence of length {len(self.cached_token_sequence)}; "
-                f"INV-1 should have caught this earlier"
-            )
         for cache_idx, global_pos in enumerate(positions):
             if global_pos >= len(prompt):
                 return False
