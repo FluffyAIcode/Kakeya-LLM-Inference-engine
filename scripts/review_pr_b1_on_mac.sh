@@ -87,6 +87,21 @@ import xml.etree.ElementTree as ET
 junit_path, cov_path, out_path = sys.argv[1:4]
 
 junit_root = ET.parse(junit_path).getroot()
+
+# pytest's --junitxml emits a <testsuites> root that wraps one or
+# more <testsuite> elements; the count attributes (tests / failures /
+# errors / skipped) live on the *inner* <testsuite>, not on the
+# wrapper. Earlier versions of this helper read the wrapper and
+# silently produced "tests": 0. Aggregate from every <testsuite>
+# element so we are correct whether the root is <testsuites> (the
+# pytest case) or <testsuite> (junit-xml producers that omit the
+# wrapper).
+testsuites = list(junit_root.iter("testsuite"))
+total_tests = sum(int(ts.get("tests", "0")) for ts in testsuites)
+total_failures = sum(int(ts.get("failures", "0")) for ts in testsuites)
+total_errors = sum(int(ts.get("errors", "0")) for ts in testsuites)
+total_skipped = sum(int(ts.get("skipped", "0")) for ts in testsuites)
+
 cases = []
 for tc in junit_root.iter("testcase"):
     cases.append({
@@ -111,10 +126,10 @@ report = {
         "python": platform.python_version(),
     },
     "junit": {
-        "tests": int(junit_root.get("tests", "0")),
-        "failures": int(junit_root.get("failures", "0")),
-        "errors": int(junit_root.get("errors", "0")),
-        "skipped": int(junit_root.get("skipped", "0")),
+        "tests": total_tests,
+        "failures": total_failures,
+        "errors": total_errors,
+        "skipped": total_skipped,
         "cases": cases,
     },
     "coverage": {
