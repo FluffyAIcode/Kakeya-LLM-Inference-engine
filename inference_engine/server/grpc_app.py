@@ -42,10 +42,33 @@ from inference_engine.server.proto_gen.kakeya.v1 import (
 )
 from inference_engine.session import (
     AppendTokensCoordinator,
+    DoneEvent,
+    GenerationCoordinator,
+    HistoryTruncatedEvent,
     InvariantViolation,
     SessionNotFoundError,
     SessionStore,
+    STOP_REASON_CANCELLED,
+    STOP_REASON_EOS,
+    STOP_REASON_MAX_TOKENS,
+    STOP_REASON_TRUNCATED,
+    TokenEvent,
 )
+
+
+# Mapping from GenerationCoordinator's string stop reasons to the
+# protobuf enum. Defined at module level so reviewers can audit the
+# 1:1 correspondence at a glance.
+_STOP_REASON_TO_PROTO = {
+    STOP_REASON_MAX_TOKENS:
+        runtime_pb2.GenerateDone.STOP_REASON_MAX_TOKENS,
+    STOP_REASON_EOS:
+        runtime_pb2.GenerateDone.STOP_REASON_EOS,
+    STOP_REASON_CANCELLED:
+        runtime_pb2.GenerateDone.STOP_REASON_CANCELLED,
+    STOP_REASON_TRUNCATED:
+        runtime_pb2.GenerateDone.STOP_REASON_TRUNCATED,
+}
 
 _logger = logging.getLogger(__name__)
 
@@ -113,18 +136,25 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         session_store: SessionStore,
         *,
         append_coordinator: Optional[AppendTokensCoordinator] = None,
+        generation_coordinator: Optional[GenerationCoordinator] = None,
     ) -> None:
         """Construct a Servicer.
 
-        ``append_coordinator`` is the wiring point added in PR-B2. When
-        ``None`` (the PR-B1 mode, preserved for tests that don't need a
-        verifier), ``AppendTokens`` returns ``UNIMPLEMENTED`` — the same
-        framework default used in PR-B1. When non-None, ``AppendTokens``
-        runs the §2.3 byte-exact prefill-incremental contract through
-        the coordinator and surfaces the typed error mapping above.
+        ``append_coordinator`` is the PR-B2 wiring point: when None
+        (PR-B1 mode, preserved for tests that don't need a verifier),
+        ``AppendTokens`` returns ``UNIMPLEMENTED``; when non-None,
+        ``AppendTokens`` runs the §2.3 byte-exact prefill-incremental
+        contract.
+
+        ``generation_coordinator`` is the PR-B3 wiring point: same
+        optional-default contract for ``Generate``. When None, the
+        Generate stream returns ``UNIMPLEMENTED``; when non-None,
+        Generate streams TokenEvents / HistoryTruncatedEvents /
+        DoneEvent through the gRPC server-streaming response.
         """
         self._store = session_store
         self._append = append_coordinator
+        self._generate = generation_coordinator
 
     async def CreateSession(  # noqa: N802 — gRPC-generated method casing
         self,
@@ -184,6 +214,111 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             history_length=new_history_length,
         )
 
+    async def Generate(  # noqa: N802 — gRPC-generated method casing
+        self,
+        request: runtime_pb2.GenerateRequest,
+        context: grpc.aio.ServicerContext,
+    ):
+        """Stream tokens generated against ``request.session_id``.
+
+        Yields ``runtime_pb2.GenerateResponse`` frames carrying one of:
+
+          * ``token_id``: a committed token, in generation order.
+          * ``truncated``: ``HistoryTruncated`` event, emitted at most
+            once per call before the first ``token_id`` (per the proto
+            contract).
+          * ``done``: ``GenerateDone`` terminal frame.
+
+        When this Servicer was constructed without a
+        ``generation_coordinator``, returns ``UNIMPLEMENTED`` (PR-B2
+        regression contract preserved).
+
+        Cancellation: the loop polls ``context.cancelled()`` after
+        every event the coordinator yields. On cancellation we emit
+        a ``GenerateDone(STOP_REASON_CANCELLED)`` frame and return.
+        Cancellation latency is bounded by one generation step on
+        the worst case (the in-flight forward pass finishes before
+        the next poll).
+        """
+        if self._generate is None:
+            await context.abort(
+                grpc.StatusCode.UNIMPLEMENTED,
+                "Generate not configured on this Servicer "
+                "(coordinator not provided)",
+            )
+
+        seed = request.seed if request.HasField("seed") else None
+        temperature = (
+            request.temperature
+            if request.HasField("temperature") else None
+        )
+        top_p = request.top_p if request.HasField("top_p") else None
+        top_k = request.top_k if request.HasField("top_k") else None
+
+        # GenerationCoordinator.generate is a generator function; the
+        # call itself returns a generator object without executing
+        # any of the body, so no exception is raised here. All typed
+        # errors (SessionNotFoundError, ValueError, InvariantViolation)
+        # propagate from the inner `for event in event_stream:` loop
+        # below and are caught there.
+        event_stream = self._generate.generate(
+            session_id=request.session_id,
+            max_tokens=request.max_tokens,
+            seed=seed,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+
+        token_count_so_far = 0
+
+        try:
+            for event in event_stream:
+                if context.cancelled():
+                    yield runtime_pb2.GenerateResponse(
+                        done=runtime_pb2.GenerateDone(
+                            stop_reason=_STOP_REASON_TO_PROTO[
+                                STOP_REASON_CANCELLED
+                            ],
+                            generated_token_count=token_count_so_far,
+                            prefill_duration_seconds=0.0,
+                            total_duration_seconds=0.0,
+                        ),
+                    )
+                    return
+
+                if isinstance(event, TokenEvent):
+                    token_count_so_far += 1
+                    yield runtime_pb2.GenerateResponse(
+                        token_id=event.token_id,
+                    )
+                elif isinstance(event, HistoryTruncatedEvent):
+                    yield runtime_pb2.GenerateResponse(
+                        truncated=runtime_pb2.HistoryTruncated(
+                            dropped_token_count=event.dropped_token_count,
+                        ),
+                    )
+                else:
+                    # DoneEvent — the only remaining event type per
+                    # the GenerateEvent union.
+                    assert isinstance(event, DoneEvent)
+                    yield runtime_pb2.GenerateResponse(
+                        done=runtime_pb2.GenerateDone(
+                            stop_reason=_STOP_REASON_TO_PROTO[
+                                event.stop_reason
+                            ],
+                            generated_token_count=event.generated_token_count,
+                            prefill_duration_seconds=event.prefill_seconds,
+                            total_duration_seconds=event.total_seconds,
+                        ),
+                    )
+        except SessionNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except InvariantViolation as exc:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+
     async def CloseSession(  # noqa: N802
         self,
         request: runtime_pb2.CloseSessionRequest,
@@ -233,6 +368,7 @@ def create_grpc_server(
     *,
     session_store: SessionStore,
     append_coordinator: Optional[AppendTokensCoordinator] = None,
+    generation_coordinator: Optional[GenerationCoordinator] = None,
     config: Optional[GrpcServerConfig] = None,
 ) -> grpc.aio.Server:
     """Build, but do not start, a configured gRPC asyncio server.
@@ -264,7 +400,9 @@ def create_grpc_server(
     )
     runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
         RuntimeServiceServicer(
-            session_store, append_coordinator=append_coordinator,
+            session_store,
+            append_coordinator=append_coordinator,
+            generation_coordinator=generation_coordinator,
         ),
         server,
     )
