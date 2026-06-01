@@ -1,0 +1,13 @@
+# TypeScript build output
+dist/
+*.tsbuildinfo
+
+# vitest / coverage
+coverage/
+
+# npm
+node_modules/
+
+# IDE
+.vscode/
+.idea/
