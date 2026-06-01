@@ -139,6 +139,9 @@ jobs:
             import inference_engine.pipeline.coordinator; \
             import inference_engine.session; \
             import inference_engine.session.store; \
+            import inference_engine.server.grpc_app; \
+            import inference_engine.server.proto_gen.kakeya.v1.runtime_pb2; \
+            import inference_engine.server.proto_gen.kakeya.v1.runtime_pb2_grpc; \
             import inference_engine.proposer; \
             import inference_engine.proposer.sparse_logits; \
             import inference_engine.backends.mlx.env; \
@@ -212,5 +215,44 @@ jobs:
             echo "::error::buf format would have rewritten one or more .proto files."
             echo "Run 'buf format -w' locally and commit the result."
             printf '%s\n' "$diff_output"
+            exit 1
+          fi
+
+  proto-stub-drift:
+    name: proto stub drift
+    runs-on: ubuntu-latest
+    # ADR 0008 PR-B1: the committed Python stubs under
+    # inference_engine/server/proto_gen/ MUST be byte-identical to what
+    # scripts/regenerate_proto_stubs.sh produces from the .proto. This
+    # job re-runs the script, then `git diff --exit-code` fails CI if
+    # anything changed. Catches drift between the .proto contract and
+    # the SDK-consumed Python API.
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install grpcio-tools
+        run: |
+          python -m pip install --upgrade pip
+          # Pin the same grpcio-tools range as requirements.txt so the
+          # stubs we regenerate match what production uses. If
+          # grpcio-tools updates and starts producing different stub
+          # bytes, this job catches it as a drift before merge.
+          pip install 'grpcio>=1.65,<2.0' 'grpcio-tools>=1.65,<2.0'
+
+      - name: Regenerate stubs
+        run: bash scripts/regenerate_proto_stubs.sh
+
+      - name: Fail if regenerated stubs differ from committed stubs
+        run: |
+          if ! git diff --exit-code -- inference_engine/server/proto_gen/; then
+            echo "::error::Committed stubs are out of date with proto/."
+            echo "Run scripts/regenerate_proto_stubs.sh locally and commit."
             exit 1
           fi

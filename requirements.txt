@@ -26,6 +26,15 @@ pydantic>=2.7,<3.0
 httpx>=0.27,<1.0
 prometheus-client>=0.20,<1.0
 
+# gRPC runtime (PR-B1 of ADR 0008 Phase B; the runtime/SDK protocol).
+# grpcio-tools is needed only at build time (regenerating stubs from
+# proto/kakeya/v1/runtime.proto) — kept in this single requirements
+# file because (a) we want CI to be able to drift-check the
+# committed stubs, and (b) the install footprint is small and there
+# is no separate dev-requirements file in this project today.
+grpcio>=1.65,<2.0
+grpcio-tools>=1.65,<2.0
+
 # Test stack (used by tests/ and run_platform_tests.sh)
 pytest>=8.0
 pytest-cov>=5.0
