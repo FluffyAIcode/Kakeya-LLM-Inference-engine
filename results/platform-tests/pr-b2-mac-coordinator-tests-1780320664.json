@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "kind": "pr_b2_mac_coordinator_tests",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "junit": {
+    "tests": 19,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "cases": [
+      {
+        "classname": "tests.inference_engine.session.test_coordinator",
+        "name": "test_fake_verifier_is_structurally_a_verifier_protocol",
+        "time": 0.001,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestDispatch",
+        "name": "test_first_call_uses_prefill",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestDispatch",
+        "name": "test_second_call_uses_forward_block_then_commit",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestDispatch",
+        "name": "test_third_call_again_uses_incremental",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestStateMirroring",
+        "name": "test_session_history_extends",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestStateMirroring",
+        "name": "test_session_history_grows_across_calls",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestStateMirroring",
+        "name": "test_session_cached_token_sequence_mirrors_verifier",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestStateMirroring",
+        "name": "test_session_position_mirrors_verifier",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestStateMirroring",
+        "name": "test_next_token_logits_set_after_incremental_call",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestInv3ByteExactDispatch",
+        "name": "test_one_call_vs_two_calls_produce_same_cache",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestInv3ByteExactDispatch",
+        "name": "test_chunking_invariance_across_many_splits",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestEmptyAppend",
+        "name": "test_empty_token_list_is_noop",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestEmptyAppend",
+        "name": "test_empty_append_after_real_append_is_noop_on_verifier",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestEmptyAppend",
+        "name": "test_empty_append_advances_last_active_at",
+        "time": 0.001,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestErrors",
+        "name": "test_unknown_session_raises_session_not_found",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestErrors",
+        "name": "test_negative_token_id_raises_value_error",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestErrors",
+        "name": "test_inv1_violation_propagates_through_coordinator",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestErrors",
+        "name": "test_inv2_violation_propagates_through_coordinator",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_coordinator.TestConstructor",
+        "name": "test_stores_store_and_verifier_references",
+        "time": 0.0,
+        "outcome": "passed"
+      }
+    ]
+  },
+  "coverage": {
+    "line_rate": 1.0,
+    "branch_rate": 0.0,
+    "lines_covered": 32,
+    "lines_valid": 32
+  }
+}

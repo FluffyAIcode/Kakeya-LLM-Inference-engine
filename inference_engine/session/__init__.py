@@ -16,6 +16,10 @@ no gRPC binding. Subsequent PRs add:
   store.
 """
 
+from inference_engine.session.coordinator import (
+    AppendTokensCoordinator,
+    VerifierProtocol,
+)
 from inference_engine.session.store import (
     CacheInspector,
     InvariantViolation,
@@ -26,10 +30,12 @@ from inference_engine.session.store import (
 )
 
 __all__ = [
+    "AppendTokensCoordinator",
     "CacheInspector",
     "InvariantViolation",
     "Session",
     "SessionNotFoundError",
     "SessionStore",
     "SessionStoreError",
+    "VerifierProtocol",
 ]

@@ -46,23 +46,35 @@ smoke_report="$out_dir/pr-b1-mac-grpc-smoke-${stamp}.json"
 mkdir -p "$out_dir"
 
 echo "==> [1/2] pytest tests/inference_engine/server/test_grpc_app.py"
-# Run coverage via `coverage run -m pytest` instead of pytest-cov.
+# Run coverage via `coverage run -m pytest` rather than pytest-cov.
+# Two design points:
 #
-# Why: pytest-cov starts coverage tracing at conftest-import time,
-# which races with torch's _C extension initializer on Python 3.13
-# (and on torch >= 2.10 / Python 3.12) and can segfault before any
-# test starts. `coverage run` initializes the tracer before pytest
-# even loads, so torch's `from torch._C import *` sees a stable
-# tracer state. Functionally equivalent (same .coverage data file,
-# same xml/term reports), just more robust.
-COVERAGE_CORE=sysmon PYTHONPATH=. python3 -m coverage run \
-    --source=inference_engine.server.grpc_app \
+#   1. No `--source=...` flag on `coverage run`. The user-reported
+#      Mac M4 segfault (Python 3.13.12) reproduced reliably with
+#      `--source=inference_engine.server.grpc_app`; the same coverage
+#      version with no `--source` and `--include=...` applied at
+#      report time runs cleanly. Tracing-then-filtering is slightly
+#      slower than source-scoped tracing but it sidesteps a coverage
+#      / torch-_C / sys.monitoring race that we don't control.
+#
+#   2. No `COVERAGE_CORE=sysmon` env var. .coveragerc already sets
+#      `[run] core = sysmon` for Python 3.12+. Setting it via env
+#      forces an earlier init path that, on Python 3.13, can
+#      segfault inside torch's C extension. The config-file route
+#      defers init until `coverage run` actually starts, which is
+#      after torch's import has settled.
+PYTHONPATH=. python3 -m coverage erase
+PYTHONPATH=. python3 -m coverage run \
     -m pytest \
         tests/inference_engine/server/test_grpc_app.py \
         --junitxml="$tests_junit" \
         -v
-COVERAGE_CORE=sysmon python3 -m coverage report --fail-under=100 -m
-COVERAGE_CORE=sysmon python3 -m coverage xml -o "$tests_cov"
+python3 -m coverage report \
+    --include='inference_engine/server/grpc_app.py' \
+    --fail-under=100 -m
+python3 -m coverage xml \
+    --include='inference_engine/server/grpc_app.py' \
+    -o "$tests_cov"
 
 # Convert junit + summary into a JSON report for parity with the
 # other artifacts under results/platform-tests/.
@@ -75,6 +87,21 @@ import xml.etree.ElementTree as ET
 junit_path, cov_path, out_path = sys.argv[1:4]
 
 junit_root = ET.parse(junit_path).getroot()
+
+# pytest's --junitxml emits a <testsuites> root that wraps one or
+# more <testsuite> elements; the count attributes (tests / failures /
+# errors / skipped) live on the *inner* <testsuite>, not on the
+# wrapper. Earlier versions of this helper read the wrapper and
+# silently produced "tests": 0. Aggregate from every <testsuite>
+# element so we are correct whether the root is <testsuites> (the
+# pytest case) or <testsuite> (junit-xml producers that omit the
+# wrapper).
+testsuites = list(junit_root.iter("testsuite"))
+total_tests = sum(int(ts.get("tests", "0")) for ts in testsuites)
+total_failures = sum(int(ts.get("failures", "0")) for ts in testsuites)
+total_errors = sum(int(ts.get("errors", "0")) for ts in testsuites)
+total_skipped = sum(int(ts.get("skipped", "0")) for ts in testsuites)
+
 cases = []
 for tc in junit_root.iter("testcase"):
     cases.append({
@@ -99,10 +126,10 @@ report = {
         "python": platform.python_version(),
     },
     "junit": {
-        "tests": int(junit_root.get("tests", "0")),
-        "failures": int(junit_root.get("failures", "0")),
-        "errors": int(junit_root.get("errors", "0")),
-        "skipped": int(junit_root.get("skipped", "0")),
+        "tests": total_tests,
+        "failures": total_failures,
+        "errors": total_errors,
+        "skipped": total_skipped,
         "cases": cases,
     },
     "coverage": {
