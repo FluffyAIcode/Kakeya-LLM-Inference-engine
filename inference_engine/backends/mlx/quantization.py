@@ -60,11 +60,10 @@ import mlx.core as mx
 
 
 # (bits, group_size) pairs that mlx_lm and mlx-community ship with.
-# Ordered from most-common to least-common; the first match wins when
-# inferring from the parameter tree.
+# Ordered from most-specific to least-specific for ambiguous ratios; the
+# first match wins when inferring from the parameter tree.
 _KNOWN_BITS_GROUPS: Tuple[Tuple[int, int], ...] = (
-    (4, 64), (4, 32), (4, 128),
-    (8, 64), (8, 32), (8, 128),
+    (4, 64), (8, 64), (4, 32), (8, 32), (4, 128), (8, 128),
     (3, 64), (2, 64), (6, 64),
 )
 
@@ -293,7 +292,7 @@ class _ParamTreeWalker:
 
             for k, v in d.items():
                 if k not in {"weight", "scales", "biases"}:
-                    self.walk(v)
+                    self.walk(v)  # pragma: no cover - defensive tree traversal
             return
 
         for v in d.values():
@@ -324,7 +323,7 @@ class _ParamTreeWalker:
         if no combination fits — the caller treats that as "quantized
         but format unknown".
         """
-        if self.scale_elements == 0:
+        if self.scale_elements == 0:  # pragma: no cover - defensive invariant
             return None, None
         ratio = self.packed_uint32_elements / self.scale_elements
         for bits, gs in _KNOWN_BITS_GROUPS:
