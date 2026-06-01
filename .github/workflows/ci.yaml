@@ -258,13 +258,55 @@ jobs:
           # bytes, this job catches it as a drift before merge.
           pip install 'grpcio>=1.65,<2.0' 'grpcio-tools>=1.65,<2.0'
 
-      - name: Regenerate stubs
+      - name: Set up Node.js (for ts-proto plugin)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Install ts-proto in sdks/typescript
+        run: |
+          cd sdks/typescript
+          npm install --no-audit --no-fund
+
+      - name: Regenerate stubs (Python + TypeScript)
         run: bash scripts/regenerate_proto_stubs.sh
 
       - name: Fail if regenerated stubs differ from committed stubs
         run: |
-          if ! git diff --exit-code -- inference_engine/server/proto_gen/; then
+          if ! git diff --exit-code -- inference_engine/server/proto_gen/ sdks/typescript/src/proto_gen/; then
             echo "::error::Committed stubs are out of date with proto/."
             echo "Run scripts/regenerate_proto_stubs.sh locally and commit."
             exit 1
           fi
+
+  typescript-sdk-tests:
+    name: TypeScript SDK tests
+    runs-on: ubuntu-latest
+    # ADR 0008 PR-B5: vitest under Node 20+. The TypeScript SDK is
+    # Linux-runnable end-to-end (no MLX dependency); the in-Node
+    # gRPC server fixture lets us test the SDK against a real
+    # @grpc/grpc-js channel without needing the Python runtime.
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Install dependencies
+        working-directory: sdks/typescript
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check
+        working-directory: sdks/typescript
+        run: npm run typecheck
+
+      - name: Run vitest with 100% coverage
+        working-directory: sdks/typescript
+        run: npm test
