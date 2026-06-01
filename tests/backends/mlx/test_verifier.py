@@ -402,6 +402,53 @@ def test_record_peak_activation_grows_only() -> None:
     assert v.stats.peak_activation_bytes == pa2  # smaller doesn't regress
 
 
+# ---------------------------------------------------------------------------
+# ADR 0008 PR-A3b — CacheInspector protocol on MLX verifier
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_k_seq_length_zero_before_prefill() -> None:
+    """Cold MLX verifier reports k_seq_length = 0; matches
+    Session.cached_token_sequence empty initial state, so INV-1
+    trivially holds at session creation."""
+    v = _build_mlx_verifier()
+    assert v.k_seq_length(session=None) == 0
+
+
+def test_mlx_k_seq_length_matches_cache_buffer_after_prefill() -> None:
+    """After prefill, k_seq_length equals the SinkWindowKVCache's
+    post-trim buffer size and equals len(cached_token_sequence) —
+    the basis of INV-1 enforcement at the session layer."""
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30, 40, 50])
+    k_len = v.k_seq_length(session=None)
+    assert k_len == 5
+    assert k_len == len(v.cached_token_sequence)
+
+
+def test_mlx_k_seq_length_after_long_prefill_is_sink_plus_window() -> None:
+    """When the prefill exceeds sink+window, the cache is trimmed
+    and k_seq_length reflects the post-trim size, not the prompt
+    length."""
+    v = _build_mlx_verifier(sink=2, window=4)
+    v.prefill(list(range(100, 120)))  # 20 tokens, budget = 6
+    assert v.k_seq_length(session=None) == 6
+
+
+def test_mlx_verifier_satisfies_cache_inspector_protocol() -> None:
+    """The MLX verifier can be passed as the cache_inspector to
+    SessionStore; INV-1 enforcement uses the live MLX cache state."""
+    from inference_engine.session import SessionStore
+
+    v = _build_mlx_verifier(sink=2, window=8)
+    store = SessionStore(capacity=1, cache_inspector=v)
+    sess = store.create_session()
+    # Cold verifier: k_seq_length=0 matches empty cached_token_sequence.
+    store.append_tokens(sess.session_id, [1, 2, 3])
+    assert sess.history_token_ids == [1, 2, 3]
+    assert callable(v.k_seq_length)
+
+
 def test_reset_clears_state() -> None:
     v = _build_mlx_verifier()
     v.prefill([1, 2, 3])

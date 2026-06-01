@@ -205,6 +205,23 @@ class MLXSinkWindowVerifier:
         self.next_token_logits = logits[-1].clone()
         return self.next_token_logits
 
+    # ---------------- CacheInspector protocol (ADR 0008 PR-A3b) ---------------- #
+    # Mirrors the CPU verifier's CacheInspector implementation. The session
+    # argument is accepted for protocol conformance but ignored in v0.3
+    # single-tenant scope (one verifier instance binds to one session at a
+    # time, see ADR 0008 §2.5). PR-A3c plumbs session-scoped binding.
+
+    def k_seq_length(self, session: object) -> int:
+        """Return the K/V tensor sequence length for the bound session.
+
+        Implements the :class:`inference_engine.session.store.CacheInspector`
+        Protocol. The ``session`` argument is unused in v0.3 (single
+        bound session per verifier). Returns 0 when no cache is
+        allocated.
+        """
+        del session  # unused in v0.3 single-tenant scope
+        return self._cache_buffer_size()
+
     # --------------------------- internals --------------------------- #
 
     def _cache_buffer_size(self) -> int:

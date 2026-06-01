@@ -510,3 +510,64 @@ def test_record_peak_activation_grows_only(fresh_verifier_factory) -> None:
     # smaller does not regress
     verifier._record_peak_activation(a)
     assert verifier.stats.peak_activation_bytes == pa2
+
+
+# ---------------------------------------------------------------------------
+# ADR 0008 PR-A3b — CacheInspector protocol implementation
+# ---------------------------------------------------------------------------
+
+
+def test_k_seq_length_returns_zero_before_prefill(fresh_verifier_factory) -> None:
+    """The CacheInspector contract: with no cache allocated, the
+    seq length is 0. Session.cached_token_sequence is also empty,
+    so SessionStore's INV-1 check (len == k_seq_length) trivially
+    holds at session creation time, before the first prefill."""
+    verifier = fresh_verifier_factory()
+    assert verifier.k_seq_length(session=None) == 0
+
+
+def test_k_seq_length_matches_cache_seq_dim_after_prefill(
+    fresh_verifier_factory,
+) -> None:
+    """After a prefill, k_seq_length must equal the actual K/V
+    tensor sequence dimension and equal len(cached_token_sequence)
+    — the latter being the basis of INV-1."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([10, 20, 30, 40, 50])
+    k_len = verifier.k_seq_length(session=None)
+    assert k_len == 5
+    assert k_len == len(verifier.cached_token_sequence)
+
+
+def test_k_seq_length_ignores_session_argument(fresh_verifier_factory) -> None:
+    """v0.3 single-tenant scope: the session argument is accepted for
+    Protocol conformance but ignored. Two arbitrary objects produce
+    the same value."""
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([10, 20, 30])
+    assert verifier.k_seq_length(session=object()) == verifier.k_seq_length(
+        session="any-string-shaped-stand-in",
+    )
+
+
+def test_cpu_verifier_satisfies_cache_inspector_protocol(
+    fresh_verifier_factory,
+) -> None:
+    """Structural typing check: the CPU verifier is a valid
+    CacheInspector. SessionStore can be constructed with a real
+    verifier as its inspector and INV-1 enforcement uses verifier
+    state."""
+    from inference_engine.session import CacheInspector, SessionStore
+
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    store = SessionStore(capacity=1, cache_inspector=verifier)
+    sess = store.create_session()
+    # Sanity: cold verifier reports 0; cached_token_sequence is also
+    # empty; INV-1 holds.
+    store.append_tokens(sess.session_id, [1, 2, 3])
+    assert sess.history_token_ids == [1, 2, 3]
+    # Confirm the protocol shape; runtime-checkable Protocol would
+    # report True, but isinstance(_, Protocol) requires the @runtime_checkable
+    # decorator. We assert by signature presence instead.
+    assert hasattr(CacheInspector, "k_seq_length")
+    assert callable(verifier.k_seq_length)
