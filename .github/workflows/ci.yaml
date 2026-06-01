@@ -175,3 +175,38 @@ jobs:
           docker run --rm \
             kakeya:ci-${{ github.sha }} \
             --help
+
+  proto-lint:
+    name: proto lint (buf)
+    runs-on: ubuntu-latest
+    # ADR 0008 PR-A1: the proto/ schema is the wire-contract source of
+    # truth for the gRPC runtime + Python / TypeScript SDKs. `buf lint`
+    # under the STANDARD ruleset enforces public-style conventions
+    # (service / message naming, enum zero-value naming, file-package
+    # alignment). `buf format --diff` enforces canonical formatting so
+    # the source of truth is also character-stable across editors.
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.50.0
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lint .proto files
+        run: buf lint
+
+      - name: Verify .proto formatting is canonical
+        run: |
+          # `buf format` is an in-place rewriter; --diff makes it print
+          # what it would change instead of editing files (and always
+          # exits 0). A non-empty diff is a CI failure.
+          diff_output="$(buf format --diff)"
+          if [ -n "$diff_output" ]; then
+            echo "::error::buf format would have rewritten one or more .proto files."
+            echo "Run 'buf format -w' locally and commit the result."
+            printf '%s\n' "$diff_output"
+            exit 1
+          fi
