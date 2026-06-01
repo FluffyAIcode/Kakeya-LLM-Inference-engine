@@ -38,7 +38,8 @@ reader what was *not* chosen.
 | 0004 | [Alignment training data preparation policy (Nemotron-informed)](0004-alignment-training-data-preparation-policy.md) | Accepted |
 | 0005 | Personal layer / personal data store                            | Planned  |
 | 0006 | [Project positioning as local agent infrastructure](0006-local-agent-infrastructure-positioning.md) | Accepted |
-| 0007 | [Cross-request KV cache reuse for long sessions](0007-cross-request-kv-reuse.md) | Accepted |
+| 0007 | [Cross-request KV cache reuse for long sessions](0007-cross-request-kv-reuse.md) | Superseded by 0008 |
+| 0008 | [Session-bound runtime + gRPC protocol](0008-session-bound-runtime-and-grpc-protocol.md) | Accepted |
 
 Note: ADR numbering is monotonically increasing; in-flight or
 planned numbers (0005) appear in the index so readers can
