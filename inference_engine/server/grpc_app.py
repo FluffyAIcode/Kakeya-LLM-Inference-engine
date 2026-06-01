@@ -41,6 +41,7 @@ from inference_engine.server.proto_gen.kakeya.v1 import (
     runtime_pb2_grpc,
 )
 from inference_engine.session import (
+    AppendTokensCoordinator,
     InvariantViolation,
     SessionNotFoundError,
     SessionStore,
@@ -99,17 +100,31 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
     | ValueError (token-id range) | INVALID_ARGUMENT                 |
     +-----------------------------+----------------------------------+
 
-    Of these, PR-B1's three RPCs only ever raise
-    SessionNotFoundError or PoolExhausted (Create can raise
-    PoolExhausted; Close and GetSessionInfo can raise
-    SessionNotFoundError). InvariantViolation and ValueError become
-    reachable in PR-B2 (``AppendTokens``) and are wired here for
-    forward-compatibility — but un-tested in PR-B1 because the
-    RPC paths that trigger them do not exist yet.
+    PR-B2 adds the AppendTokens RPC which can raise the full set of
+    errors above (``InvariantViolation`` from INV-1 / INV-2 mismatch
+    detected during the prefill-incremental path, ``ValueError`` from
+    well-formedness checks on token ids).
+
+    Generate is still UNIMPLEMENTED in PR-B2; PR-B3 wires it.
     """
 
-    def __init__(self, session_store: SessionStore) -> None:
+    def __init__(
+        self,
+        session_store: SessionStore,
+        *,
+        append_coordinator: Optional[AppendTokensCoordinator] = None,
+    ) -> None:
+        """Construct a Servicer.
+
+        ``append_coordinator`` is the wiring point added in PR-B2. When
+        ``None`` (the PR-B1 mode, preserved for tests that don't need a
+        verifier), ``AppendTokens`` returns ``UNIMPLEMENTED`` — the same
+        framework default used in PR-B1. When non-None, ``AppendTokens``
+        runs the §2.3 byte-exact prefill-incremental contract through
+        the coordinator and surfaces the typed error mapping above.
+        """
         self._store = session_store
+        self._append = append_coordinator
 
     async def CreateSession(  # noqa: N802 — gRPC-generated method casing
         self,
@@ -133,6 +148,40 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             )
         return runtime_pb2.CreateSessionResponse(
             session_id=session.session_id,
+        )
+
+    async def AppendTokens(  # noqa: N802 — gRPC-generated method casing
+        self,
+        request: runtime_pb2.AppendTokensRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> runtime_pb2.AppendTokensResponse:
+        """Append raw tokens; run the §2.3 byte-exact prefill-incremental.
+
+        When this Servicer was constructed without an
+        ``append_coordinator`` (the PR-B1 mode), this returns
+        ``UNIMPLEMENTED`` — identical to a non-overridden gRPC method.
+        With a coordinator attached, this implements the full §2.3
+        contract and surfaces the four typed status mappings.
+        """
+        if self._append is None:
+            await context.abort(
+                grpc.StatusCode.UNIMPLEMENTED,
+                "AppendTokens not configured on this Servicer "
+                "(coordinator not provided)",
+            )
+        try:
+            new_history_length = self._append.append_tokens(
+                session_id=request.session_id,
+                token_ids=list(request.token_ids),
+            )
+        except SessionNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except InvariantViolation as exc:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+        return runtime_pb2.AppendTokensResponse(
+            history_length=new_history_length,
         )
 
     async def CloseSession(  # noqa: N802
@@ -183,6 +232,7 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
 def create_grpc_server(
     *,
     session_store: SessionStore,
+    append_coordinator: Optional[AppendTokensCoordinator] = None,
     config: Optional[GrpcServerConfig] = None,
 ) -> grpc.aio.Server:
     """Build, but do not start, a configured gRPC asyncio server.
@@ -193,6 +243,12 @@ def create_grpc_server(
     servers without starting them, and the eventual production
     entry point may want to wire signal handlers between
     construction and start.
+
+    ``append_coordinator`` is the PR-B2 wiring point. Pass an
+    :class:`AppendTokensCoordinator` to enable AppendTokens; omit
+    (or pass ``None``) to leave AppendTokens at its PR-B1
+    UNIMPLEMENTED default — useful for tests that don't need a
+    verifier instance.
 
     The bound port is observable via the returned server's
     ``add_insecure_port`` return value; callers that need the port
@@ -207,7 +263,9 @@ def create_grpc_server(
         maximum_concurrent_rpcs=config.max_concurrent_rpcs,
     )
     runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(session_store),
+        RuntimeServiceServicer(
+            session_store, append_coordinator=append_coordinator,
+        ),
         server,
     )
     server.add_insecure_port(config.bind_address)
