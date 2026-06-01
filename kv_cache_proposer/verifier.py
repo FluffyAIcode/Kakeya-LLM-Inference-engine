@@ -301,6 +301,25 @@ class SinkWindowVerifier:
                 return int(keys.shape[2])
         return 0
 
+    # --------------- CacheInspector protocol (ADR 0008 PR-A3b) --------------- #
+    # The CPU verifier satisfies inference_engine.session.store.CacheInspector
+    # structurally so SessionStore can use it as the INV-1 source of truth.
+    # The session argument is unused — the verifier holds a single cache for
+    # the session it is currently bound to (single-tenant, max_concurrent=1
+    # in v0.3, see ADR 0008 §2.5). PR-A3c will plumb session-scoped binding
+    # so multiple sessions can each query their own slab.
+
+    def k_seq_length(self, session: object) -> int:
+        """Return the K/V tensor sequence length for the bound session.
+
+        Implements the :class:`inference_engine.session.store.CacheInspector`
+        Protocol. The ``session`` argument is accepted for protocol
+        conformance but ignored in v0.3 (one verifier instance binds to
+        one session at a time). Returns 0 when no cache is allocated.
+        """
+        del session  # unused in v0.3 single-tenant scope
+        return self._cache_seq_length()
+
     def _assert_cache_invariant_1(self) -> None:
         """ADR 0007 §2.9 INV-1: parallel-sequence consistency.
 

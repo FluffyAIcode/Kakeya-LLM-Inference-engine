@@ -720,14 +720,34 @@ parallelize.
     `prefill_duration_seconds` so the server-side observability
     surface (which §6.6 rows server/* scope to PR-D1) keeps reading
     valid values without code change. 100% Linux unit coverage.
-  - **PR-A3b** (next, queued after this PR): the slab-ownership
-    refactor proper — verifier KV state is constructed and owned by
-    `SessionStore`. Slab-pool integration becomes "slab per
-    session" instead of "slab per scheduler slot". This is the PR
-    where the verifier becomes a `CacheInspector` (PR-A2) for
-    `SessionStore`. First PR with a mandatory Mac M4 integration
-    test report (cf. §9), since it touches MLX runtime paths in a
-    non-deletion way.
+  - **PR-A3b**: the slab-ownership refactor proper. Three deliverables:
+      1. **`Session.slab` is real** — typed `Optional[KVSlab]`. When
+         the store has a `slab_pool`, `create_session` acquires;
+         every removal path (`close_session`, LRU eviction, TTL
+         eviction, INV-1 / INV-2 violation) releases. `Session.kv_live_bytes()`
+         reads through to `slab.live_kv_bytes` so the §2.9
+         `session_kv_live_bytes` gauge becomes real once a pool is
+         wired.
+      2. **Both verifiers implement `CacheInspector`** — CPU
+         `SinkWindowVerifier.k_seq_length` delegates to
+         `_cache_seq_length`; MLX `MLXSinkWindowVerifier.k_seq_length`
+         delegates to `_cache_buffer_size`. The session argument is
+         accepted for protocol conformance but ignored in v0.3
+         single-tenant scope (one verifier instance binds to one
+         session at a time).
+      3. **Existing code paths preserve byte-exact behavior** — the
+         deprecated HTTP shim continues using `PooledVerifier` (the
+         ADR 0003 wrapper) on its own slab pool; PR-D1 is what
+         migrates the HTTP shim to `SessionStore`. `PooledVerifier`
+         is left untouched in this PR.
+    Reserved for **PR-A3c**: session-scoped binding (so the verifier
+    holds per-session cache state when `max_concurrent > 1` is
+    enabled in v0.4 multi-tenant scope). v0.3 single-tenant
+    intentionally leaves this as a `del session` no-op in
+    `k_seq_length`.
+    First PR with a mandatory Mac M4 integration test report
+    (cf. §9), since the new MLX `k_seq_length` method is reachable
+    from MLX-runtime tests in `tests/backends/mlx/test_verifier.py`.
 
 ### 6.2 Phase B — gRPC server + Python SDK
 

@@ -12,6 +12,8 @@ import time
 
 import pytest
 
+from inference_engine.memory.pool import PoolExhausted, SlabPool
+from inference_engine.memory.slab import SlabConfig
 from inference_engine.session import (
     CacheInspector,
     InvariantViolation,
@@ -20,6 +22,24 @@ from inference_engine.session import (
     SessionStore,
     SessionStoreError,
 )
+
+
+def _tiny_slab_pool(num_slabs: int = 4) -> SlabPool:
+    """Construct a minimal SlabPool for SessionStore-with-pool tests.
+
+    Dimensions are deliberately small so the test suite stays fast on
+    Linux CI runners; we are testing the SessionStore <-> pool wiring,
+    not the slab tensors themselves (those have their own coverage in
+    tests/inference_engine/memory/test_pool.py).
+    """
+    cfg = SlabConfig(
+        num_layers=1,
+        num_heads=1,
+        sink_size=1,
+        window_size=2,
+        head_dim=4,
+    )
+    return SlabPool(num_slabs=num_slabs, slab_config=cfg)
 
 
 class _SyntheticInspector:
@@ -521,13 +541,140 @@ class TestTotalKvLiveBytes:
     def test_zero_when_no_sessions(self):
         assert SessionStore(capacity=2).total_kv_live_bytes == 0
 
-    def test_zero_in_pr_a2_even_with_sessions(self):
-        # PR-A2: every session.kv_live_bytes() returns 0 unconditionally.
-        # PR-A3 will replace this with real slab.live_kv_bytes.
+    def test_zero_for_pool_less_store_even_with_sessions(self):
+        # When SessionStore was constructed with no slab_pool,
+        # session.slab stays None and kv_live_bytes() returns 0
+        # by definition. PR-A3b makes the with-pool case return
+        # real bytes (see TestSlabOwnership below).
         store = SessionStore(capacity=2)
         store.create_session()
         store.create_session()
         assert store.total_kv_live_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# Slab ownership (PR-A3b)
+# ---------------------------------------------------------------------------
+
+
+class TestSlabOwnership:
+    def test_default_store_has_no_pool(self):
+        store = SessionStore(capacity=2)
+        assert store.slab_pool is None
+
+    def test_store_with_pool_records_it(self):
+        pool = _tiny_slab_pool()
+        store = SessionStore(capacity=2, slab_pool=pool)
+        assert store.slab_pool is pool
+
+    def test_create_session_acquires_slab_when_pool_present(self):
+        pool = _tiny_slab_pool(num_slabs=2)
+        store = SessionStore(capacity=2, slab_pool=pool)
+        sess = store.create_session()
+        assert sess.slab is not None
+        assert pool.in_use_count == 1
+        assert pool.available_count == 1
+
+    def test_create_session_pool_less_leaves_slab_none(self):
+        store = SessionStore(capacity=2)
+        sess = store.create_session()
+        assert sess.slab is None
+
+    def test_close_session_releases_slab_to_pool(self):
+        pool = _tiny_slab_pool(num_slabs=2)
+        store = SessionStore(capacity=2, slab_pool=pool)
+        sess = store.create_session()
+        store.close_session(sess.session_id)
+        assert pool.in_use_count == 0
+        assert pool.available_count == 2
+
+    def test_lru_eviction_releases_slab_before_admitting(self):
+        # capacity=1, num_slabs=1 — admitting a second session must
+        # evict the first AND release its slab so the new session
+        # can acquire one. Without the eviction-before-acquire
+        # ordering, the pool would be exhausted at the moment of
+        # acquire() and create_session would raise PoolExhausted.
+        pool = _tiny_slab_pool(num_slabs=1)
+        store = SessionStore(capacity=1, slab_pool=pool)
+        a = store.create_session()
+        b = store.create_session()  # must evict a, reuse a's slab
+        assert b.slab is not None
+        assert a.slab is None  # released
+        assert pool.in_use_count == 1
+        with pytest.raises(SessionNotFoundError):
+            store.get_session(a.session_id)
+
+    def test_evict_idle_releases_slabs(self):
+        pool = _tiny_slab_pool(num_slabs=3)
+        store = SessionStore(capacity=3, slab_pool=pool)
+        a = store.create_session()
+        b = store.create_session()
+        a.last_active_at = 0.0
+        b.last_active_at = 1000.0
+        evicted = store.evict_idle(ttl_seconds=10.0, now=1001.0)
+        assert evicted == [a]
+        assert a.slab is None  # released
+        assert pool.in_use_count == 1  # only b remains
+        assert b.slab is not None
+
+    def test_inv1_violation_releases_slab(self):
+        pool = _tiny_slab_pool(num_slabs=2)
+        store = SessionStore(
+            capacity=2,
+            cache_inspector=_SyntheticInspector(k_seq_length=5),
+            slab_pool=pool,
+        )
+        sess = store.create_session()
+        assert sess.slab is not None
+        with pytest.raises(InvariantViolation):
+            store.append_tokens(sess.session_id, [1])
+        # Slab released back to pool even though session was failed.
+        assert sess.slab is None
+        assert pool.in_use_count == 0
+
+    def test_inv2_violation_releases_slab(self):
+        pool = _tiny_slab_pool(num_slabs=2)
+        store = SessionStore(capacity=2, slab_pool=pool)
+        sess = store.create_session()
+        store.record_position_advance(sess.session_id, 10)
+        assert sess.slab is not None
+        with pytest.raises(InvariantViolation):
+            store.record_position_advance(sess.session_id, 5)
+        assert sess.slab is None
+        assert pool.in_use_count == 0
+
+    def test_kv_live_bytes_reads_through_slab(self):
+        # KVSlab exposes a live_kv_bytes_override field that the
+        # verifier wiring (PooledVerifier) currently uses to publish
+        # real KV bytes. Session.kv_live_bytes() must read through
+        # to the slab's live_kv_bytes property.
+        pool = _tiny_slab_pool(num_slabs=2)
+        store = SessionStore(capacity=2, slab_pool=pool)
+        sess = store.create_session()
+        sess.slab.live_kv_bytes_override = 12345
+        assert sess.kv_live_bytes() == 12345
+        assert store.total_kv_live_bytes == 12345
+
+    def test_total_kv_live_bytes_aggregates_across_sessions(self):
+        pool = _tiny_slab_pool(num_slabs=4)
+        store = SessionStore(capacity=4, slab_pool=pool)
+        a = store.create_session()
+        b = store.create_session()
+        a.slab.live_kv_bytes_override = 100
+        b.slab.live_kv_bytes_override = 200
+        assert store.total_kv_live_bytes == 300
+
+    def test_pool_exhausted_at_create_when_capacity_exceeds_pool(self):
+        # capacity=4 but num_slabs=1: after the first session, the
+        # second create wants to admit (capacity allows) but the pool
+        # is empty (no eviction triggered, since active_count <
+        # capacity). PoolExhausted must propagate — silent fall-back
+        # to a None slab would corrupt the §2.3 byte-exact contract.
+        pool = _tiny_slab_pool(num_slabs=1)
+        store = SessionStore(capacity=4, slab_pool=pool)
+        store.create_session()
+        with pytest.raises(PoolExhausted):
+            store.create_session()
 
 
 # ---------------------------------------------------------------------------
@@ -548,8 +695,9 @@ class TestSessionDataclass:
         after = sess.idle_seconds
         assert after > before
 
-    def test_kv_live_bytes_zero_in_pr_a2(self):
+    def test_kv_live_bytes_zero_when_no_slab(self):
         sess = Session(session_id="s", eos_token_ids=(), client_label="")
+        assert sess.slab is None
         assert sess.kv_live_bytes() == 0
 
 

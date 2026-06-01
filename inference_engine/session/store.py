@@ -48,6 +48,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
+from inference_engine.memory.pool import SlabPool
+from inference_engine.memory.slab import KVSlab
+
 
 class SessionStoreError(Exception):
     """Base class for typed errors raised by :class:`SessionStore`.
@@ -160,6 +163,13 @@ class Session:
     created_at: float = field(default_factory=time.monotonic)
     last_active_at: float = field(default_factory=time.monotonic)
 
+    # Per-session slab — one ``KVSlab`` is allocated by
+    # ``SessionStore.create_session`` when the store was constructed
+    # with a non-None ``slab_pool``. Released by ``close_session``,
+    # by LRU eviction, by TTL eviction, or on INV violation. None
+    # when the store has no pool (the test / pure-data-layer mode).
+    slab: Optional[KVSlab] = None
+
     @property
     def history_length(self) -> int:
         """Number of tokens currently in the session's history."""
@@ -174,10 +184,16 @@ class Session:
     def kv_live_bytes(self) -> int:
         """Live KV bytes held by this session's slab.
 
-        PR-A2 placeholder: returns 0. PR-A3 will compute from the
-        verifier's slab at call time.
+        Returns the slab's reported live KV bytes (the verifier
+        wiring keeps ``slab.live_kv_bytes_override`` synced to its
+        real ``stats.peak_kv_bytes`` snapshot — see
+        ``PooledVerifier._sync_slab_bytes`` for the existing CPU/MLX
+        contract that PR-A3b reuses). When the session has no slab
+        (pool-less store), returns 0.
         """
-        return 0
+        if self.slab is None:
+            return 0
+        return self.slab.live_kv_bytes
 
 
 class SessionStore:
@@ -198,6 +214,7 @@ class SessionStore:
         *,
         capacity: int,
         cache_inspector: Optional[CacheInspector] = None,
+        slab_pool: Optional[SlabPool] = None,
     ) -> None:
         if capacity < 1:
             raise ValueError(
@@ -205,7 +222,21 @@ class SessionStore:
             )
         self._capacity = capacity
         self._cache_inspector = cache_inspector
+        self._slab_pool = slab_pool
         self._sessions: dict[str, Session] = {}
+
+    @property
+    def slab_pool(self) -> Optional[SlabPool]:
+        """The slab pool this store was constructed with, if any.
+
+        When non-None, every ``create_session`` acquires a slab from
+        this pool and assigns it to ``Session.slab``; eviction /
+        close releases it back. When None (the test default), the
+        store is a pure data-layer with no real KV memory bookkeeping
+        (``Session.slab`` stays ``None`` and ``kv_live_bytes()``
+        returns 0).
+        """
+        return self._slab_pool
 
     @property
     def capacity(self) -> int:
@@ -235,7 +266,15 @@ class SessionStore:
 
         Server-issues the ``session_id`` (clients have no input on
         it, per §2.2 item 1). At capacity, evicts the
-        least-recently-active session before admitting (§2.6 LRU).
+        least-recently-active session before admitting (§2.6 LRU);
+        the evicted session's slab (if any) is released back to the
+        pool before the new session acquires one.
+
+        When the store was constructed with a ``slab_pool``, the
+        new session's ``slab`` is acquired from the pool. The
+        store guarantees that the LRU eviction frees its slab
+        *before* this acquire, so a single-pool / single-capacity
+        configuration cannot deadlock on slab availability.
         """
         if self.active_count >= self._capacity:
             self._evict_one_lru()
@@ -244,6 +283,8 @@ class SessionStore:
             eos_token_ids=tuple(eos_token_ids),
             client_label=client_label,
         )
+        if self._slab_pool is not None:
+            session.slab = self._slab_pool.acquire()
         self._sessions[session.session_id] = session
         return session
 
@@ -296,9 +337,15 @@ class SessionStore:
         currently in the store. Idempotent close is **not** offered;
         a second close is an error so that double-close bugs in
         callers surface loudly.
+
+        When the store has a ``slab_pool``, the session's slab is
+        released back to the pool before the dict entry is removed,
+        so a follow-up ``create_session`` is guaranteed to have at
+        least one free slab.
         """
         session = self.get_session(session_id)
         final_length = session.history_length
+        self._release_slab_if_held(session)
         del self._sessions[session_id]
         return final_length
 
@@ -310,15 +357,17 @@ class SessionStore:
         Enforces INV-2 (position monotonicity, §2.8): the new
         position MUST be >= the current ``next_global_position``.
         On violation the counter is incremented on the local
-        ``Session`` reference, the session is removed, and
+        ``Session`` reference, the session's slab (if any) is
+        released back to the pool, the session is removed, and
         :class:`InvariantViolation` is raised.
 
         Called by the verifier after every prefill / generation
-        step (PR-A3 wiring); PR-A2 tests exercise it directly.
+        step (PR-A3b wiring); PR-A2 tests exercise it directly.
         """
         session = self.get_session(session_id)
         if new_position < session.next_global_position:
             session.inv2_violations += 1
+            self._release_slab_if_held(session)
             del self._sessions[session_id]
             raise InvariantViolation(
                 kind="2",
@@ -357,6 +406,7 @@ class SessionStore:
             session = self._sessions[sid]
             idle = clock - session.last_active_at
             if idle >= ttl_seconds:
+                self._release_slab_if_held(session)
                 del self._sessions[sid]
                 evicted.append(session)
         return evicted
@@ -367,8 +417,10 @@ class SessionStore:
         When no :class:`CacheInspector` is registered, INV-1 is
         treated as trivially holding (no cache to compare against).
         With an inspector, ``len(cached_token_sequence)`` MUST equal
-        ``inspector.k_seq_length(session)``; otherwise the session
-        is removed and :class:`InvariantViolation` is raised.
+        ``inspector.k_seq_length(session)``; otherwise the slab
+        (if held) is released back to the pool, the session is
+        removed from the store, and :class:`InvariantViolation` is
+        raised.
         """
         if self._cache_inspector is None:
             return
@@ -376,6 +428,7 @@ class SessionStore:
         cached_len = len(session.cached_token_sequence)
         if actual_k_seq_len != cached_len:
             session.inv1_violations += 1
+            self._release_slab_if_held(session)
             del self._sessions[session.session_id]
             raise InvariantViolation(
                 kind="1",
@@ -386,17 +439,39 @@ class SessionStore:
                 ),
             )
 
+    def _release_slab_if_held(self, session: Session) -> None:
+        """Release ``session.slab`` back to the pool if held.
+
+        Idempotent: a session whose slab has already been released
+        (or never held one) is a no-op. The slab attribute is
+        cleared so a subsequent stale reference does not double-
+        release. Safe to call regardless of whether the store has a
+        pool — a session without a slab and a store without a pool
+        both no-op.
+        """
+        if session.slab is None:
+            return
+        if self._slab_pool is None:  # pragma: no cover - structurally unreachable: a slab can only have been acquired through self._slab_pool.
+            session.slab = None
+            return
+        slab = session.slab
+        session.slab = None
+        self._slab_pool.release(slab)
+
     def _evict_one_lru(self) -> Session:
         """Evict the least-recently-active session.
 
         Caller must have confirmed ``active_count >= capacity``;
         the store guarantees ``capacity >= 1`` so the dict is
-        non-empty here.
+        non-empty here. Releases the evicted session's slab (if
+        held) back to the pool *before* removing the dict entry,
+        so a follow-up ``create_session`` always has a free slab.
         """
         evicted_id, evicted = min(
             self._sessions.items(),
             key=lambda kv: kv[1].last_active_at,
         )
+        self._release_slab_if_held(evicted)
         del self._sessions[evicted_id]
         return evicted
 
