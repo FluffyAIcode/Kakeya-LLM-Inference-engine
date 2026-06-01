@@ -46,23 +46,35 @@ smoke_report="$out_dir/pr-b1-mac-grpc-smoke-${stamp}.json"
 mkdir -p "$out_dir"
 
 echo "==> [1/2] pytest tests/inference_engine/server/test_grpc_app.py"
-# Run coverage via `coverage run -m pytest` instead of pytest-cov.
+# Run coverage via `coverage run -m pytest` rather than pytest-cov.
+# Two design points:
 #
-# Why: pytest-cov starts coverage tracing at conftest-import time,
-# which races with torch's _C extension initializer on Python 3.13
-# (and on torch >= 2.10 / Python 3.12) and can segfault before any
-# test starts. `coverage run` initializes the tracer before pytest
-# even loads, so torch's `from torch._C import *` sees a stable
-# tracer state. Functionally equivalent (same .coverage data file,
-# same xml/term reports), just more robust.
-COVERAGE_CORE=sysmon PYTHONPATH=. python3 -m coverage run \
-    --source=inference_engine.server.grpc_app \
+#   1. No `--source=...` flag on `coverage run`. The user-reported
+#      Mac M4 segfault (Python 3.13.12) reproduced reliably with
+#      `--source=inference_engine.server.grpc_app`; the same coverage
+#      version with no `--source` and `--include=...` applied at
+#      report time runs cleanly. Tracing-then-filtering is slightly
+#      slower than source-scoped tracing but it sidesteps a coverage
+#      / torch-_C / sys.monitoring race that we don't control.
+#
+#   2. No `COVERAGE_CORE=sysmon` env var. .coveragerc already sets
+#      `[run] core = sysmon` for Python 3.12+. Setting it via env
+#      forces an earlier init path that, on Python 3.13, can
+#      segfault inside torch's C extension. The config-file route
+#      defers init until `coverage run` actually starts, which is
+#      after torch's import has settled.
+PYTHONPATH=. python3 -m coverage erase
+PYTHONPATH=. python3 -m coverage run \
     -m pytest \
         tests/inference_engine/server/test_grpc_app.py \
         --junitxml="$tests_junit" \
         -v
-COVERAGE_CORE=sysmon python3 -m coverage report --fail-under=100 -m
-COVERAGE_CORE=sysmon python3 -m coverage xml -o "$tests_cov"
+python3 -m coverage report \
+    --include='inference_engine/server/grpc_app.py' \
+    --fail-under=100 -m
+python3 -m coverage xml \
+    --include='inference_engine/server/grpc_app.py' \
+    -o "$tests_cov"
 
 # Convert junit + summary into a JSON report for parity with the
 # other artifacts under results/platform-tests/.

@@ -107,23 +107,33 @@ PY
 
 
 echo "==> [1/4] coordinator unit tests"
-COVERAGE_CORE=sysmon PYTHONPATH=. python3 -m coverage run \
-    --source=inference_engine.session.coordinator \
+# See review_pr_b1_on_mac.sh for the rationale on the no-`--source`
+# / no-`COVERAGE_CORE=sysmon` choice; we mirror that here.
+PYTHONPATH=. python3 -m coverage erase
+PYTHONPATH=. python3 -m coverage run \
     -m pytest tests/inference_engine/session/test_coordinator.py \
         --junitxml="$coord_junit" -v
-COVERAGE_CORE=sysmon python3 -m coverage report --fail-under=100 -m
-COVERAGE_CORE=sysmon python3 -m coverage xml -o "$coord_cov"
+python3 -m coverage report \
+    --include='inference_engine/session/coordinator.py' \
+    --fail-under=100 -m
+python3 -m coverage xml \
+    --include='inference_engine/session/coordinator.py' \
+    -o "$coord_cov"
 _summarize_pytest "$coord_junit" "$coord_cov" "$coord_report" \
     "pr_b2_mac_coordinator_tests"
 
 echo
 echo "==> [2/4] gRPC tests (PR-B1 surface + PR-B2 AppendTokens)"
-COVERAGE_CORE=sysmon PYTHONPATH=. python3 -m coverage run \
-    --source=inference_engine.server.grpc_app \
+PYTHONPATH=. python3 -m coverage erase
+PYTHONPATH=. python3 -m coverage run \
     -m pytest tests/inference_engine/server/test_grpc_app.py \
         --junitxml="$grpc_junit" -v
-COVERAGE_CORE=sysmon python3 -m coverage report --fail-under=100 -m
-COVERAGE_CORE=sysmon python3 -m coverage xml -o "$grpc_cov"
+python3 -m coverage report \
+    --include='inference_engine/server/grpc_app.py' \
+    --fail-under=100 -m
+python3 -m coverage xml \
+    --include='inference_engine/server/grpc_app.py' \
+    -o "$grpc_cov"
 _summarize_pytest "$grpc_junit" "$grpc_cov" "$grpc_report" \
     "pr_b2_mac_grpc_tests"
 
