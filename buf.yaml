@@ -1,0 +1,27 @@
+# buf v2 workspace config — ADR 0008 PR-A1.
+#
+# v0.3 ships only a single module (the runtime schema). When PR-A2
+# and beyond add dependent schemas (e.g., a separate metrics or
+# control-plane module), additional `modules` entries land here.
+#
+# The lint policy uses buf's STANDARD set, which enforces the public-
+# style guide (file-level package matching, message naming, enum
+# zero-value naming, etc.). FILE-level breaking-change detection is
+# enabled so that any incompatible edit to a published RPC or
+# message field is caught at PR time. Until v0.3 GA the schema is
+# still flagged Unstable in §1 of ADR 0008 — breaking changes are
+# allowed, but they require an explicit ADR-update commit referencing
+# this file's diff so the audit trail is preserved.
+
+version: v2
+
+modules:
+  - path: proto
+
+lint:
+  use:
+    - STANDARD
+
+breaking:
+  use:
+    - FILE

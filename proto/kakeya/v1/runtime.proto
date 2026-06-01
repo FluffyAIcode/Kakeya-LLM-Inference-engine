@@ -1,0 +1,250 @@
+// Copyright 2026 Kakeya contributors.
+//
+// Kakeya local-agent runtime — session-bound inference protocol.
+//
+// This file is the single source of truth for the wire contract
+// between Kakeya runtime instances and their SDKs (Python and
+// TypeScript at v0.3; future Rust / Go SDKs are admitted by the
+// design but not part of v0.3 scope).
+//
+// Servers and clients MUST conform to the bytes of this schema. In
+// particular, the byte-exact KV cache binding contract (ADR 0008
+// §2.3) is parameterized over the (session_id, history_token_ids,
+// seed) triple defined here.
+//
+// References:
+//   - docs/adr/0008-session-bound-runtime-and-grpc-protocol.md
+//     - §2.1 wire protocol decision (gRPC bidi primary)
+//     - §2.2 session model (server-issued id, raw tokens, append-only)
+//     - §2.3 KV binding + determinism contract
+//     - §2.4 no chat template at the runtime, ever
+//     - §2.6 cache state lifecycle (TTL, no implicit reset)
+//     - §2.8 anomaly invariants INV-1 / INV-2 / INV-3
+//     - §2.9 observability surface
+//     - §8 OQ-2 (history > sink+window default behavior)
+//     - §8 OQ-4 (seed is per-Generate; default while unresolved)
+//
+// This is PR-A1 from ADR 0008 §6.1: schema-only landing, no code-gen
+// targets, no service implementation. The file is documentation in
+// `.proto` form. `buf lint` is the CI gate.
+
+syntax = "proto3";
+
+package kakeya.v1;
+
+// -----------------------------------------------------------------------------
+// Service
+// -----------------------------------------------------------------------------
+
+// RuntimeService is the single service exposed by a Kakeya runtime
+// instance. All session lifecycle and inference RPCs live here. v0.3
+// is single-tenant; multi-tenant authorization is deferred to v0.4
+// (ADR 0008 §4.5) and is intentionally not modeled in this schema.
+service RuntimeService {
+  // CreateSession allocates a new session and returns its server-
+  // issued identifier. Clients cannot fabricate session ids; this RPC
+  // is the only way to obtain one (ADR 0008 §2.2 contract item 1).
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+
+  // AppendTokens appends raw token ids to a session's history. The
+  // history is append-only within a session; clients cannot rewrite
+  // prior history mid-session (ADR 0008 §2.2 contract item 3). The
+  // server treats token ids as opaque integers and does NOT call any
+  // chat template, role marker, or template re-rendering logic
+  // (ADR 0008 §2.4).
+  rpc AppendTokens(AppendTokensRequest) returns (AppendTokensResponse);
+
+  // Generate requests up to GenerateRequest.max_tokens of generation
+  // bound to a session_id. The server streams generated token ids
+  // back as they commit (server-streaming RPC). The byte-exact KV
+  // cache binding contract (ADR 0008 §2.3) applies: for the same
+  // (session_id, history_token_ids, seed) tuple, repeated Generate
+  // calls produce bit-identical output regardless of how the history
+  // was built up (one AppendTokens of N tokens vs. N AppendTokens of
+  // 1 token vs. CreateSession+AppendTokens combinations).
+  rpc Generate(GenerateRequest) returns (stream GenerateResponse);
+
+  // CloseSession releases a session and frees its KV slab. Subsequent
+  // RPCs that reference the closed session_id return NOT_FOUND.
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+
+  // GetSessionInfo returns diagnostic counters for a session. Used
+  // primarily by SDK observability helpers and integration tests
+  // (ADR 0008 §2.9). Subset of the metrics also exposed on the
+  // Prometheus /metrics endpoint of the deprecated HTTP shim.
+  rpc GetSessionInfo(GetSessionInfoRequest) returns (GetSessionInfoResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Session lifecycle messages
+// -----------------------------------------------------------------------------
+
+message CreateSessionRequest {
+  // Optional client-supplied label, recorded for diagnostics. Has no
+  // effect on session identity; the server still issues the
+  // session_id. Empty string = no label.
+  string client_label = 1;
+
+  // Token ids that, when emitted by the verifier sampler during
+  // Generate, cause the server to stop emitting and end the stream
+  // with GenerateDone.stop_reason = STOP_REASON_EOS. The runtime
+  // does NOT interpret these tokens semantically (ADR 0008 §2.4) —
+  // they are opaque ids supplied by the SDK / application based on
+  // its own knowledge of the model's tokenizer. Empty list =
+  // generation only stops on STOP_REASON_MAX_TOKENS, on
+  // STOP_REASON_TRUNCATED, or on cancellation.
+  repeated uint32 eos_token_ids = 2;
+}
+
+message CreateSessionResponse {
+  // Server-issued opaque identifier. Treat as a black box; do not
+  // attempt to parse, derive new ids from, or reuse across runtime
+  // process restarts.
+  string session_id = 1;
+}
+
+message AppendTokensRequest {
+  // Target session. Must reference a session previously returned by
+  // CreateSession; otherwise returns NOT_FOUND (ADR 0008 §2.6).
+  string session_id = 1;
+
+  // Raw token ids to append. Each id must be in the verifier's
+  // tokenizer vocabulary range; out-of-range ids return
+  // INVALID_ARGUMENT and the session's history is unchanged.
+  repeated uint32 token_ids = 2;
+}
+
+message AppendTokensResponse {
+  // Total number of tokens in the session's history after this
+  // append. Useful for SDK-side bookkeeping and history-length
+  // assertions.
+  uint64 history_length = 1;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {
+  // Number of tokens that were in the session's history at close
+  // time. Diagnostic only; clients should not depend on this for
+  // correctness.
+  uint64 final_history_length = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Generate messages
+// -----------------------------------------------------------------------------
+
+message GenerateRequest {
+  string session_id = 1;
+
+  // Maximum tokens to emit in this Generate call. Generation may
+  // stop earlier if (a) the verifier sampler emits one of the
+  // session's eos_token_ids (STOP_REASON_EOS), (b) the session's
+  // history would exceed the verifier's sink+window capacity
+  // (STOP_REASON_TRUNCATED, default per ADR 0008 §8 OQ-2), or
+  // (c) the call is cancelled (STOP_REASON_CANCELLED).
+  uint32 max_tokens = 2;
+
+  // Deterministic-sampling seed. ADR 0008 §8 OQ-4 default while
+  // unresolved: the seed is a per-Generate argument; the byte-exact
+  // determinism contract (§2.3) is parameterized over a fixed seed.
+  // Field is proto3-optional so the SDK can distinguish "no seed
+  // pinned, sampler may use process entropy" from "seed = 0
+  // pinned" (both are valid).
+  optional uint64 seed = 3;
+
+  // Sampling parameters, all optional. Documented here for the SDK
+  // contract; the runtime passes these through to the verifier
+  // sampler without further interpretation in v0.3.
+  optional float temperature = 4;
+  optional float top_p = 5;
+  optional uint32 top_k = 6;
+}
+
+// GenerateResponse is one frame of the server-streaming response.
+// Exactly one terminal Done event is emitted per Generate call,
+// after which the stream closes cleanly. Despite the "Response"
+// suffix (per proto3 / buf STANDARD convention), each individual
+// instance is conceptually one *event* in the stream — see the
+// `payload` oneof.
+message GenerateResponse {
+  oneof payload {
+    // A single committed token id, in the order the verifier
+    // accepted it.
+    uint32 token_id = 1;
+
+    // Terminal event. Sent exactly once at the end of the stream.
+    GenerateDone done = 2;
+
+    // History was truncated to fit within the verifier's
+    // sink+window capacity (ADR 0008 §8 OQ-2 default). Emitted at
+    // most once per Generate call, before any token_id event in
+    // that call. The truncation discards the oldest non-sink tokens;
+    // no information beyond what was discarded is recoverable.
+    HistoryTruncated truncated = 3;
+  }
+}
+
+message GenerateDone {
+  enum StopReason {
+    STOP_REASON_UNSPECIFIED = 0;
+    STOP_REASON_MAX_TOKENS = 1;
+    STOP_REASON_EOS = 2;
+    STOP_REASON_CANCELLED = 3;
+    STOP_REASON_TRUNCATED = 4;
+  }
+  StopReason stop_reason = 1;
+
+  // Number of tokens this Generate call appended to the session
+  // history (excludes the prefill phase).
+  uint32 generated_token_count = 2;
+
+  // Wall-clock duration of the prefill phase for this call, in
+  // seconds. Exposes the §2.9 metric `generate_prefill_duration_seconds`
+  // observation that this call contributed.
+  double prefill_duration_seconds = 3;
+
+  // Wall-clock duration from prefill start to last token committed.
+  double total_duration_seconds = 4;
+}
+
+message HistoryTruncated {
+  // Number of tokens dropped from the history. The verifier slab
+  // now holds (sink + window) tokens at most; this event reports
+  // history_length - (sink + window) at the moment of truncation.
+  uint64 dropped_token_count = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Diagnostic messages
+// -----------------------------------------------------------------------------
+
+message GetSessionInfoRequest {
+  string session_id = 1;
+}
+
+message GetSessionInfoResponse {
+  // Number of tokens currently in the session's history (after any
+  // truncation; the runtime never reports a history longer than the
+  // slab can hold).
+  uint64 history_length = 1;
+
+  // Live KV bytes held by the session's slab. Sum of all sessions'
+  // values equals the §2.9 `session_kv_live_bytes` gauge.
+  uint64 kv_live_bytes = 2;
+
+  // Anomaly-invariant violation counters per ADR 0008 §2.8. MUST be
+  // 0 under healthy operation. Non-zero is a paging-grade signal
+  // that the session has been failed and the slab freed; the
+  // session_id is no longer usable for AppendTokens / Generate
+  // (those return NOT_FOUND or FAILED_PRECONDITION).
+  uint64 cache_invariant_inv1_violations = 3;
+  uint64 cache_invariant_inv2_violations = 4;
+
+  // Wall-clock seconds since this session's last RPC interaction.
+  // The runtime evicts sessions idle longer than its configured
+  // session_idle_ttl_s (ADR 0008 §2.6 default 1800s).
+  double idle_seconds = 5;
+}
