@@ -46,14 +46,23 @@ smoke_report="$out_dir/pr-b1-mac-grpc-smoke-${stamp}.json"
 mkdir -p "$out_dir"
 
 echo "==> [1/2] pytest tests/inference_engine/server/test_grpc_app.py"
-PYTHONPATH=. python3 -m pytest \
-    tests/inference_engine/server/test_grpc_app.py \
-    --cov=inference_engine.server.grpc_app \
-    --cov-report=term \
-    --cov-report=xml:"$tests_cov" \
-    --cov-fail-under=100 \
-    --junitxml="$tests_junit" \
-    -v
+# Run coverage via `coverage run -m pytest` instead of pytest-cov.
+#
+# Why: pytest-cov starts coverage tracing at conftest-import time,
+# which races with torch's _C extension initializer on Python 3.13
+# (and on torch >= 2.10 / Python 3.12) and can segfault before any
+# test starts. `coverage run` initializes the tracer before pytest
+# even loads, so torch's `from torch._C import *` sees a stable
+# tracer state. Functionally equivalent (same .coverage data file,
+# same xml/term reports), just more robust.
+COVERAGE_CORE=sysmon PYTHONPATH=. python3 -m coverage run \
+    --source=inference_engine.server.grpc_app \
+    -m pytest \
+        tests/inference_engine/server/test_grpc_app.py \
+        --junitxml="$tests_junit" \
+        -v
+COVERAGE_CORE=sysmon python3 -m coverage report --fail-under=100 -m
+COVERAGE_CORE=sysmon python3 -m coverage xml -o "$tests_cov"
 
 # Convert junit + summary into a JSON report for parity with the
 # other artifacts under results/platform-tests/.
