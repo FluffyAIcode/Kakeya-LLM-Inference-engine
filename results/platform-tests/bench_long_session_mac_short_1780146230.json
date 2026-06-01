@@ -1,0 +1,931 @@
+{
+  "schema_version": 1,
+  "partial": false,
+  "duration_s": 1800.0,
+  "turn_spacing_s": 5.0,
+  "baseline_metrics": {
+    "scheduler_active_sessions": 0.0,
+    "scheduler_pool_in_use": 0.0,
+    "scheduler_pool_total": 1.0,
+    "scheduler_pending": 0.0,
+    "scheduler_kv_live_bytes": 0.0
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "elapsed_s": 0.034763375006150454,
+      "latency_s": 2.163541707996046,
+      "completion_tokens": 21,
+      "tokens_per_s": 9.70630698839219,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 48250880
+    },
+    {
+      "turn": 1,
+      "elapsed_s": 5.044412042014301,
+      "latency_s": 2.228922042006161,
+      "completion_tokens": 23,
+      "tokens_per_s": 10.318889385336531,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 48267264
+    },
+    {
+      "turn": 2,
+      "elapsed_s": 10.047111209016293,
+      "latency_s": 6.631162250007037,
+      "completion_tokens": 54,
+      "tokens_per_s": 8.143368834014383,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 48283648
+    },
+    {
+      "turn": 3,
+      "elapsed_s": 16.681781916995533,
+      "latency_s": 6.155455875006737,
+      "completion_tokens": 33,
+      "tokens_per_s": 5.361097645747299,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36077568
+    },
+    {
+      "turn": 4,
+      "elapsed_s": 22.841792209015694,
+      "latency_s": 7.724307583004702,
+      "completion_tokens": 43,
+      "tokens_per_s": 5.566842016313558,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36126720
+    },
+    {
+      "turn": 5,
+      "elapsed_s": 30.570981166994898,
+      "latency_s": 12.800447624991648,
+      "completion_tokens": 64,
+      "tokens_per_s": 4.999825152602174,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36241408
+    },
+    {
+      "turn": 6,
+      "elapsed_s": 43.374539709009696,
+      "latency_s": 15.47154929197859,
+      "completion_tokens": 64,
+      "tokens_per_s": 4.136625155774255,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36274176
+    },
+    {
+      "turn": 7,
+      "elapsed_s": 58.84778104201541,
+      "latency_s": 3.8882295840012375,
+      "completion_tokens": 14,
+      "tokens_per_s": 3.600610431442966,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36306944
+    },
+    {
+      "turn": 8,
+      "elapsed_s": 63.85383224999532,
+      "latency_s": 6.804852915985975,
+      "completion_tokens": 24,
+      "tokens_per_s": 3.5268947464858713,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36831232
+    },
+    {
+      "turn": 9,
+      "elapsed_s": 70.66015795900603,
+      "latency_s": 8.072399083001073,
+      "completion_tokens": 25,
+      "tokens_per_s": 3.0969727515882126,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36864000
+    },
+    {
+      "turn": 10,
+      "elapsed_s": 78.73411987500731,
+      "latency_s": 19.215584582998417,
+      "completion_tokens": 64,
+      "tokens_per_s": 3.330629870955161,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36929536
+    },
+    {
+      "turn": 11,
+      "elapsed_s": 97.95125216699671,
+      "latency_s": 7.350700875016628,
+      "completion_tokens": 20,
+      "tokens_per_s": 2.7208289848897924,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30261248
+    },
+    {
+      "turn": 12,
+      "elapsed_s": 105.30630799999926,
+      "latency_s": 5.994915832998231,
+      "completion_tokens": 22,
+      "tokens_per_s": 3.669776292588442,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30720000
+    },
+    {
+      "turn": 13,
+      "elapsed_s": 111.30275433399947,
+      "latency_s": 18.762931417004438,
+      "completion_tokens": 64,
+      "tokens_per_s": 3.4109808631501037,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30752768
+    },
+    {
+      "turn": 14,
+      "elapsed_s": 130.06952975000604,
+      "latency_s": 19.723196083010407,
+      "completion_tokens": 64,
+      "tokens_per_s": 3.24491019257927,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31637504
+    },
+    {
+      "turn": 15,
+      "elapsed_s": 149.79444895900087,
+      "latency_s": 10.926209124998422,
+      "completion_tokens": 28,
+      "tokens_per_s": 2.5626454408544963,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31686656
+    },
+    {
+      "turn": 16,
+      "elapsed_s": 160.7222040000197,
+      "latency_s": 9.228881457995158,
+      "completion_tokens": 24,
+      "tokens_per_s": 2.6005318314288606,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31211520
+    },
+    {
+      "turn": 17,
+      "elapsed_s": 169.95352645902312,
+      "latency_s": 8.670120249997126,
+      "completion_tokens": 18,
+      "tokens_per_s": 2.0760957727207954,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31244288
+    },
+    {
+      "turn": 18,
+      "elapsed_s": 178.62528500001645,
+      "latency_s": 27.21907054199255,
+      "completion_tokens": 64,
+      "tokens_per_s": 2.3512926314388003,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30720000
+    },
+    {
+      "turn": 19,
+      "elapsed_s": 205.84886479200213,
+      "latency_s": 14.36819308300619,
+      "completion_tokens": 24,
+      "tokens_per_s": 1.670356172230572,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31309824
+    },
+    {
+      "turn": 20,
+      "elapsed_s": 220.2195141670236,
+      "latency_s": 16.279484084021533,
+      "completion_tokens": 33,
+      "tokens_per_s": 2.027091265895202,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31326208
+    },
+    {
+      "turn": 21,
+      "elapsed_s": 236.50089687501895,
+      "latency_s": 26.414448083000025,
+      "completion_tokens": 64,
+      "tokens_per_s": 2.4229164205474927,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31358976
+    },
+    {
+      "turn": 22,
+      "elapsed_s": 262.91766175001976,
+      "latency_s": 30.20270429199445,
+      "completion_tokens": 64,
+      "tokens_per_s": 2.119015548450868,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31391744
+    },
+    {
+      "turn": 23,
+      "elapsed_s": 293.1243782500096,
+      "latency_s": 27.935531166993314,
+      "completion_tokens": 45,
+      "tokens_per_s": 1.6108517762199874,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30408704
+    },
+    {
+      "turn": 24,
+      "elapsed_s": 321.0636831250158,
+      "latency_s": 14.2592430000077,
+      "completion_tokens": 28,
+      "tokens_per_s": 1.9636386026933463,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30851072
+    },
+    {
+      "turn": 25,
+      "elapsed_s": 335.32503875001566,
+      "latency_s": 16.014347624994116,
+      "completion_tokens": 18,
+      "tokens_per_s": 1.1239920864404624,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30965760
+    },
+    {
+      "turn": 26,
+      "elapsed_s": 351.3435199170199,
+      "latency_s": 43.576022332999855,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.4686976133554346,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30359552
+    },
+    {
+      "turn": 27,
+      "elapsed_s": 394.92439291701885,
+      "latency_s": 23.238191958982497,
+      "completion_tokens": 29,
+      "tokens_per_s": 1.2479456255111248,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30883840
+    },
+    {
+      "turn": 28,
+      "elapsed_s": 418.1656988750037,
+      "latency_s": 21.166937125002733,
+      "completion_tokens": 32,
+      "tokens_per_s": 1.5117917066140418,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31408128
+    },
+    {
+      "turn": 29,
+      "elapsed_s": 439.33563216699986,
+      "latency_s": 46.4615382910124,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.3774834487643357,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31473664
+    },
+    {
+      "turn": 30,
+      "elapsed_s": 485.8031844170182,
+      "latency_s": 57.485883582994575,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.1133168007690226,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 30769152
+    },
+    {
+      "turn": 31,
+      "elapsed_s": 543.2921304170159,
+      "latency_s": 26.388039541983744,
+      "completion_tokens": 31,
+      "tokens_per_s": 1.1747746531408125,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 27688960
+    },
+    {
+      "turn": 32,
+      "elapsed_s": 569.6843101670092,
+      "latency_s": 30.626073916995665,
+      "completion_tokens": 51,
+      "tokens_per_s": 1.665247727744104,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 28819456
+    },
+    {
+      "turn": 33,
+      "elapsed_s": 600.3131659589999,
+      "latency_s": 26.28519487500307,
+      "completion_tokens": 34,
+      "tokens_per_s": 1.293503820750959,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 28901376
+    },
+    {
+      "turn": 34,
+      "elapsed_s": 626.6003337090078,
+      "latency_s": 55.80683545800275,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.1468129212981981,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25165824
+    },
+    {
+      "turn": 35,
+      "elapsed_s": 682.4110739169992,
+      "latency_s": 32.260240375006106,
+      "completion_tokens": 37,
+      "tokens_per_s": 1.1469226382040867,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26771456
+    },
+    {
+      "turn": 36,
+      "elapsed_s": 714.6738852919952,
+      "latency_s": 29.319031833001645,
+      "completion_tokens": 33,
+      "tokens_per_s": 1.125548762590961,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26869760
+    },
+    {
+      "turn": 37,
+      "elapsed_s": 743.9970780840085,
+      "latency_s": 35.77392179198796,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.7890126884085056,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26902528
+    },
+    {
+      "turn": 38,
+      "elapsed_s": 779.7726647499949,
+      "latency_s": 56.27514837498893,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.1372693248809687,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25706496
+    },
+    {
+      "turn": 39,
+      "elapsed_s": 836.0525563340052,
+      "latency_s": 39.764890249993186,
+      "completion_tokens": 40,
+      "tokens_per_s": 1.0059124958859116,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26886144
+    },
+    {
+      "turn": 40,
+      "elapsed_s": 875.8196553339949,
+      "latency_s": 38.70086908302619,
+      "completion_tokens": 38,
+      "tokens_per_s": 0.9818900944699047,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26345472
+    },
+    {
+      "turn": 41,
+      "elapsed_s": 914.5251077919966,
+      "latency_s": 39.714896582998335,
+      "completion_tokens": 33,
+      "tokens_per_s": 0.8309224708928756,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 27033600
+    },
+    {
+      "turn": 42,
+      "elapsed_s": 954.242575250013,
+      "latency_s": 88.03456641698722,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.7269871665733622,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25296896
+    },
+    {
+      "turn": 43,
+      "elapsed_s": 1042.2822181670053,
+      "latency_s": 29.49776075000409,
+      "completion_tokens": 27,
+      "tokens_per_s": 0.9153237165636804,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26935296
+    },
+    {
+      "turn": 44,
+      "elapsed_s": 1071.782269917021,
+      "latency_s": 24.89531525003258,
+      "completion_tokens": 23,
+      "tokens_per_s": 0.9238685981279108,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 27607040
+    },
+    {
+      "turn": 45,
+      "elapsed_s": 1096.6888514999882,
+      "latency_s": 33.53331787500065,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.9085495875644474,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 27656192
+    },
+    {
+      "turn": 46,
+      "elapsed_s": 1130.2250530419988,
+      "latency_s": 61.112865291011985,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.0472426664212164,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25903104
+    },
+    {
+      "turn": 47,
+      "elapsed_s": 1191.3423229589825,
+      "latency_s": 42.62712704204023,
+      "completion_tokens": 30,
+      "tokens_per_s": 0.7037771973328872,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26787840
+    },
+    {
+      "turn": 48,
+      "elapsed_s": 1233.9713299170253,
+      "latency_s": 40.48692558298353,
+      "completion_tokens": 31,
+      "tokens_per_s": 0.7656792792641474,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25116672
+    },
+    {
+      "turn": 49,
+      "elapsed_s": 1274.4637838749913,
+      "latency_s": 54.62267787498422,
+      "completion_tokens": 58,
+      "tokens_per_s": 1.0618300357361736,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26869760
+    },
+    {
+      "turn": 50,
+      "elapsed_s": 1329.0887031669845,
+      "latency_s": 76.11745416698977,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.8408058401374542,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25067520
+    },
+    {
+      "turn": 51,
+      "elapsed_s": 1405.2108855000115,
+      "latency_s": 60.643278957984876,
+      "completion_tokens": 41,
+      "tokens_per_s": 0.6760848144178646,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26673152
+    },
+    {
+      "turn": 52,
+      "elapsed_s": 1465.8573402920156,
+      "latency_s": 55.729188708995935,
+      "completion_tokens": 32,
+      "tokens_per_s": 0.5742053803635309,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25116672
+    },
+    {
+      "turn": 53,
+      "elapsed_s": 1521.5897682500072,
+      "latency_s": 70.21273783396464,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.91151551661956,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25804800
+    },
+    {
+      "turn": 54,
+      "elapsed_s": 1591.8082841670257,
+      "latency_s": 111.12245399999665,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.5759412044662182,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26230784
+    },
+    {
+      "turn": 55,
+      "elapsed_s": 1702.935391334002,
+      "latency_s": 53.918927083024755,
+      "completion_tokens": 39,
+      "tokens_per_s": 0.7233081611573523,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 26738688
+    },
+    {
+      "turn": 56,
+      "elapsed_s": 1756.8570728339837,
+      "latency_s": 49.41842004097998,
+      "completion_tokens": 27,
+      "tokens_per_s": 0.5463549821627317,
+      "metrics": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 25706496
+    }
+  ],
+  "errors": [],
+  "agg": {
+    "all_failed": false,
+    "n_turns": 57,
+    "n_errors": 0,
+    "duration_s": 1800.0,
+    "p50_latency_s": 27.21907054199255,
+    "p95_latency_s": 70.21273783396464,
+    "mean_latency_s": 31.567073012402957,
+    "min_kv_live_bytes": 0.0,
+    "max_kv_live_bytes": 0.0,
+    "mean_kv_live_bytes": 0.0,
+    "kv_bounded": true,
+    "pool_in_use_max": 0.0,
+    "pool_in_use_settles_to_zero": true,
+    "latency_drift_p50_s": 40.257639417017344,
+    "kv_drift_bytes": 0.0,
+    "buckets_10min": [
+      {
+        "bucket_index": 0,
+        "bucket_start_s": 0.0,
+        "n_turns": 33,
+        "p50_latency_s": 15.47154929197859,
+        "p95_latency_s": 43.576022332999855,
+        "mean_kv_live_bytes": 0.0,
+        "max_kv_live_bytes": 0.0
+      },
+      {
+        "bucket_index": 1,
+        "bucket_start_s": 600.0,
+        "n_turns": 15,
+        "p50_latency_s": 38.70086908302619,
+        "p95_latency_s": 61.112865291011985,
+        "mean_kv_live_bytes": 0.0,
+        "max_kv_live_bytes": 0.0
+      },
+      {
+        "bucket_index": 2,
+        "bucket_start_s": 1200.0,
+        "n_turns": 9,
+        "p50_latency_s": 55.729188708995935,
+        "p95_latency_s": 111.12245399999665,
+        "mean_kv_live_bytes": 0.0,
+        "max_kv_live_bytes": 0.0
+      }
+    ]
+  },
+  "summary_text": "\n==============================================================================\nLong-session memory-stability benchmark\n==============================================================================\n  duration                       = 1800.0 s (0.50 h)\n  successful turns               = 57\n  errored turns                  = 0\n  p50 turn latency               = 27.219 s\n  p95 turn latency               = 70.213 s\n  mean turn latency              = 31.567 s\n  KV live bytes  min / mean / max= 0.0 MiB / 0.0 MiB / 0.0 MiB\n  KV bounded (<10% spread)       = True\n  pool_in_use settles to zero    = True\n  pool_in_use max                = 0.0\n  latency drift (last-first p50) = +40.258 s\n  KV drift (last-first 10-min)   = +0.00 MiB\n\n  Per-10min buckets:\n    bucket  n_turns  p50_lat   p95_lat   mean_kv\n        0       33   15.472s   43.576s      0.0 MiB\n        1       15   38.701s   61.113s      0.0 MiB\n        2        9   55.729s  111.122s      0.0 MiB\n==============================================================================",
+  "config": {
+    "kakeya_url": "http://127.0.0.1:8000",
+    "kakeya_model": "kakeya-v1",
+    "metrics_path": "/metrics",
+    "duration_s": 1800.0,
+    "turn_spacing_s": 5.0,
+    "max_tokens": 64,
+    "timeout_s": 120.0,
+    "progress_every_s": 30.0,
+    "report": "results/platform-tests/bench_long_session_mac_short_1780146230.json",
+    "checkpoint": null,
+    "dry_run": false
+  }
+}

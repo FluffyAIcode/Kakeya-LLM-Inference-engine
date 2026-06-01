@@ -203,6 +203,65 @@ async def test_metrics_path_selection_recorded_after_completion(short_engine):
     assert 'path_selection_total{path="new_session"} 1.0' in text
 
 
+# ---------------------------------------------------------------------------
+# Defensive None-handling in _session_acceptance_rate and
+# _emit_path_selection_metric (reachable when EngineResult is partially
+# populated, e.g. an engine that completed without an acceptance rate or
+# without a populated path_selection field). These helpers are private but
+# must hold their early-return contracts; the route-handler relies on
+# either returning None / no-op rather than raising AttributeError or
+# emitting a counter with a label outside the documented label set.
+# ---------------------------------------------------------------------------
+
+
+async def test_session_acceptance_rate_returns_none_when_result_missing_rate():
+    """A completed session whose EngineResult-shaped object has
+    ``acceptance_rate=None`` (e.g., a fast-aborted engine that did
+    not measure acceptance) must yield ``None`` from the helper, not
+    raise. Covers app.py:_session_acceptance_rate None-rate branch.
+    """
+    from types import SimpleNamespace
+
+    from inference_engine.scheduler.session import Session
+    from inference_engine.server.app import _session_acceptance_rate
+
+    sess = Session(prompt_ids=[1], max_new_tokens=1, eos_token_ids=[2])
+    sess.engine_result = SimpleNamespace(acceptance_rate=None)
+
+    assert _session_acceptance_rate(scheduler=object(), session=sess) is None
+
+
+async def test_emit_path_selection_metric_noop_when_path_unset(short_engine):
+    """An EngineResult whose ``path_selection`` is anything other than
+    'continuation' or 'new_session' (commonly ``None`` for engines /
+    test doubles that never populated it) must produce **no** metric
+    write — emitting a counter with an undocumented label would
+    pollute the label set. Covers app.py:_emit_path_selection_metric
+    early-return branch.
+    """
+    from types import SimpleNamespace
+
+    from inference_engine.scheduler.session import Session
+    from inference_engine.server.app import _emit_path_selection_metric
+
+    app = create_app(short_engine, ServerConfig(max_concurrent=1))
+    metrics = app.state.metrics
+
+    sess = Session(prompt_ids=[1], max_new_tokens=1, eos_token_ids=[2])
+    sess.engine_result = SimpleNamespace(
+        path_selection=None, tokens_skipped=0, prefill_duration_seconds=0.0,
+    )
+
+    text_before = metrics.render().decode()
+    _emit_path_selection_metric(metrics, sess)
+    text_after = metrics.render().decode()
+
+    # No write happened: counter unchanged, no spurious label appeared.
+    assert text_before == text_after
+    assert 'path_selection_total{path="None"}' not in text_after
+    assert 'path_selection_total{path="unknown"}' not in text_after
+
+
 async def test_metrics_kv_live_bytes_zero_when_no_active_session(tokenizer):
     """Between turns the verifier may hold residual KV (next prefill
     will reset it, but until then it sits in self.cache). Reporting
