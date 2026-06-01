@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "kind": "grpc_appender_smoke",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12",
+    "grpc": "1.81.0"
+  },
+  "steps_total": 10,
+  "steps_passed": 10,
+  "steps_failed": 0,
+  "all_passed": true,
+  "steps": [
+    {
+      "step": "CreateSession",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "session_id": "sess-bde5b331375e4a76a82af3d4f91306af"
+      },
+      "elapsed_ms": 0.99
+    },
+    {
+      "step": "AppendTokens (cold prefill)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 3,
+        "verifier_calls": [
+          "prefill"
+        ]
+      },
+      "elapsed_ms": 0.48
+    },
+    {
+      "step": "GetSessionInfo (after cold)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 3,
+        "inv1_violations": 0,
+        "inv2_violations": 0
+      },
+      "elapsed_ms": 0.32
+    },
+    {
+      "step": "AppendTokens (incremental)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 5,
+        "verifier_calls_total": [
+          "prefill",
+          "forward_block",
+          "commit_or_truncate"
+        ]
+      },
+      "elapsed_ms": 0.34
+    },
+    {
+      "step": "GetSessionInfo (after incremental)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 5
+      },
+      "elapsed_ms": 0.31
+    },
+    {
+      "step": "AppendTokens (empty list, no-op)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 5,
+        "verifier_calls_after_empty": [
+          "prefill",
+          "forward_block",
+          "commit_or_truncate"
+        ]
+      },
+      "elapsed_ms": 0.29
+    },
+    {
+      "step": "AppendTokens (unknown session)",
+      "expected": "NOT_FOUND",
+      "observed": "NOT_FOUND",
+      "passed": true,
+      "detail": {
+        "details": "session_id 'sess-nonexistent' not found"
+      },
+      "elapsed_ms": 0.32
+    },
+    {
+      "step": "AppendTokens (after CloseSession)",
+      "expected": "NOT_FOUND",
+      "observed": "NOT_FOUND",
+      "passed": true,
+      "detail": {
+        "details": "session_id 'sess-bde5b331375e4a76a82af3d4f91306af' not found"
+      },
+      "elapsed_ms": 0.3
+    },
+    {
+      "step": "Generate (PR-B3, still UNIMPLEMENTED)",
+      "expected": "UNIMPLEMENTED",
+      "observed": "UNIMPLEMENTED",
+      "passed": true,
+      "detail": {
+        "phase": "PR-B3"
+      },
+      "elapsed_ms": 0.35
+    },
+    {
+      "step": "AppendTokens (INV-1 violation)",
+      "expected": "FAILED_PRECONDITION",
+      "observed": "FAILED_PRECONDITION",
+      "passed": true,
+      "detail": {
+        "details": "INV-1 violation in session 'sess-89aefa3e276144388ce057c6fbf27c80': cached_token_sequence length (3) != K/V tensor seque",
+        "kind": "INV-1"
+      },
+      "elapsed_ms": 0.3
+    }
+  ]
+}

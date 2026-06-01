@@ -20,6 +20,17 @@ from inference_engine.session.coordinator import (
     AppendTokensCoordinator,
     VerifierProtocol,
 )
+from inference_engine.session.generator import (
+    DoneEvent,
+    GenerateEvent,
+    GenerationCoordinator,
+    HistoryTruncatedEvent,
+    STOP_REASON_CANCELLED,
+    STOP_REASON_EOS,
+    STOP_REASON_MAX_TOKENS,
+    STOP_REASON_TRUNCATED,
+    TokenEvent,
+)
 from inference_engine.session.store import (
     CacheInspector,
     InvariantViolation,
@@ -32,10 +43,19 @@ from inference_engine.session.store import (
 __all__ = [
     "AppendTokensCoordinator",
     "CacheInspector",
+    "DoneEvent",
+    "GenerateEvent",
+    "GenerationCoordinator",
+    "HistoryTruncatedEvent",
     "InvariantViolation",
+    "STOP_REASON_CANCELLED",
+    "STOP_REASON_EOS",
+    "STOP_REASON_MAX_TOKENS",
+    "STOP_REASON_TRUNCATED",
     "Session",
     "SessionNotFoundError",
     "SessionStore",
     "SessionStoreError",
+    "TokenEvent",
     "VerifierProtocol",
 ]

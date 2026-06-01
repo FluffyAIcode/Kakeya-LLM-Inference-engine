@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "kind": "pr_b3_mac_generator_tests",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "junit": {
+    "tests": 31,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "cases": [
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyHappyPath",
+        "name": "test_yields_token_then_done",
+        "time": 0.001,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyHappyPath",
+        "name": "test_max_tokens_caps_token_emission",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyHappyPath",
+        "name": "test_done_is_terminal_and_unique",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyHappyPath",
+        "name": "test_done_includes_total_seconds",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyAdvancesVerifier",
+        "name": "test_each_token_advances_position_by_one",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyAdvancesVerifier",
+        "name": "test_session_history_grows",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyAdvancesVerifier",
+        "name": "test_session_cached_token_sequence_mirrors_verifier",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestGreedyAdvancesVerifier",
+        "name": "test_each_token_calls_forward_then_commit",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestEos",
+        "name": "test_eos_token_terminates_with_eos_stop_reason",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestEos",
+        "name": "test_no_eos_runs_to_max_tokens",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestEos",
+        "name": "test_empty_eos_set_runs_to_max_tokens",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestHistoryTruncated",
+        "name": "test_emitted_at_start_when_already_truncated",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestHistoryTruncated",
+        "name": "test_not_emitted_when_under_capacity",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestHistoryTruncated",
+        "name": "test_at_most_one_per_call",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_max_tokens_zero_rejected",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_max_tokens_negative_rejected",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_temperature_nonzero_rejected",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_temperature_zero_accepted",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_top_p_set_rejected",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_top_k_other_than_one_rejected",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_top_k_one_accepted",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_seed_accepted_and_ignored_in_greedy",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_no_appendtokens_first_rejected",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestValidation",
+        "name": "test_unknown_session_raises_session_not_found",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestInvariants",
+        "name": "test_inv1_violation_propagates",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestInvariants",
+        "name": "test_inv2_violation_propagates",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestDeterminism",
+        "name": "test_two_runs_with_same_history_produce_same_tokens",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestConstructorAndEventDataclasses",
+        "name": "test_constructor_stores_references",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestConstructorAndEventDataclasses",
+        "name": "test_token_event_is_frozen",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestConstructorAndEventDataclasses",
+        "name": "test_history_truncated_event_is_frozen",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.session.test_generator.TestConstructorAndEventDataclasses",
+        "name": "test_done_event_is_frozen",
+        "time": 0.0,
+        "outcome": "passed"
+      }
+    ]
+  },
+  "coverage": {
+    "line_rate": 1.0,
+    "branch_rate": 0.0,
+    "lines_covered": 63,
+    "lines_valid": 63
+  }
+}

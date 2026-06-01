@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "kind": "grpc_generator_smoke",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12",
+    "grpc": "1.81.0"
+  },
+  "steps_total": 10,
+  "steps_passed": 10,
+  "steps_failed": 0,
+  "all_passed": true,
+  "steps": [
+    {
+      "step": "CreateSession",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "session_id": "sess-c9d9f77c02d4498a975518cb6a61319a"
+      },
+      "elapsed_ms": 0.98
+    },
+    {
+      "step": "AppendTokens (cold prefill)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 3
+      },
+      "elapsed_ms": 0.48
+    },
+    {
+      "step": "Generate (max_tokens=3, no EOS)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "frames": [
+          "token_id",
+          "token_id",
+          "token_id",
+          "done"
+        ],
+        "tokens_emitted": 3,
+        "done_frames": 1
+      },
+      "elapsed_ms": 0.63
+    },
+    {
+      "step": "Generate (EOS triggers, max_tokens=10)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "tokens": [
+          6
+        ],
+        "stop_reason": "STOP_REASON_EOS"
+      },
+      "elapsed_ms": 1.01
+    },
+    {
+      "step": "Generate (no AppendTokens prior)",
+      "expected": "INVALID_ARGUMENT",
+      "observed": "INVALID_ARGUMENT",
+      "passed": true,
+      "detail": {
+        "details": "session has no history yet; AppendTokens must precede Generate (the first token'"
+      },
+      "elapsed_ms": 0.57
+    },
+    {
+      "step": "Generate (max_tokens=0)",
+      "expected": "INVALID_ARGUMENT",
+      "observed": "INVALID_ARGUMENT",
+      "passed": true,
+      "detail": {
+        "details": "max_tokens must be >= 1, got 0"
+      },
+      "elapsed_ms": 0.33
+    },
+    {
+      "step": "Generate (temperature=0.7, non-greedy rejected)",
+      "expected": "INVALID_ARGUMENT",
+      "observed": "INVALID_ARGUMENT",
+      "passed": true,
+      "detail": {
+        "details": "v0.3 supports only greedy decoding; temperature must be 0 or"
+      },
+      "elapsed_ms": 0.31
+    },
+    {
+      "step": "Generate (unknown session)",
+      "expected": "NOT_FOUND",
+      "observed": "NOT_FOUND",
+      "passed": true,
+      "detail": {
+        "details": "session_id 'sess-nonexistent' not found"
+      },
+      "elapsed_ms": 0.34
+    },
+    {
+      "step": "Generate (truncated state -> truncated frame)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "frames": [
+          "truncated",
+          "token_id",
+          "token_id",
+          "done"
+        ],
+        "dropped_token_count": 2
+      },
+      "elapsed_ms": 1.5
+    },
+    {
+      "step": "Generate (no coordinator wired)",
+      "expected": "UNIMPLEMENTED",
+      "observed": "UNIMPLEMENTED",
+      "passed": true,
+      "detail": {
+        "details": "Generate not configured on this Servicer (coordinator not provided)"
+      },
+      "elapsed_ms": 0.72
+    }
+  ]
+}
