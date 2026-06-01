@@ -72,12 +72,14 @@ jobs:
             tests/inference_engine/memory/ \
             tests/inference_engine/scheduler/ \
             tests/inference_engine/pipeline/ \
+            tests/inference_engine/session/ \
             tests/training/repr_align/ \
             tests/backends/mlx/test_env.py \
             --cov=inference_engine.server \
             --cov=inference_engine.memory \
             --cov=inference_engine.scheduler \
             --cov=inference_engine.pipeline \
+            --cov=inference_engine.session \
             --cov=training.repr_align \
             --cov-report=term \
             --cov-report=xml:coverage.xml \
@@ -135,6 +137,8 @@ jobs:
             import inference_engine.scheduler.session; \
             import inference_engine.pipeline; \
             import inference_engine.pipeline.coordinator; \
+            import inference_engine.session; \
+            import inference_engine.session.store; \
             import inference_engine.proposer; \
             import inference_engine.proposer.sparse_logits; \
             import inference_engine.backends.mlx.env; \
