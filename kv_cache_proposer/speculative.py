@@ -73,10 +73,13 @@ class SpeculativeRunResult:
     verifier_weight_bytes: int
     verifier_final_kv_token_count: int
     wall_time_seconds: float
-    # ADR 0007 §2.10 path-selection observability. Populated by
-    # SpeculativeDecoder.generate based on the path it dispatched to.
-    path_selection: str = "new_session"  # "continuation" | "new_session"
-    tokens_skipped: int = 0  # ContinuationPlan.skip_n if continuation, 0 else
+    # Historically ADR 0007 §2.10 path-selection observability fields.
+    # After ADR 0008 PR-A3 the path-select dispatch was removed; these
+    # are kept as inert defaults so server/engine.py and server/app.py
+    # (which still surface them on /metrics) keep working unchanged
+    # until ADR 0008 PR-D1 deletes them at the deprecated-shim refactor.
+    path_selection: str = "new_session"
+    tokens_skipped: int = 0
     prefill_duration_seconds: float = 0.0
 
     @property
@@ -143,28 +146,18 @@ class SpeculativeDecoder:
         self.verifier.stats.peak_kv_bytes = 0
         self.verifier.stats.peak_activation_bytes = 0
 
-        # ADR 0007 §2.4: dispatch on path-selection. ContinuationPlan
-        # reuses cached prefix; NewSession runs full prefill (the
-        # v0.3.0-rc1 behavior). Output is bit-identical between the
-        # two paths for the same input (§2.7); the only difference
-        # is the prefill cost. We record the decision + the prefill
-        # wall time on the result so the route handler can populate
-        # the §2.10 observability metrics.
-        from .path_plan import ContinuationPlan, NewSession
-        plan = self.verifier.path_select(prompt_ids)
+        # ADR 0008 PR-A3 (supersedes ADR 0007 §2.4): the path_select /
+        # ContinuationPlan / NewSession dispatch was removed when ADR
+        # 0008 replaced ADR 0007's automatic-prefix-matching design with
+        # an explicit session_id protocol. The verifier always does a
+        # full prefill here; cross-request cache reuse is now the SDK's
+        # responsibility (it calls Generate against an existing
+        # session_id with only the new tokens). prefill_duration_seconds
+        # is still measured for observability; path_selection is left
+        # at its default of "new_session" since this entry point is
+        # always the new-session path.
         prefill_t0 = time.perf_counter()
-        if isinstance(plan, ContinuationPlan):
-            self.verifier.prefill_incremental(plan.new_tokens)
-            path_selection = "continuation"
-            tokens_skipped = int(plan.skip_n)
-        else:
-            assert isinstance(plan, NewSession), (
-                f"path_select must return ContinuationPlan or NewSession, "
-                f"got {type(plan).__name__}"
-            )
-            self.verifier.prefill(plan.prompt)
-            path_selection = "new_session"
-            tokens_skipped = 0
+        self.verifier.prefill(prompt_ids)
         prefill_duration_seconds = time.perf_counter() - prefill_t0
         committed: List[int] = list(prompt_ids)
         generated: List[int] = []
@@ -269,9 +262,10 @@ class SpeculativeDecoder:
             verifier_weight_bytes=self.verifier.stats.weight_bytes,
             verifier_final_kv_token_count=self.verifier.cache_logical_size,
             wall_time_seconds=elapsed,
-            path_selection=path_selection,
-            tokens_skipped=tokens_skipped,
             prefill_duration_seconds=prefill_duration_seconds,
+            # path_selection / tokens_skipped use SpeculativeRunResult's
+            # dataclass defaults ("new_session" / 0). After ADR 0008
+            # PR-A3 there is only one path through this entry point.
         )
 
     @staticmethod

@@ -694,13 +694,40 @@ parallelize.
   `SessionStore` with create/append/close, in-memory only, no
   scheduler binding yet. INV-1, INV-2 enforced inside. Pure Python,
   no gRPC. 100% unit coverage.
-- **PR-A3**: Refactor the verifier (CPU + MLX) so its KV cache state
-  is constructed and owned by `SessionStore` rather than by the
-  scheduler / pool. Slab-pool integration (ADR 0003) becomes "slab
-  per session" instead of "slab per scheduler slot". Internal-only
-  refactor; the existing HTTP shim still works against the new
-  internal shape. 100% unit coverage; no behavior change to the
-  HTTP surface.
+- **PR-A3** *(scope split, recorded 2026-06-01 during implementation
+  of PR-A3)*: This phase originally proposed two coupled changes —
+  (a) remove the ADR 0007 `path_select` / `prefill_incremental`
+  machinery from both verifiers, and (b) refactor slab ownership so
+  the KV cache state is constructed and owned by `SessionStore`
+  rather than by the scheduler / pool. (a) requires only Linux unit
+  tests; (b) crosses into MLX-runtime hardware paths and pulls in
+  scheduler / pool API redesign. Atomic merge of (a) is essential
+  for coherence: the moment ADR 0007's `path_select` is removed
+  from the verifier, every caller has to be removed too, or the
+  speculative-decoding loop breaks. (b) does not have that
+  coherence pressure — it can land independently after (a).
+  Therefore PR-A3 is split:
+  - **PR-A3** (this PR): pure removal of ADR 0007 dead code.
+    Deletes `kv_cache_proposer/path_plan.py`,
+    `tests/core/test_path_plan.py`,
+    `tests/core/test_determinism_gate.py` (depends on
+    `path_select`); strips `path_select` /
+    `prefill_incremental` / `_cached_global_positions` /
+    `_prompt_matches_cached_positions` from both verifiers; reverts
+    `kv_cache_proposer/speculative.py`'s `generate()` dispatch to a
+    single always-prefill path. Inert defaults are retained on
+    `SpeculativeRunResult.path_selection` / `tokens_skipped` /
+    `prefill_duration_seconds` so the server-side observability
+    surface (which §6.6 rows server/* scope to PR-D1) keeps reading
+    valid values without code change. 100% Linux unit coverage.
+  - **PR-A3b** (next, queued after this PR): the slab-ownership
+    refactor proper — verifier KV state is constructed and owned by
+    `SessionStore`. Slab-pool integration becomes "slab per
+    session" instead of "slab per scheduler slot". This is the PR
+    where the verifier becomes a `CacheInspector` (PR-A2) for
+    `SessionStore`. First PR with a mandatory Mac M4 integration
+    test report (cf. §9), since it touches MLX runtime paths in a
+    non-deletion way.
 
 ### 6.2 Phase B — gRPC server + Python SDK
 
@@ -767,10 +794,10 @@ through `0a31ee9` PR 7-6):
 | ------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
 | `kv_cache_proposer/path_plan.py`                        | added    | Deleted in PR-A3 (verifier session-store rewiring) — `PathPlan` is replaced by `SessionStore` lookup.        |
 | `tests/core/test_path_plan.py`                          | added    | Deleted alongside the implementation in PR-A3.                                                               |
-| `tests/core/test_determinism_gate.py`                   | added    | Replaced by `tests/integration/test_inv3_session_determinism_gate.py` in PR-E1; old file deleted in PR-E1.   |
+| `tests/core/test_determinism_gate.py`                   | added    | Deleted in **PR-A3** (the test depends on `path_select`, which PR-A3 removes; cannot wait for PR-E1). Replaced by `tests/integration/test_inv3_session_determinism_gate.py` in PR-E1, which is created from scratch rather than refactored from the deleted file. |
 | `kv_cache_proposer/verifier.py`                         | modified | `path_select` / `prefill_incremental` removed in PR-A3; `cached_token_sequence` retained (still useful for INV-1 inside `SessionStore`). |
 | `inference_engine/backends/mlx/verifier.py`             | modified | Same as above.                                                                                               |
-| `kv_cache_proposer/speculative.py`                      | modified | `path_select` dispatch removed in PR-B2 (`AppendTokens` handler subsumes the role).                          |
+| `kv_cache_proposer/speculative.py`                      | modified | `path_select` dispatch removed in **PR-A3** (atomic with the verifier-side removal — leaving the dispatch but removing `verifier.path_select` would break the speculative loop). `generate()` reverts to single always-prefill. PR-B2 is now scoped to "the gRPC `AppendTokens` handler subsumes the *role* that `generate`'s dispatch used to play, this time at the protocol layer not the speculative-decoder layer." |
 | `inference_engine/server/app.py`                        | modified | `_emit_path_selection_metric` and `_session_acceptance_rate` paths removed in PR-D1 (deprecated-shim refactor).|
 | `inference_engine/server/engine.py`                     | modified | `EngineResult` `path_selection` / `tokens_skipped` / `prefill_duration_seconds` fields removed in PR-D1.     |
 | `inference_engine/server/metrics.py`                    | modified | `path_selection_total`, `continuation_tokens_skipped_total`, `verifier_prefill_duration_seconds`, `cache_invariant_violations_total` are removed in PR-D1; replaced by §2.9's `session_*` metrics in PR-B1/B3. |
