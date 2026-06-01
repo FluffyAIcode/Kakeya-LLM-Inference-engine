@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "kind": "grpc_runtime_smoke",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12",
+    "grpc": "1.81.0"
+  },
+  "steps_total": 10,
+  "steps_passed": 10,
+  "steps_failed": 0,
+  "all_passed": true,
+  "steps": [
+    {
+      "step": "CreateSession",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "session_id": "sess-94b7db54cc0a4f0f8e6bca3fa8c3a0e2",
+        "port": 63781
+      },
+      "elapsed_ms": 1.06
+    },
+    {
+      "step": "GetSessionInfo (initial)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "history_length": 0,
+        "kv_live_bytes": 0,
+        "inv1_violations": 0,
+        "inv2_violations": 0,
+        "idle_seconds": 0.0004
+      },
+      "elapsed_ms": 0.37
+    },
+    {
+      "step": "CloseSession",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "final_history_length": 0
+      },
+      "elapsed_ms": 0.47
+    },
+    {
+      "step": "CloseSession (double-close)",
+      "expected": "NOT_FOUND",
+      "observed": "NOT_FOUND",
+      "passed": true,
+      "detail": {
+        "details": "session_id 'sess-94b7db54cc0a4f0f8e6bca3fa8c3a0e2' not found"
+      },
+      "elapsed_ms": 0.47
+    },
+    {
+      "step": "GetSessionInfo (after close)",
+      "expected": "NOT_FOUND",
+      "observed": "NOT_FOUND",
+      "passed": true,
+      "detail": {
+        "details": "session_id 'sess-94b7db54cc0a4f0f8e6bca3fa8c3a0e2' not found"
+      },
+      "elapsed_ms": 0.39
+    },
+    {
+      "step": "AppendTokens (PR-B2)",
+      "expected": "UNIMPLEMENTED",
+      "observed": "UNIMPLEMENTED",
+      "passed": true,
+      "detail": {
+        "phase": "PR-B2"
+      },
+      "elapsed_ms": 0.53
+    },
+    {
+      "step": "Generate (PR-B3)",
+      "expected": "UNIMPLEMENTED",
+      "observed": "UNIMPLEMENTED",
+      "passed": true,
+      "detail": {
+        "phase": "PR-B3"
+      },
+      "elapsed_ms": 0.4
+    },
+    {
+      "step": "CreateSession (eos + client_label)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "session_id": "sess-7b88797ef5824e238ab31e68ff21c780",
+        "eos_token_ids_recorded": [
+          7,
+          11,
+          13
+        ],
+        "client_label_recorded": "smoke-demo"
+      },
+      "elapsed_ms": 0.35
+    },
+    {
+      "step": "CreateSession (pool slab #1 / 1)",
+      "expected": "ok",
+      "observed": "ok",
+      "passed": true,
+      "detail": {
+        "session_id": "sess-55522cd557f345bca33ff4223e786518"
+      },
+      "elapsed_ms": 0.73
+    },
+    {
+      "step": "CreateSession (pool exhausted)",
+      "expected": "RESOURCE_EXHAUSTED",
+      "observed": "RESOURCE_EXHAUSTED",
+      "passed": true,
+      "detail": {
+        "details": "slab pool exhausted: all 1 slabs in use; admission control must reject or queue this session",
+        "pool_in_use": 1,
+        "pool_available": 0
+      },
+      "elapsed_ms": 0.42
+    }
+  ]
+}

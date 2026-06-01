@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "kind": "pr_b1_mac_grpc_tests",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "junit": {
+    "tests": 22,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "cases": [
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_session_returns_server_issued_id",
+        "time": 0.017,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_session_records_eos_token_ids",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_session_records_client_label",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_session_default_eos_is_empty_tuple",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_session_pool_exhausted_returns_resource_exhausted",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_close_session_returns_final_history_length",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_close_session_returns_zero_for_empty_session",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_close_session_unknown_id_returns_not_found",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_close_session_double_close_returns_not_found",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_get_session_info_initial_state",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_get_session_info_reflects_history_growth",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_get_session_info_reflects_kv_live_bytes_when_pool_present",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_get_session_info_unknown_id_returns_not_found",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_get_session_info_after_close_returns_not_found",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_append_tokens_returns_unimplemented",
+        "time": 0.003,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_generate_returns_unimplemented",
+        "time": 0.002,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_default_bind_address_is_loopback",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_grpc_server_config_defaults",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_grpc_server_config_is_frozen",
+        "time": 0.0,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_grpc_server_default_config_binds_default_address",
+        "time": 0.001,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_grpc_server_with_no_config_uses_defaults",
+        "time": 0.001,
+        "outcome": "passed"
+      },
+      {
+        "classname": "tests.inference_engine.server.test_grpc_app",
+        "name": "test_create_grpc_server_with_max_concurrent_rpcs",
+        "time": 0.001,
+        "outcome": "passed"
+      }
+    ]
+  },
+  "coverage": {
+    "line_rate": 1.0,
+    "branch_rate": 0.0,
+    "lines_covered": 46,
+    "lines_valid": 46
+  }
+}

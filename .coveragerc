@@ -30,6 +30,14 @@ branch = false
 # tested library code).
 omit =
     kv_cache_proposer/run_demo.py
+    # Generated gRPC / protobuf stubs (PR-B1 of ADR 0008). The
+    # canonical regeneration command is
+    # ``scripts/regenerate_proto_stubs.sh``; CI's
+    # ``proto-stub-drift`` step verifies that the committed stubs
+    # match what the script would produce. The stubs are not the
+    # surface we own — protoc owns them — so coverage on them is
+    # neither meaningful nor stable across protoc versions.
+    inference_engine/server/proto_gen/*
 
 [report]
 exclude_lines =
