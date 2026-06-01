@@ -64,13 +64,6 @@ class Session:
     # the scheduler.iter_tokens() async iterator drain this; the
     # scheduler's worker pushes into it.
     token_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue())
-    # The engine's full result, set by the scheduler worker after
-    # ``engine.generate()`` returns. Route handlers read this to
-    # populate ADR 0007 §2.10 path-selection observability metrics
-    # (path_selection, tokens_skipped, prefill_duration_seconds) and
-    # acceptance-rate stats. ``None`` until the engine returns —
-    # callers must check before reading.
-    engine_result: Optional[object] = None
 
     def __post_init__(self) -> None:
         if not self.prompt_ids:
