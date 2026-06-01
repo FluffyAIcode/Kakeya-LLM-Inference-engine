@@ -1,0 +1,2506 @@
+{
+  "schema_version": 1,
+  "partial": false,
+  "duration_s": 14400.0,
+  "turn_spacing_s": 5.0,
+  "baseline_metrics": {
+    "scheduler_active_sessions": 0.0,
+    "scheduler_pool_in_use": 0.0,
+    "scheduler_pool_total": 1.0,
+    "scheduler_pending": 0.0,
+    "scheduler_kv_live_bytes": 0.0
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "elapsed_s": 0.036838917003478855,
+      "latency_s": 2.340962624992244,
+      "completion_tokens": 21,
+      "tokens_per_s": 8.97066863682609,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 10,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 48726016
+    },
+    {
+      "turn": 1,
+      "elapsed_s": 5.04712558403844,
+      "latency_s": 2.2458286669570953,
+      "completion_tokens": 23,
+      "tokens_per_s": 10.241208663153731,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 9,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36372480
+    },
+    {
+      "turn": 2,
+      "elapsed_s": 10.05135391704971,
+      "latency_s": 7.012977625010535,
+      "completion_tokens": 54,
+      "tokens_per_s": 7.700010307664268,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 28,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36995072
+    },
+    {
+      "turn": 3,
+      "elapsed_s": 17.067493042035494,
+      "latency_s": 5.778242249973118,
+      "completion_tokens": 33,
+      "tokens_per_s": 5.711079351190844,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 23,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 37158912
+    },
+    {
+      "turn": 4,
+      "elapsed_s": 22.849123875028454,
+      "latency_s": 7.309544833027758,
+      "completion_tokens": 43,
+      "tokens_per_s": 5.882719236594182,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 29,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 37896192
+    },
+    {
+      "turn": 5,
+      "elapsed_s": 30.16079970903229,
+      "latency_s": 12.223022374964785,
+      "completion_tokens": 64,
+      "tokens_per_s": 5.236020849563763,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 48,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 37978112
+    },
+    {
+      "turn": 6,
+      "elapsed_s": 42.38807187502971,
+      "latency_s": 14.750861582986545,
+      "completion_tokens": 64,
+      "tokens_per_s": 4.338729615212225,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 58,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 41156608
+    },
+    {
+      "turn": 7,
+      "elapsed_s": 57.14263416704489,
+      "latency_s": 4.066596707969438,
+      "completion_tokens": 14,
+      "tokens_per_s": 3.442682175137691,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 16,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 41189376
+    },
+    {
+      "turn": 8,
+      "elapsed_s": 62.1517349590431,
+      "latency_s": 7.172013083007187,
+      "completion_tokens": 24,
+      "tokens_per_s": 3.3463408003066455,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 28,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 41680896
+    },
+    {
+      "turn": 9,
+      "elapsed_s": 69.32859687501332,
+      "latency_s": 9.679220290970989,
+      "completion_tokens": 25,
+      "tokens_per_s": 2.5828526728873613,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 38,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 41680896
+    },
+    {
+      "turn": 10,
+      "elapsed_s": 79.01182120904559,
+      "latency_s": 20.439563416002784,
+      "completion_tokens": 64,
+      "tokens_per_s": 3.131182339731012,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 81,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 41795584
+    },
+    {
+      "turn": 11,
+      "elapsed_s": 99.4531540000462,
+      "latency_s": 7.589470166014507,
+      "completion_tokens": 20,
+      "tokens_per_s": 2.635230070415138,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 30,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 35569664
+    },
+    {
+      "turn": 12,
+      "elapsed_s": 107.04561125003966,
+      "latency_s": 6.240155459032394,
+      "completion_tokens": 22,
+      "tokens_per_s": 3.5255531924538537,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 25,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 35995648
+    },
+    {
+      "turn": 13,
+      "elapsed_s": 113.28903370903572,
+      "latency_s": 19.28261516604107,
+      "completion_tokens": 64,
+      "tokens_per_s": 3.319051873871935,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 76,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36306944
+    },
+    {
+      "turn": 14,
+      "elapsed_s": 132.57888600003207,
+      "latency_s": 20.099815917026717,
+      "completion_tokens": 64,
+      "tokens_per_s": 3.184108763194447,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 80,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36847616
+    },
+    {
+      "turn": 15,
+      "elapsed_s": 152.68051129201194,
+      "latency_s": 11.20539929199731,
+      "completion_tokens": 28,
+      "tokens_per_s": 2.498795381615458,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 45,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36667392
+    },
+    {
+      "turn": 16,
+      "elapsed_s": 163.8873917920282,
+      "latency_s": 9.232284041994717,
+      "completion_tokens": 24,
+      "tokens_per_s": 2.5995733981787876,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 37,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36831232
+    },
+    {
+      "turn": 17,
+      "elapsed_s": 173.12176200002432,
+      "latency_s": 8.934666957997251,
+      "completion_tokens": 18,
+      "tokens_per_s": 2.0146246171927586,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 35,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 36880384
+    },
+    {
+      "turn": 18,
+      "elapsed_s": 182.05955808400176,
+      "latency_s": 27.436547584016807,
+      "completion_tokens": 64,
+      "tokens_per_s": 2.332655003477306,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 109,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33538048
+    },
+    {
+      "turn": 19,
+      "elapsed_s": 209.498608834052,
+      "latency_s": 14.49482620798517,
+      "completion_tokens": 24,
+      "tokens_per_s": 1.6557632120334391,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 58,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34226176
+    },
+    {
+      "turn": 20,
+      "elapsed_s": 223.99505900003714,
+      "latency_s": 16.585870624985546,
+      "completion_tokens": 33,
+      "tokens_per_s": 1.9896453280111581,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 66,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34111488
+    },
+    {
+      "turn": 21,
+      "elapsed_s": 240.58513058401877,
+      "latency_s": 26.839366458007134,
+      "completion_tokens": 64,
+      "tokens_per_s": 2.384557031185307,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 106,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33685504
+    },
+    {
+      "turn": 22,
+      "elapsed_s": 267.4276692090207,
+      "latency_s": 30.440467291977257,
+      "completion_tokens": 64,
+      "tokens_per_s": 2.102464439396682,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 120,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32964608
+    },
+    {
+      "turn": 23,
+      "elapsed_s": 297.8728289590217,
+      "latency_s": 28.13316362502519,
+      "completion_tokens": 45,
+      "tokens_per_s": 1.5995357152073475,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 111,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33931264
+    },
+    {
+      "turn": 24,
+      "elapsed_s": 326.00816450000275,
+      "latency_s": 15.521971084002871,
+      "completion_tokens": 28,
+      "tokens_per_s": 1.8038946116100638,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 62,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33587200
+    },
+    {
+      "turn": 25,
+      "elapsed_s": 341.5320365000516,
+      "latency_s": 16.068117666989565,
+      "completion_tokens": 18,
+      "tokens_per_s": 1.120230780795146,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 64,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33914880
+    },
+    {
+      "turn": 26,
+      "elapsed_s": 357.60225983400596,
+      "latency_s": 43.8362649170449,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.4599784019261826,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 174,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34160640
+    },
+    {
+      "turn": 27,
+      "elapsed_s": 401.44216700003017,
+      "latency_s": 23.26897958299378,
+      "completion_tokens": 29,
+      "tokens_per_s": 1.2462944452104276,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 92,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34160640
+    },
+    {
+      "turn": 28,
+      "elapsed_s": 424.7130487090326,
+      "latency_s": 21.53412304102676,
+      "completion_tokens": 32,
+      "tokens_per_s": 1.486013613790247,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 85,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34226176
+    },
+    {
+      "turn": 29,
+      "elapsed_s": 446.2490915420349,
+      "latency_s": 46.22111858299468,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.3846484456035297,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 183,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33406976
+    },
+    {
+      "turn": 30,
+      "elapsed_s": 492.47487520903815,
+      "latency_s": 57.3091219170019,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.1167506648014636,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 227,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33980416
+    },
+    {
+      "turn": 31,
+      "elapsed_s": 549.7856172920438,
+      "latency_s": 26.1970210839645,
+      "completion_tokens": 31,
+      "tokens_per_s": 1.1833406516199454,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 104,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34406400
+    },
+    {
+      "turn": 32,
+      "elapsed_s": 575.9861119170091,
+      "latency_s": 30.546571582963225,
+      "completion_tokens": 51,
+      "tokens_per_s": 1.6695818010700845,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 121,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34373632
+    },
+    {
+      "turn": 33,
+      "elapsed_s": 606.5345816250192,
+      "latency_s": 26.60978920897469,
+      "completion_tokens": 34,
+      "tokens_per_s": 1.2777252661788396,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 105,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34308096
+    },
+    {
+      "turn": 34,
+      "elapsed_s": 633.1464065840119,
+      "latency_s": 56.07427641598042,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.1413433055332454,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 221,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32735232
+    },
+    {
+      "turn": 35,
+      "elapsed_s": 689.2248408340383,
+      "latency_s": 32.35799141699681,
+      "completion_tokens": 37,
+      "tokens_per_s": 1.1434578717566772,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 128,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34095104
+    },
+    {
+      "turn": 36,
+      "elapsed_s": 721.5846786250477,
+      "latency_s": 29.450319583993405,
+      "completion_tokens": 33,
+      "tokens_per_s": 1.1205311339961108,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 117,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34177024
+    },
+    {
+      "turn": 37,
+      "elapsed_s": 751.0387030840502,
+      "latency_s": 35.65503754100064,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.7949777763213617,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 141,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34209792
+    },
+    {
+      "turn": 38,
+      "elapsed_s": 786.6954255840392,
+      "latency_s": 56.373501708963886,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.1352851616422373,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 223,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34275328
+    },
+    {
+      "turn": 39,
+      "elapsed_s": 843.0728510000044,
+      "latency_s": 40.11839174997294,
+      "completion_tokens": 40,
+      "tokens_per_s": 0.9970489407773176,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 159,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32849920
+    },
+    {
+      "turn": 40,
+      "elapsed_s": 883.1930770000326,
+      "latency_s": 38.95136058400385,
+      "completion_tokens": 38,
+      "tokens_per_s": 0.9755756777237059,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 154,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33275904
+    },
+    {
+      "turn": 41,
+      "elapsed_s": 922.1479156670393,
+      "latency_s": 40.082507041981444,
+      "completion_tokens": 33,
+      "tokens_per_s": 0.8233017951056955,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 158,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34275328
+    },
+    {
+      "turn": 42,
+      "elapsed_s": 962.2326524170348,
+      "latency_s": 88.46549904200947,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.7234458709107425,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 348,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33914880
+    },
+    {
+      "turn": 43,
+      "elapsed_s": 1050.7031764590065,
+      "latency_s": 29.710341374971904,
+      "completion_tokens": 27,
+      "tokens_per_s": 0.9087744788669744,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 117,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34144256
+    },
+    {
+      "turn": 44,
+      "elapsed_s": 1080.41537612502,
+      "latency_s": 24.93567024997901,
+      "completion_tokens": 23,
+      "tokens_per_s": 0.9223734421182987,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 99,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33882112
+    },
+    {
+      "turn": 45,
+      "elapsed_s": 1105.3529114170233,
+      "latency_s": 34.01576387498062,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.8814806051459416,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 135,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32505856
+    },
+    {
+      "turn": 46,
+      "elapsed_s": 1139.3723374590045,
+      "latency_s": 63.24212191597326,
+      "completion_tokens": 64,
+      "tokens_per_s": 1.0119837548308974,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 249,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34127872
+    },
+    {
+      "turn": 47,
+      "elapsed_s": 1202.6171527090482,
+      "latency_s": 42.50192245800281,
+      "completion_tokens": 30,
+      "tokens_per_s": 0.7058504242871304,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 168,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34111488
+    },
+    {
+      "turn": 48,
+      "elapsed_s": 1245.1206802500528,
+      "latency_s": 40.13624829100445,
+      "completion_tokens": 31,
+      "tokens_per_s": 0.7723691505802222,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 158,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 34095104
+    },
+    {
+      "turn": 49,
+      "elapsed_s": 1285.2605730840005,
+      "latency_s": 53.79281970899319,
+      "completion_tokens": 58,
+      "tokens_per_s": 1.0782108153795746,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 213,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32718848
+    },
+    {
+      "turn": 50,
+      "elapsed_s": 1339.0548574170098,
+      "latency_s": 74.15480870899046,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.8630593364640519,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 293,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 33259520
+    },
+    {
+      "turn": 51,
+      "elapsed_s": 1413.215287084051,
+      "latency_s": 57.082533332984895,
+      "completion_tokens": 41,
+      "tokens_per_s": 0.7182582412877658,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 225,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32620544
+    },
+    {
+      "turn": 52,
+      "elapsed_s": 1470.2995844590478,
+      "latency_s": 51.31658470799448,
+      "completion_tokens": 32,
+      "tokens_per_s": 0.6235800800479772,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 202,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32161792
+    },
+    {
+      "turn": 53,
+      "elapsed_s": 1521.6203749590204,
+      "latency_s": 65.25083733297652,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.9808303251865801,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 257,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31932416
+    },
+    {
+      "turn": 54,
+      "elapsed_s": 1586.8751285840408,
+      "latency_s": 107.05327750003198,
+      "completion_tokens": 64,
+      "tokens_per_s": 0.5978331676952243,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 422,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 32145408
+    },
+    {
+      "turn": 55,
+      "elapsed_s": 1693.9315858340124,
+      "latency_s": 52.64909474999877,
+      "completion_tokens": 39,
+      "tokens_per_s": 0.7407534770576641,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 207,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31555584
+    },
+    {
+      "turn": 56,
+      "elapsed_s": 1746.5825793340337,
+      "latency_s": 46.046839375048876,
+      "completion_tokens": 27,
+      "tokens_per_s": 0.5863594628088704,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 181,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 31621120
+    },
+    {
+      "turn": 57,
+      "elapsed_s": 1792.6331502500107,
+      "latency_s": 62.31628199998522,
+      "completion_tokens": 30,
+      "tokens_per_s": 0.4814151139505902,
+      "metrics_peak": {
+        "scheduler_active_sessions": 1.0,
+        "scheduler_pool_in_use": 1.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 7798784.0
+      },
+      "metrics_samples": 245,
+      "metrics_idle": {
+        "scheduler_active_sessions": 0.0,
+        "scheduler_pool_in_use": 0.0,
+        "scheduler_pool_total": 1.0,
+        "scheduler_pending": 0.0,
+        "scheduler_kv_live_bytes": 0.0
+      },
+      "client_rss_bytes": 41861120
+    }
+  ],
+  "errors": [
+    {
+      "turn": 58,
+      "elapsed_s": 1854.9521792090381,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00440308300313
+    },
+    {
+      "turn": 59,
+      "elapsed_s": 1975.9678743340191,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00585474999389
+    },
+    {
+      "turn": 60,
+      "elapsed_s": 2096.9791981250164,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.033428208029363
+    },
+    {
+      "turn": 61,
+      "elapsed_s": 2108.0176478750072,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00443283404456
+    },
+    {
+      "turn": 62,
+      "elapsed_s": 2229.025099500024,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.018407833995298
+    },
+    {
+      "turn": 63,
+      "elapsed_s": 2240.0460829590447,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00252370798262
+    },
+    {
+      "turn": 64,
+      "elapsed_s": 2361.0514190840186,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00295500003267
+    },
+    {
+      "turn": 65,
+      "elapsed_s": 2482.0573011250235,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011345916020218
+    },
+    {
+      "turn": 66,
+      "elapsed_s": 2493.0713748340495,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00335820799228
+    },
+    {
+      "turn": 67,
+      "elapsed_s": 2614.078289417026,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009170917037409
+    },
+    {
+      "turn": 68,
+      "elapsed_s": 2625.09087545902,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00326854200102
+    },
+    {
+      "turn": 69,
+      "elapsed_s": 2746.0976419590297,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011650624976028
+    },
+    {
+      "turn": 70,
+      "elapsed_s": 2757.115227209055,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00573320797412
+    },
+    {
+      "turn": 71,
+      "elapsed_s": 2878.124350292026,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00344687496545
+    },
+    {
+      "turn": 72,
+      "elapsed_s": 2999.1317141250474,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.019180915958714
+    },
+    {
+      "turn": 73,
+      "elapsed_s": 3010.1546655840357,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00341500004288
+    },
+    {
+      "turn": 74,
+      "elapsed_s": 3131.1601864170516,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.008995583979413
+    },
+    {
+      "turn": 75,
+      "elapsed_s": 3142.172558625054,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00367774994811
+    },
+    {
+      "turn": 76,
+      "elapsed_s": 3263.180601125001,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010651624994352
+    },
+    {
+      "turn": 77,
+      "elapsed_s": 3274.1951667500543,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00352475000545
+    },
+    {
+      "turn": 78,
+      "elapsed_s": 3395.2033827920095,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0035227080225
+    },
+    {
+      "turn": 79,
+      "elapsed_s": 3516.210843625013,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010703375039157
+    },
+    {
+      "turn": 80,
+      "elapsed_s": 3527.22449708404,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00330208300147
+    },
+    {
+      "turn": 81,
+      "elapsed_s": 3648.2313763750135,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009540041035507
+    },
+    {
+      "turn": 82,
+      "elapsed_s": 3659.244492375001,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00338716700207
+    },
+    {
+      "turn": 83,
+      "elapsed_s": 3780.251325417019,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.008859875029884
+    },
+    {
+      "turn": 84,
+      "elapsed_s": 3791.263686875056,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00251912500244
+    },
+    {
+      "turn": 85,
+      "elapsed_s": 3912.2685962090036,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.006992291018832
+    },
+    {
+      "turn": 86,
+      "elapsed_s": 3923.2793242920307,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00323608302278
+    },
+    {
+      "turn": 87,
+      "elapsed_s": 4044.2860150000197,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009353625006042
+    },
+    {
+      "turn": 88,
+      "elapsed_s": 4055.298873584019,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00282100000186
+    },
+    {
+      "turn": 89,
+      "elapsed_s": 4176.304527834,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011040791985579
+    },
+    {
+      "turn": 90,
+      "elapsed_s": 4187.320444625046,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.01665808301186
+    },
+    {
+      "turn": 91,
+      "elapsed_s": 4308.340921916999,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00926362501923
+    },
+    {
+      "turn": 92,
+      "elapsed_s": 4319.352970834007,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00226974999532
+    },
+    {
+      "turn": 93,
+      "elapsed_s": 4440.357873084024,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00823654094711
+    },
+    {
+      "turn": 94,
+      "elapsed_s": 4451.368571667001,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00348974997178
+    },
+    {
+      "turn": 95,
+      "elapsed_s": 4572.3759972920525,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00328420900041
+    },
+    {
+      "turn": 96,
+      "elapsed_s": 4693.382825167035,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009644582984038
+    },
+    {
+      "turn": 97,
+      "elapsed_s": 4704.395967292017,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00462462496944
+    },
+    {
+      "turn": 98,
+      "elapsed_s": 4825.407460834016,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009232832991984
+    },
+    {
+      "turn": 99,
+      "elapsed_s": 4836.420234417019,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.001548750035
+    },
+    {
+      "turn": 100,
+      "elapsed_s": 4957.425333167019,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009211333002895
+    },
+    {
+      "turn": 101,
+      "elapsed_s": 4968.438459125056,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00624162500026
+    },
+    {
+      "turn": 102,
+      "elapsed_s": 5089.450180625019,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00568899995415
+    },
+    {
+      "turn": 103,
+      "elapsed_s": 5210.459704375011,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009618875046726
+    },
+    {
+      "turn": 104,
+      "elapsed_s": 5221.472980625054,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00514020799892
+    },
+    {
+      "turn": 105,
+      "elapsed_s": 5342.480610917031,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00885395903606
+    },
+    {
+      "turn": 106,
+      "elapsed_s": 5353.4930612500175,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.003554624971
+    },
+    {
+      "turn": 107,
+      "elapsed_s": 5474.500508792,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009343042038381
+    },
+    {
+      "turn": 108,
+      "elapsed_s": 5485.513613625022,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00518416595878
+    },
+    {
+      "turn": 109,
+      "elapsed_s": 5606.524694917025,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.021193292050157
+    },
+    {
+      "turn": 110,
+      "elapsed_s": 5617.551993750036,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00588729098672
+    },
+    {
+      "turn": 111,
+      "elapsed_s": 5738.561698875041,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010287125012837
+    },
+    {
+      "turn": 112,
+      "elapsed_s": 5749.578071959026,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0049550840049
+    },
+    {
+      "turn": 113,
+      "elapsed_s": 5870.5868770000525,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011956750007812
+    },
+    {
+      "turn": 114,
+      "elapsed_s": 5881.60258020903,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0059408750385
+    },
+    {
+      "turn": 115,
+      "elapsed_s": 6002.610847709002,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010906084033195
+    },
+    {
+      "turn": 116,
+      "elapsed_s": 6013.625482459029,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00521258398658
+    },
+    {
+      "turn": 117,
+      "elapsed_s": 6134.634179167042,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009458833024837
+    },
+    {
+      "turn": 118,
+      "elapsed_s": 6145.6470767499995,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00599537504604
+    },
+    {
+      "turn": 119,
+      "elapsed_s": 6266.656917042041,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009234958037268
+    },
+    {
+      "turn": 120,
+      "elapsed_s": 6277.669929084019,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00557512504747
+    },
+    {
+      "turn": 121,
+      "elapsed_s": 6398.678881042055,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.01034941704711
+    },
+    {
+      "turn": 122,
+      "elapsed_s": 6409.6928296670085,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0054182910244
+    },
+    {
+      "turn": 123,
+      "elapsed_s": 6530.701722292055,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009630082990043
+    },
+    {
+      "turn": 124,
+      "elapsed_s": 6541.714833542006,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00528849998955
+    },
+    {
+      "turn": 125,
+      "elapsed_s": 6662.723933250003,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.01142604200868
+    },
+    {
+      "turn": 126,
+      "elapsed_s": 6673.739227667043,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00625074998243
+    },
+    {
+      "turn": 127,
+      "elapsed_s": 6794.750860250031,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.019287041970529
+    },
+    {
+      "turn": 128,
+      "elapsed_s": 6805.773972875031,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00636137503898
+    },
+    {
+      "turn": 129,
+      "elapsed_s": 6926.784406209015,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010127208021004
+    },
+    {
+      "turn": 130,
+      "elapsed_s": 6937.798411584052,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00627504097065
+    },
+    {
+      "turn": 131,
+      "elapsed_s": 7058.808747292031,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.012273291999009
+    },
+    {
+      "turn": 132,
+      "elapsed_s": 7069.824720125005,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00542920903536
+    },
+    {
+      "turn": 133,
+      "elapsed_s": 7190.83241916704,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009588957997039
+    },
+    {
+      "turn": 134,
+      "elapsed_s": 7201.845560000045,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00555312499637
+    },
+    {
+      "turn": 135,
+      "elapsed_s": 7322.85499833402,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011453124985565
+    },
+    {
+      "turn": 136,
+      "elapsed_s": 7333.87019812502,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00489633303368
+    },
+    {
+      "turn": 137,
+      "elapsed_s": 7454.878784334054,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009830125025474
+    },
+    {
+      "turn": 138,
+      "elapsed_s": 7465.892440625001,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00568066700362
+    },
+    {
+      "turn": 139,
+      "elapsed_s": 7586.901708750054,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.01543008297449
+    },
+    {
+      "turn": 140,
+      "elapsed_s": 7597.921005750017,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00401249999413
+    },
+    {
+      "turn": 141,
+      "elapsed_s": 7718.928797375003,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.013817000028212
+    },
+    {
+      "turn": 142,
+      "elapsed_s": 7729.946462375054,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00626983400434
+    },
+    {
+      "turn": 143,
+      "elapsed_s": 7850.95663429203,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010347499977797
+    },
+    {
+      "turn": 144,
+      "elapsed_s": 7861.972856917011,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00595504097873
+    },
+    {
+      "turn": 145,
+      "elapsed_s": 7982.9826602920075,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009082250006031
+    },
+    {
+      "turn": 146,
+      "elapsed_s": 7993.995554000023,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00591520802118
+    },
+    {
+      "turn": 147,
+      "elapsed_s": 8115.005461375054,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.0090911660227
+    },
+    {
+      "turn": 148,
+      "elapsed_s": 8126.018335125002,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00542454200331
+    },
+    {
+      "turn": 149,
+      "elapsed_s": 8247.02719475003,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009454749990255
+    },
+    {
+      "turn": 150,
+      "elapsed_s": 8258.040107459005,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00544454099145
+    },
+    {
+      "turn": 151,
+      "elapsed_s": 8379.049466834054,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.016188750043511
+    },
+    {
+      "turn": 152,
+      "elapsed_s": 8390.072124417056,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00619425001787
+    },
+    {
+      "turn": 153,
+      "elapsed_s": 8511.08187016705,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009271041955799
+    },
+    {
+      "turn": 154,
+      "elapsed_s": 8522.094728084048,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00582033401588
+    },
+    {
+      "turn": 155,
+      "elapsed_s": 8643.104082292004,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011144540971145
+    },
+    {
+      "turn": 156,
+      "elapsed_s": 8654.12195375003,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00521600001957
+    },
+    {
+      "turn": 157,
+      "elapsed_s": 8775.131111250026,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009930250002071
+    },
+    {
+      "turn": 158,
+      "elapsed_s": 8786.144853500009,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00617183296708
+    },
+    {
+      "turn": 159,
+      "elapsed_s": 8907.154900209047,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.019061625003815
+    },
+    {
+      "turn": 160,
+      "elapsed_s": 8918.18012850004,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00476304098265
+    },
+    {
+      "turn": 161,
+      "elapsed_s": 9039.188429625006,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009098750015255
+    },
+    {
+      "turn": 162,
+      "elapsed_s": 9050.201279084024,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00446608301718
+    },
+    {
+      "turn": 163,
+      "elapsed_s": 9171.20921637502,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.012420833983924
+    },
+    {
+      "turn": 164,
+      "elapsed_s": 9182.22535737505,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00644179194933
+    },
+    {
+      "turn": 165,
+      "elapsed_s": 9303.23569845903,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011681791977026
+    },
+    {
+      "turn": 166,
+      "elapsed_s": 9314.251136042003,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00594241695944
+    },
+    {
+      "turn": 167,
+      "elapsed_s": 9435.26036545902,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00895154097816
+    },
+    {
+      "turn": 168,
+      "elapsed_s": 9446.272832209012,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0052365839947
+    },
+    {
+      "turn": 169,
+      "elapsed_s": 9567.285187125031,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009553499985486
+    },
+    {
+      "turn": 170,
+      "elapsed_s": 9578.298602375027,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00747087504715
+    },
+    {
+      "turn": 171,
+      "elapsed_s": 9699.313247834041,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.020822874968871
+    },
+    {
+      "turn": 172,
+      "elapsed_s": 9710.337891084026,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00558079197071
+    },
+    {
+      "turn": 173,
+      "elapsed_s": 9831.34691100003,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010013584047556
+    },
+    {
+      "turn": 174,
+      "elapsed_s": 9842.360845834017,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00562462495873
+    },
+    {
+      "turn": 175,
+      "elapsed_s": 9963.36993491702,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.012144415988587
+    },
+    {
+      "turn": 176,
+      "elapsed_s": 9974.385653084028,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00626475003082
+    },
+    {
+      "turn": 177,
+      "elapsed_s": 10095.395835459,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.01443995803129
+    },
+    {
+      "turn": 178,
+      "elapsed_s": 10106.414064667013,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00630295800511
+    },
+    {
+      "turn": 179,
+      "elapsed_s": 10227.42737566703,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010179417033214
+    },
+    {
+      "turn": 180,
+      "elapsed_s": 10238.441323042032,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00552316597896
+    },
+    {
+      "turn": 181,
+      "elapsed_s": 10359.450602834055,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011323665967211
+    },
+    {
+      "turn": 182,
+      "elapsed_s": 10370.46580825001,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0049715419882
+    },
+    {
+      "turn": 183,
+      "elapsed_s": 10491.474239792034,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.015166958037298
+    },
+    {
+      "turn": 184,
+      "elapsed_s": 10502.492931125045,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00587516702944
+    },
+    {
+      "turn": 185,
+      "elapsed_s": 10623.502605500049,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011119166039862
+    },
+    {
+      "turn": 186,
+      "elapsed_s": 10634.517521959031,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00524208403658
+    },
+    {
+      "turn": 187,
+      "elapsed_s": 10755.527440250036,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.017431208048947
+    },
+    {
+      "turn": 188,
+      "elapsed_s": 10766.548678667052,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00522341701435
+    },
+    {
+      "turn": 189,
+      "elapsed_s": 10887.55642591702,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.008515166991856
+    },
+    {
+      "turn": 190,
+      "elapsed_s": 10898.567415459023,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00245829200139
+    },
+    {
+      "turn": 191,
+      "elapsed_s": 11019.571895375033,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.007424457988236
+    },
+    {
+      "turn": 192,
+      "elapsed_s": 11030.582173750037,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00575566699263
+    },
+    {
+      "turn": 193,
+      "elapsed_s": 11151.593343834043,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00507433299208
+    },
+    {
+      "turn": 194,
+      "elapsed_s": 11272.603534375026,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.018293000000995
+    },
+    {
+      "turn": 195,
+      "elapsed_s": 11283.624297334056,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00353125005495
+    },
+    {
+      "turn": 196,
+      "elapsed_s": 11404.631424042047,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00929154199548
+    },
+    {
+      "turn": 197,
+      "elapsed_s": 11415.644166250015,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00369437498739
+    },
+    {
+      "turn": 198,
+      "elapsed_s": 11536.655517042032,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.020714082987979
+    },
+    {
+      "turn": 199,
+      "elapsed_s": 11547.680090000038,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00559741701
+    },
+    {
+      "turn": 200,
+      "elapsed_s": 11668.688527625054,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00296479195822
+    },
+    {
+      "turn": 201,
+      "elapsed_s": 11789.694583459,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00811358296778
+    },
+    {
+      "turn": 202,
+      "elapsed_s": 11800.705573167012,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00471920898417
+    },
+    {
+      "turn": 203,
+      "elapsed_s": 11921.71668058401,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.020355999993626
+    },
+    {
+      "turn": 204,
+      "elapsed_s": 11932.740860292048,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00218337500701
+    },
+    {
+      "turn": 205,
+      "elapsed_s": 12053.746861084015,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009910207998473
+    },
+    {
+      "turn": 206,
+      "elapsed_s": 12064.762034167012,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00349216698669
+    },
+    {
+      "turn": 207,
+      "elapsed_s": 12185.769439042022,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00322637497447
+    },
+    {
+      "turn": 208,
+      "elapsed_s": 12306.776183250011,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.019089667010121
+    },
+    {
+      "turn": 209,
+      "elapsed_s": 12317.797965500038,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00347441603662
+    },
+    {
+      "turn": 210,
+      "elapsed_s": 12438.805419125012,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009501875028946
+    },
+    {
+      "turn": 211,
+      "elapsed_s": 12449.820689625049,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00562841701321
+    },
+    {
+      "turn": 212,
+      "elapsed_s": 12570.830013834056,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.018171083007473
+    },
+    {
+      "turn": 213,
+      "elapsed_s": 12581.851073125028,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00427670800127
+    },
+    {
+      "turn": 214,
+      "elapsed_s": 12702.861519375001,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.022359792026691
+    },
+    {
+      "turn": 215,
+      "elapsed_s": 12713.890208875004,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00561633403413
+    },
+    {
+      "turn": 216,
+      "elapsed_s": 12834.899852542032,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.011319541023113
+    },
+    {
+      "turn": 217,
+      "elapsed_s": 12845.915623500012,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00556383299408
+    },
+    {
+      "turn": 218,
+      "elapsed_s": 12966.92721975001,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.007563249964733
+    },
+    {
+      "turn": 219,
+      "elapsed_s": 12977.938445167034,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00615604204359
+    },
+    {
+      "turn": 220,
+      "elapsed_s": 13098.948187792033,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009802374988794
+    },
+    {
+      "turn": 221,
+      "elapsed_s": 13109.964274834027,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00501658400754
+    },
+    {
+      "turn": 222,
+      "elapsed_s": 13230.973054375034,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010934667021502
+    },
+    {
+      "turn": 223,
+      "elapsed_s": 13241.990193625039,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00606741697993
+    },
+    {
+      "turn": 224,
+      "elapsed_s": 13362.999738750048,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009144042036496
+    },
+    {
+      "turn": 225,
+      "elapsed_s": 13374.012694167031,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00697341701016
+    },
+    {
+      "turn": 226,
+      "elapsed_s": 13495.025942709006,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009027374966536
+    },
+    {
+      "turn": 227,
+      "elapsed_s": 13506.038503334043,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0041707920027
+    },
+    {
+      "turn": 228,
+      "elapsed_s": 13627.046505084028,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.013449417019729
+    },
+    {
+      "turn": 229,
+      "elapsed_s": 13638.06385312503,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.0042828330188
+    },
+    {
+      "turn": 230,
+      "elapsed_s": 13759.071701292007,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.010665458044969
+    },
+    {
+      "turn": 231,
+      "elapsed_s": 13770.08585516701,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00535975000821
+    },
+    {
+      "turn": 232,
+      "elapsed_s": 13891.095083334018,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.00915554194944
+    },
+    {
+      "turn": 233,
+      "elapsed_s": 13902.108164375008,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00569854100468
+    },
+    {
+      "turn": 234,
+      "elapsed_s": 14023.117313084018,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.016622791998088
+    },
+    {
+      "turn": 235,
+      "elapsed_s": 14034.141132459044,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00568004098022
+    },
+    {
+      "turn": 236,
+      "elapsed_s": 14155.150688542053,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.012551583000459
+    },
+    {
+      "turn": 237,
+      "elapsed_s": 14166.167099459039,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00566749996506
+    },
+    {
+      "turn": 238,
+      "elapsed_s": 14287.176239375025,
+      "error": "http 429: {\"error\":{\"message\":\"queue wait exceeded queue_max_wait_s=10.0\",\"type\":\"rate_limit_error\",\"code\":null,\"param\":null}}",
+      "latency_s": 10.009492374956608
+    },
+    {
+      "turn": 239,
+      "elapsed_s": 14298.189605792053,
+      "error": "transport: ReadTimeout: ",
+      "latency_s": 120.00552524998784
+    }
+  ],
+  "agg": {
+    "all_failed": false,
+    "n_turns": 58,
+    "n_errors": 182,
+    "duration_s": 14400.0,
+    "p50_latency_s": 27.784855604521,
+    "p95_latency_s": 65.25083733297652,
+    "mean_latency_s": 31.868630889357583,
+    "in_flight_metric_samples_total": 7303,
+    "turns_without_metric_samples": 0,
+    "min_kv_live_bytes": 7798784.0,
+    "max_kv_live_bytes": 7798784.0,
+    "mean_kv_live_bytes": 7798784.0,
+    "kv_bounded": true,
+    "pool_in_use_peak_max": 1.0,
+    "idle_pool_in_use_settles_to_zero": true,
+    "latency_drift_p50_s": 38.27084862499032,
+    "kv_drift_bytes": 0.0,
+    "buckets_10min": [
+      {
+        "bucket_index": 0,
+        "bucket_start_s": 0.0,
+        "n_turns": 33,
+        "p50_latency_s": 15.521971084002871,
+        "p95_latency_s": 43.8362649170449,
+        "mean_kv_live_bytes": 7798784.0,
+        "max_kv_live_bytes": 7798784.0
+      },
+      {
+        "bucket_index": 1,
+        "bucket_start_s": 600.0,
+        "n_turns": 14,
+        "p50_latency_s": 37.303199062502244,
+        "p95_latency_s": 63.24212191597326,
+        "mean_kv_live_bytes": 7798784.0,
+        "max_kv_live_bytes": 7798784.0
+      },
+      {
+        "bucket_index": 2,
+        "bucket_start_s": 1200.0,
+        "n_turns": 11,
+        "p50_latency_s": 53.79281970899319,
+        "p95_latency_s": 107.05327750003198,
+        "mean_kv_live_bytes": 7798784.0,
+        "max_kv_live_bytes": 7798784.0
+      }
+    ]
+  },
+  "summary_text": "\n==============================================================================\nLong-session memory-stability benchmark\n==============================================================================\n  duration                       = 14400.0 s (4.00 h)\n  successful turns               = 58\n  errored turns                  = 182\n  p50 turn latency               = 27.785 s\n  p95 turn latency               = 65.251 s\n  mean turn latency              = 31.869 s\n  in-flight metric samples total = 7303\n  turns w/o any metric sample    = 0\n  KV peak (in-flight) min/mean/max = 7.4 MiB / 7.4 MiB / 7.4 MiB\n  KV bounded (<10% spread)       = True\n  idle pool_in_use settles to 0  = True\n  pool_in_use peak (in-flight)   = 1.0\n  latency drift (last-first p50) = +38.271 s\n  KV drift (last-first 10-min)   = +0.00 MiB\n\n  Per-10min buckets:\n    bucket  n_turns  p50_lat   p95_lat   mean_kv\n        0       33   15.522s   43.836s      7.4 MiB\n        1       14   37.303s   63.242s      7.4 MiB\n        2       11   53.793s  107.053s      7.4 MiB\n==============================================================================",
+  "config": {
+    "kakeya_url": "http://127.0.0.1:8000",
+    "kakeya_model": "kakeya-v1",
+    "metrics_path": "/metrics",
+    "duration_s": 14400.0,
+    "turn_spacing_s": 5.0,
+    "max_tokens": 64,
+    "timeout_s": 120.0,
+    "progress_every_s": 60.0,
+    "metrics_poll_interval_s": 0.25,
+    "report": "results/platform-tests/bench_long_session_mac_4h_1780211323.json",
+    "checkpoint": null,
+    "dry_run": false
+  }
+}

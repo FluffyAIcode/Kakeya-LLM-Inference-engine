@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "report_type": "long_session_aborted_analysis",
+  "partial_source": "results/platform-tests/bench_long_session_mac_1780130542.partial.json",
+  "intended_final_report": "results/platform-tests/bench_long_session_mac_1780130542.json",
+  "status": "aborted_for_bugfix",
+  "bench_command": "PYTHONPATH=. python3 scripts/bench_agentic/bench_long_session.py --kakeya-url http://127.0.0.1:8000 --kakeya-model kakeya-v1 --duration-s 14400 --turn-spacing-s 5 --max-tokens 64 --report results/platform-tests/bench_long_session_mac_$(date +%s).json",
+  "server_command": "PYTHONPATH=. python3 scripts/serve.py --max-concurrent 1 --admission-policy queue --queue-max-wait-s 10",
+  "started_at_utc": "2026-05-30T08:42:22.381Z",
+  "aborted_at_utc": "2026-05-30T12:09:14.683Z",
+  "intended_duration_s": 14400.0,
+  "wall_time_before_abort_s": 12412.302,
+  "reason": "The 4-hour run stopped making healthy progress after about 29.4 minutes. The server remained alive, but later requests repeatedly returned HTTP 429 because an in-flight generation continued occupying the single scheduler slot after the client side stopped receiving successful turns.",
+  "observed_progress": {
+    "elapsed_s_at_last_successful_turn": 1766.5887877499918,
+    "elapsed_minutes_at_last_successful_turn": 29.443146462499864,
+    "successful_turns": 58,
+    "errors_recorded_in_checkpoint": 0,
+    "last_turn_latency_s": 62.51412974999403,
+    "last_turn_completion_tokens": 30,
+    "last_turn_tokens_per_s": 0.47989150804747255,
+    "p50_latency_s": 26.623062083497643,
+    "p95_latency_s": 65.42716470800224,
+    "mean_latency_s": 31.433550418826755,
+    "latency_drift_p50_s": 40.87042041600216,
+    "kv_metrics_available": false,
+    "kv_bounded": null
+  },
+  "bucket_summary_10min": [
+    {
+      "bucket_index": 0,
+      "bucket_start_s": 0.0,
+      "n_turns": 34,
+      "p50_latency_s": 14.670069646497723,
+      "p95_latency_s": 42.745099040999776
+    },
+    {
+      "bucket_index": 1,
+      "bucket_start_s": 600.0,
+      "n_turns": 14,
+      "p50_latency_s": 39.14198016699811,
+      "p95_latency_s": 60.575091375008924
+    },
+    {
+      "bucket_index": 2,
+      "bucket_start_s": 1200.0,
+      "n_turns": 10,
+      "p50_latency_s": 55.540490062499885,
+      "p95_latency_s": 107.6281096249877
+    }
+  ],
+  "server_symptoms": [
+    "Kakeya server was still listening on 127.0.0.1:8000.",
+    "Server logs showed repeated POST /v1/chat/completions 429 Too Many Requests responses.",
+    "The partial checkpoint stopped advancing at 58 successful turns even though the bench shell process was still alive.",
+    "The final 4-hour report was not produced because the benchmark was intentionally terminated for debugging."
+  ],
+  "fixes_applied": [
+    "Non-streaming chat completions now cancel their scheduler session when the HTTP request is cancelled or the client disconnects.",
+    "Non-streaming chat completions now cancel the scheduler session before surfacing engine drain errors.",
+    "Scheduler token enqueue now waits for each cross-thread queue put to complete before generation can push the terminal sentinel, preserving token-before-done ordering."
+  ],
+  "verification": [
+    {
+      "command": "PYTHONPATH=. pytest tests/inference_engine/server/test_app_routes.py tests/inference_engine/server/test_app_streaming.py -q",
+      "result": "25 passed"
+    },
+    {
+      "command": "PYTHONPATH=. pytest tests/inference_engine/scheduler/test_scheduler.py -q",
+      "result": "20 passed"
+    }
+  ],
+  "recommended_next_run": {
+    "purpose": "Validate that the disconnect/orphan-session and token queue ordering fixes allow the long-session benchmark to keep making progress without 429 saturation.",
+    "command": "PYTHONPATH=. python3 scripts/bench_agentic/bench_long_session.py --kakeya-url http://127.0.0.1:8000 --kakeya-model kakeya-v1 --duration-s 14400 --turn-spacing-s 5 --max-tokens 64 --report results/platform-tests/bench_long_session_mac_$(date +%s).json",
+    "success_criteria": [
+      "No sustained POST /v1/chat/completions 429 Too Many Requests responses under a single-client run.",
+      "Partial checkpoint continues advancing past the previous 58-turn / 29.4-minute stall point.",
+      "Final report is produced with partial=false.",
+      "Server metrics populate scheduler queue and pool state, or the report explicitly records why KV metrics are unavailable."
+    ]
+  }
+}
