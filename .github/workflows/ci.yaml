@@ -65,7 +65,12 @@ jobs:
 
       - name: Run platform-neutral test suite with 100% coverage
         env:
-          PYTHONPATH: .
+          # sdks/python is the on-tree location of the Python SDK
+          # (per ADR 0008 §3.1). Adding it to PYTHONPATH lets the
+          # tests import `kakeya` without having to pip-install the
+          # SDK as a separate package — both layouts work, and the
+          # PYTHONPATH route avoids a setuptools build step in CI.
+          PYTHONPATH: .:sdks/python
         run: |
           pytest \
             tests/inference_engine/server/ \
@@ -73,6 +78,7 @@ jobs:
             tests/inference_engine/scheduler/ \
             tests/inference_engine/pipeline/ \
             tests/inference_engine/session/ \
+            tests/sdk/python/ \
             tests/training/repr_align/ \
             tests/backends/mlx/test_env.py \
             --cov=inference_engine.server \
@@ -80,6 +86,7 @@ jobs:
             --cov=inference_engine.scheduler \
             --cov=inference_engine.pipeline \
             --cov=inference_engine.session \
+            --cov=kakeya \
             --cov=training.repr_align \
             --cov-report=term \
             --cov-report=xml:coverage.xml \
@@ -142,6 +149,11 @@ jobs:
             import inference_engine.server.grpc_app; \
             import inference_engine.server.proto_gen.kakeya.v1.runtime_pb2; \
             import inference_engine.server.proto_gen.kakeya.v1.runtime_pb2_grpc; \
+            import sys; sys.path.insert(0, 'sdks/python'); \
+            import kakeya; \
+            import kakeya.client; \
+            import kakeya.session; \
+            import kakeya.errors; \
             import inference_engine.proposer; \
             import inference_engine.proposer.sparse_logits; \
             import inference_engine.backends.mlx.env; \
