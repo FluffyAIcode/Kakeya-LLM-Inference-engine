@@ -1,6 +1,6 @@
 # ADR 0007 — Cross-request KV cache reuse for long sessions
 
-- **Status**: Superseded by [ADR 0008](0008-session-bound-runtime-and-grpc-protocol.md) (2026-06-01). Originally Accepted 2026-05-31; superseded after empirical falsification of §2.4 by Qwen3 chat-template re-rendering. None of this ADR's implementation reached `main`. See ADR 0008 §1.2.
+- **Status**: Superseded by [ADR 0008](0008-session-bound-runtime-and-grpc-protocol.md) (2026-06-01). Originally Accepted 2026-05-31; superseded after empirical falsification of §2.4 by Qwen3 chat-template re-rendering. Implementation (PR 7-1..7-6, merged via PRs #30-#36 on 2026-05-31, before ADR 0008 was written) is present on `main` and is treated by ADR 0008 as a historical code layer that its Phases A-E will replace incrementally; see ADR 0008 §6.6 for the per-file disposition.
 - **Date**: 2026-05-31
 - **Decision drivers**: ADR 0006 §2.3.b empirical evidence (4-hour Mac M4
   run); the gap between the "local agent infrastructure" framing and the

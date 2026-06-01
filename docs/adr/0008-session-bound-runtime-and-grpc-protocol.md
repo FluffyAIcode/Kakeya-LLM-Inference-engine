@@ -18,8 +18,11 @@
   (positioning + §2.3 sub-claims).
 - **Supersedes**: ADR 0007 (cross-request KV cache reuse via automatic
   prefix matching). ADR 0007 is retained as a historical record of the
-  architecture-discovery process; none of its implementation reaches
-  `main`.
+  architecture-discovery process. Its implementation (PR 7-1..7-6,
+  merged via PRs #30-#36 on 2026-05-31, before this ADR's strategic
+  context was finalized) is present on `main` as of this ADR's merge
+  commit and is treated as a historical code layer that Phases A-E
+  (§6) will replace incrementally; see §6.6.
 
 ---
 
@@ -122,9 +125,12 @@ The user reframed scope and constraints, which this ADR commits to:
    without intelligence loss**. Compatibility surface is a tool, not a
    goal.
 4. There is **no deadline**, and we explicitly **reject sunk-cost
-   reasoning** when evaluating prior implementation work (this is
-   what enables the C3 = "close PR #30..#36 without merging" decision
-   recorded for v0.3).
+   reasoning** when evaluating prior implementation work. (This is
+   what enabled the original 2026-06-01 decision C3 = b "close PR
+   #30..#36 without merging" — superseded post-hoc by C3-revised = a
+   when audit revealed those PRs had already been merged on
+   2026-05-31, before this ADR was written; see §6.6 for the
+   resulting reconciliation plan.)
 5. **No PR may be requested for merge until it carries a passing Mac
    M4 integration-test report on the PR branch.** Unit tests on the
    Linux CI runner are necessary but not sufficient — they have already
@@ -741,14 +747,47 @@ parallelize.
   automatically when a PR touches `inference_engine/`, `sdks/`, or
   `proto/`. Failing this job blocks merge.
 
-### 6.6 Phase F — Old PRs cleanup
+### 6.6 Phase F — Reconciling pre-existing ADR 0007 implementation on `main`
 
-- **PR-F1**: Close PRs #30..#36 (recorded as decision C3=b,
-  2026-06-01) without merging. Their commit history remains
-  reachable via the `AgentMemory/v030-pr7-*` branches for archival
-  reading; their content is superseded by Phases A–E.
+PRs #30..#36 (the PR 7-1..7-6 stack implementing ADR 0007) merged to
+`main` on 2026-05-31, **before** this ADR's strategic context was
+finalized. Decision C3-revised = a (recorded 2026-06-01 after audit
+revealed the merges) accepts that implementation as a **historical
+code layer** that this ADR's Phases A-E will progressively replace.
+The revised decision rests on the §1.3-item-4 sunk-cost rejection:
+keeping the merged code is not a sunk-cost concession (the code does
+correctly implement the rejected design), it is a recognition that
+deleting it now and re-implementing it later via Phases A-E in the
+same files would be churn for no architectural gain.
 
-Phases A and F can run in parallel; F is a paperwork PR with no code.
+Pre-existing ADR 0007 surface on `main` (commits `56e8c5c` PR 7-1
+through `0a31ee9` PR 7-6):
+
+| File                                                    | Status   | Disposition                                                                                                  |
+| ------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `kv_cache_proposer/path_plan.py`                        | added    | Deleted in PR-A3 (verifier session-store rewiring) — `PathPlan` is replaced by `SessionStore` lookup.        |
+| `tests/core/test_path_plan.py`                          | added    | Deleted alongside the implementation in PR-A3.                                                               |
+| `tests/core/test_determinism_gate.py`                   | added    | Replaced by `tests/integration/test_inv3_session_determinism_gate.py` in PR-E1; old file deleted in PR-E1.   |
+| `kv_cache_proposer/verifier.py`                         | modified | `path_select` / `prefill_incremental` removed in PR-A3; `cached_token_sequence` retained (still useful for INV-1 inside `SessionStore`). |
+| `inference_engine/backends/mlx/verifier.py`             | modified | Same as above.                                                                                               |
+| `kv_cache_proposer/speculative.py`                      | modified | `path_select` dispatch removed in PR-B2 (`AppendTokens` handler subsumes the role).                          |
+| `inference_engine/server/app.py`                        | modified | `_emit_path_selection_metric` and `_session_acceptance_rate` paths removed in PR-D1 (deprecated-shim refactor).|
+| `inference_engine/server/engine.py`                     | modified | `EngineResult` `path_selection` / `tokens_skipped` / `prefill_duration_seconds` fields removed in PR-D1.     |
+| `inference_engine/server/metrics.py`                    | modified | `path_selection_total`, `continuation_tokens_skipped_total`, `verifier_prefill_duration_seconds`, `cache_invariant_violations_total` are removed in PR-D1; replaced by §2.9's `session_*` metrics in PR-B1/B3. |
+| `inference_engine/scheduler/session.py`                 | modified | `engine_result` field removed in PR-D1; replaced by gRPC-side response metadata in PR-B3.                    |
+| `scripts/bench_agentic/bench_long_session.py`           | modified | Path-selection scrape removed in PR-D1; replaced by `scripts/bench_agentic/bench_session_long_run.py` in PR-E1.|
+
+- **PR-F1**: This ADR's supplement PR (the same PR that lands the §6.6
+  rewrite you are reading) is the entire Phase F paperwork. **No code
+  PR closes / reverts / deletes anything** — Phases A-E own the
+  removals at the points where their own additions make those removals
+  natural.
+
+Phases A and the §6.6 supplement PR ran independently; the supplement
+PR is doc-only, Phase A involves runtime code. The supplement PR
+preceding Phase A guarantees that anyone reading ADR 0008 against
+`main` after the supplement merges sees the correct disposition of
+the pre-existing surface.
 
 ---
 
@@ -880,10 +919,10 @@ runtime code.
 ### Local-only smoke evidence (annotation, not archived per C2 = a)
 
 - `bench_long_session_mac_v2_smoke_1780236903.json` — first v2 smoke,
-  surfaced the partial-cache crash. The hotfix is preserved in the
-  commit history of `AgentMemory/v030-pr7-2-path-select-and-prefill-
-  incremental-8e7f` even though that branch is not merged (per
-  C3 = b).
+  surfaced the partial-cache crash. The hotfix is preserved on `main`
+  via PR #32 (commit `f3b3c64`, "PR 7-2 (ADR 0007): path_select +
+  prefill_incremental + INV-2"); see §6.6 for the disposition of that
+  code under this ADR.
 - `bench_long_session_mac_v2_smoke2_1780238315.json` — 5 min smoke
   after hotfix, reported `continuation_rate = 0.0`. The empirical
   falsification of ADR 0007 §2.4.
