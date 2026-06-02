@@ -34,19 +34,33 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-def real_app(real_speculative_engine):
+def _real_verifier_for_http(real_speculative_engine):
+    """Extract the underlying real verifier from the
+    SpeculativeEngine fixture. Post PR-D2 the HTTP shim's
+    ``create_app`` accepts a verifier directly (not an
+    ``Engine`` wrapper); the SpeculativeEngine fixture is
+    still the canonical source of a configured + loaded
+    real verifier in the integration suite, so we reach
+    into its decoder rather than re-loading model weights.
+    """
+    return real_speculative_engine._decoder.verifier
+
+
+@pytest.fixture
+def real_app(_real_verifier_for_http):
     return create_app(
-        real_speculative_engine,
-        ServerConfig(default_max_new_tokens=4),
+        _real_verifier_for_http,
+        ServerConfig(default_max_new_tokens=4, model_id_label="kakeya-test"),
     )
 
 
 @pytest.fixture
-def real_app_with_auth(real_speculative_engine):
+def real_app_with_auth(_real_verifier_for_http):
     return create_app(
-        real_speculative_engine,
+        _real_verifier_for_http,
         ServerConfig(
             default_max_new_tokens=4,
+            model_id_label="kakeya-test",
             api_keys=frozenset({"sk-test-secret"}),
         ),
     )
@@ -73,7 +87,7 @@ async def test_chat_completions_returns_openai_envelope(real_app):
     assert body["object"] == "chat.completion"
     assert "id" in body
     assert "created" in body
-    assert body["model"] == real_app.state.engine.model_id_label
+    assert body["model"] == real_app.state.model_id_label
     assert len(body["choices"]) == 1
     choice = body["choices"][0]
     assert choice["index"] == 0
@@ -251,6 +265,6 @@ async def test_models_endpoint_lists_engine_id(real_app):
     body = r.json()
     assert body["object"] == "list"
     assert any(
-        m["id"] == real_app.state.engine.model_id_label
+        m["id"] == real_app.state.model_id_label
         for m in body["data"]
     )

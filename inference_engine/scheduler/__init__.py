@@ -26,13 +26,15 @@ Submodules:
 """
 
 from .config import AdmissionPolicy, SchedulerConfig
-from .pooled_verifier import PooledVerifier
+# PooledVerifier was retired by PR-D2; the HTTP shim now drives
+# SessionStore + AppendTokensCoordinator directly. Imports kept
+# stable by removing the export entirely (no soft-deprecation
+# layer — the symbol is gone from the package).
 from .scheduler import RequestRejected, Scheduler
 from .session import Session, SessionState
 
 __all__ = [
     "AdmissionPolicy",
-    "PooledVerifier",
     "RequestRejected",
     "Scheduler",
     "SchedulerConfig",

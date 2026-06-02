@@ -598,6 +598,138 @@ async def test_generate_cancellation_emits_cancelled_done():
         runtime_pb2.GenerateDone.STOP_REASON_CANCELLED
     assert events[1].done.generated_token_count == 1
 
+
+async def test_append_tokens_session_not_found_returns_not_found():
+    """SessionNotFoundError raised by the AppendTokensCoordinator →
+    NOT_FOUND on the wire. Coordinator override; verifier-free."""
+    from inference_engine.session import AppendTokensCoordinator
+    from inference_engine.session.store import SessionNotFoundError
+
+    class _NotFoundCoordinator(AppendTokensCoordinator):
+        def append_tokens(self, session_id, token_ids):
+            del token_ids
+            raise SessionNotFoundError(session_id)
+
+    store = SessionStore(capacity=2)
+    coord = _NotFoundCoordinator(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, append_coordinator=coord), server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.AppendTokens(
+                runtime_pb2.AppendTokensRequest(
+                    session_id="any-id", token_ids=[1, 2, 3],
+                ),
+            )
+        assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
+async def test_append_tokens_success_returns_response():
+    """Coordinator override returns successfully → AppendTokensResponse
+    with the correct history_length on the wire."""
+    from inference_engine.session import AppendTokensCoordinator
+
+    class _SuccessCoordinator(AppendTokensCoordinator):
+        def append_tokens(self, session_id, token_ids):
+            del session_id
+            return len(list(token_ids)) + 100  # deterministic, easy to assert
+
+    store = SessionStore(capacity=2)
+    coord = _SuccessCoordinator(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, append_coordinator=coord), server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
+        resp = await stub.AppendTokens(
+            runtime_pb2.AppendTokensRequest(
+                session_id=create_resp.session_id, token_ids=[1, 2, 3],
+            ),
+        )
+        assert resp.history_length == 103
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
+async def test_generate_yields_history_truncated_then_done():
+    """Generator override yields HistoryTruncatedEvent + DoneEvent →
+    truncated frame + done frame on the wire. Covers the
+    HistoryTruncatedEvent and DoneEvent yield paths."""
+    from inference_engine.session import (
+        DoneEvent,
+        GenerationCoordinator,
+        HistoryTruncatedEvent,
+        STOP_REASON_MAX_TOKENS,
+        TokenEvent,
+    )
+
+    class _StreamingGen(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kw):
+            del session_id, max_tokens, kw
+            yield HistoryTruncatedEvent(dropped_token_count=42)
+            yield TokenEvent(token_id=7)
+            yield DoneEvent(
+                stop_reason=STOP_REASON_MAX_TOKENS,
+                generated_token_count=1,
+                prefill_seconds=0.0,
+                total_seconds=0.0,
+            )
+
+    store = SessionStore(capacity=2)
+    gen_coord = _StreamingGen(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(
+            store, generation_coordinator=gen_coord,
+        ),
+        server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
+        events = []
+        async for evt in stub.Generate(
+            runtime_pb2.GenerateRequest(
+                session_id=create_resp.session_id, max_tokens=1,
+            ),
+        ):
+            events.append(evt)
+        # Order: truncated → token → done
+        assert len(events) == 3
+        assert events[0].WhichOneof("payload") == "truncated"
+        assert events[0].truncated.dropped_token_count == 42
+        assert events[1].WhichOneof("payload") == "token_id"
+        assert events[1].token_id == 7
+        assert events[2].WhichOneof("payload") == "done"
+        assert events[2].done.stop_reason == \
+            runtime_pb2.GenerateDone.STOP_REASON_MAX_TOKENS
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
 # ---------------------------------------------------------------------------
 # Generate (PR-B3) — verifier-independent paths only
 #
