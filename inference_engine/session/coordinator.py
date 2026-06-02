@@ -96,6 +96,28 @@ class VerifierProtocol(Protocol):
     def k_seq_length(self, session: Session) -> int:
         ...  # pragma: no cover - Protocol body, never executed
 
+    def kv_live_bytes(self, session: Session) -> int:
+        ...  # pragma: no cover - Protocol body, never executed
+
+
+def _sync_slab_bytes(session: Session, verifier: "VerifierProtocol") -> None:
+    """Mirror the verifier's current KV byte count onto the session's
+    slab placeholder (PR-E1c).
+
+    The slab's ``live_kv_bytes`` is the source of truth for
+    :meth:`Session.kv_live_bytes`, which in turn feeds
+    ``GetSessionInfo.kv_live_bytes`` over gRPC. The verifier owns
+    the actual K/V tensors; the slab is a placeholder that holds
+    one capacity unit per active session. Without this sync the
+    gauge reads 0 forever (PR-E1b's 4h bench surfaced this).
+
+    No-op when the session has no slab (pool-less SessionStore — the
+    test / pure-data-layer mode the coordinator unit tests use).
+    """
+    if session.slab is None:
+        return
+    session.slab.live_kv_bytes_override = int(verifier.kv_live_bytes(session))
+
 
 class AppendTokensCoordinator:
     """Orchestrator for the §2.3 byte-exact prefill-incremental contract.
@@ -193,5 +215,10 @@ class AppendTokensCoordinator:
         self._store.record_position_advance(
             session_id, self._verifier.next_global_position,
         )
+
+        # Mirror the verifier's current KV byte count onto the slab
+        # so GetSessionInfo.kv_live_bytes reports physical bytes
+        # rather than the slab's placeholder zero. PR-E1c.
+        _sync_slab_bytes(session, self._verifier)
 
         return new_history_length

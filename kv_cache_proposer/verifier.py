@@ -98,6 +98,27 @@ class SinkWindowVerifier:
             weight_bytes=sum(p.numel() * p.element_size() for p in self.model.parameters())
         )
 
+        # PR-E1c: precompute per-K/V-token byte cost so the
+        # ``kv_live_bytes`` accessor is O(1). Two factors of 2 — one
+        # for K + V, one already absorbed into the dim product. Read
+        # the dims from the HF config so GQA / MQA variants
+        # (Qwen3 / Gemma / DeepSeek) are accounted for correctly via
+        # ``num_key_value_heads`` rather than ``num_attention_heads``.
+        cfg = self.model.config
+        num_layers = int(getattr(cfg, "num_hidden_layers"))
+        num_kv_heads = int(
+            getattr(cfg, "num_key_value_heads", None)
+            or getattr(cfg, "num_attention_heads")
+        )
+        head_dim = int(
+            getattr(cfg, "head_dim", None)
+            or (cfg.hidden_size // cfg.num_attention_heads)
+        )
+        itemsize = torch.tensor([], dtype=self.config.dtype).element_size()
+        self._bytes_per_kv_token = (
+            num_layers * num_kv_heads * head_dim * itemsize * 2
+        )
+
     # ---------------------------- public API ---------------------------- #
     def reset(self) -> None:
         self.cache = DynamicCache(config=self.model.config)
@@ -319,6 +340,23 @@ class SinkWindowVerifier:
         """
         del session  # unused in v0.3 single-tenant scope
         return self._cache_seq_length()
+
+    def kv_live_bytes(self, session: object) -> int:
+        """Return the live K/V cache size in bytes for ``session``.
+
+        Implements the :class:`VerifierProtocol.kv_live_bytes` contract
+        introduced by PR-E1c. Computed as
+        ``k_seq_length × num_layers × num_kv_heads × head_dim ×
+        itemsize × 2`` (the trailing 2 = K + V).
+
+        After PR-E1c the gRPC ``GetSessionInfo.kv_live_bytes`` field is
+        sourced from this method via the coordinator's slab-write-
+        through (PR-E1b's 4h bench surfaced that the previous source —
+        ``slab.live_kv_bytes`` — was always 0 because the slab is a
+        capacity placeholder, not a real KV-tensor sink).
+        """
+        del session  # unused in v0.3 single-tenant scope
+        return self._cache_seq_length() * self._bytes_per_kv_token
 
     def _assert_cache_invariant_1(self) -> None:
         """ADR 0007 §2.9 INV-1: parallel-sequence consistency.

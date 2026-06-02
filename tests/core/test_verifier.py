@@ -550,6 +550,68 @@ def test_k_seq_length_ignores_session_argument(fresh_verifier_factory) -> None:
     )
 
 
+def test_kv_live_bytes_returns_zero_before_prefill(
+    fresh_verifier_factory,
+) -> None:
+    """PR-E1c: with no cache allocated, kv_live_bytes is 0. Session
+    has nothing to report yet."""
+    verifier = fresh_verifier_factory()
+    assert verifier.kv_live_bytes(session=None) == 0
+
+
+def test_kv_live_bytes_equals_k_seq_length_times_per_token_bytes(
+    fresh_verifier_factory,
+) -> None:
+    """PR-E1c: ``kv_live_bytes = k_seq_length × per-token bytes``.
+
+    Per-token bytes itself is
+    ``num_layers × num_kv_heads × head_dim × itemsize × 2`` (×2 = K + V).
+    We compute it from the model config the same way the verifier does
+    to verify the closed-form relationship; an off-by-one in either
+    factor would surface immediately because the resulting product no
+    longer matches.
+    """
+    verifier = fresh_verifier_factory(sink=2, window=8)
+    verifier.prefill([10, 20, 30, 40, 50])
+    k_len = verifier.k_seq_length(session=None)
+    assert k_len == 5
+    cfg = verifier.model.config
+    num_layers = int(cfg.num_hidden_layers)
+    num_kv_heads = int(
+        getattr(cfg, "num_key_value_heads", None)
+        or cfg.num_attention_heads
+    )
+    head_dim = int(
+        getattr(cfg, "head_dim", None)
+        or (cfg.hidden_size // cfg.num_attention_heads)
+    )
+    bytes_per_token = (
+        num_layers * num_kv_heads * head_dim
+        * verifier.config.dtype.itemsize * 2
+    )
+    expected = k_len * bytes_per_token
+    assert verifier.kv_live_bytes(session=None) == expected
+    # And for the headline 4-h Mac M4 Qwen3-0.6B numbers, this is in
+    # the multi-megabyte range — no longer the constant 0 the bench
+    # surfaced before PR-E1c.
+    assert expected > 0
+
+
+def test_kv_live_bytes_plateaus_at_capacity(fresh_verifier_factory) -> None:
+    """The architectural KV-bound claim: once k_seq_length hits
+    sink+window, kv_live_bytes plateaus. This test compares the
+    bytes after a prefill that fills the cache to the bytes after
+    additional tokens are forwarded — they must be equal."""
+    verifier = fresh_verifier_factory(sink=2, window=4)
+    verifier.prefill([10, 20, 30, 40, 50, 60])  # 6 = sink+window cap
+    bytes_at_cap = verifier.kv_live_bytes(session=None)
+    # Forward more tokens — sink+window keeps trimming so k_seq stays at cap.
+    verifier.forward_block([70, 80, 90])
+    verifier.commit_or_truncate(forwarded=3, accepted=3)
+    bytes_after_forward = verifier.kv_live_bytes(session=None)
+    assert bytes_at_cap == bytes_after_forward
+
+
 def test_cpu_verifier_satisfies_cache_inspector_protocol(
     fresh_verifier_factory,
 ) -> None:
