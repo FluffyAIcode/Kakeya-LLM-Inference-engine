@@ -1,0 +1,89 @@
+name: Auto-label needs-mac-m4
+
+# Auto-applies the ``needs-mac-m4`` label to PRs that touch
+# verifier-dependent code paths so the integration workflow
+# (.github/workflows/integration.yaml) runs without contributors
+# remembering to apply the label by hand.
+#
+# A PR opts INTO Mac M4 review by editing files under any of:
+#   inference_engine/  — runtime, scheduler, session, server, etc.
+#   sdks/              — Python + TypeScript SDK
+#   proto/             — protobuf wire contract
+#   tests/integration/ — the integration suite itself
+#   kv_cache_proposer/ — verifier + decoder
+#
+# A doc-only PR (touching only docs/, README.md, etc.) does NOT
+# trigger Mac M4 review, saving runner time.
+#
+# Once labelled, the integration workflow auto-fires; once a PR
+# lands without the label, the integration workflow auto-skips.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label PRs touching verifier-dependent paths
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const labelName = "needs-mac-m4";
+
+            // Pull the diff file list. github-script gives us the
+            // full octokit; pagination matters for >100-file PRs
+            // but in practice the v0.3 PRs are well under that.
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const triggers = [
+              "inference_engine/",
+              "sdks/",
+              "proto/",
+              "tests/integration/",
+              "kv_cache_proposer/",
+            ];
+
+            const matched = files.some(f =>
+              triggers.some(t => f.filename.startsWith(t))
+            );
+
+            const hasLabel = pr.labels.some(l => l.name === labelName);
+
+            if (matched && !hasLabel) {
+              core.info(`Adding ${labelName} (PR touches verifier-dependent paths).`);
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: [labelName],
+              });
+            } else if (!matched && hasLabel) {
+              // PR was previously labelled; subsequent push removed
+              // all verifier-dependent file edits. Drop the label
+              // so the integration workflow doesn't burn runner
+              // time on doc-only updates.
+              core.info(`Removing ${labelName} (no verifier-dependent paths).`);
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                name: labelName,
+              });
+            } else {
+              core.info(
+                `No-op: matched=${matched} hasLabel=${hasLabel}.`
+              );
+            }
