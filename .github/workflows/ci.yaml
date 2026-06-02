@@ -78,6 +78,7 @@ jobs:
             tests/inference_engine/scheduler/ \
             tests/inference_engine/pipeline/ \
             tests/inference_engine/session/ \
+            tests/inference_engine/bench/ \
             tests/sdk/python/ \
             tests/training/repr_align/ \
             tests/backends/mlx/test_env.py \
@@ -86,6 +87,7 @@ jobs:
             --cov=inference_engine.scheduler \
             --cov=inference_engine.pipeline \
             --cov=inference_engine.session \
+            --cov=inference_engine.bench \
             --cov=kakeya \
             --cov=training.repr_align \
             --cov-report=term \
