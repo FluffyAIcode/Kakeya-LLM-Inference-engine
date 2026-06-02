@@ -1,0 +1,368 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="3" failures="8" skipped="0" tests="83" time="94.022" timestamp="2026-06-02T11:23:59.771120+08:00" hostname="fluffy314s-Mac-mini.local"><testcase classname="tests.integration.test_coordinator_real" name="test_real_verifier_satisfies_verifier_protocol" time="2.445" /><testcase classname="tests.integration.test_coordinator_real.TestDispatch" name="test_first_call_advances_position_from_zero" time="6.222" /><testcase classname="tests.integration.test_coordinator_real.TestDispatch" name="test_second_call_extends_position_incrementally" time="2.154" /><testcase classname="tests.integration.test_coordinator_real.TestDispatch" name="test_third_call_again_uses_incremental" time="2.091" /><testcase classname="tests.integration.test_coordinator_real.TestStateMirroring" name="test_session_history_extends_in_lockstep" time="2.157" /><testcase classname="tests.integration.test_coordinator_real.TestStateMirroring" name="test_session_cached_token_sequence_mirrors_verifier_after_trim" time="2.202" /><testcase classname="tests.integration.test_coordinator_real.TestStateMirroring" name="test_session_position_mirrors_verifier_across_calls" time="2.088" /><testcase classname="tests.integration.test_coordinator_real.TestStateMirroring" name="test_next_token_logits_re_assigned_on_incremental_call" time="2.043" /><testcase classname="tests.integration.test_coordinator_real.TestEmptyAppend" name="test_empty_token_list_is_noop_on_cold_session" time="1.835" /><testcase classname="tests.integration.test_coordinator_real.TestEmptyAppend" name="test_empty_append_after_real_append_does_not_re_invoke_verifier" time="2.017" /><testcase classname="tests.integration.test_coordinator_real.TestEmptyAppend" name="test_empty_append_still_advances_last_active_at" time="1.986" /><testcase classname="tests.integration.test_coordinator_real.TestErrors" name="test_unknown_session_raises_session_not_found" time="1.879" /><testcase classname="tests.integration.test_coordinator_real.TestErrors" name="test_negative_token_id_raises_value_error" time="1.894"><failure message="IndexError: index out of range in self">self = &lt;tests.integration.test_coordinator_real.TestErrors object at 0x112e10190&gt;
+store_and_coord = (&lt;inference_engine.session.store.SessionStore object at 0x117703890&gt;, &lt;inference_engine.session.coordinator.AppendTokensCoordinator object at 0x11765a120&gt;, &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x1176b3d90&gt;)
+
+    def test_negative_token_id_raises_value_error(self, store_and_coord):
+        store, coord, _ = store_and_coord
+        sess = store.create_session()
+        with pytest.raises(ValueError, match="non-negative"):
+&gt;           coord.append_tokens(sess.session_id, [10, -1])
+
+tests/integration/test_coordinator_real.py:225: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+inference_engine/session/coordinator.py:187: in append_tokens
+    self._verifier.prefill(token_list)
+.venv-mac/lib/python3.13/site-packages/torch/utils/_contextlib.py:124: in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+kv_cache_proposer/verifier.py:143: in prefill
+    outputs = self.model(
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py:1778: in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py:1789: in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/transformers/utils/generic.py:918: in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/transformers/models/qwen3/modeling_qwen3.py:480: in forward
+    outputs: BaseModelOutputWithPast = self.model(
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py:1778: in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py:1789: in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/transformers/utils/generic.py:1072: in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/transformers/models/qwen3/modeling_qwen3.py:371: in forward
+    inputs_embeds = self.embed_tokens(input_ids)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py:1778: in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py:1789: in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv-mac/lib/python3.13/site-packages/torch/nn/modules/sparse.py:189: in forward
+    return F.embedding(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = tensor([[10, -1]])
+weight = Parameter containing:
+tensor([[-0.0127,  0.0195,  0.0117,  ...,  0.0157, -0.0469, -0.0013],
+        [ 0.0249, -0.0055,...        [ 0.0060,  0.0131,  0.0190,  ...,  0.0020, -0.0014, -0.0055]],
+       dtype=torch.bfloat16, requires_grad=True)
+padding_idx = -1, max_norm = None, norm_type = 2.0, scale_grad_by_freq = False
+sparse = False
+
+    def embedding(
+        input: Tensor,
+        weight: Tensor,
+        padding_idx: int | None = None,
+        max_norm: float | None = None,
+        norm_type: float = 2.0,
+        scale_grad_by_freq: bool = False,
+        sparse: bool = False,
+    ) -&gt; Tensor:
+        r"""Generate a simple lookup table that looks up embeddings in a fixed dictionary and size.
+    
+        This module is often used to retrieve word embeddings using indices.
+        The input to the module is a list of indices, and the embedding matrix,
+        and the output is the corresponding word embeddings.
+    
+        See :class:`torch.nn.Embedding` for more details.
+    
+        .. note::
+            Note that the analytical gradients of this function with respect to
+            entries in :attr:`weight` at the row specified by :attr:`padding_idx`
+            are expected to differ from the numerical ones.
+    
+        .. note::
+            Note that `:class:`torch.nn.Embedding` differs from this function in
+            that it initializes the row of :attr:`weight` specified by
+            :attr:`padding_idx` to all zeros on construction.
+    
+        Args:
+            input (LongTensor): Tensor containing indices into the embedding matrix
+            weight (Tensor): The embedding matrix (must be 2-D) with number of rows equal to the maximum possible index + 1,
+                and number of columns equal to the embedding size
+            padding_idx (int, optional): If specified, the entries at :attr:`padding_idx` do not contribute to the gradient;
+                                         therefore, the embedding vector at :attr:`padding_idx` is not updated during training,
+                                         i.e. it remains as a fixed "pad".
+            max_norm (float, optional): If given, each embedding vector with norm larger than :attr:`max_norm`
+                                        is renormalized to have norm :attr:`max_norm`.
+                                        Note: this will modify :attr:`weight` in-place.
+            norm_type (float, optional): The p of the p-norm to compute for the :attr:`max_norm` option. Default ``2``.
+            scale_grad_by_freq (bool, optional): If given, this will scale gradients by the inverse of frequency of
+                                                    the words in the mini-batch. Default ``False``.
+            sparse (bool, optional): If ``True``, gradient w.r.t. :attr:`weight` will be a sparse tensor. See Notes under
+                                     :class:`torch.nn.Embedding` for more details regarding sparse gradients.
+    
+        Shape:
+            - Input: LongTensor of arbitrary shape containing the indices to extract
+            - Weight: Embedding matrix of floating point type with shape `(V, embedding_dim)`,
+              where V = maximum index + 1 and embedding_dim = the embedding size
+            - Output: `(*, embedding_dim)`, where `*` is the input shape
+    
+        Examples::
+    
+            &gt;&gt;&gt; # a batch of 2 samples of 4 indices each
+            &gt;&gt;&gt; input = torch.tensor([[1, 2, 4, 5], [4, 3, 2, 9]])
+            &gt;&gt;&gt; # an embedding matrix containing 10 tensors of size 3
+            &gt;&gt;&gt; embedding_matrix = torch.rand(10, 3)
+            &gt;&gt;&gt; # xdoctest: +IGNORE_WANT("non-deterministic")
+            &gt;&gt;&gt; F.embedding(input, embedding_matrix)
+            tensor([[[ 0.8490,  0.9625,  0.6753],
+                     [ 0.9666,  0.7761,  0.6108],
+                     [ 0.6246,  0.9751,  0.3618],
+                     [ 0.4161,  0.2419,  0.7383]],
+    
+                    [[ 0.6246,  0.9751,  0.3618],
+                     [ 0.0237,  0.7794,  0.0528],
+                     [ 0.9666,  0.7761,  0.6108],
+                     [ 0.3385,  0.8612,  0.1867]]])
+    
+            &gt;&gt;&gt; # example with padding_idx
+            &gt;&gt;&gt; weights = torch.rand(10, 3)
+            &gt;&gt;&gt; weights[0, :].zero_()
+            &gt;&gt;&gt; embedding_matrix = weights
+            &gt;&gt;&gt; input = torch.tensor([[0, 2, 0, 5]])
+            &gt;&gt;&gt; F.embedding(input, embedding_matrix, padding_idx=0)
+            tensor([[[ 0.0000,  0.0000,  0.0000],
+                     [ 0.5609,  0.5384,  0.8720],
+                     [ 0.0000,  0.0000,  0.0000],
+                     [ 0.6262,  0.2438,  0.7471]]])
+        """
+        if has_torch_function_variadic(input, weight):
+            return handle_torch_function(
+                embedding,
+                (input, weight),
+                input,
+                weight,
+                padding_idx=padding_idx,
+                max_norm=max_norm,
+                norm_type=norm_type,
+                scale_grad_by_freq=scale_grad_by_freq,
+                sparse=sparse,
+            )
+        if padding_idx is not None:
+            if padding_idx &gt; 0:
+                if padding_idx &gt;= weight.size(0):
+                    raise AssertionError("Padding_idx must be within num_embeddings")
+            elif padding_idx &lt; 0:
+                if padding_idx &lt; -weight.size(0):
+                    raise AssertionError("Padding_idx must be within num_embeddings")
+                padding_idx = weight.size(0) + padding_idx
+        else:
+            padding_idx = -1
+        if max_norm is not None:
+            # Note [embedding_renorm contiguous]
+            # `embedding_renorm_` will call .contiguous() on input anyways, so we
+            # call it here and take advantage of the improved locality in the
+            # `embedding` call below too.
+            input = input.contiguous()
+            # Note [embedding_renorm set_grad_enabled]
+            # XXX: equivalent to
+            # with torch.no_grad():
+            #   torch.embedding_renorm_
+            # remove once script supports set_grad_enabled
+            _no_grad_embedding_renorm_(weight, input, max_norm, norm_type)
+&gt;       return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndexError: index out of range in self
+
+.venv-mac/lib/python3.13/site-packages/torch/nn/functional.py:2567: IndexError</failure></testcase><testcase classname="tests.integration.test_coordinator_real.TestErrors" name="test_inv1_violation_through_session_state_corruption" time="2.032"><failure message="Failed: DID NOT RAISE &lt;class 'inference_engine.session.store.InvariantViolation'&gt;">self = &lt;tests.integration.test_coordinator_real.TestErrors object at 0x112cdbe10&gt;
+store_and_coord = (&lt;inference_engine.session.store.SessionStore object at 0x11c824830&gt;, &lt;inference_engine.session.coordinator.AppendTokensCoordinator object at 0x11c9c25f0&gt;, &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x11c825710&gt;)
+
+    def test_inv1_violation_through_session_state_corruption(
+        self, store_and_coord,
+    ):
+        """Corrupt the session's cached_token_sequence directly so its
+        length stops matching the verifier's k_seq_length. The store's
+        INV-1 check fires.
+    
+        This test directly mutates session state (a session-store
+        invariant violation) instead of inserting a lying verifier
+        between the verifier and the store. The INV-1 detection
+        mechanism is what we're validating, not the verifier's
+        cooperation; injecting a fault into the session state is the
+        cleaner contract test.
+        """
+        store, coord, _ = store_and_coord
+        sess = store.create_session()
+        coord.append_tokens(sess.session_id, [1, 2, 3])
+        # Corrupt: set cached_token_sequence to a wrong length.
+        sess.cached_token_sequence = [99, 99, 99, 99, 99]
+&gt;       with pytest.raises(InvariantViolation) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE &lt;class 'inference_engine.session.store.InvariantViolation'&gt;
+
+tests/integration/test_coordinator_real.py:246: Failed</failure></testcase><testcase classname="tests.integration.test_coordinator_real.TestKvLiveBytesSync" name="test_first_prefill_writes_real_bytes_to_slab_override" time="2.060" /><testcase classname="tests.integration.test_coordinator_real.TestKvLiveBytesSync" name="test_subsequent_append_re_syncs_bytes" time="2.192" /><testcase classname="tests.integration.test_coordinator_real.TestKvLiveBytesSync" name="test_sync_no_op_when_session_has_no_slab" time="1.973" /><testcase classname="tests.integration.test_coordinator_real.TestKvLiveBytesSync" name="test_empty_append_does_not_overwrite_override" time="2.026" /><testcase classname="tests.integration.test_coordinator_real" name="test_chunking_invariance_smoke" time="4.364"><failure message="assert False&#10; +  where False = &lt;built-in method equal of type object at 0x10c80cac8&gt;(tensor([17.3750, 16.2500, 17.5000,  ...,  1.4297,  1.4297,  1.4297],\n       dtype=torch.bfloat16), tensor([17.3750, 16.2500, 17.3750,  ...,  1.4219,  1.4219,  1.4219],\n       dtype=torch.bfloat16))&#10; +    where &lt;built-in method equal of type object at 0x10c80cac8&gt; = torch.equal&#10; +    and   tensor([17.3750, 16.2500, 17.5000,  ...,  1.4297,  1.4297,  1.4297],\n       dtype=torch.bfloat16) = &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x11c809390&gt;.next_token_logits&#10; +    and   tensor([17.3750, 16.2500, 17.3750,  ...,  1.4219,  1.4219,  1.4219],\n       dtype=torch.bfloat16) = &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x11c96e0d0&gt;.next_token_logits">fresh_verifier_factory = &lt;function _build_verifier at 0x112d4d9e0&gt;
+
+    def test_chunking_invariance_smoke(fresh_verifier_factory):
+        """One-call vs. two-calls produces byte-identical final state.
+        This is a sanity check; the comprehensive INV-3 GA gate lives in
+        test_inv3_session_determinism_gate.py."""
+        full = [10, 20, 30, 40, 50, 60, 70, 80]
+        v_a = fresh_verifier_factory(sink=2, window=4)
+        v_b = fresh_verifier_factory(sink=2, window=4)
+        store_a = SessionStore(capacity=1, cache_inspector=v_a)
+        store_b = SessionStore(capacity=1, cache_inspector=v_b)
+        coord_a = AppendTokensCoordinator(store_a, v_a)
+        coord_b = AppendTokensCoordinator(store_b, v_b)
+        sess_a = store_a.create_session()
+        sess_b = store_b.create_session()
+        coord_a.append_tokens(sess_a.session_id, full)
+        coord_b.append_tokens(sess_b.session_id, full[:5])
+        coord_b.append_tokens(sess_b.session_id, full[5:])
+        assert v_a.cached_token_sequence == v_b.cached_token_sequence
+        assert v_a.next_global_position == v_b.next_global_position
+&gt;       assert torch.equal(v_a.next_token_logits, v_b.next_token_logits)
+E       assert False
+E        +  where False = &lt;built-in method equal of type object at 0x10c80cac8&gt;(tensor([17.3750, 16.2500, 17.5000,  ...,  1.4297,  1.4297,  1.4297],\n       dtype=torch.bfloat16), tensor([17.3750, 16.2500, 17.3750,  ...,  1.4219,  1.4219,  1.4219],\n       dtype=torch.bfloat16))
+E        +    where &lt;built-in method equal of type object at 0x10c80cac8&gt; = torch.equal
+E        +    and   tensor([17.3750, 16.2500, 17.5000,  ...,  1.4297,  1.4297,  1.4297],\n       dtype=torch.bfloat16) = &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x11c809390&gt;.next_token_logits
+E        +    and   tensor([17.3750, 16.2500, 17.3750,  ...,  1.4219,  1.4219,  1.4219],\n       dtype=torch.bfloat16) = &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x11c96e0d0&gt;.next_token_logits
+
+tests/integration/test_coordinator_real.py:361: AssertionError</failure></testcase><testcase classname="tests.integration.test_engine_real" name="test_engine_exposes_tokenizer_and_model_id_label" time="5.314" /><testcase classname="tests.integration.test_engine_real" name="test_engine_generate_returns_engine_result" time="3.157" /><testcase classname="tests.integration.test_engine_real" name="test_engine_generate_respects_max_new_tokens" time="0.573" /><testcase classname="tests.integration.test_engine_real" name="test_engine_generate_rejects_empty_prompt" time="0.000" /><testcase classname="tests.integration.test_engine_real" name="test_engine_generate_rejects_zero_max_tokens" time="0.000" /><testcase classname="tests.integration.test_engine_real" name="test_engine_on_token_callback_invoked_per_committed_token" time="0.700" /><testcase classname="tests.integration.test_engine_real" name="test_engine_on_token_callback_can_request_early_stop" time="0.348" /><testcase classname="tests.integration.test_generator_real.TestGreedyHappyPath" name="test_yields_token_then_done" time="2.042" /><testcase classname="tests.integration.test_generator_real.TestGreedyHappyPath" name="test_max_tokens_yields_n_tokens_then_done" time="2.259" /><testcase classname="tests.integration.test_generator_real.TestGreedyHappyPath" name="test_each_token_advances_position" time="2.820" /><testcase classname="tests.integration.test_generator_real.TestEos" name="test_eos_stops_generation_and_reports_eos_stop_reason" time="2.242" /><testcase classname="tests.integration.test_generator_real.TestHistoryTruncated" name="test_no_truncated_event_when_cache_holds_full_history" time="2.134" /><testcase classname="tests.integration.test_generator_real.TestHistoryTruncated" name="test_truncated_event_when_cache_is_in_truncated_mode" time="2.593"><failure message="AssertionError: assert 14 == (21 - 6)&#10; +  where 14 = HistoryTruncatedEvent(dropped_token_count=14).dropped_token_count&#10; +  and   21 = len([100, 101, 102, 103, 104, 105, ...])&#10; +    where [100, 101, 102, 103, 104, 105, ...] = Session(session_id='sess-080549c7da7a4c99a20fd7542b115930', eos_token_ids=(), client_label='', history_token_ids=[100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 119], cached_token_sequence=[100, 101, 117, 118, 119, 119], next_global_position=21, inv1_violations=0, inv2_violations=0, created_at=485554.183945833, last_active_at=485554.976851083, slab=None).history_token_ids&#10; +  and   6 = len([100, 101, 117, 118, 119, 119])&#10; +    where [100, 101, 117, 118, 119, 119] = Session(session_id='sess-080549c7da7a4c99a20fd7542b115930', eos_token_ids=(), client_label='', history_token_ids=[100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 119], cached_token_sequence=[100, 101, 117, 118, 119, 119], next_global_position=21, inv1_violations=0, inv2_violations=0, created_at=485554.183945833, last_active_at=485554.976851083, slab=None).cached_token_sequence">self = &lt;tests.integration.test_generator_real.TestHistoryTruncated object at 0x112e10f50&gt;
+fresh_verifier_factory = &lt;function _build_verifier at 0x112d4d9e0&gt;
+
+    def test_truncated_event_when_cache_is_in_truncated_mode(
+        self, fresh_verifier_factory,
+    ):
+        # Use a tight sink+window so a moderate prefill triggers trim.
+        v = fresh_verifier_factory(sink=2, window=4)
+        store = SessionStore(capacity=1, cache_inspector=v)
+        AppendTokensCoordinator(store, v).append_tokens(
+            (sess := store.create_session()).session_id,
+            list(range(100, 120)),  # 20 tokens &gt; 6 = sink+window
+        )
+        # History is 20, cached is 6 → drops 14.
+        events = list(GenerationCoordinator(store, v).generate(
+            sess.session_id, max_tokens=1,
+        ))
+        truncated = [
+            e for e in events if isinstance(e, HistoryTruncatedEvent)
+        ]
+        assert len(truncated) == 1
+        # Exact value: history_length - len(cached_token_sequence).
+&gt;       assert truncated[0].dropped_token_count == (
+            len(sess.history_token_ids) - len(sess.cached_token_sequence)
+        )
+E       AssertionError: assert 14 == (21 - 6)
+E        +  where 14 = HistoryTruncatedEvent(dropped_token_count=14).dropped_token_count
+E        +  and   21 = len([100, 101, 102, 103, 104, 105, ...])
+E        +    where [100, 101, 102, 103, 104, 105, ...] = Session(session_id='sess-080549c7da7a4c99a20fd7542b115930', eos_token_ids=(), client_label='', history_token_ids=[100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 119], cached_token_sequence=[100, 101, 117, 118, 119, 119], next_global_position=21, inv1_violations=0, inv2_violations=0, created_at=485554.183945833, last_active_at=485554.976851083, slab=None).history_token_ids
+E        +  and   6 = len([100, 101, 117, 118, 119, 119])
+E        +    where [100, 101, 117, 118, 119, 119] = Session(session_id='sess-080549c7da7a4c99a20fd7542b115930', eos_token_ids=(), client_label='', history_token_ids=[100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 119], cached_token_sequence=[100, 101, 117, 118, 119, 119], next_global_position=21, inv1_violations=0, inv2_violations=0, created_at=485554.183945833, last_active_at=485554.976851083, slab=None).cached_token_sequence
+
+tests/integration/test_generator_real.py:151: AssertionError</failure></testcase><testcase classname="tests.integration.test_generator_real.TestInvariants" name="test_inv1_violation_propagates_through_generate" time="2.228"><failure message="Failed: DID NOT RAISE &lt;class 'inference_engine.session.store.InvariantViolation'&gt;">self = &lt;tests.integration.test_generator_real.TestInvariants object at 0x112e11090&gt;
+real_verifier = &lt;kv_cache_proposer.verifier.SinkWindowVerifier object at 0x11cda67b0&gt;
+
+    def test_inv1_violation_propagates_through_generate(
+        self, real_verifier,
+    ):
+        # Drive a clean AppendTokens, then corrupt session state
+        # before Generate runs — the per-step INV-1 check fires.
+        store = SessionStore(capacity=1, cache_inspector=real_verifier)
+        AppendTokensCoordinator(store, real_verifier).append_tokens(
+            (sess := store.create_session()).session_id,
+            [1, 2, 3],
+        )
+        sess.cached_token_sequence = [99, 99, 99, 99, 99]  # corrupt
+        gen_coord = GenerationCoordinator(store, real_verifier)
+&gt;       with pytest.raises(InvariantViolation):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE &lt;class 'inference_engine.session.store.InvariantViolation'&gt;
+
+tests/integration/test_generator_real.py:174: Failed</failure></testcase><testcase classname="tests.integration.test_generator_real.TestGenerationSyncsSlabBytes" name="test_max_tokens_path_writes_real_bytes_to_slab_override" time="2.293" /><testcase classname="tests.integration.test_generator_real.TestGenerationSyncsSlabBytes" name="test_eos_path_writes_real_bytes_to_slab_override" time="2.174" /><testcase classname="tests.integration.test_http_shim_real" name="test_chat_completions_returns_openai_envelope" time="0.912" /><testcase classname="tests.integration.test_http_shim_real" name="test_chat_completions_rejects_empty_messages" time="0.003"><failure message="assert 422 == 400&#10; +  where 422 = &lt;Response [422 Unprocessable Entity]&gt;.status_code">real_app = &lt;fastapi.applications.FastAPI object at 0x11d413250&gt;
+
+    async def test_chat_completions_rejects_empty_messages(real_app):
+        async with AsyncClient(
+            transport=ASGITransport(app=real_app), base_url="http://t",
+        ) as c:
+            r = await c.post("/v1/chat/completions", json={
+                "model": "any", "messages": [],
+            })
+&gt;       assert r.status_code == 400
+E       assert 422 == 400
+E        +  where 422 = &lt;Response [422 Unprocessable Entity]&gt;.status_code
+
+tests/integration/test_http_shim_real.py:94: AssertionError</failure></testcase><testcase classname="tests.integration.test_http_shim_real" name="test_chat_completions_rejects_unsupported_role" time="0.002" /><testcase classname="tests.integration.test_http_shim_real" name="test_chat_completions_streaming_yields_chunks_then_done" time="0.690"><failure message="json.decoder.JSONDecodeError: Extra data: line 3 column 1 (char 226)">real_app = &lt;fastapi.applications.FastAPI object at 0x11caf0b90&gt;
+
+    async def test_chat_completions_streaming_yields_chunks_then_done(real_app):
+        async with AsyncClient(
+            transport=ASGITransport(app=real_app), base_url="http://t",
+        ) as c:
+            async with c.stream("POST", "/v1/chat/completions", json={
+                "model": "any",
+                "messages": [{"role": "user", "content": "Hi."}],
+                "max_tokens": 4,
+                "stream": True,
+            }) as r:
+                assert r.status_code == 200
+                text = ""
+                async for chunk in r.aiter_text():
+                    text += chunk
+        # Final SSE marker present.
+        assert "data: [DONE]" in text
+        # At least one delta chunk before the marker.
+        parts = [p for p in text.split("\n\n") if p.startswith("data: {")]
+        assert len(parts) &gt;= 1
+        # The first content delta is a structural OpenAI chunk shape.
+&gt;       first = json.loads(parts[0][len("data: "):])
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/test_http_shim_real.py:135: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/json/__init__.py:352: in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = &lt;json.decoder.JSONDecoder object at 0x103c6f4d0&gt;
+s = '{"id":"chatcmpl-c2cbdae1a07643f89cbbf32082c7a1ef","object":"chat.completion.chunk","created":1780370717,"model":"kake...on","choices":[{"index":0,"delta":{"role":null,"content":null},"finish_reason":"length"}]}\r\n\r\ndata: [DONE]\r\n\r\n'
+_w = &lt;built-in method match of re.Pattern object at 0x103d7c110&gt;
+
+    def decode(self, s, _w=WHITESPACE.match):
+        """Return the Python representation of ``s`` (a ``str`` instance
+        containing a JSON document).
+    
+        """
+        obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+        end = _w(s, end).end()
+        if end != len(s):
+&gt;           raise JSONDecodeError("Extra data", s, end)
+E           json.decoder.JSONDecodeError: Extra data: line 3 column 1 (char 226)
+
+../../.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/json/decoder.py:348: JSONDecodeError</failure></testcase><testcase classname="tests.integration.test_http_shim_real" name="test_auth_required_returns_401_without_token" time="0.002"><failure message="AssertionError: assert 'authentication_error' == 'invalid_request_error'&#10;  &#10;  - invalid_request_error&#10;  + authentication_error">real_app_with_auth = &lt;fastapi.applications.FastAPI object at 0x11d403c50&gt;
+
+    async def test_auth_required_returns_401_without_token(real_app_with_auth):
+        async with AsyncClient(
+            transport=ASGITransport(app=real_app_with_auth),
+            base_url="http://t",
+        ) as c:
+            r = await c.post("/v1/chat/completions", json={
+                "model": "any",
+                "messages": [{"role": "user", "content": "x"}],
+            })
+        assert r.status_code == 401
+        body = r.json()
+&gt;       assert body["error"]["type"] == "invalid_request_error"
+E       AssertionError: assert 'authentication_error' == 'invalid_request_error'
+E         
+E         - invalid_request_error
+E         + authentication_error
+
+tests/integration/test_http_shim_real.py:156: AssertionError</failure></testcase><testcase classname="tests.integration.test_http_shim_real" name="test_auth_succeeds_with_correct_token" time="0.702" /><testcase classname="tests.integration.test_http_shim_real" name="test_auth_rejects_wrong_token" time="0.002" /><testcase classname="tests.integration.test_http_shim_real" name="test_healthz_does_not_require_auth" time="0.003" /><testcase classname="tests.integration.test_http_shim_real" name="test_metrics_does_not_require_auth" time="0.002" /><testcase classname="tests.integration.test_http_shim_real" name="test_metrics_records_completion_after_request" time="0.701" /><testcase classname="tests.integration.test_http_shim_real" name="test_models_endpoint_lists_engine_id" time="0.002" /><testcase classname="tests.integration.test_inv3_session_determinism_gate" name="test_one_call_vs_two_calls_yield_byte_identical_tokens" time="0.000"><error message="failed on setup with &quot;Failed: ScopeMismatch: You tried to access the function scoped fixture fresh_verifier_factory with a module scoped request object. Requesting fixture stack:&#10;tests/integration/test_inv3_session_determinism_gate.py:49:  def session_verifier_pair(fresh_verifier_factory)&#10;Requested fixture:&#10;tests/conftest.py:47:  def fresh_verifier_factory()&quot;">ScopeMismatch: You tried to access the function scoped fixture fresh_verifier_factory with a module scoped request object. Requesting fixture stack:
+tests/integration/test_inv3_session_determinism_gate.py:49:  def session_verifier_pair(fresh_verifier_factory)
+Requested fixture:
+tests/conftest.py:47:  def fresh_verifier_factory()</error></testcase><testcase classname="tests.integration.test_inv3_session_determinism_gate" name="test_chunking_invariance_across_three_splits" time="0.000"><error message="failed on setup with &quot;Failed: ScopeMismatch: You tried to access the function scoped fixture fresh_verifier_factory with a module scoped request object. Requesting fixture stack:&#10;tests/integration/test_inv3_session_determinism_gate.py:49:  def session_verifier_pair(fresh_verifier_factory)&#10;Requested fixture:&#10;tests/conftest.py:47:  def fresh_verifier_factory()&quot;">ScopeMismatch: You tried to access the function scoped fixture fresh_verifier_factory with a module scoped request object. Requesting fixture stack:
+tests/integration/test_inv3_session_determinism_gate.py:49:  def session_verifier_pair(fresh_verifier_factory)
+Requested fixture:
+tests/conftest.py:47:  def fresh_verifier_factory()</error></testcase><testcase classname="tests.integration.test_inv3_session_determinism_gate" name="test_repeated_runs_with_same_history_byte_identical" time="0.000"><error message="failed on setup with &quot;Failed: ScopeMismatch: You tried to access the function scoped fixture fresh_verifier_factory with a module scoped request object. Requesting fixture stack:&#10;tests/integration/test_inv3_session_determinism_gate.py:49:  def session_verifier_pair(fresh_verifier_factory)&#10;Requested fixture:&#10;tests/conftest.py:47:  def fresh_verifier_factory()&quot;">ScopeMismatch: You tried to access the function scoped fixture fresh_verifier_factory with a module scoped request object. Requesting fixture stack:
+tests/integration/test_inv3_session_determinism_gate.py:49:  def session_verifier_pair(fresh_verifier_factory)
+Requested fixture:
+tests/conftest.py:47:  def fresh_verifier_factory()</error></testcase><testcase classname="tests.integration.test_scheduler_real" name="test_construction_validates_pool_size_match" time="0.000" /><testcase classname="tests.integration.test_scheduler_real" name="test_construction_with_matching_pool_size_works" time="0.000" /><testcase classname="tests.integration.test_scheduler_real" name="test_single_session_runs_to_completion" time="0.698" /><testcase classname="tests.integration.test_scheduler_real" name="test_session_admitted_at_set_after_submit" time="0.702" /><testcase classname="tests.integration.test_scheduler_real" name="test_pool_slab_released_after_completion" time="0.704" /><testcase classname="tests.integration.test_scheduler_real" name="test_reject_when_pool_exhausted" time="2.113" /><testcase classname="tests.integration.test_scheduler_real" name="test_queue_policy_admits_after_first_completes" time="2.836" /><testcase classname="tests.integration.test_scheduler_real" name="test_cancel_session_terminates_iteration" time="0.665" /><testcase classname="tests.integration.test_scheduler_real" name="test_cancel_idempotent_after_completion" time="0.699" /><testcase classname="tests.integration.test_scheduler_real" name="test_engine_error_marks_session_failed" time="0.012" /><testcase classname="tests.integration.test_scheduler_real" name="test_three_concurrent_submits_all_complete" time="2.087" /><testcase classname="tests.integration.test_scheduler_real" name="test_shutdown_cancels_active_and_pending" time="0.348" /><testcase classname="tests.integration.test_scheduler_real" name="test_active_count_zero_after_drain" time="0.708" /><testcase classname="tests.integration.test_sdk_real.TestClient" name="test_client_create_session_returns_session_with_server_id" time="1.823" /><testcase classname="tests.integration.test_sdk_real.TestClient" name="test_client_create_session_with_eos_token_ids" time="0.002" /><testcase classname="tests.integration.test_sdk_real.TestClient" name="test_client_close_idempotent" time="0.000" /><testcase classname="tests.integration.test_sdk_real.TestClient" name="test_client_address_property" time="0.000" /><testcase classname="tests.integration.test_sdk_real.TestSession" name="test_append_then_generate_yields_tokens" time="0.158" /><testcase classname="tests.integration.test_sdk_real.TestSession" name="test_session_info_reports_history_after_append" time="0.039" /><testcase classname="tests.integration.test_sdk_real.TestSession" name="test_session_close_returns_final_history_length" time="0.030" /><testcase classname="tests.integration.test_sdk_real.TestSession" name="test_session_close_is_idempotent_locally" time="0.026" /><testcase classname="tests.integration.test_sdk_real.TestErrorsEndToEnd" name="test_unknown_session_raises_session_not_found" time="0.001" /><testcase classname="tests.integration.test_sdk_real.TestErrorsEndToEnd" name="test_invalid_argument_for_zero_max_tokens" time="0.043" /><testcase classname="tests.integration.test_sdk_real.TestErrorsEndToEnd" name="test_session_closed_locally_then_append_raises" time="0.001" /><testcase classname="tests.integration.test_streaming_real" name="test_detokenizer_emits_full_text_via_per_token_deltas" time="0.000" /><testcase classname="tests.integration.test_streaming_real" name="test_detokenizer_starts_empty" time="0.000" /><testcase classname="tests.integration.test_streaming_real" name="test_detokenizer_is_per_instance" time="0.000" /><testcase classname="tests.integration.test_streaming_real" name="test_detokenizer_handles_special_tokens" time="0.000" /><testcase classname="tests.integration.test_tokenizer_real" name="test_real_tokenizer_satisfies_tokenizer_protocol" time="0.000" /><testcase classname="tests.integration.test_tokenizer_real" name="test_resolve_eos_ids_includes_canonical_eos" time="0.000" /><testcase classname="tests.integration.test_tokenizer_real" name="test_resolve_eos_ids_includes_qwen3_im_end" time="0.000" /><testcase classname="tests.integration.test_tokenizer_real" name="test_resolve_eos_ids_is_deduplicated" time="0.000" /><testcase classname="tests.integration.test_tokenizer_real" name="test_apply_chat_template_returns_list_of_ints" time="0.000" /><testcase classname="tests.integration.test_tokenizer_real" name="test_decode_round_trips_through_apply_chat_template" time="0.053" /></testsuite></testsuites>

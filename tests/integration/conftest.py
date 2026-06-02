@@ -25,21 +25,37 @@ import pytest
 
 def pytest_collection_modifyitems(config, items):  # noqa: ARG001
     """Auto-mark every test under ``tests/integration/`` with
-    ``@pytest.mark.integration``."""
+    ``@pytest.mark.integration`` so contributors don't have to
+    repeat the decorator on every test in this directory.
+
+    Standard pytest behavior: tests with this marker run only when
+    explicitly selected via ``-m integration``; a bare ``pytest``
+    invocation skips them.
+    """
     for item in items:
+        # str(item.fspath) is reliable across pytest versions; "rootpath"
+        # comparisons would also work but require a config dependency.
         if "tests/integration/" in str(item.fspath):
             item.add_marker(pytest.mark.integration)
 
 
 # ---------------------------------------------------------------------------
-# Real engine fixture — used by PR-N3's HTTP shim integration tests
-# and PR-N4's SDK integration tests.
+# Real engine fixture — used by PR-N2's migrated scheduler tests + future
+# integration tests that exercise the HTTP shim or the SpeculativeEngine
+# end-to-end. Session-scoped so the model load cost (~3-5s on CPU)
+# is paid once across the whole suite.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")
 def real_speculative_engine():
-    """Real :class:`SpeculativeEngine` over Qwen3-0.6B."""
+    """Real :class:`SpeculativeEngine` over real Qwen3-0.6B.
+
+    Mirrors the long-standing fixture under ``tests/system/conftest.py``
+    but uses Qwen3-0.6B (not 1.7B) to match the rest of the integration
+    suite — keeps the HF cache footprint a single model, faster to
+    set up on Mac M4 24 GB.
+    """
     import torch
 
     from inference_engine.proposer import SparseLogitsProposer

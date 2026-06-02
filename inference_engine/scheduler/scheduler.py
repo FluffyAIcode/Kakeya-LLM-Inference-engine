@@ -358,12 +358,12 @@ class Scheduler:
                     session.eos_token_ids, on_token,
                 )
 
-            # Out of engine lock — finalize state.
-            # Stash the engine result on the session so route handlers
-            # can read path-selection observability fields (ADR 0007
-            # §2.10) and acceptance rate. tokens were already streamed
-            # via on_token.
-            session.engine_result = result
+            # Out of engine lock — finalize state. Tokens were already
+            # streamed via on_token; the engine result is otherwise
+            # discarded (PR-D1 of ADR 0008 removed the engine_result
+            # stash that ADR 0007 §2.10 used for path-selection
+            # observability).
+            del result
             if session.state == SessionState.CANCELLED:
                 # Already counted by cancel_session caller; we just
                 # observe the terminal state here.

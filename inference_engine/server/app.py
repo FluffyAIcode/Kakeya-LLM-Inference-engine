@@ -442,9 +442,8 @@ def _register_routes(app: FastAPI) -> None:
         metrics.record_completion(
             finish_reason=finish_reason,
             n_tokens=len(output_token_ids),
-            acceptance_rate=_session_acceptance_rate(scheduler, session),
+            acceptance_rate=None,
         )
-        _emit_path_selection_metric(metrics, session)
 
         return JSONResponse(
             content=ChatCompletionResponse(
@@ -493,53 +492,6 @@ def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> List[int]:
     if not prompt_ids:
         raise ValueError("chat template produced an empty token sequence")
     return prompt_ids
-
-
-def _session_acceptance_rate(
-    scheduler: Scheduler, session: Session,
-) -> Optional[float]:
-    """Per-session acceptance rate from the stashed EngineResult.
-
-    The scheduler worker stores ``engine.generate()``'s result on
-    ``session.engine_result`` after generation completes (PR 7-4).
-    Returns ``None`` if the result is unavailable (session was
-    cancelled / failed before the engine returned, or the engine
-    is a test double that doesn't expose the field).
-    """
-    _ = scheduler  # kept for signature stability with existing callers
-    result = getattr(session, "engine_result", None)
-    if result is None:
-        return None
-    rate = getattr(result, "acceptance_rate", None)
-    if rate is None:
-        return None
-    return float(rate)
-
-
-def _emit_path_selection_metric(
-    metrics: "Metrics", session: Session,
-) -> None:
-    """Emit ADR 0007 §2.10 path-selection observability for one
-    completed session, if the engine reported the relevant fields.
-
-    Called from both the streaming and non-streaming completion
-    paths after the session reaches a terminal state. No-op when
-    the engine result is unavailable (e.g., test doubles that
-    don't populate path_selection).
-    """
-    result = getattr(session, "engine_result", None)
-    if result is None:
-        return
-    path = getattr(result, "path_selection", None)
-    if path not in ("continuation", "new_session"):
-        return
-    metrics.record_path_selection(
-        path=path,
-        tokens_skipped=int(getattr(result, "tokens_skipped", 0)),
-        prefill_duration_s=float(
-            getattr(result, "prefill_duration_seconds", 0.0)
-        ),
-    )
 
 
 async def _collect_non_streaming_tokens(
@@ -662,7 +614,6 @@ async def _stream_via_scheduler(
     metrics.record_completion(
         finish_reason=finish_reason,
         n_tokens=len(session.output_token_ids),
-        acceptance_rate=_session_acceptance_rate(scheduler, session),
+        acceptance_rate=None,
     )
-    _emit_path_selection_metric(metrics, session)
     yield {"data": "[DONE]"}
