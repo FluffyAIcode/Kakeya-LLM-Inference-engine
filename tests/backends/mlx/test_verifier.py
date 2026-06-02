@@ -449,6 +449,52 @@ def test_mlx_verifier_satisfies_cache_inspector_protocol() -> None:
     assert callable(v.k_seq_length)
 
 
+# ---------------------------------------------------------------------------
+# ADR 0008 PR-E1c — kv_live_bytes accessor on the MLX verifier
+# ---------------------------------------------------------------------------
+
+
+def test_mlx_kv_live_bytes_zero_before_prefill() -> None:
+    v = _build_mlx_verifier()
+    assert v.kv_live_bytes(session=None) == 0
+
+
+def test_mlx_kv_live_bytes_equals_k_seq_length_times_per_token() -> None:
+    """kv_live_bytes = k_seq_length × per-token bytes, computed from
+    the wrapped HF config the same way the verifier does."""
+    v = _build_mlx_verifier(sink=2, window=8)
+    v.prefill([10, 20, 30, 40, 50])
+    k_len = v.k_seq_length(session=None)
+    assert k_len == 5
+    cfg = v.model.config if hasattr(v.model, "config") else v.model
+    num_layers = int(cfg.num_hidden_layers)
+    num_kv_heads = int(
+        getattr(cfg, "num_key_value_heads", None)
+        or cfg.num_attention_heads
+    )
+    head_dim = int(
+        getattr(cfg, "head_dim", None)
+        or (cfg.hidden_size // cfg.num_attention_heads)
+    )
+    bytes_per_token = (
+        num_layers * num_kv_heads * head_dim
+        * v.config.dtype.itemsize * 2
+    )
+    expected = k_len * bytes_per_token
+    assert v.kv_live_bytes(session=None) == expected
+    assert expected > 0
+
+
+def test_mlx_kv_live_bytes_plateaus_at_capacity() -> None:
+    v = _build_mlx_verifier(sink=2, window=4)
+    v.prefill(list(range(100, 106)))  # exactly sink+window
+    bytes_at_cap = v.kv_live_bytes(session=None)
+    v.forward_block([200, 201, 202])
+    v.commit_or_truncate(forwarded=3, accepted=3)
+    bytes_after = v.kv_live_bytes(session=None)
+    assert bytes_at_cap == bytes_after
+
+
 def test_reset_clears_state() -> None:
     v = _build_mlx_verifier()
     v.prefill([1, 2, 3])

@@ -53,31 +53,27 @@ The 4h re-run with the same workload should now produce
 hundreds of useful turns and never enter the timeout/recovery
 regime.
 
-This bench scrapes the new ADR §2.10 metrics on every turn:
+PR-D1 (ADR 0008) note
+---------------------
+The ADR 0007 path-selection metrics
+(``path_selection_total``, ``continuation_tokens_skipped_total``,
+``verifier_prefill_duration_seconds``, ``cache_invariant_violations_total``)
+were removed by PR-D1 along with the ADR-0007-vintage code that
+emitted them. The new session-bound architecture (ADR 0008) replaces
+those counters; the replacement bench, ``bench_session_long_run.py``,
+lands in PR-E1. This script remains in place as the regression
+harness for ADR 0006 §2.3.a (memory-bounded long sessions) — its
+``agg.kv_bounded`` / ``agg.kv_drift_bytes`` checks are protocol-
+agnostic and still meaningful against any v0.3 server.
 
-  * ``path_selection_total{path=continuation}``    Counter
-  * ``path_selection_total{path=new_session}``     Counter
-  * ``continuation_tokens_skipped_total``           Counter
-  * ``cache_invariant_violations_total{kind=...}``  Counter (must be 0)
+Remaining GA gate criteria this script speaks to:
 
-The aggregate report now includes an ``adr_0007`` block with:
-
-  continuation_decisions       int    (count this run)
-  new_session_decisions        int
-  total_decisions              int
-  continuation_rate            float in [0, 1]
-  tokens_skipped               int    (total prefill tokens reused)
-  cache_invariant_inv1_total   int    (must be 0)
-  cache_invariant_inv2_total   int    (must be 0)
-
-GA gate criteria (per ADR 0007 §6, applied to the 4h Mac M4 re-run):
-
-  1. ``agg.kv_bounded`` is True (memory bound holds across 4h)
-  2. ``agg.n_errors`` < 5 (no sustained timeout/recovery loop)
-  3. ``agg.n_turns`` >= 200 (vs 58 in v0.3.0-rc1)
-  4. ``agg.latency_drift_p50_s`` <= 5 seconds (vs +39.74s in v0.3.0-rc1)
-  5. ``adr_0007.continuation_rate`` >= 0.95
-  6. ``adr_0007.cache_invariant_inv1_total + inv2_total`` == 0
+  1. ``agg.kv_bounded`` is True (memory bound holds across the run)
+  2. ``agg.n_errors`` is small (no sustained timeout/recovery loop)
+  3. ``agg.latency_drift_p50_s`` (latency-bounded claim — v0.3
+     non-claim per ADR 0006 §2.3.b until cross-request KV reuse is
+     wired through the gRPC AppendTokens path on the deprecated
+     HTTP shim too).
 
 Usage
 -----
@@ -187,21 +183,6 @@ _METRIC_NAMES = (
     "scheduler_kv_live_bytes",
 )
 
-# ADR 0007 §2.10 path-selection metrics — labeled, parsed separately
-# from the unlabeled scheduler gauges. continuation_rate is the
-# headline KPI for the cross-request KV reuse fix: ≥95% on a healthy
-# long-session agent run.
-_PATH_SELECTION_METRIC = "path_selection_total"
-_CONTINUATION_TOKENS_SKIPPED_METRIC = "continuation_tokens_skipped_total"
-_CACHE_INVARIANT_VIOLATIONS_METRIC = "cache_invariant_violations_total"
-
-# Match a Prometheus exposition line with labels: e.g.
-# `path_selection_total{path="continuation"} 5.0`
-_LABELED_METRIC_LINE = re.compile(
-    r'^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)\{(?P<labels>[^}]*)\}\s+(?P<value>[-+0-9eE.\.NaNinf]+)\s*$'
-)
-
-
 _METRIC_LINE = re.compile(
     r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(?P<value>[-+0-9eE.\.NaNinf]+)\s*$"
 )
@@ -210,18 +191,11 @@ _METRIC_LINE = re.compile(
 def _parse_prom_text(body: str) -> dict[str, float]:
     """Tiny Prometheus text parser.
 
-    Returns a flat dict where unlabeled metrics keep their bare
-    name and labeled ADR 0007 §2.10 metrics get a synthesized name
-    of the form ``"{base}__{label_value}"``:
-
-      * ``path_selection_total{path="continuation"}`` →
-        ``"path_selection_total__continuation"``
-      * ``path_selection_total{path="new_session"}`` →
-        ``"path_selection_total__new_session"``
-      * ``cache_invariant_violations_total{kind="inv1"}`` →
-        ``"cache_invariant_violations_total__inv1"``
-      * ``continuation_tokens_skipped_total`` (no label) →
-        ``"continuation_tokens_skipped_total"``
+    Returns a flat dict of unlabeled metric name -> value. Labeled
+    metrics are silently ignored (the previous ADR 0007 §2.10
+    handling — path_selection_total{path=...} etc. — was removed
+    in PR-D1; this script's headline KPIs are the unlabeled
+    scheduler gauges in :data:`_METRIC_NAMES`).
 
     Values are coerced to float; ``NaN`` and ``inf`` are preserved.
     """
@@ -229,54 +203,16 @@ def _parse_prom_text(body: str) -> dict[str, float]:
     for line in body.splitlines():
         if not line or line.startswith("#"):
             continue
-        # Try labeled match first (more specific).
-        labeled = _LABELED_METRIC_LINE.match(line)
-        if labeled is not None:
-            name = labeled.group("name")
-            label_str = labeled.group("labels")
-            try:
-                value = float(labeled.group("value"))
-            except ValueError:  # pragma: no cover - malformed exporter
-                continue
-            if name == _PATH_SELECTION_METRIC:
-                # Extract the path label (continuation|new_session)
-                path = _extract_label(label_str, "path")
-                if path:
-                    out[f"{name}__{path}"] = value
-            elif name == _CACHE_INVARIANT_VIOLATIONS_METRIC:
-                kind = _extract_label(label_str, "kind")
-                if kind:
-                    out[f"{name}__{kind}"] = value
-            continue
-        # Unlabeled.
         m = _METRIC_LINE.match(line)
         if m is None:
             continue
         name = m.group("name")
-        if name in _METRIC_NAMES or name == _CONTINUATION_TOKENS_SKIPPED_METRIC:
+        if name in _METRIC_NAMES:
             try:
                 out[name] = float(m.group("value"))
             except ValueError:  # pragma: no cover - malformed exporter
                 continue
     return out
-
-
-def _extract_label(label_str: str, key: str) -> Optional[str]:
-    """Pull a single label value out of a Prometheus label segment.
-
-    Input is the part between the curly braces, e.g.
-    ``path="continuation"`` or
-    ``path="continuation",result="ok"``. Returns the value (without
-    quotes) for the requested key, or ``None`` if absent.
-    """
-    for fragment in label_str.split(","):
-        fragment = fragment.strip()
-        if "=" not in fragment:
-            continue
-        k, v = fragment.split("=", 1)
-        if k.strip() == key:
-            return v.strip().strip('"')
-    return None
 
 
 async def _scrape_metrics(
@@ -751,58 +687,6 @@ def _aggregate(
     }
 
 
-def _adr_0007_summary(turns: list[dict[str, Any]]) -> dict[str, Any]:
-    """ADR 0007 §2.10 path-selection summary from the per-turn idle
-    scrapes (`metrics_idle`).
-
-    The path_selection_total counters are CUMULATIVE across the
-    server's lifetime, so we take the LAST observed value (= final
-    counter at end of run) and the FIRST observed value (= counter
-    at start of run, may be > 0 if the server already handled
-    requests before this bench started). Difference = decisions
-    this run made.
-
-    Returns a dict with:
-      continuation_decisions       int
-      new_session_decisions        int
-      total_decisions              int
-      continuation_rate            float in [0, 1] (None if 0 decisions)
-      tokens_skipped               int (delta of the counter)
-      cache_invariant_inv1_total   int (last - first; should be 0)
-      cache_invariant_inv2_total   int (last - first; should be 0)
-    """
-    def _delta(name: str) -> int:
-        first: Optional[float] = None
-        last: Optional[float] = None
-        for t in turns:
-            idle = t.get("metrics_idle") or {}
-            v = idle.get(name)
-            if v is None:
-                continue
-            if first is None:
-                first = v
-            last = v
-        if first is None or last is None:
-            return 0
-        return int(round(last - first))
-
-    cont = _delta(f"{_PATH_SELECTION_METRIC}__continuation")
-    news = _delta(f"{_PATH_SELECTION_METRIC}__new_session")
-    skipped = _delta(_CONTINUATION_TOKENS_SKIPPED_METRIC)
-    inv1 = _delta(f"{_CACHE_INVARIANT_VIOLATIONS_METRIC}__inv1")
-    inv2 = _delta(f"{_CACHE_INVARIANT_VIOLATIONS_METRIC}__inv2")
-    total = cont + news
-    return {
-        "continuation_decisions": cont,
-        "new_session_decisions": news,
-        "total_decisions": total,
-        "continuation_rate": (cont / total) if total > 0 else None,
-        "tokens_skipped": skipped,
-        "cache_invariant_inv1_total": inv1,
-        "cache_invariant_inv2_total": inv2,
-    }
-
-
 def _build_payload(
     *,
     turns: list[dict[str, Any]],
@@ -821,7 +705,6 @@ def _build_payload(
         "turns": turns,
         "errors": errors,
         "agg": _aggregate(turns, errors, duration_s),
-        "adr_0007": _adr_0007_summary(turns),
     }
 
 
@@ -880,41 +763,11 @@ def render_summary(payload: dict[str, Any]) -> str:
                 f"{b['p95_latency_s']:>7.3f}s  "
                 f"{(mkb / (1024 * 1024)) if mkb is not None else float('nan'):>7.1f} MiB"
             )
-    # ADR 0007 §2.10 path-selection block (only emitted when the
-    # payload actually carries the data — backward-compat with old
-    # checkpoints that pre-date PR 7-6).
-    adr_0007 = payload.get("adr_0007")
-    if adr_0007 is not None:
-        rate = adr_0007.get("continuation_rate")
-        rate_str = (
-            f"{rate * 100:.2f}%" if rate is not None else "n/a (no decisions)"
-        )
-        lines.append("")
-        lines.append("  ADR 0007 §2.10 — cross-request KV reuse")
-        lines.append(
-            f"    continuation decisions  = "
-            f"{adr_0007['continuation_decisions']}"
-        )
-        lines.append(
-            f"    new-session decisions   = "
-            f"{adr_0007['new_session_decisions']}"
-        )
-        lines.append(f"    continuation rate       = {rate_str}")
-        lines.append(
-            f"    total tokens skipped    = "
-            f"{adr_0007['tokens_skipped']:,}"
-        )
-        inv1 = adr_0007["cache_invariant_inv1_total"]
-        inv2 = adr_0007["cache_invariant_inv2_total"]
-        inv_marker = "" if (inv1 == 0 and inv2 == 0) else "  ← CRITICAL"
-        lines.append(
-            f"    INV-1 violations        = {inv1}"
-            + (inv_marker if inv1 > 0 else "")
-        )
-        lines.append(
-            f"    INV-2 violations        = {inv2}"
-            + (inv_marker if inv2 > 0 else "")
-        )
+    # Old ADR 0007 §2.10 path-selection summary block was removed in
+    # PR-D1 along with the metrics that fed it. Historical reports
+    # produced by earlier commits retain the ``adr_0007`` payload
+    # field; we ignore it here. Replacement bench is PR-E1's
+    # ``bench_session_long_run.py``.
 
     lines.append("=" * 78)
     return "\n".join(lines)

@@ -107,13 +107,6 @@ class Metrics:
     scheduler_pending: Gauge
     scheduler_kv_live_bytes: Gauge
     scheduler_admission_total: Counter
-    # ADR 0007 §2.10 — cross-request KV reuse observability.
-    # Both ``path`` labels are first-class outcomes; neither is an
-    # "error" or "fallback" (per ADR 0007 §2.4.c).
-    path_selection_total: Counter
-    continuation_tokens_skipped_total: Counter
-    verifier_prefill_duration_seconds: Histogram
-    cache_invariant_violations_total: Counter
 
     @classmethod
     def build(cls) -> "Metrics":
@@ -194,47 +187,6 @@ class Metrics:
                 labelnames=["result"],
                 registry=registry,
             ),
-            path_selection_total=Counter(
-                "path_selection_total",
-                "Total path-selection decisions made by the verifier "
-                "for cross-request KV cache reuse (ADR 0007 §2.4). "
-                "Both 'continuation' and 'new_session' are first-class "
-                "first-class outcomes; neither is an 'error' or "
-                "'fallback' (§2.4.c). Healthy long-session agent "
-                "workloads see continuation rate >= 95%.",
-                labelnames=["path"],
-                registry=registry,
-            ),
-            continuation_tokens_skipped_total=Counter(
-                "continuation_tokens_skipped_total",
-                "Cumulative prompt tokens that the continuation path "
-                "did not need to re-prefill (ADR 0007 §2.10). Sums "
-                "ContinuationPlan.skip_n across every continuation-"
-                "path request the server has handled. The win.",
-                registry=registry,
-            ),
-            verifier_prefill_duration_seconds=Histogram(
-                "verifier_prefill_duration_seconds",
-                "Wall time of the prefill phase of a single request, "
-                "partitioned by path. Continuation-path histogram "
-                "centers around per-incremental-token cost; "
-                "new-session-path histogram tracks full-prefill cost "
-                "(O(history_length)).",
-                labelnames=["path"],
-                buckets=(
-                    0.001, 0.005, 0.01, 0.05, 0.1, 0.5,
-                    1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
-                ),
-                registry=registry,
-            ),
-            cache_invariant_violations_total=Counter(
-                "cache_invariant_violations_total",
-                "Count of ADR 0007 §2.9 INV-1 / INV-2 detections at "
-                "runtime. Should always read 0; any non-zero value is "
-                "a critical operational alert (page on it).",
-                labelnames=["kind"],
-                registry=registry,
-            ),
         )
 
     # ------------------------------------------------------------------
@@ -254,32 +206,6 @@ class Metrics:
         self.scheduler_admission_total.labels(
             result="admitted" if admitted else "rejected"
         ).inc()
-
-    def record_path_selection(self, *, path: str, tokens_skipped: int,
-                              prefill_duration_s: float) -> None:
-        """Record one path-selection decision (ADR 0007 §2.10).
-
-        ``path`` must be ``"continuation"`` or ``"new_session"``. The
-        method does not validate the label set explicitly because
-        prometheus-client's ``labels()`` already raises for unknown
-        labels; we want such a violation to surface loudly per the
-        no-silent-failure principle.
-        """
-        self.path_selection_total.labels(path=path).inc()
-        if tokens_skipped > 0:
-            self.continuation_tokens_skipped_total.inc(tokens_skipped)
-        self.verifier_prefill_duration_seconds.labels(path=path).observe(
-            float(prefill_duration_s)
-        )
-
-    def record_cache_invariant_violation(self, *, kind: str) -> None:
-        """Record an INV-1 or INV-2 detection (ADR 0007 §2.9).
-
-        ``kind`` must be ``"inv1"`` or ``"inv2"``. Should never be
-        called in healthy operation; any increment of this counter
-        is a critical alert.
-        """
-        self.cache_invariant_violations_total.labels(kind=kind).inc()
 
     def record_completion(self, *, finish_reason: str, n_tokens: int,
                           acceptance_rate: Optional[float]) -> None:

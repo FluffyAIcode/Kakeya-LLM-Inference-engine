@@ -281,47 +281,13 @@ async def test_get_session_info_after_close_returns_not_found(grpc_pair):
 
 
 # ---------------------------------------------------------------------------
-# AppendTokens (PR-B2) — wired via AppendTokensCoordinator + FakeVerifier
+# AppendTokens (PR-B2) — verifier-independent paths only
+#
+# Tests that wire a real AppendTokensCoordinator + verifier moved to
+# tests/integration/test_grpc_runtime_real.py in PR-N1. The Linux
+# gate keeps only the "no coordinator wired in" UNIMPLEMENTED check
+# below.
 # ---------------------------------------------------------------------------
-
-
-# Reuse the FakeVerifier from the coordinator test module rather than
-# re-defining it here. The fake is itself fully tested in
-# tests/inference_engine/session/test_coordinator.py, so importing it
-# here just exercises the gRPC ↔ coordinator wiring on top.
-from tests.inference_engine.session.test_coordinator import FakeVerifier  # noqa: E402
-
-
-@pytest_asyncio.fixture
-async def grpc_pair_with_appender() -> AsyncIterator[
-    tuple[
-        runtime_pb2_grpc.RuntimeServiceStub,
-        SessionStore,
-        FakeVerifier,
-        grpc.aio.Server,
-    ]
-]:
-    """gRPC pair where the Servicer has an AppendTokensCoordinator
-    wired in. Yields ``(stub, store, verifier, server)``."""
-    from inference_engine.session import AppendTokensCoordinator
-
-    fv = FakeVerifier()
-    store = SessionStore(capacity=4, cache_inspector=fv)
-    coordinator = AppendTokensCoordinator(store, fv)
-    server = grpc.aio.server()
-    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(store, append_coordinator=coordinator),
-        server,
-    )
-    port = server.add_insecure_port("127.0.0.1:0")
-    await server.start()
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
-    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
-    try:
-        yield stub, store, fv, server
-    finally:
-        await channel.close()
-        await server.stop(grace=0.1)
 
 
 async def test_append_tokens_returns_unimplemented_when_no_coordinator(grpc_pair):
@@ -340,123 +306,25 @@ async def test_append_tokens_returns_unimplemented_when_no_coordinator(grpc_pair
     assert exc_info.value.code() == grpc.StatusCode.UNIMPLEMENTED
 
 
-async def test_append_tokens_first_call_triggers_prefill(
-    grpc_pair_with_appender,
-):
-    stub, store, fv, _ = grpc_pair_with_appender
-    create_resp = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-    resp = await stub.AppendTokens(
-        runtime_pb2.AppendTokensRequest(
-            session_id=create_resp.session_id,
-            token_ids=[10, 20, 30],
-        ),
-    )
-    assert resp.history_length == 3
-    # Verifier saw a prefill, not a forward_block (cold cache path).
-    kinds = [c[0] for c in fv.call_log]
-    assert kinds == ["prefill"]
-    sess = store.get_session(create_resp.session_id)
-    assert sess.history_token_ids == [10, 20, 30]
-    assert sess.next_global_position == 3
-
-
-async def test_append_tokens_subsequent_call_triggers_incremental(
-    grpc_pair_with_appender,
-):
-    stub, store, fv, _ = grpc_pair_with_appender
-    create_resp = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-    await stub.AppendTokens(
-        runtime_pb2.AppendTokensRequest(
-            session_id=create_resp.session_id, token_ids=[10, 20, 30],
-        ),
-    )
-    resp = await stub.AppendTokens(
-        runtime_pb2.AppendTokensRequest(
-            session_id=create_resp.session_id, token_ids=[40, 50],
-        ),
-    )
-    assert resp.history_length == 5
-    kinds = [c[0] for c in fv.call_log]
-    assert kinds == ["prefill", "forward_block", "commit_or_truncate"]
-    assert fv.call_log[1] == ("forward_block", (40, 50))
-    assert fv.call_log[2] == ("commit_or_truncate", 2, 2)
-
-
-async def test_append_tokens_unknown_session_returns_not_found(
-    grpc_pair_with_appender,
-):
-    stub, _, _, _ = grpc_pair_with_appender
-    with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-        await stub.AppendTokens(
-            runtime_pb2.AppendTokensRequest(
-                session_id="sess-nonexistent", token_ids=[1, 2, 3],
-            ),
-        )
-    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
-    assert "sess-nonexistent" in exc_info.value.details()
-
-
-async def test_append_tokens_invariant_violation_returns_failed_precondition():
-    """Construct an AppendTokensCoordinator whose verifier triggers
-    INV-1 on the first append; the gRPC servicer must surface it as
-    FAILED_PRECONDITION (not as INTERNAL or NOT_FOUND)."""
-    from inference_engine.session import AppendTokensCoordinator
-
-    class _LyingFakeVerifier(FakeVerifier):
-        def k_seq_length(self, session):
-            del session
-            return 999  # never matches anything the session reports
-
-    fv = _LyingFakeVerifier()
-    store = SessionStore(capacity=2, cache_inspector=fv)
-    coord = AppendTokensCoordinator(store, fv)
-    server = grpc.aio.server()
-    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(store, append_coordinator=coord), server,
-    )
-    port = server.add_insecure_port("127.0.0.1:0")
-    await server.start()
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
-    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
-    try:
-        create_resp = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-            await stub.AppendTokens(
-                runtime_pb2.AppendTokensRequest(
-                    session_id=create_resp.session_id, token_ids=[1, 2, 3],
-                ),
-            )
-        assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
-        assert "INV-1" in exc_info.value.details()
-    finally:
-        await channel.close()
-        await server.stop(grace=0.1)
+# Error-mapping tests for AppendTokens. These don't load a real
+# verifier; they use AppendTokensCoordinator subclasses that raise
+# the relevant exception directly. ``verifier=None`` is safe because
+# the override never touches ``self._verifier``.
 
 
 async def test_append_tokens_value_error_returns_invalid_argument():
-    """Construct an AppendTokensCoordinator that surfaces a ValueError
-    from the well-formedness check. We can't push a negative through
-    the wire (uint32 blocks it), so we exercise this by manually
-    invoking the servicer at the AppendTokensCoordinator level via a
-    coordinator that re-raises ValueError on contact.
-
-    The gRPC servicer must surface the ValueError as
-    INVALID_ARGUMENT, not as INTERNAL.
-    """
+    """ValueError raised by the coordinator → INVALID_ARGUMENT
+    on the wire. Verifier is never consulted on this path."""
     from inference_engine.session import AppendTokensCoordinator
 
     class _ValueErroringCoordinator(AppendTokensCoordinator):
         def append_tokens(self, session_id, token_ids):
             del token_ids
-            # Look up the session first so SessionNotFoundError still
-            # wins for unknown ids — only raise ValueError for known
-            # sessions, mirroring the real coordinator's order.
-            self._store.get_session(session_id)
+            self._store.get_session(session_id)  # SessionNotFound first
             raise ValueError("synthetic well-formedness violation")
 
-    fv = FakeVerifier()
     store = SessionStore(capacity=2)
-    coord = _ValueErroringCoordinator(store, fv)
+    coord = _ValueErroringCoordinator(store, verifier=None)
     server = grpc.aio.server()
     runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
         RuntimeServiceServicer(store, append_coordinator=coord), server,
@@ -466,7 +334,9 @@ async def test_append_tokens_value_error_returns_invalid_argument():
     channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
     stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
     try:
-        create_resp = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
         with pytest.raises(grpc.aio.AioRpcError) as exc_info:
             await stub.AppendTokens(
                 runtime_pb2.AppendTokensRequest(
@@ -480,13 +350,261 @@ async def test_append_tokens_value_error_returns_invalid_argument():
         await server.stop(grace=0.1)
 
 
-# ---------------------------------------------------------------------------
-# Generate not yet implemented in PR-B2
-# ---------------------------------------------------------------------------
+async def test_append_tokens_invariant_violation_returns_failed_precondition():
+    """InvariantViolation raised by the coordinator → FAILED_PRECONDITION
+    on the wire. Verifier is never consulted on this path."""
+    from inference_engine.session import (
+        AppendTokensCoordinator,
+        InvariantViolation,
+    )
+
+    class _InvariantViolatingCoordinator(AppendTokensCoordinator):
+        def append_tokens(self, session_id, token_ids):
+            del token_ids
+            self._store.get_session(session_id)  # SessionNotFound first
+            raise InvariantViolation(
+                kind="1",
+                session_id=session_id,
+                detail="synthetic INV-1 violation",
+            )
+
+    store = SessionStore(capacity=2)
+    coord = _InvariantViolatingCoordinator(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, append_coordinator=coord), server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.AppendTokens(
+                runtime_pb2.AppendTokensRequest(
+                    session_id=create_resp.session_id, token_ids=[1],
+                ),
+            )
+        assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+        assert "synthetic INV-1" in exc_info.value.details()
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
 
 
+async def test_generate_invariant_violation_returns_failed_precondition():
+    """InvariantViolation raised by GenerationCoordinator → FAILED_PRECONDITION
+    on the wire. The override never touches the verifier."""
+    from inference_engine.session import (
+        GenerationCoordinator,
+        InvariantViolation,
+    )
+
+    class _InvariantViolatingGen(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kw):
+            del max_tokens, kw
+            # GenerationCoordinator.generate is a SYNC GENERATOR
+            # function (yields events). The override must also be one
+            # — otherwise a synchronous raise from this call escapes
+            # before the gRPC handler's try/except can catch it.
+            # The unreachable yield turns this into a generator
+            # function whose first .next()/iteration raises.
+            if False:
+                yield  # pragma: no cover - generator marker only
+            raise InvariantViolation(
+                kind="1",
+                session_id=session_id,
+                detail="synthetic INV-1 from Generate",
+            )
+
+    store = SessionStore(capacity=2)
+    gen_coord = _InvariantViolatingGen(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(
+            store, generation_coordinator=gen_coord,
+        ),
+        server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            async for _evt in stub.Generate(
+                runtime_pb2.GenerateRequest(
+                    session_id=create_resp.session_id, max_tokens=1,
+                ),
+            ):
+                pass
+        assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+        assert "synthetic INV-1" in exc_info.value.details()
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
+async def test_generate_value_error_returns_invalid_argument():
+    """ValueError raised by GenerationCoordinator → INVALID_ARGUMENT.
+    Synthetic test driven without a verifier."""
+    from inference_engine.session import GenerationCoordinator
+
+    class _ValueErroringGen(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kw):
+            del session_id, max_tokens, kw
+            if False:
+                yield  # pragma: no cover - generator marker only
+            raise ValueError("synthetic invalid argument")
+
+    store = SessionStore(capacity=2)
+    gen_coord = _ValueErroringGen(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(
+            store, generation_coordinator=gen_coord,
+        ),
+        server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            async for _evt in stub.Generate(
+                runtime_pb2.GenerateRequest(
+                    session_id=create_resp.session_id, max_tokens=1,
+                ),
+            ):
+                pass
+        assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
+async def test_generate_session_not_found_mid_stream_returns_not_found():
+    """SessionNotFoundError raised mid-stream from the generator
+    after some tokens already flowed → NOT_FOUND on the wire.
+    Verifier-independent generator override."""
+    from inference_engine.session import GenerationCoordinator
+    from inference_engine.session import (
+        SessionNotFoundError,
+        TokenEvent,
+    )
+
+    class _NotFoundMidStream(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kw):
+            del max_tokens, kw
+            yield TokenEvent(token_id=1)
+            raise SessionNotFoundError(session_id)
+
+    store = SessionStore(capacity=2)
+    gen_coord = _NotFoundMidStream(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, generation_coordinator=gen_coord),
+        server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(
+            runtime_pb2.CreateSessionRequest(),
+        )
+        events = []
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            async for evt in stub.Generate(
+                runtime_pb2.GenerateRequest(
+                    session_id=create_resp.session_id, max_tokens=4,
+                ),
+            ):
+                events.append(evt)
+        # The first event flowed normally before the raise.
+        assert len(events) == 1
+        assert events[0].WhichOneof("payload") == "token_id"
+        assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
+async def test_generate_cancellation_emits_cancelled_done():
+    """Direct-invocation test: drive the Servicer's Generate with
+    a fake gRPC context that flips ``cancelled()`` to True after
+    the first event. The servicer must yield a CANCELLED done
+    frame and stop. Uses a verifier-free generator override.
+    """
+    from inference_engine.session import (
+        GenerationCoordinator,
+        TokenEvent,
+    )
+
+    class _TwoTokenGen(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kw):
+            del session_id, max_tokens, kw
+            yield TokenEvent(token_id=1)
+            yield TokenEvent(token_id=2)  # never reached: cancelled first
+
+    store = SessionStore(capacity=1)
+    gen_coord = _TwoTokenGen(store, verifier=None)
+    servicer = RuntimeServiceServicer(
+        store, generation_coordinator=gen_coord,
+    )
+
+    class _FakeContext:
+        """Minimal stand-in for ``grpc.aio.ServicerContext``.
+
+        Reports cancelled=False on the first poll, True on every
+        subsequent poll. Exists purely to drive coverage of the
+        servicer's cancellation branch — it does not stand in for
+        the verifier. (The ``cancelled``-checked-on-context API is
+        gRPC framework surface, not application contract.)
+        """
+        def __init__(self) -> None:
+            self._polls = 0
+
+        def cancelled(self) -> bool:
+            self._polls += 1
+            return self._polls > 1
+
+        async def abort(self, code, details):  # pragma: no cover
+            raise AssertionError(f"abort: {code} {details!r}")
+
+    ctx = _FakeContext()
+    sess = store.create_session()
+    request = runtime_pb2.GenerateRequest(
+        session_id=sess.session_id, max_tokens=10,
+    )
+    events = []
+    async for resp in servicer.Generate(request, ctx):
+        events.append(resp)
+    assert len(events) == 2
+    assert events[0].WhichOneof("payload") == "token_id"
+    assert events[1].WhichOneof("payload") == "done"
+    assert events[1].done.stop_reason == \
+        runtime_pb2.GenerateDone.STOP_REASON_CANCELLED
+    assert events[1].done.generated_token_count == 1
+
 # ---------------------------------------------------------------------------
-# Generate (PR-B3) — wired via GenerationCoordinator + FakeVerifier
+# Generate (PR-B3) — verifier-independent paths only
+#
+# Tests that wire a real GenerationCoordinator + verifier moved to
+# tests/integration/test_grpc_runtime_real.py in PR-N1. The Linux
+# gate keeps only the "no coordinator wired in" UNIMPLEMENTED check
+# below.
 # ---------------------------------------------------------------------------
 
 
@@ -501,353 +619,6 @@ async def test_generate_returns_unimplemented_when_no_coordinator(grpc_pair):
         ):
             pass  # pragma: no cover - the stream raises before yielding
     assert exc_info.value.code() == grpc.StatusCode.UNIMPLEMENTED
-
-
-@pytest_asyncio.fixture
-async def grpc_pair_with_generator() -> AsyncIterator[
-    tuple[
-        runtime_pb2_grpc.RuntimeServiceStub,
-        SessionStore,
-        FakeVerifier,
-        grpc.aio.Server,
-    ]
-]:
-    """gRPC pair with both AppendTokens and Generate coordinators
-    wired (so we can prep a session via AppendTokens, then call
-    Generate against it)."""
-    from inference_engine.session import (
-        AppendTokensCoordinator,
-        GenerationCoordinator,
-    )
-
-    fv = FakeVerifier()
-    store = SessionStore(capacity=4, cache_inspector=fv)
-    append_coord = AppendTokensCoordinator(store, fv)
-    gen_coord = GenerationCoordinator(store, fv)
-    server = grpc.aio.server()
-    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(
-            store,
-            append_coordinator=append_coord,
-            generation_coordinator=gen_coord,
-        ),
-        server,
-    )
-    port = server.add_insecure_port("127.0.0.1:0")
-    await server.start()
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
-    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
-    try:
-        yield stub, store, fv, server
-    finally:
-        await channel.close()
-        await server.stop(grace=0.1)
-
-
-async def _prep_session(stub, token_ids=(1, 2, 3)):
-    """Create + prefill a session, return its session_id."""
-    create = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-    await stub.AppendTokens(
-        runtime_pb2.AppendTokensRequest(
-            session_id=create.session_id, token_ids=list(token_ids),
-        ),
-    )
-    return create.session_id
-
-
-async def test_generate_streams_tokens_then_done(grpc_pair_with_generator):
-    stub, _, _, _ = grpc_pair_with_generator
-    sid = await _prep_session(stub)
-    events = []
-    async for resp in stub.Generate(
-        runtime_pb2.GenerateRequest(session_id=sid, max_tokens=3),
-    ):
-        events.append(resp)
-    # Three token frames followed by one done frame.
-    payload_kinds = [r.WhichOneof("payload") for r in events]
-    assert payload_kinds == ["token_id", "token_id", "token_id", "done"]
-    done = events[-1].done
-    assert done.stop_reason == runtime_pb2.GenerateDone.STOP_REASON_MAX_TOKENS
-    assert done.generated_token_count == 3
-    assert done.prefill_duration_seconds == 0.0
-
-
-async def test_generate_eos_stops_with_eos_stop_reason(
-    grpc_pair_with_generator,
-):
-    stub, store, _, _ = grpc_pair_with_generator
-    # Pre-load history that makes the first argmax = 6 (FakeVerifier's
-    # _logits_for hashes recent 3 tokens to argmax = sum % 16).
-    create = await stub.CreateSession(
-        runtime_pb2.CreateSessionRequest(eos_token_ids=[6]),
-    )
-    await stub.AppendTokens(
-        runtime_pb2.AppendTokensRequest(
-            session_id=create.session_id, token_ids=[1, 2, 3],
-        ),
-    )
-    events = []
-    async for resp in stub.Generate(
-        runtime_pb2.GenerateRequest(
-            session_id=create.session_id, max_tokens=10,
-        ),
-    ):
-        events.append(resp)
-    payload_kinds = [r.WhichOneof("payload") for r in events]
-    assert payload_kinds == ["token_id", "done"]
-    assert events[0].token_id == 6
-    assert events[-1].done.stop_reason == \
-        runtime_pb2.GenerateDone.STOP_REASON_EOS
-
-
-async def test_generate_history_truncated_emitted(grpc_pair_with_generator):
-    stub, store, _, _ = grpc_pair_with_generator
-    # FakeVerifier's default budget is sink+window = 2+4 = 6.
-    # Prefill 8 tokens so we're in truncated state at start of Generate.
-    create = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-    await stub.AppendTokens(
-        runtime_pb2.AppendTokensRequest(
-            session_id=create.session_id,
-            token_ids=[10, 20, 30, 40, 50, 60, 70, 80],
-        ),
-    )
-    events = []
-    async for resp in stub.Generate(
-        runtime_pb2.GenerateRequest(
-            session_id=create.session_id, max_tokens=2,
-        ),
-    ):
-        events.append(resp)
-    payload_kinds = [r.WhichOneof("payload") for r in events]
-    # First frame is truncated, then tokens, then done.
-    assert payload_kinds[0] == "truncated"
-    assert events[0].truncated.dropped_token_count == 2  # 8 - 6
-    # Tokens follow.
-    assert payload_kinds[1:3] == ["token_id", "token_id"]
-    assert payload_kinds[3] == "done"
-
-
-async def test_generate_unknown_session_returns_not_found(
-    grpc_pair_with_generator,
-):
-    stub, _, _, _ = grpc_pair_with_generator
-    with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-        async for _resp in stub.Generate(
-            runtime_pb2.GenerateRequest(
-                session_id="sess-nonexistent", max_tokens=1,
-            ),
-        ):
-            pass  # pragma: no cover - stream raises before yielding
-    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
-
-
-async def test_generate_no_history_returns_invalid_argument(
-    grpc_pair_with_generator,
-):
-    """Session created but no AppendTokens preceded — Generate has
-    no prefill state to start from. Must surface INVALID_ARGUMENT,
-    not crash on argmax of uninitialized logits."""
-    stub, _, _, _ = grpc_pair_with_generator
-    create = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-    with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-        async for _resp in stub.Generate(
-            runtime_pb2.GenerateRequest(
-                session_id=create.session_id, max_tokens=1,
-            ),
-        ):
-            pass  # pragma: no cover
-    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
-    assert "AppendTokens must precede" in exc_info.value.details()
-
-
-async def test_generate_max_tokens_zero_returns_invalid_argument(
-    grpc_pair_with_generator,
-):
-    stub, _, _, _ = grpc_pair_with_generator
-    sid = await _prep_session(stub)
-    with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-        async for _resp in stub.Generate(
-            runtime_pb2.GenerateRequest(session_id=sid, max_tokens=0),
-        ):
-            pass  # pragma: no cover
-    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
-
-
-async def test_generate_temperature_nonzero_returns_invalid_argument(
-    grpc_pair_with_generator,
-):
-    stub, _, _, _ = grpc_pair_with_generator
-    sid = await _prep_session(stub)
-    with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-        async for _resp in stub.Generate(
-            runtime_pb2.GenerateRequest(
-                session_id=sid, max_tokens=1, temperature=0.7,
-            ),
-        ):
-            pass  # pragma: no cover
-    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
-
-
-async def test_generate_seed_is_accepted(grpc_pair_with_generator):
-    """Seed must be accepted on the wire (proto3 optional uint64).
-    In greedy mode it's ignored; the run must complete normally."""
-    stub, _, _, _ = grpc_pair_with_generator
-    sid = await _prep_session(stub)
-    events = []
-    async for resp in stub.Generate(
-        runtime_pb2.GenerateRequest(
-            session_id=sid, max_tokens=2, seed=42,
-        ),
-    ):
-        events.append(resp)
-    assert any(r.WhichOneof("payload") == "done" for r in events)
-
-
-async def test_generate_invariant_violation_returns_failed_precondition():
-    """An INV-1 violation during a generation step must surface as
-    FAILED_PRECONDITION, not INTERNAL."""
-    from inference_engine.session import (
-        AppendTokensCoordinator,
-        GenerationCoordinator,
-    )
-
-    fv = FakeVerifier()
-    store = SessionStore(capacity=2, cache_inspector=fv)
-    append_coord = AppendTokensCoordinator(store, fv)
-    gen_coord = GenerationCoordinator(store, fv)
-    server = grpc.aio.server()
-    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(
-            store,
-            append_coordinator=append_coord,
-            generation_coordinator=gen_coord,
-        ),
-        server,
-    )
-    port = server.add_insecure_port("127.0.0.1:0")
-    await server.start()
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
-    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
-    try:
-        # Set up a valid session via honest AppendTokens.
-        create = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
-        await stub.AppendTokens(
-            runtime_pb2.AppendTokensRequest(
-                session_id=create.session_id, token_ids=[1, 2, 3],
-            ),
-        )
-        # Now make k_seq_length lie so the FIRST generation step's
-        # INV-1 check fires.
-        fv.k_seq_length = lambda session: 999
-        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-            async for _resp in stub.Generate(
-                runtime_pb2.GenerateRequest(
-                    session_id=create.session_id, max_tokens=1,
-                ),
-            ):
-                pass  # pragma: no cover - stream aborts mid-way
-        assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
-        assert "INV-1" in exc_info.value.details()
-    finally:
-        await channel.close()
-        await server.stop(grace=0.1)
-
-
-async def test_create_grpc_server_accepts_generation_coordinator():
-    """The factory must accept the new keyword and plumb it through."""
-    from inference_engine.session import GenerationCoordinator
-
-    fv = FakeVerifier()
-    store = SessionStore(capacity=2)
-    coord = GenerationCoordinator(store, fv)
-    server = create_grpc_server(
-        session_store=store,
-        generation_coordinator=coord,
-        config=GrpcServerConfig(bind_address="127.0.0.1:0"),
-    )
-    assert server is not None
-
-
-async def test_generate_cancellation_emits_cancelled_done():
-    """Drive the Servicer's Generate directly with a fake gRPC context
-    that flips ``cancelled()`` to True after the first event. The
-    servicer must:
-
-      1. Yield the first TokenEvent normally.
-      2. On the next loop turn, observe context.cancelled() == True.
-      3. Emit a final GenerateDone(STOP_REASON_CANCELLED) frame and
-         return — without continuing to generate.
-
-    Direct-invocation test rather than through-the-channel: the
-    real-channel cancellation closes the connection from the client
-    side, so the server-emitted CANCELLED frame is observable only
-    in-process. This test exercises the server-side branch.
-    """
-    from inference_engine.session import (
-        AppendTokensCoordinator,
-        GenerationCoordinator,
-    )
-
-    fv = FakeVerifier()
-    store = SessionStore(capacity=1, cache_inspector=fv)
-    append_coord = AppendTokensCoordinator(store, fv)
-    gen_coord = GenerationCoordinator(store, fv)
-    sess = store.create_session()
-    append_coord.append_tokens(sess.session_id, [1, 2, 3])
-
-    servicer = RuntimeServiceServicer(
-        store,
-        append_coordinator=append_coord,
-        generation_coordinator=gen_coord,
-    )
-
-    class _FakeContext:
-        """Minimal stand-in for grpc.aio.ServicerContext.
-
-        Tracks how many times ``cancelled()`` has been polled; flips
-        to True after the first poll so the very first iteration of
-        the servicer's loop yields a TokenEvent normally and the
-        second iteration observes the cancellation. ``abort`` is not
-        used in this happy-path-of-cancellation test.
-        """
-        def __init__(self) -> None:
-            self._polls = 0
-            self.poll_history: list[bool] = []
-
-        def cancelled(self) -> bool:
-            self._polls += 1
-            verdict = self._polls > 1
-            self.poll_history.append(verdict)
-            return verdict
-
-        async def abort(self, code, details):  # pragma: no cover
-            raise AssertionError(
-                f"abort should not be called: {code} {details!r}",
-            )
-
-    ctx = _FakeContext()
-    request = runtime_pb2.GenerateRequest(
-        session_id=sess.session_id, max_tokens=10,
-    )
-
-    events = []
-    async for resp in servicer.Generate(request, ctx):
-        events.append(resp)
-
-    # First frame is a token, then CANCELLED done — no more.
-    assert len(events) == 2
-    assert events[0].WhichOneof("payload") == "token_id"
-    assert events[1].WhichOneof("payload") == "done"
-    assert events[1].done.stop_reason == \
-        runtime_pb2.GenerateDone.STOP_REASON_CANCELLED
-    assert events[1].done.generated_token_count == 1
-    # cancelled() polled twice: once on first iteration (returned
-    # False, allowed token to flow), once on second (returned True,
-    # tripped CANCELLED branch).
-    assert ctx.poll_history == [False, True]
-
-
-# ---------------------------------------------------------------------------
 # create_grpc_server factory + GrpcServerConfig
 # ---------------------------------------------------------------------------
 
@@ -917,21 +688,5 @@ async def test_create_grpc_server_with_max_concurrent_rpcs():
             bind_address="127.0.0.1:0",
             max_concurrent_rpcs=8,
         ),
-    )
-    assert server is not None
-
-
-async def test_create_grpc_server_accepts_append_coordinator():
-    """PR-B2 wiring: the factory must accept an append_coordinator
-    keyword and plumb it into the Servicer."""
-    from inference_engine.session import AppendTokensCoordinator
-
-    fv = FakeVerifier()
-    store = SessionStore(capacity=2)
-    coord = AppendTokensCoordinator(store, fv)
-    server = create_grpc_server(
-        session_store=store,
-        append_coordinator=coord,
-        config=GrpcServerConfig(bind_address="127.0.0.1:0"),
     )
     assert server is not None
