@@ -47,16 +47,35 @@ from inference_engine.session import (
 
 
 @pytest.fixture(scope="module")
-def session_verifier_pair(fresh_verifier_factory):
+def session_verifier_pair():
     """Two independent verifiers + stores + coordinator pairs.
 
     Module-scoped: loading Qwen3-0.6B twice costs ~2-4 s on Mac M4
     with a warm HF cache. Tests share the pair; each test resets
     each verifier's state via ``reset()`` before driving its own
     workload, so cross-test bleed-over is impossible by construction.
+
+    Inline-build the verifier (rather than going through
+    ``fresh_verifier_factory`` which is function-scoped in
+    ``tests/conftest.py``) so the module scope is consistent —
+    pytest forbids a module-scoped fixture depending on a function-
+    scoped one.
     """
-    fv_a = fresh_verifier_factory(sink=4, window=64)
-    fv_b = fresh_verifier_factory(sink=4, window=64)
+    import torch
+    from kv_cache_proposer.verifier import SinkWindowVerifier, VerifierConfig
+
+    def _build(sink: int, window: int) -> SinkWindowVerifier:
+        return SinkWindowVerifier(
+            VerifierConfig(
+                dtype=torch.bfloat16,
+                device="cpu",
+                sink_size=sink,
+                window_size=window,
+            )
+        )
+
+    fv_a = _build(sink=4, window=64)
+    fv_b = _build(sink=4, window=64)
     yield fv_a, fv_b
 
 
