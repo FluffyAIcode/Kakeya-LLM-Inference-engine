@@ -1,0 +1,136 @@
+name: Integration (Mac M4)
+
+# Self-hosted runner workflow that runs the integration suite under
+# tests/integration/ against real Qwen3-0.6B on Apple Silicon.
+#
+# Trigger model:
+#   - Pull-request events. Only fires when the PR carries the
+#     ``needs-mac-m4`` label (auto-applied by .github/workflows/
+#     auto-label-mac.yaml when a PR touches inference_engine/,
+#     sdks/, proto/, or tests/integration/). PRs that don't touch
+#     verifier-dependent code skip this gate entirely so the runner
+#     pool isn't burned on doc-only or CI-only PRs.
+#   - Manual workflow_dispatch for re-runs from the Actions UI.
+#
+# Runner requirements (self-hosted):
+#   - macOS 14+ on Apple Silicon (M-series).
+#   - Labels: [self-hosted, macOS, ARM64, kakeya-mac-m4].
+#   - Pre-warmed HF cache containing Qwen/Qwen3-0.6B at
+#     ~/.cache/huggingface/hub/ (avoids 10-minute first-run download).
+#   - Python 3.12+ on PATH.
+#   - At least 24 GB unified memory and ~50 GB free disk.
+#
+# See docs/ops/mac-m4-runner-setup.md for the one-time runner setup.
+
+on:
+  pull_request:
+    # Only run on PR events for branches targeting main.
+    types: [opened, synchronize, reopened, labeled]
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same PR — saves runner time when
+# the contributor pushes a new commit before the previous run
+# finishes.
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: pytest -m integration on Mac M4
+    # Only fire on labeled PRs (this saves the runner pool from
+    # doc-only / CI-only PRs that don't touch verifier-dependent
+    # code). The auto-label workflow adds 'needs-mac-m4' on file
+    # paths that warrant the GA gate.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'needs-mac-m4')
+    runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the runner can compare against base for
+          # any future rebase-based gating.
+          fetch-depth: 0
+
+      - name: Verify host shape
+        run: |
+          echo "=== sysctl ==="
+          sysctl -n hw.model || true
+          sysctl -n hw.memsize || true
+          sysctl -n machdep.cpu.brand_string || true
+          echo "=== python ==="
+          python3 --version
+          python3 -c "import platform; print(platform.machine(), platform.platform())"
+
+      - name: Verify Qwen3-0.6B in HF cache
+        run: |
+          # Don't download here; the runner is expected to be
+          # pre-warmed. If the model isn't cached the test loads
+          # would hit HF and exceed the 90-min timeout. Surface a
+          # clear error early.
+          set -e
+          MODEL_DIR="$HOME/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B"
+          if [ ! -d "$MODEL_DIR" ]; then
+            echo "::error::HF cache miss for Qwen/Qwen3-0.6B."
+            echo "::error::Pre-warm the runner: python3 -c 'from transformers import AutoModelForCausalLM, AutoTokenizer; AutoModelForCausalLM.from_pretrained(\"Qwen/Qwen3-0.6B\"); AutoTokenizer.from_pretrained(\"Qwen/Qwen3-0.6B\")'"
+            exit 1
+          fi
+          echo "Found $MODEL_DIR"
+
+      - name: Install Python dependencies
+        run: |
+          # The runner is expected to have a long-lived venv.
+          # If a per-run venv is preferred, swap to ``python3 -m venv .venv``.
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e .
+          python3 -m pip install pytest pytest-asyncio pytest-timeout coverage
+
+      - name: Run integration suite
+        env:
+          PYTHONPATH: .:sdks/python
+          # No HF download in tests; if we hit a cache miss it's a
+          # bug or a stale runner.
+          HF_HUB_OFFLINE: "1"
+        run: |
+          mkdir -p results/platform-tests
+          stamp=$(date +%s)
+          python3 -m pytest \
+            -m integration \
+            tests/integration/ \
+            --junitxml="results/platform-tests/integration-mac-m4-${stamp}.junit.xml" \
+            -v
+          # Record the artifact path for the upload step below.
+          echo "artifact_stamp=${stamp}" >> "$GITHUB_OUTPUT"
+        id: pytest_run
+
+      - name: Upload JUnit + log artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-mac-m4-${{ steps.pytest_run.outputs.artifact_stamp || github.run_id }}
+          path: |
+            results/platform-tests/integration-mac-m4-*.junit.xml
+          retention-days: 30
+
+      - name: Surface failure summary
+        if: failure()
+        run: |
+          # Tail the last few lines of the JUnit so the failure is
+          # visible in the action log, not just inside the artifact.
+          for f in results/platform-tests/integration-mac-m4-*.junit.xml; do
+            echo "=== $f ==="
+            python3 - "$f" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          r = ET.parse(sys.argv[1]).getroot()
+          for tc in r.iter("testcase"):
+              for child in tc:
+                  if child.tag in ("failure", "error"):
+                      print(f"[{child.tag.upper()}] {tc.get('classname')}::{tc.get('name')}")
+                      msg = (child.get("message") or "").splitlines()
+                      if msg:
+                          print(f"    {msg[0][:180]}")
+          PY
+          done
