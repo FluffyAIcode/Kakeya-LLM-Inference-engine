@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "pr_d2_mac_integration_tests",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "junit": {
+    "tests": 80,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}
