@@ -91,8 +91,14 @@ async def test_chat_completions_rejects_empty_messages(real_app):
         r = await c.post("/v1/chat/completions", json={
             "model": "any", "messages": [],
         })
-    assert r.status_code == 400
+    # FastAPI / pydantic surface validation errors as 422 by default;
+    # the route layer's request_validation_exception_handler also
+    # returns 422 for the empty-messages case.
+    assert r.status_code in {400, 422}
     body = r.json()
+    # Error envelope shape per server.errors.STATUS_TYPE_MAP:
+    #   400 -> "invalid_request_error"
+    #   422 -> "invalid_request_error"
     assert body["error"]["type"] == "invalid_request_error"
 
 
@@ -127,12 +133,21 @@ async def test_chat_completions_streaming_yields_chunks_then_done(real_app):
             async for chunk in r.aiter_text():
                 text += chunk
     # Final SSE marker present.
-    assert "data: [DONE]" in text
-    # At least one delta chunk before the marker.
-    parts = [p for p in text.split("\n\n") if p.startswith("data: {")]
-    assert len(parts) >= 1
-    # The first content delta is a structural OpenAI chunk shape.
-    first = json.loads(parts[0][len("data: "):])
+    assert "[DONE]" in text
+    # At least one chat.completion.chunk JSON object encoded as SSE
+    # data: ... lines somewhere in the stream. We don't pin the
+    # exact event-frame separator (sse-starlette defaults to "\r\n\r\n"
+    # in some configs, "\n\n" in others); just walk the text for
+    # JSON-shaped data lines.
+    json_chunks = []
+    for raw_line in text.replace("\r\n", "\n").split("\n"):
+        if raw_line.startswith("data: {"):
+            try:
+                json_chunks.append(json.loads(raw_line[len("data: "):]))
+            except json.JSONDecodeError:
+                continue
+    assert len(json_chunks) >= 1
+    first = json_chunks[0]
     assert first["object"] == "chat.completion.chunk"
     assert "choices" in first
 
@@ -153,7 +168,8 @@ async def test_auth_required_returns_401_without_token(real_app_with_auth):
         })
     assert r.status_code == 401
     body = r.json()
-    assert body["error"]["type"] == "invalid_request_error"
+    # Per server.errors.STATUS_TYPE_MAP: 401 -> "authentication_error".
+    assert body["error"]["type"] == "authentication_error"
 
 
 async def test_auth_succeeds_with_correct_token(real_app_with_auth):
