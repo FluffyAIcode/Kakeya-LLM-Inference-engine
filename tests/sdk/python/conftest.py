@@ -11,11 +11,19 @@ background thread with its own event loop and yields the
 server through a ``call_soon_threadsafe`` round-trip and joins the
 thread.
 
-This pattern keeps SDK tests free of pytest-asyncio dependence
-while still exercising the production gRPC machinery. No mocks of
-the SUT — only a deterministic ``FakeVerifier`` (already shared
-with the coordinator and gRPC-app test suites) so the runtime's
-behavior is observable.
+The SDK tests are **wire-layer** tests: their truth is "the gRPC
+encode/decode + error-status-mapping behaves correctly", not "the
+verifier produces correct numerics". To make AppendTokens and
+Generate respond at all, the runtime needs *some* verifier object
+satisfying ``VerifierProtocol``. PR-N1 replaced the previous
+shared ``FakeVerifier`` import with a minimum-protocol-conformance
+``_MinimalVerifierStub`` defined locally below — scoped strictly
+to SDK transport testing. The stub does NOT mirror real verifier
+state-mutation contracts; it just satisfies the protocol shape.
+End-to-end runtime correctness is covered by
+``tests/integration/test_coordinator_real.py`` and the binding
+GA-gate ``test_inv3_session_determinism_gate.py`` against real
+Qwen3-0.6B (PR-E1).
 """
 
 from __future__ import annotations
@@ -23,10 +31,11 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, List, Optional
 
 import grpc
 import pytest
+import torch
 
 from inference_engine.server.grpc_app import RuntimeServiceServicer
 from inference_engine.server.proto_gen.kakeya.v1 import (
@@ -38,9 +47,86 @@ from inference_engine.session import (
     SessionStore,
 )
 
-# Shared FakeVerifier from PR-B2's coordinator suite — same fake the
-# rest of the Phase-B test suite uses.
-from tests.inference_engine.session.test_coordinator import FakeVerifier
+
+# ---------------------------------------------------------------------------
+# Minimum VerifierProtocol stub for SDK wire-layer tests.
+#
+# This is NOT a verifier mirror. It satisfies just enough of
+# ``inference_engine.session.coordinator.VerifierProtocol`` to make
+# AppendTokens and Generate succeed end-to-end so the SDK can
+# observe the wire response (status code, payload encoding,
+# stream order). Real-numerics verifier validation lives in
+# ``tests/integration/test_coordinator_real.py`` per PR-N1's
+# no-test-doubles split.
+# ---------------------------------------------------------------------------
+
+
+class _MinimalVerifierStub:
+    """Bare-bones ``VerifierProtocol`` impl for transport tests.
+
+    Sink+window=2+4=6, vocab=16. Maintains the same state-mutation
+    invariants the real verifier does (cached_token_sequence stays
+    in sync with K/V tensor seq dim) so the SessionStore's INV-1
+    enforcement works against it. No real attention or model.
+    """
+
+    SINK = 2
+    WINDOW = 4
+    VOCAB = 16
+
+    def __init__(self) -> None:
+        self.cached_token_sequence: List[int] = []
+        self.next_global_position: int = 0
+        self.next_token_logits: torch.Tensor = torch.zeros(self.VOCAB)
+
+    def _trim(self, seq: List[int]) -> List[int]:
+        budget = self.SINK + self.WINDOW
+        if len(seq) <= budget:
+            return list(seq)
+        return list(seq[: self.SINK]) + list(seq[-self.WINDOW:])
+
+    def _greedy(self, hist: List[int]) -> torch.Tensor:
+        out = torch.zeros(self.VOCAB)
+        if hist:
+            out[sum(hist[-3:]) % self.VOCAB] = 1.0
+        return out
+
+    def k_seq_length(self, session: object) -> int:
+        del session
+        return len(self.cached_token_sequence)
+
+    def kv_live_bytes(self, session: object) -> int:
+        del session
+        # Synthetic per-token bytes — irrelevant to wire-layer truth.
+        return len(self.cached_token_sequence) * 13
+
+    def prefill(self, prompt_ids: List[int]) -> None:
+        self.cached_token_sequence = self._trim(prompt_ids)
+        self.next_global_position = len(prompt_ids)
+        self.next_token_logits = self._greedy(self.cached_token_sequence)
+
+    def forward_block(self, tokens: List[int]) -> torch.Tensor:
+        # Mutate cache: add new tokens, then trim.
+        self.cached_token_sequence = self._trim(
+            self.cached_token_sequence + list(tokens),
+        )
+        rows = []
+        running = list(self.cached_token_sequence)
+        for tok in tokens:
+            running = self._trim(running + [tok])
+            rows.append(self._greedy(running))
+        return torch.stack(rows) if rows else torch.zeros(0, self.VOCAB)
+
+    def commit_or_truncate(self, *, forwarded: int, accepted: int) -> None:
+        # forwarded == accepted in prompt-mode; full accept. Advance
+        # position by accepted and trim to budget (idempotent).
+        del forwarded
+        self.next_global_position += accepted
+        self.cached_token_sequence = self._trim(self.cached_token_sequence)
+
+
+# Backward-compat name used by existing fixture code below.
+FakeVerifier = _MinimalVerifierStub
 
 
 @dataclass
