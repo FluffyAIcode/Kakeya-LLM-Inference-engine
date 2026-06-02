@@ -72,17 +72,22 @@ jobs:
           # PYTHONPATH route avoids a setuptools build step in CI.
           PYTHONPATH: .:sdks/python
         run: |
-          # PR-N1/N2 (ADR 0008) cleanup: this gate covers ONLY
+          # PR-N1/N2/N3 (ADR 0008) cleanup: this gate covers ONLY
           # verifier-independent code. The Linux runner cannot load
-          # real Qwen3 weights; PR-N1 retired the FakeVerifier test
-          # double, and PR-N2 retired DeterministicEngine /
-          # DeterministicTokenizer doubles. Verifier-, engine-, and
-          # scheduler-runtime tests moved to tests/integration/
-          # (Mac M4 / CUDA gate).
+          # real Qwen3 weights; the cleanup PRs retired the
+          # FakeVerifier / DeterministicEngine / DeterministicTokenizer
+          # test doubles. Engine-dependent modules — currently
+          # ``inference_engine.session.coordinator``,
+          # ``inference_engine.session.generator``,
+          # ``inference_engine.scheduler.scheduler``,
+          # ``inference_engine.server.app``,
+          # ``inference_engine.server.engine``,
+          # ``inference_engine.server.tokenizer`` — move to the
+          # tests/integration/ suite, gated on Mac M4 / CUDA hosts.
           #
-          # Coverage is invoked via ``coverage run -m pytest`` not
-          # ``pytest --cov=`` to avoid a torch+pytest-cov race at
-          # conftest-import time on the hosted Linux runner.
+          # Coverage is invoked via ``coverage run -m pytest`` rather
+          # than ``pytest --cov=`` to avoid a torch+pytest-cov race
+          # at conftest-import time.
           coverage run -m pytest \
             tests/inference_engine/server/ \
             tests/inference_engine/memory/ \
@@ -96,10 +101,10 @@ jobs:
             --junitxml=junit.xml \
             -v
           coverage report \
-            --include='inference_engine/server/*,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/scheduler/pooled_verifier.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/bench/*,sdks/python/kakeya/*,training/repr_align/*' \
+            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/scheduler/pooled_verifier.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/bench/*,sdks/python/kakeya/*,training/repr_align/*' \
             --fail-under=100
           coverage xml -o coverage.xml \
-            --include='inference_engine/server/*,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/scheduler/pooled_verifier.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/bench/*,sdks/python/kakeya/*,training/repr_align/*'
+            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/scheduler/pooled_verifier.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/bench/*,sdks/python/kakeya/*,training/repr_align/*'
 
       - name: Upload coverage artifact
         if: always()

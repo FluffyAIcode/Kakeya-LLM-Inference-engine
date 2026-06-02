@@ -96,3 +96,43 @@ async def test_request_validation_handler_with_multiple_errors():
     assert response.status_code == 422
     body = response.body.decode("utf-8")
     assert "and 2 more validation error(s)" in body
+
+
+@pytest.mark.asyncio
+async def test_request_validation_handler_with_single_error():
+    """When pydantic raises with exactly one error, the message is
+    that error's ``msg`` field unchanged — no 'and N more' suffix."""
+    from fastapi.exceptions import RequestValidationError
+
+    from inference_engine.server.errors import (
+        request_validation_exception_handler,
+    )
+
+    errors = [
+        {"loc": ("body", "messages"), "msg": "field required", "type": "value_error"},
+    ]
+    exc = RequestValidationError(errors=errors)
+    response = await request_validation_exception_handler(request=None, exc=exc)
+    assert response.status_code == 422
+    body = response.body.decode("utf-8")
+    assert "field required" in body
+    assert "more validation error" not in body
+
+
+@pytest.mark.asyncio
+async def test_unhandled_exception_handler_emits_500_envelope():
+    """The last-resort wrapper turns an arbitrary exception into an
+    OpenAI-shaped 500 envelope without leaking the traceback."""
+    from inference_engine.server.errors import unhandled_exception_handler
+
+    class _BizarreError(RuntimeError):
+        pass
+
+    response = await unhandled_exception_handler(
+        request=None, exc=_BizarreError("internal something"),
+    )
+    assert response.status_code == 500
+    body = response.body.decode("utf-8")
+    # Class name surfaces in the message; raw message body must NOT.
+    assert "_BizarreError" in body
+    assert "internal something" not in body
