@@ -44,13 +44,6 @@ class EngineResult:
     proposer_forward_calls: int
     verifier_forward_calls: int
     stopped_on_eos: bool
-    # ADR 0007 §2.10 observability — populated by the speculative
-    # engine; test doubles default to ``new_session`` / 0 so the
-    # route layer's metric emission code path is exercisable
-    # against either backend.
-    path_selection: str = "new_session"  # "continuation" | "new_session"
-    tokens_skipped: int = 0
-    prefill_duration_seconds: float = 0.0
 
 
 @runtime_checkable
@@ -191,11 +184,6 @@ class SpeculativeEngine:
             proposer_forward_calls=int(result.proposer_forward_calls),
             verifier_forward_calls=int(result.verifier_forward_calls),
             stopped_on_eos=stopped_on_eos,
-            path_selection=str(getattr(result, "path_selection", "new_session")),
-            tokens_skipped=int(getattr(result, "tokens_skipped", 0)),
-            prefill_duration_seconds=float(
-                getattr(result, "prefill_duration_seconds", 0.0)
-            ),
         )
 
     def kv_state(self) -> int:
