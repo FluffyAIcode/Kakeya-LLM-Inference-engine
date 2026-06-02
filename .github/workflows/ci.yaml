@@ -72,6 +72,14 @@ jobs:
           # PYTHONPATH route avoids a setuptools build step in CI.
           PYTHONPATH: .:sdks/python
         run: |
+          # PR-N1 (ADR 0008) split: this gate covers ONLY
+          # verifier-independent code. The Linux runner cannot load
+          # real Qwen3 weights, and PR-N1 retired the FakeVerifier
+          # test double that previously stood in for them.
+          # Verifier-dependent modules — currently
+          # ``inference_engine.session.coordinator`` and
+          # ``inference_engine.session.generator`` — move to the
+          # tests/integration/ suite, gated on Mac M4 / CUDA hosts.
           pytest \
             tests/inference_engine/server/ \
             tests/inference_engine/memory/ \
@@ -85,7 +93,7 @@ jobs:
             --cov=inference_engine.memory \
             --cov=inference_engine.scheduler \
             --cov=inference_engine.pipeline \
-            --cov=inference_engine.session \
+            --cov=inference_engine.session.store \
             --cov=kakeya \
             --cov=training.repr_align \
             --cov-report=term \
