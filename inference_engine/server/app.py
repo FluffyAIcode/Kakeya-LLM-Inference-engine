@@ -1,57 +1,51 @@
-"""FastAPI app factory and route handlers.
+"""FastAPI app factory and route handlers (PR-D2 of ADR 0008 Phase D).
 
-The app is constructed by :func:`create_app` from a fully-initialized
-:class:`Engine` (and a :class:`ServerConfig`). All inference flows
-through a :class:`Scheduler` constructed inside the factory: routes
-never call ``engine.generate`` directly. This is the integration that
-makes admission control, fair queuing, slab-pool occupancy, and
-graceful shutdown observable / consistent regardless of single-user
-or multi-user deployment.
+The HTTP shim is **deprecated** per ADR 0008 §2.7 and slated for
+retirement once OpenAI-API consumers migrate to the v0.3 gRPC
+surface. PR-D2 refactored this module's internals to drive the
+session-bound runtime (``SessionStore`` +
+:class:`AppendTokensCoordinator` + :class:`GenerationCoordinator`)
+directly, retiring the previous ``Scheduler`` + ``PooledVerifier``
++ :class:`SpeculativeEngine` machinery. Each ``/v1/chat/completions``
+request is now a single-shot session: ``CreateSession`` →
+``AppendTokens(prompt)`` → ``Generate`` → ``CloseSession`` —
+identical semantics to the gRPC ``RuntimeService`` surface.
 
-Routes implemented in this commit:
+What this means for users
+-------------------------
+
+* **Speculative decoding is no longer applied on the HTTP path.**
+  The session-bound runtime is pure autoregressive against the
+  verifier; the proposer is wired into the v0.4 alignment work
+  (ADR 0004). For now the HTTP shim is roughly the same speed as
+  ``transformers``-vanilla AR generation. **Migrate to gRPC** for
+  the v0.3 architecture's full perf story.
+* Every response carries ``Deprecation: true`` and a
+  ``Sunset`` header pointing to the v0.3 GA tag. The OpenAI clients
+  ignore these by default but the metadata is in the response for
+  proxies / observability tools.
+* Admission control is now an :class:`asyncio.Semaphore` instead of
+  a full ``Scheduler`` — the queueing and timeout semantics are
+  preserved (REJECT vs QUEUE policy with ``queue_max_wait_s``) but
+  the in-flight slab-pool bookkeeping moved into ``SessionStore``.
+
+Routes
+------
 
     GET  /healthz
+    GET  /metrics
     GET  /v1/models
     POST /v1/chat/completions
-
-OpenAI compatibility notes
---------------------------
-
-* ``stream`` is the load-bearing flag: when true the response is
-  ``text/event-stream``; when false it is ``application/json``. We
-  branch on it inside the route, not at registration time.
-* Sampling parameters (``temperature``, ``top_p``, ``stop``) are
-  accepted in the request schema but not applied — the underlying
-  decoder is greedy temperature-0 by design (see ADR 0001 §2.2 for
-  the rationale).
-* ``finish_reason`` is ``"stop"`` if EOS terminated generation OR
-  if the client cancelled, ``"length"`` if ``max_tokens`` did. We
-  do not yet emit ``"content_filter"`` or ``"function_call"``.
 
 Error mapping
 -------------
 
-* Pydantic validation errors: 422 (FastAPI default).
+* Pydantic validation errors: 422.
 * Tokenizer chat-template rejection: 400.
-* Tokenizer with no EOS: 500 (defense in depth; engine constructor
-  is supposed to catch this earlier).
-* Scheduler rejects (pool full under REJECT policy, queue timeout
-  under QUEUE policy): 429 with a JSON body following OpenAI's
-  error shape.
-* Engine raises mid-generate: 500 (non-streaming) or terminal SSE
-  chunk with ``finish_reason="stop"`` (streaming — the SSE
-  contract has no graceful way to surface a 500 once the response
-  has started; the session error is swallowed at the wire after
-  any partial output).
-
-Lifespan
---------
-
-The app registers a FastAPI lifespan context that calls
-``scheduler.shutdown()`` when the server stops. Active sessions are
-cancelled, queued admissions are rejected, slabs are released. The
-HTTP layer becomes externally indistinguishable from "no server here"
-within one poll interval after the lifespan exits.
+* Tokenizer with no EOS: 500.
+* Pool / admission saturation: 429 with OpenAI error envelope.
+* Verifier raises mid-generate: 500 (non-streaming) or terminal
+  SSE chunk with ``finish_reason="stop"`` (streaming).
 """
 
 from __future__ import annotations
@@ -72,23 +66,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from inference_engine.memory.pool import SlabPool
 from inference_engine.memory.slab import SlabConfig
-from inference_engine.scheduler.config import SchedulerConfig
-from inference_engine.scheduler.scheduler import (
-    RequestRejected,
-    Scheduler,
-)
-from inference_engine.scheduler.session import Session, SessionState
-
-from .auth import verify_api_key
-from .config import ServerConfig
-from .engine import Engine
-from .errors import (
+from inference_engine.scheduler.config import AdmissionPolicy
+from inference_engine.server.auth import verify_api_key
+from inference_engine.server.config import ServerConfig
+from inference_engine.server.errors import (
+    build_error_envelope,
     http_exception_handler,
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
-from .metrics import Metrics
-from .schemas import (
+from inference_engine.server.metrics import Metrics
+from inference_engine.server.schemas import (
     ChatCompletionChoice,
     ChatCompletionChunk,
     ChatCompletionChunkChoice,
@@ -101,87 +89,121 @@ from .schemas import (
     ListModelsResponse,
     ModelInfo,
 )
-from .streaming import _StreamingDetokenizer
-from .tokenizer import resolve_eos_ids
+from inference_engine.server.streaming import _StreamingDetokenizer
+from inference_engine.server.tokenizer import resolve_eos_ids
+from inference_engine.session import (
+    AppendTokensCoordinator,
+    DoneEvent,
+    GenerationCoordinator,
+    HistoryTruncatedEvent,
+    SessionStore,
+    STOP_REASON_EOS,
+    TokenEvent,
+)
+from inference_engine.session.store import SessionNotFoundError
 
 
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
+# Per ADR 0008 §2.7: every HTTP-shim response carries these headers.
+# v0.3.0 final ships with the deprecation marker live; the Sunset
+# date is cosmetic until a real cutover plan exists.
+_DEPRECATION_HEADERS = {
+    "Deprecation": "true",
+    "Sunset": "Wed, 31 Dec 2025 00:00:00 GMT",
+    "Link": (
+        '</docs/adr/0008-session-bound-runtime-and-grpc-protocol.md>; '
+        'rel="successor-version"; type="text/markdown"'
+    ),
+}
 
 
 def create_app(
-    engine: Engine,
+    verifier,
     config: ServerConfig,
-    pool: Optional[SlabPool] = None,
+    *,
+    slab_pool: Optional[SlabPool] = None,
+    model_id_label: Optional[str] = None,
 ) -> FastAPI:
-    """Build a FastAPI app bound to a specific engine + config.
+    """Build a FastAPI app bound to a verifier + config.
 
     Parameters
     ----------
-    engine:
-        Anything implementing :class:`Engine`. In production this is
-        a :class:`SpeculativeEngine`; in tests it is a deterministic
-        test double.
+    verifier:
+        Anything implementing the verifier protocol consumed by
+        :class:`AppendTokensCoordinator` (i.e., :meth:`prefill`,
+        :meth:`forward_block`, :meth:`commit_or_truncate`,
+        :meth:`k_seq_length`, :meth:`kv_live_bytes`) plus a
+        :attr:`tokenizer` attribute satisfying
+        :class:`~inference_engine.server.tokenizer.Tokenizer`.
+        In production this is a :class:`SinkWindowVerifier`.
     config:
-        Process-wide :class:`ServerConfig`. The scheduler-related
-        fields (``max_concurrent``, ``admission_policy``,
-        ``queue_max_wait_s``) drive the internal :class:`Scheduler`.
-    pool:
-        Optional pre-built :class:`SlabPool`. If ``None``, we build a
-        minimal placeholder pool sized for ``config.max_concurrent``
-        slots — these slots are pure admission-control bookkeeping
-        until a future commit wires the verifier itself to consume
-        slabs from the pool. The placeholder slab tensors are
-        deliberately tiny (a few bytes per slab) since they are not
-        currently read by attention kernels.
+        Process-wide :class:`ServerConfig`. ``max_concurrent``,
+        ``admission_policy``, and ``queue_max_wait_s`` drive the
+        per-app admission semaphore.
+    slab_pool:
+        Optional pre-built :class:`SlabPool`. If ``None``, a tiny
+        placeholder pool is built for ``max_concurrent`` slots.
+        The slab is a session-bookkeeping placeholder; the verifier
+        owns the real KV tensors and writes byte counts onto the
+        slab via PR-E1c's ``_sync_slab_bytes`` helper.
+    model_id_label:
+        Returned by ``/v1/models`` and embedded in every
+        ``chat.completion`` payload's ``model`` field. Defaults to
+        ``config.model_id_label``.
     """
-    pool = pool if pool is not None else _build_placeholder_pool(config.max_concurrent)
+    pool = slab_pool if slab_pool is not None else _build_placeholder_pool(
+        config.max_concurrent,
+    )
     if pool.total_count != config.max_concurrent:
         raise ValueError(
-            f"pool.total_count={pool.total_count} does not match "
+            f"slab_pool.total_count={pool.total_count} does not match "
             f"config.max_concurrent={config.max_concurrent}"
         )
-    scheduler = Scheduler(
-        engine=engine, pool=pool,
-        config=SchedulerConfig(
-            max_concurrent=config.max_concurrent,
-            admission_policy=config.admission_policy,
-            queue_max_wait_s=config.queue_max_wait_s,
-        ),
+
+    store = SessionStore(
+        capacity=config.max_concurrent,
+        cache_inspector=verifier,
+        slab_pool=pool,
     )
+    append_coord = AppendTokensCoordinator(store, verifier)
+    gen_coord = GenerationCoordinator(store, verifier)
+
     metrics = Metrics.build()
     metrics.snapshot_scheduler(
         active=0, pool_in_use=0, pool_total=pool.total_count, pending=0,
         kv_live_bytes=0,
     )
 
+    label = model_id_label or config.model_id_label
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Startup: nothing to do; scheduler is already constructed and
-        # ready to admit. We yield without doing anything here so unit
-        # tests that exercise the route via ASGITransport without
-        # explicit lifespan handling still work.
-        try:
-            yield
-        finally:
-            await scheduler.shutdown()
+        # No long-lived worker tasks anymore — every request is a
+        # single-shot session. Lifespan is a no-op other than the
+        # context-manager protocol the framework needs.
+        yield
 
     app = FastAPI(
-        title="Kakeya Inference Engine",
+        title="Kakeya Inference Engine (HTTP shim, deprecated)",
         description=(
-            "OpenAI-compatible HTTP API for the DLM-proposer + AR-verifier "
-            "speculative decoder. See https://github.com/FluffyAIcode/"
-            "Kakeya-LLM-Inference-engine for source and ADRs."
+            "DEPRECATED OpenAI-compatible HTTP API. The v0.3 architecture "
+            "is gRPC-first; see /docs/adr/0008-session-bound-runtime-"
+            "and-grpc-protocol.md. This shim is feature-frozen, pure-AR "
+            "(no speculative decoding), and slated for removal once "
+            "consumers migrate."
         ),
-        version="0.2.0-dev",
+        version="0.3.0",
         lifespan=lifespan,
     )
-    app.state.engine = engine
+
+    app.state.verifier = verifier
     app.state.config = config
-    app.state.scheduler = scheduler
+    app.state.store = store
+    app.state.append_coord = append_coord
+    app.state.gen_coord = gen_coord
     app.state.pool = pool
     app.state.metrics = metrics
+    app.state.model_id_label = label
+    app.state.admission_sem = asyncio.Semaphore(config.max_concurrent)
 
     # OpenAI-shape error envelopes for HTTPException + 422 + 500.
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
@@ -194,9 +216,16 @@ def create_app(
     app.add_middleware(_AuthMiddleware, valid_keys=config.api_keys)
     # Per-request timing + counter.
     app.add_middleware(_MetricsMiddleware, metrics=metrics)
+    # ADR 0008 §2.7 Deprecation / Sunset headers on every response.
+    app.add_middleware(_DeprecationHeadersMiddleware)
 
     _register_routes(app)
     return app
+
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -210,20 +239,12 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         try:
             verify_api_key(request, valid_keys=self._valid_keys)
         except StarletteHTTPException as exc:
-            # Re-route through the registered handler so the response
-            # carries the OpenAI envelope.
             return await http_exception_handler(request, exc)
         return await call_next(request)
 
 
 class _MetricsMiddleware(BaseHTTPMiddleware):
-    """Records ``http_requests_total`` + duration histogram per request.
-
-    The path label is the matched route's path template (e.g.
-    ``/v1/chat/completions``) when available, otherwise the raw URL
-    path. We deliberately avoid recording dynamic path segments
-    (e.g. session ids) to prevent label-cardinality blow-up.
-    """
+    """Records ``http_requests_total`` + duration histogram per request."""
 
     def __init__(self, app, *, metrics: Metrics) -> None:
         super().__init__(app)
@@ -244,27 +265,35 @@ class _MetricsMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _safe_path(request) -> str:
-        """Return the route template if matched, else the raw path.
-
-        Starlette stores the matched route on ``request.scope["route"]``
-        when available; we fall back to the raw URL for unmatched
-        requests (404s).
-        """
         route = request.scope.get("route")
         if route is not None and hasattr(route, "path"):
             return route.path
         return request.url.path
 
 
-def _build_placeholder_pool(num_slabs: int) -> SlabPool:
-    """Construct a minimal :class:`SlabPool` for admission-control bookkeeping.
+class _DeprecationHeadersMiddleware(BaseHTTPMiddleware):
+    """Stamps ADR 0008 §2.7 deprecation headers onto every response."""
 
-    Slab tensors are 1-element bf16 (2 bytes per K + 2 per V × num_slabs).
-    Total memory cost for the default ``num_slabs=1`` pool is ~4 bytes,
-    plus Python object overhead. When the verifier-side refactor lands
-    that actually consumes slabs as KV storage, callers will pass a
-    properly-sized pool to ``create_app`` and this placeholder will
-    become unnecessary in production paths.
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        for k, v in _DEPRECATION_HEADERS.items():
+            response.headers[k] = v
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_placeholder_pool(num_slabs: int) -> SlabPool:
+    """Construct a tiny ``SlabPool`` for session bookkeeping.
+
+    The slab is a placeholder; PR-E1c's :func:`_sync_slab_bytes`
+    writes the verifier's real KV byte count onto each slab's
+    ``live_kv_bytes_override`` after every coordinator mutation,
+    so :meth:`Session.kv_live_bytes` reports physically meaningful
+    values without the slab actually holding the K/V tensors.
     """
     cfg = SlabConfig(
         num_layers=1, num_heads=1, sink_size=0, window_size=1,
@@ -273,210 +302,10 @@ def _build_placeholder_pool(num_slabs: int) -> SlabPool:
     return SlabPool(num_slabs=num_slabs, slab_config=cfg)
 
 
-# ---------------------------------------------------------------------------
-# Route registration
-# ---------------------------------------------------------------------------
-
-
-def _register_routes(app: FastAPI) -> None:
-    @app.get("/healthz", response_model=HealthResponse)
-    async def healthz() -> HealthResponse:
-        engine: Engine = app.state.engine
-        return HealthResponse(status="ok", model=engine.model_id_label)
-
-    @app.get("/metrics")
-    async def metrics_endpoint() -> Response:
-        metrics: Metrics = app.state.metrics
-        scheduler: Scheduler = app.state.scheduler
-        pool: SlabPool = app.state.pool
-        # Refresh scheduler-state gauges on every scrape so the
-        # exposition reflects "now" rather than the last
-        # admission/completion event.
-        engine_for_kv: Engine = app.state.engine
-        # Read KV bytes directly from the engine's verifier rather
-        # than from pool.live_kv_bytes. Rationale: in v0.3 the slab
-        # is a session ticket (acquired/released per request) — the
-        # verifier holds the real KV cache tensors and is the
-        # canonical source of truth. Pool-side accounting only
-        # populates once PooledVerifier is wired (a post-v0.3.0
-        # change) and otherwise reads 0 even while the verifier
-        # cache is several MiB.
-        #
-        # Gauge semantics: "KV bytes attributable to in-flight
-        # sessions". Between turns, the verifier's ``self.cache``
-        # still holds the previous turn's tensors — the next
-        # prefill calls ``reset()`` which replaces them, but until
-        # then ``engine.kv_state()`` reports non-zero residual
-        # bytes. Reporting that as "live" misleads observers
-        # and breaks the §2.3 KV-bounded check (residual carries
-        # forward at the previous turn's peak, never trimmed). We
-        # therefore gate the gauge on ``active_count > 0``: an
-        # idle server reports 0, a server with an active session
-        # reports the verifier's true KV size. This is also how
-        # the gauge will naturally behave once PooledVerifier is
-        # wired post-v0.3 (the pool aggregation is 0 when no slab
-        # is in use).
-        kv_live = (
-            int(engine_for_kv.kv_state())
-            if scheduler.active_count > 0
-            else 0
-        )
-        metrics.snapshot_scheduler(
-            active=scheduler.active_count,
-            pool_in_use=pool.in_use_count,
-            pool_total=pool.total_count,
-            pending=scheduler.pending_count,
-            kv_live_bytes=kv_live,
-        )
-        return PlainTextResponse(
-            content=metrics.render(),
-            media_type=metrics.content_type,
-        )
-
-    @app.get("/v1/models", response_model=ListModelsResponse)
-    async def list_models() -> ListModelsResponse:
-        engine: Engine = app.state.engine
-        return ListModelsResponse(
-            data=[
-                ModelInfo(
-                    id=engine.model_id_label,
-                    created=int(time.time()),
-                )
-            ]
-        )
-
-    @app.post("/v1/chat/completions")
-    async def chat_completions(req: ChatCompletionRequest, request: Request):
-        engine: Engine = app.state.engine
-        scheduler: Scheduler = app.state.scheduler
-        config: ServerConfig = app.state.config
-        metrics: Metrics = app.state.metrics
-
-        try:
-            prompt_ids = _encode_prompt(engine, req)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"prompt encoding failed: {exc}",
-            ) from exc
-
-        eos_token_ids = resolve_eos_ids(engine.tokenizer)
-        if not eos_token_ids:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="server tokenizer has no EOS configuration",
-            )
-
-        max_new_tokens = req.max_tokens or config.default_max_new_tokens
-        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
-        created = int(time.time())
-        prompt_token_count = len(prompt_ids)
-
-        # Submit to the scheduler. Admission failures surface as 429
-        # — the canonical OpenAI status for capacity exhaustion.
-        try:
-            session = await scheduler.submit(
-                prompt_ids=prompt_ids,
-                max_new_tokens=max_new_tokens,
-                eos_token_ids=eos_token_ids,
-            )
-        except RequestRejected as exc:
-            metrics.record_admission(admitted=False)
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=str(exc),
-            ) from exc
-        metrics.record_admission(admitted=True)
-
-        if req.stream:
-            return EventSourceResponse(
-                _stream_via_scheduler(
-                    scheduler=scheduler,
-                    session=session,
-                    request=request,
-                    engine=engine,
-                    completion_id=completion_id,
-                    created=created,
-                    metrics=metrics,
-                ),
-                media_type="text/event-stream",
-            )
-
-        try:
-            output_token_ids = await _collect_non_streaming_tokens(
-                scheduler=scheduler,
-                session=session,
-                request=request,
-            )
-        except asyncio.CancelledError:
-            # Client timed out/disconnected while the JSON response was
-            # draining. Without explicit cancellation the worker can keep
-            # occupying the only slab, causing later queued requests to 429.
-            await scheduler.cancel_session(session)
-            raise
-        except BaseException as exc:
-            await scheduler.cancel_session(session)
-            # Engine raised mid-generate; surface as 500.
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"engine error: {exc}",
-            ) from exc
-
-        completion_text = engine.tokenizer.decode(
-            output_token_ids, skip_special_tokens=True
-        )
-        # finish_reason: COMPLETED + last token in eos_set => "stop";
-        # otherwise (cap, cancellation, or anything else) => "length"
-        # for non-streaming. Cancellation in non-streaming should not
-        # happen via this path (no cancel hook on JSON responses), but
-        # we keep the conservative mapping.
-        if (
-            session.state is SessionState.COMPLETED
-            and output_token_ids
-            and output_token_ids[-1] in set(eos_token_ids)
-        ):
-            finish_reason = "stop"
-        else:
-            finish_reason = "length"
-
-        metrics.record_completion(
-            finish_reason=finish_reason,
-            n_tokens=len(output_token_ids),
-            acceptance_rate=None,
-        )
-
-        return JSONResponse(
-            content=ChatCompletionResponse(
-                id=completion_id,
-                created=created,
-                model=engine.model_id_label,
-                choices=[
-                    ChatCompletionChoice(
-                        index=0,
-                        message=ChatCompletionResponseMessage(
-                            role="assistant", content=completion_text,
-                        ),
-                        finish_reason=finish_reason,
-                    )
-                ],
-                usage=ChatCompletionUsage(
-                    prompt_tokens=prompt_token_count,
-                    completion_tokens=len(output_token_ids),
-                    total_tokens=prompt_token_count + len(output_token_ids),
-                ),
-            ).model_dump()
-        )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> List[int]:
-    """Apply the tokenizer's chat template to the request messages."""
+def _encode_prompt(verifier, req: ChatCompletionRequest) -> List[int]:
+    """Apply the verifier's tokenizer's chat template to the request."""
     messages = [m.model_dump() for m in req.messages]
-    prompt_ids = engine.tokenizer.apply_chat_template(
+    prompt_ids = verifier.tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
         tokenize=True,
@@ -494,57 +323,328 @@ def _encode_prompt(engine: Engine, req: ChatCompletionRequest) -> List[int]:
     return prompt_ids
 
 
-async def _collect_non_streaming_tokens(
+async def _admit(
     *,
-    scheduler: Scheduler,
-    session: Session,
+    sem: asyncio.Semaphore,
+    config: ServerConfig,
+) -> None:
+    """Acquire the admission semaphore per the configured policy.
+
+    REJECT: fail immediately with HTTPException(429) if the
+    semaphore is fully saturated. QUEUE: wait up to
+    ``queue_max_wait_s`` then fail. The ``queue_max_wait_s=0``
+    sentinel means wait forever.
+    """
+    if config.admission_policy == AdmissionPolicy.REJECT:
+        # Non-blocking: try once.
+        if not _try_acquire(sem):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="slab pool exhausted (REJECT policy)",
+            )
+        return
+    # QUEUE policy.
+    timeout = (
+        None
+        if config.queue_max_wait_s == 0
+        else config.queue_max_wait_s
+    )
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"queue wait exceeded ({config.queue_max_wait_s}s)"
+            ),
+        ) from exc
+
+
+def _try_acquire(sem: asyncio.Semaphore) -> bool:
+    """Non-blocking semaphore acquire.
+
+    ``asyncio.Semaphore`` lacks a public ``locked()``-with-grab API;
+    we inspect the internal ``_value`` (CPython implementation
+    detail kept stable across versions; documented in cpython
+    ``asyncio/locks.py``).
+    """
+    if sem._value <= 0:  # noqa: SLF001 - intentional, see docstring
+        return False
+    sem._value -= 1  # noqa: SLF001
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
+def _register_routes(app: FastAPI) -> None:
+    @app.get("/healthz", response_model=HealthResponse)
+    async def healthz() -> HealthResponse:
+        label: str = app.state.model_id_label
+        return HealthResponse(status="ok", model=label)
+
+    @app.get("/metrics")
+    async def metrics_endpoint() -> Response:
+        metrics: Metrics = app.state.metrics
+        store: SessionStore = app.state.store
+        # Refresh the in-flight gauge from SessionStore so /metrics
+        # always reports current state.
+        kv_live = store.total_kv_live_bytes
+        active = store.active_count
+        metrics.snapshot_scheduler(
+            active=active,
+            pool_in_use=active,
+            pool_total=app.state.pool.total_count,
+            pending=0,
+            kv_live_bytes=kv_live,
+        )
+        return PlainTextResponse(
+            content=metrics.render(),
+            media_type=metrics.content_type,
+        )
+
+    @app.get("/v1/models", response_model=ListModelsResponse)
+    async def list_models() -> ListModelsResponse:
+        label: str = app.state.model_id_label
+        return ListModelsResponse(
+            data=[ModelInfo(id=label, created=int(time.time()))],
+        )
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(req: ChatCompletionRequest, request: Request):
+        verifier = app.state.verifier
+        store: SessionStore = app.state.store
+        append_coord: AppendTokensCoordinator = app.state.append_coord
+        gen_coord: GenerationCoordinator = app.state.gen_coord
+        config: ServerConfig = app.state.config
+        metrics: Metrics = app.state.metrics
+        admission_sem: asyncio.Semaphore = app.state.admission_sem
+        model_label: str = app.state.model_id_label
+
+        try:
+            prompt_ids = _encode_prompt(verifier, req)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"prompt encoding failed: {exc}",
+            ) from exc
+
+        eos_token_ids = resolve_eos_ids(verifier.tokenizer)
+        if not eos_token_ids:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="server tokenizer has no EOS configuration",
+            )
+
+        max_new_tokens = req.max_tokens or config.default_max_new_tokens
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        created = int(time.time())
+        prompt_token_count = len(prompt_ids)
+
+        # Admission control. Failures surface as 429 (REJECT) or
+        # 429-after-timeout (QUEUE).
+        await _admit(sem=admission_sem, config=config)
+        metrics.record_admission(admitted=True)
+
+        session = store.create_session(eos_token_ids=tuple(eos_token_ids))
+
+        try:
+            try:
+                append_coord.append_tokens(session.session_id, prompt_ids)
+            except Exception as exc:  # noqa: BLE001 - surface every prefill error
+                store.close_session(session.session_id)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"prefill error: {type(exc).__name__}: {exc}",
+                ) from exc
+
+            if req.stream:
+                return EventSourceResponse(
+                    _stream_session(
+                        gen_coord=gen_coord,
+                        session_id=session.session_id,
+                        request=request,
+                        verifier=verifier,
+                        completion_id=completion_id,
+                        created=created,
+                        model_label=model_label,
+                        max_tokens=max_new_tokens,
+                        eos_token_ids=eos_token_ids,
+                        metrics=metrics,
+                        store=store,
+                        admission_sem=admission_sem,
+                    ),
+                    media_type="text/event-stream",
+                )
+
+            try:
+                output_token_ids, stopped_on_eos = (
+                    await _collect_session_tokens(
+                        gen_coord=gen_coord,
+                        session_id=session.session_id,
+                        max_tokens=max_new_tokens,
+                        request=request,
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"engine error: {exc}",
+                ) from exc
+
+            completion_text = verifier.tokenizer.decode(
+                output_token_ids, skip_special_tokens=True,
+            )
+            finish_reason = "stop" if stopped_on_eos else "length"
+
+            metrics.record_completion(
+                finish_reason=finish_reason,
+                n_tokens=len(output_token_ids),
+                acceptance_rate=None,
+            )
+
+            return JSONResponse(
+                content=ChatCompletionResponse(
+                    id=completion_id,
+                    created=created,
+                    model=model_label,
+                    choices=[
+                        ChatCompletionChoice(
+                            index=0,
+                            message=ChatCompletionResponseMessage(
+                                role="assistant", content=completion_text,
+                            ),
+                            finish_reason=finish_reason,
+                        )
+                    ],
+                    usage=ChatCompletionUsage(
+                        prompt_tokens=prompt_token_count,
+                        completion_tokens=len(output_token_ids),
+                        total_tokens=(
+                            prompt_token_count + len(output_token_ids)
+                        ),
+                    ),
+                ).model_dump(),
+            )
+        finally:
+            # Non-streaming path closes the session here. The streaming
+            # path's generator owns its own teardown — the EventSource
+            # flow is asynchronous so the session lifecycle is handled
+            # in _stream_session's finally.
+            if not req.stream:
+                try:
+                    store.close_session(session.session_id)
+                except SessionNotFoundError:
+                    pass
+                admission_sem.release()
+
+
+# ---------------------------------------------------------------------------
+# Generation drivers
+# ---------------------------------------------------------------------------
+
+
+async def _collect_session_tokens(
+    *,
+    gen_coord: GenerationCoordinator,
+    session_id: str,
+    max_tokens: int,
     request: Request,
     disconnect_poll_interval_s: float = 0.05,
-) -> List[int]:
-    """Drain a non-streaming session while honoring client disconnects.
+) -> tuple[List[int], bool]:
+    """Drain the generator coordinator while honoring client disconnects.
 
-    Streaming responses already poll ``request.is_disconnected()`` and
-    cancel their scheduler session. JSON responses need the same cleanup:
-    a timed-out client otherwise leaves the scheduler worker running until
-    generation finishes, which can monopolize a single-slot server.
+    Runs the synchronous ``GenerationCoordinator.generate`` iterator
+    in a background thread (it's CPU-bound on the verifier, not
+    async), polling ``request.is_disconnected()`` between events.
+    Returns ``(emitted_token_ids, stopped_on_eos)``.
     """
-    output_token_ids: List[int] = []
+    output: List[int] = []
+    stopped_on_eos = False
+
+    # Run the generator in a thread to keep the event loop responsive
+    # to disconnect polling. Use a queue to pipe events back.
+    queue: asyncio.Queue = asyncio.Queue()
+    sentinel = object()
+
+    def _drain():
+        try:
+            for event in gen_coord.generate(
+                session_id, max_tokens=max_tokens,
+            ):
+                queue.put_nowait(event)
+        except Exception as exc:  # noqa: BLE001 - propagate as a queue item
+            queue.put_nowait(exc)
+        finally:
+            queue.put_nowait(sentinel)
+
+    drain_task = asyncio.create_task(asyncio.to_thread(_drain))
+
     last_disconnect_check = time.monotonic()
-    async for tok in scheduler.iter_tokens(session):
-        output_token_ids.append(int(tok))
-        now = time.monotonic()
-        if (now - last_disconnect_check) >= disconnect_poll_interval_s:
-            last_disconnect_check = now
-            if await request.is_disconnected():
-                await scheduler.cancel_session(session)
-    return output_token_ids
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(),
+                    timeout=disconnect_poll_interval_s,
+                )
+            except asyncio.TimeoutError:
+                if await request.is_disconnected():
+                    drain_task.cancel()
+                    raise asyncio.CancelledError() from None
+                continue
+
+            if event is sentinel:
+                break
+            if isinstance(event, BaseException):
+                raise event
+            if isinstance(event, TokenEvent):
+                output.append(event.token_id)
+            elif isinstance(event, DoneEvent):
+                stopped_on_eos = event.stop_reason == STOP_REASON_EOS
+            elif isinstance(event, HistoryTruncatedEvent):
+                # Non-streaming path doesn't surface this; ignore.
+                continue
+
+            now = time.monotonic()
+            if (now - last_disconnect_check) >= disconnect_poll_interval_s:
+                last_disconnect_check = now
+                if await request.is_disconnected():
+                    drain_task.cancel()
+                    raise asyncio.CancelledError()
+    finally:
+        if not drain_task.done():
+            drain_task.cancel()
+            try:
+                await drain_task
+            except (asyncio.CancelledError, BaseException):
+                pass
+
+    return output, stopped_on_eos
 
 
-async def _stream_via_scheduler(
+async def _stream_session(
     *,
-    scheduler: Scheduler,
-    session: Session,
+    gen_coord: GenerationCoordinator,
+    session_id: str,
     request: Request,
-    engine: Engine,
+    verifier,
     completion_id: str,
     created: int,
+    model_label: str,
+    max_tokens: int,
+    eos_token_ids: List[int],
     metrics: Metrics,
+    store: SessionStore,
+    admission_sem: asyncio.Semaphore,
     disconnect_poll_interval_s: float = 0.05,
 ) -> AsyncIterator[dict]:
-    """SSE async generator that drains :meth:`Scheduler.iter_tokens`.
-
-    Implements the OpenAI streaming chunk protocol on top of a
-    scheduler-managed session. Polls ``request.is_disconnected()`` on
-    a wall-clock interval; on disconnect, calls
-    ``scheduler.cancel_session`` to short-circuit generation.
-
-    The generator yields ``{"data": "<json>"}`` envelopes (the format
-    sse-starlette consumes), terminated by ``{"data": "[DONE]"}``.
-    """
-    import asyncio
-
-    model_label = engine.model_id_label
-    detok = _StreamingDetokenizer(engine.tokenizer)
+    """SSE async generator that drains the GenerationCoordinator."""
+    detok = _StreamingDetokenizer(verifier.tokenizer)
 
     def envelope(content_delta, role_delta, finish_reason) -> dict:
         chunk = ChatCompletionChunk(
@@ -563,57 +663,93 @@ async def _stream_via_scheduler(
         )
         return {"data": chunk.model_dump_json()}
 
-    yield envelope(content_delta=None, role_delta="assistant", finish_reason=None)
+    yield envelope(
+        content_delta=None, role_delta="assistant", finish_reason=None,
+    )
 
-    last_disconnect_check = time.monotonic()
+    queue: asyncio.Queue = asyncio.Queue()
+    sentinel = object()
+    n_tokens = 0
     cancelled_by_disconnect = False
+
+    def _drain():
+        try:
+            for event in gen_coord.generate(session_id, max_tokens=max_tokens):
+                queue.put_nowait(event)
+        except Exception as exc:  # noqa: BLE001 - swallow, surface terminal chunk
+            queue.put_nowait(exc)
+        finally:
+            queue.put_nowait(sentinel)
+
+    drain_task = asyncio.create_task(asyncio.to_thread(_drain))
+    last_disconnect_check = time.monotonic()
+    stopped_on_eos = False
+
     try:
-        async for tok in scheduler.iter_tokens(session):
-            delta = detok.feed(int(tok))
-            if delta:
-                yield envelope(
-                    content_delta=delta, role_delta=None, finish_reason=None,
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(),
+                    timeout=disconnect_poll_interval_s,
                 )
+            except asyncio.TimeoutError:
+                if await request.is_disconnected():
+                    cancelled_by_disconnect = True
+                    drain_task.cancel()
+                    break
+                continue
+            if event is sentinel:
+                break
+            if isinstance(event, BaseException):
+                # Verifier raised mid-stream. Once SSE has started
+                # there's no way to surface a 500; close gracefully
+                # with finish_reason="stop".
+                break
+            if isinstance(event, TokenEvent):
+                n_tokens += 1
+                delta = detok.feed(event.token_id)
+                if delta:
+                    yield envelope(
+                        content_delta=delta, role_delta=None, finish_reason=None,
+                    )
+            elif isinstance(event, DoneEvent):
+                stopped_on_eos = event.stop_reason == STOP_REASON_EOS
+            elif isinstance(event, HistoryTruncatedEvent):
+                # Stream contract: this event arrives BEFORE the
+                # first TokenEvent. We don't surface it on the
+                # OpenAI wire (no analog). Ignore.
+                continue
+
             now = time.monotonic()
             if (now - last_disconnect_check) >= disconnect_poll_interval_s:
                 last_disconnect_check = now
                 if await request.is_disconnected():
                     cancelled_by_disconnect = True
-                    await scheduler.cancel_session(session)
-                    # Drain remaining tokens (will exit shortly because
-                    # the on_token callback inside the scheduler now
-                    # returns True).
-    except BaseException:  # noqa: BLE001 — surface as terminal chunk
-        # Engine errors mid-stream end the SSE stream gracefully; the
-        # client sees a finish_reason="stop" with no further content.
-        # We deliberately do NOT raise here — once SSE has started,
-        # there is no way to send a 500 status; the OpenAI clients
-        # also expect graceful termination on errors.
-        pass
+                    drain_task.cancel()
+                    break
+    finally:
+        if not drain_task.done():
+            drain_task.cancel()
+            try:
+                await drain_task
+            except (asyncio.CancelledError, BaseException):
+                pass
+        try:
+            store.close_session(session_id)
+        except SessionNotFoundError:
+            pass
+        admission_sem.release()
 
-    # Terminal chunk: derive finish_reason from session state.
-    if cancelled_by_disconnect or session.state is SessionState.CANCELLED:
-        finish_reason = "stop"
-    elif session.state is SessionState.COMPLETED:
-        # Did we end on EOS or hit max_tokens?
-        if (
-            session.output_token_ids
-            and session.output_token_ids[-1]
-            in set(session.eos_token_ids)
-        ):
-            finish_reason = "stop"
-        else:
-            finish_reason = "length"
-    else:
-        # FAILED or some other terminal — be conservative.
-        finish_reason = "stop"
-
+    finish_reason = (
+        "stop" if (stopped_on_eos and not cancelled_by_disconnect)
+        else "length"
+    )
     yield envelope(
         content_delta=None, role_delta=None, finish_reason=finish_reason,
     )
     metrics.record_completion(
         finish_reason=finish_reason,
-        n_tokens=len(session.output_token_ids),
+        n_tokens=n_tokens,
         acceptance_rate=None,
     )
     yield {"data": "[DONE]"}
