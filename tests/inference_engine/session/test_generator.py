@@ -431,3 +431,77 @@ class TestConstructorAndEventDataclasses:
         )
         with pytest.raises(Exception):
             e.generated_token_count = 2  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# PR-E1c — Generation also syncs the slab byte count after each call.
+# Mirrors test_coordinator.py::TestSlabBytesSync for the AppendTokens path.
+# ---------------------------------------------------------------------------
+
+
+def _slab_pool_for_test():
+    import torch as _torch
+    from inference_engine.memory.pool import SlabPool
+    from inference_engine.memory.slab import SlabConfig
+    cfg = SlabConfig(
+        num_layers=1, num_heads=1, sink_size=1,
+        window_size=2, head_dim=4, dtype=_torch.float32,
+    )
+    return SlabPool(num_slabs=1, slab_config=cfg)
+
+
+class TestGenerationSyncsSlabBytes:
+    def test_max_tokens_path_syncs_slab_bytes(self):
+        pool = _slab_pool_for_test()
+        fv = FakeVerifier()
+        store = SessionStore(
+            capacity=1, cache_inspector=fv, slab_pool=pool,
+        )
+        AppendTokensCoordinator(store, fv).append_tokens(
+            store._sessions[next(iter(store._sessions))].session_id,
+            [1, 2, 3],
+        ) if False else None  # noqa: E501 - placeholder; real dispatch below
+
+        sess = list(store._sessions.values())[0] if store._sessions else None
+        if sess is None:
+            sess = store.create_session()
+        # Drive append → generate → expect override updated.
+        AppendTokensCoordinator(store, fv).append_tokens(
+            sess.session_id, [1, 2, 3],
+        )
+        before = sess.slab.live_kv_bytes_override
+        gen = GenerationCoordinator(store, fv)
+        events = list(gen.generate(sess.session_id, max_tokens=4))
+        assert any(isinstance(e, TokenEvent) for e in events)
+        # After generate, override has been re-synced (k_seq grew).
+        after = sess.slab.live_kv_bytes_override
+        assert after is not None and after >= before  # type: ignore[operator]
+        # Concrete value: equals current k_seq * per-token bytes.
+        assert after == (
+            len(fv.cached_token_sequence) * FakeVerifier.BYTES_PER_KV_TOKEN
+        )
+
+    def test_eos_path_syncs_slab_bytes(self):
+        pool = _slab_pool_for_test()
+        fv = FakeVerifier()
+        # FakeVerifier's vocab_size is 16; pick an EOS within range.
+        eos_id = 7
+        store = SessionStore(
+            capacity=1, cache_inspector=fv, slab_pool=pool,
+        )
+        sess = store.create_session(eos_token_ids=(eos_id,))
+        AppendTokensCoordinator(store, fv).append_tokens(
+            sess.session_id, [1, 2, 3],
+        )
+        # Force the FakeVerifier to emit eos_id as the next token.
+        fv.next_token_logits = torch.zeros_like(fv.next_token_logits)
+        fv.next_token_logits[eos_id] = 1.0
+        gen = GenerationCoordinator(store, fv)
+        events = list(gen.generate(sess.session_id, max_tokens=4))
+        # EOS path was hit.
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert done and done[0].stop_reason == "eos"
+        # Slab override is set to the verifier's reported live bytes.
+        assert sess.slab.live_kv_bytes_override == (
+            len(fv.cached_token_sequence) * FakeVerifier.BYTES_PER_KV_TOKEN
+        )
