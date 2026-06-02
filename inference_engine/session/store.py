@@ -182,14 +182,23 @@ class Session:
         return time.monotonic() - self.last_active_at
 
     def kv_live_bytes(self) -> int:
-        """Live KV bytes held by this session's slab.
+        """Live KV bytes held by this session's KV cache.
 
-        Returns the slab's reported live KV bytes (the verifier
-        wiring keeps ``slab.live_kv_bytes_override`` synced to its
-        real ``stats.peak_kv_bytes`` snapshot — see
-        ``PooledVerifier._sync_slab_bytes`` for the existing CPU/MLX
-        contract that PR-A3b reuses). When the session has no slab
-        (pool-less store), returns 0.
+        Returns the slab's ``live_kv_bytes_override`` field, which is
+        kept in sync with the verifier's true cache size by:
+
+          * The HTTP shim's :class:`PooledVerifier._sync_slab_bytes`
+            (writes ``verifier.stats.peak_kv_bytes`` after every
+            forward — running max).
+          * The gRPC path's coordinator-level ``_sync_slab_bytes``
+            helper (writes ``verifier.kv_live_bytes(session)`` after
+            every forward — current live bytes; PR-E1c).
+
+        The ``Session`` object itself never knows about the verifier;
+        the slab is the single piece of session-bound state that
+        bridges the verifier and the gRPC ``GetSessionInfo`` field.
+
+        Returns 0 when the session has no slab (pool-less store).
         """
         if self.slab is None:
             return 0

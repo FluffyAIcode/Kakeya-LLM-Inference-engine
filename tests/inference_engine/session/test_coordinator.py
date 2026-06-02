@@ -114,6 +114,17 @@ class FakeVerifier:
         del session
         return len(self.cached_token_sequence)
 
+    def kv_live_bytes(self, session: object) -> int:  # noqa: ARG002 — protocol
+        """Mirror the real verifier's ``kv_live_bytes`` contract:
+        ``k_seq_length × per-token bytes``. Tests use a synthetic
+        ``BYTES_PER_KV_TOKEN = 17`` (a deliberately odd prime so we can
+        tell apart "K/V bytes computed correctly" from "any old fixed
+        constant"). PR-E1c."""
+        del session
+        return len(self.cached_token_sequence) * self.BYTES_PER_KV_TOKEN
+
+    BYTES_PER_KV_TOKEN: int = 17
+
     def prefill(self, prompt_ids: List[int]) -> None:
         self.call_log.append(("prefill", tuple(prompt_ids)))
         self.cached_token_sequence = self._sink_window_trim(prompt_ids)
@@ -156,11 +167,105 @@ def test_fake_verifier_is_structurally_a_verifier_protocol():
     assert callable(fv.forward_block)
     assert callable(fv.commit_or_truncate)
     assert callable(fv.k_seq_length)
+    assert callable(fv.kv_live_bytes)
     assert isinstance(fv.cached_token_sequence, list)
     assert isinstance(fv.next_global_position, int)
     assert isinstance(fv.next_token_logits, torch.Tensor)
     # Confirms the public name re-exports cleanly.
     _: VerifierProtocol = fv  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# PR-E1c — slab byte-count sync (the mechanism behind
+# GetSessionInfo.kv_live_bytes returning real bytes instead of 0)
+# ---------------------------------------------------------------------------
+
+
+def _slab_pool_for_test(num_slabs: int = 1):
+    """Build a tiny SlabPool the SessionStore can use; the real KV
+    accounting comes from the verifier (PR-E1c), so the slab dims
+    here are just placeholders sized to compile."""
+    from inference_engine.memory.pool import SlabPool
+    from inference_engine.memory.slab import SlabConfig
+
+    cfg = SlabConfig(
+        num_layers=1, num_heads=1, sink_size=1,
+        window_size=2, head_dim=4, dtype=torch.float32,
+    )
+    return SlabPool(num_slabs=num_slabs, slab_config=cfg)
+
+
+class TestSlabBytesSync:
+    """Verifies that AppendTokensCoordinator writes the verifier's
+    current kv_live_bytes onto session.slab.live_kv_bytes_override
+    after every successful mutation. This is the wiring that closes
+    PR-E1b's `kv_live_bytes=0` reporting bug."""
+
+    def test_append_tokens_syncs_slab_bytes_after_first_prefill(self):
+        pool = _slab_pool_for_test()
+        fv = FakeVerifier(sink_size=2, window_size=4)
+        store = SessionStore(capacity=1, cache_inspector=fv, slab_pool=pool)
+        coord = AppendTokensCoordinator(store, fv)
+        sess = store.create_session()
+
+        # Slab override starts unset (None).
+        assert sess.slab is not None
+        assert sess.slab.live_kv_bytes_override is None
+
+        coord.append_tokens(sess.session_id, [10, 20, 30])
+
+        # After prefill, k_seq=3 (under sink+window), so the slab
+        # override = 3 * BYTES_PER_KV_TOKEN.
+        expected = 3 * FakeVerifier.BYTES_PER_KV_TOKEN
+        assert sess.slab.live_kv_bytes_override == expected
+        assert sess.kv_live_bytes() == expected
+
+    def test_append_tokens_syncs_after_forward_block(self):
+        pool = _slab_pool_for_test()
+        fv = FakeVerifier(sink_size=2, window_size=4)
+        store = SessionStore(capacity=1, cache_inspector=fv, slab_pool=pool)
+        coord = AppendTokensCoordinator(store, fv)
+        sess = store.create_session()
+
+        coord.append_tokens(sess.session_id, [10, 20, 30])
+        coord.append_tokens(sess.session_id, [40, 50])
+
+        # k_seq is now sink+window-trimmed = 2 + 4 = 6 (capped).
+        # Sequence appended: [10,20,30,40,50] -> trim to [10,20,20,30,40,50]
+        # FakeVerifier: trim keeps first 2 sink + last 4 window = 6 tokens.
+        # Slab override = 6 * BYTES_PER_KV_TOKEN.
+        assert sess.slab.live_kv_bytes_override is not None
+        assert sess.slab.live_kv_bytes_override == (
+            len(fv.cached_token_sequence) * FakeVerifier.BYTES_PER_KV_TOKEN
+        )
+
+    def test_append_tokens_no_slab_is_noop(self):
+        # SessionStore without a slab_pool means session.slab is None;
+        # the sync helper must short-circuit cleanly.
+        fv = FakeVerifier()
+        store = SessionStore(capacity=1)  # no slab_pool
+        coord = AppendTokensCoordinator(store, fv)
+        sess = store.create_session()
+        assert sess.slab is None
+        # Should NOT raise.
+        coord.append_tokens(sess.session_id, [10, 20, 30])
+        # Session.kv_live_bytes() returns 0 (no slab).
+        assert sess.kv_live_bytes() == 0
+
+    def test_empty_append_does_not_overwrite_slab_override(self):
+        # Empty append is a no-op; coordinator returns early before
+        # calling _sync_slab_bytes. The slab override should keep
+        # whatever value the previous append set.
+        pool = _slab_pool_for_test()
+        fv = FakeVerifier(sink_size=2, window_size=4)
+        store = SessionStore(capacity=1, cache_inspector=fv, slab_pool=pool)
+        coord = AppendTokensCoordinator(store, fv)
+        sess = store.create_session()
+
+        coord.append_tokens(sess.session_id, [10, 20, 30])
+        before = sess.slab.live_kv_bytes_override
+        coord.append_tokens(sess.session_id, [])  # empty
+        assert sess.slab.live_kv_bytes_override == before
 
 
 # ---------------------------------------------------------------------------
