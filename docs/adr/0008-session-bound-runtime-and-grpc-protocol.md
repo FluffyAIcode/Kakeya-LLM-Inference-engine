@@ -775,12 +775,44 @@ parallelize.
 
 ### 6.4 Phase D — Deprecated HTTP+SSE shim
 
-- **PR-D1**: Update `inference_engine/server/app.py` so each
-  `/v1/chat/completions` request creates a single-shot session under
-  the new `SessionStore`, prefills, generates, and closes. Removes
-  any path-selection / cross-request logic (none of which exists on
-  `main` after C3). Adds `Deprecation` / `Sunset` headers. Updates
-  the existing 461-test integration suite to match.
+*(scope split, recorded 2026-06-01 during implementation of PR-D1.)*
+
+The original PR-D1 entry conflated two coupled changes:
+
+  (a) Remove the ADR 0007 dead code from the server-side surface
+      (path_selection metrics, `_emit_path_selection_metric` helper,
+      `engine_result` field on the scheduler session, etc.).
+  (b) Refactor the HTTP shim's chat-completions handler onto the new
+      `SessionStore` so each request becomes a single-shot session
+      (prefill → generate → close) instead of being driven by the
+      legacy `PooledVerifier`.
+
+(a) is a pure subtraction: the dead code was reachable only from the
+ADR 0007 path_select stack that PR-A3 already removed from the
+verifier side; the server-side metrics and helpers it left behind
+are unreachable at runtime in any healthy completion. (b) is a
+larger refactor of feature-frozen code (per §2.7), with a
+corresponding test-update tail.
+
+The two are split, same pattern as PR-A3 / PR-A3b:
+
+- **PR-D1** (this PR, dead-code removal): cleans up §6.6 rows for
+  `app.py` / `engine.py` / `metrics.py` / `scheduler/session.py` /
+  `bench_long_session.py`. The HTTP shim continues to use
+  `PooledVerifier` exactly as before; nothing user-observable
+  changes except the disappearance of the four ADR 0007 metrics
+  from `/metrics` and the `acceptance_rate` field from the OpenAI
+  response (the latter was sourced from `engine_result`, which is
+  gone). 100% Linux unit coverage.
+
+- **PR-D2** (queued, not in PR-D1's diff): the HTTP-shim refactor
+  proper. Each `/v1/chat/completions` request creates a single-shot
+  session under `SessionStore`, prefills, generates, and closes;
+  `PooledVerifier` is retired. Adds `Deprecation` / `Sunset`
+  headers per §2.7. Updates the existing integration suite to
+  match. Linux-only path; §9 carve-out continues to apply. PR-D2
+  is non-blocking for v0.3 GA — the deprecated shim works on
+  `main` post-PR-D1 in its v0.3.0-rc1 shape, just lighter.
 
 ### 6.5 Phase E — Mac M4 integration test marker + CI workflow
 
