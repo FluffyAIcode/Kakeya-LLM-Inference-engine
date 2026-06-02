@@ -88,6 +88,7 @@ jobs:
             tests/inference_engine/scheduler/ \
             tests/inference_engine/pipeline/ \
             tests/inference_engine/session/ \
+            tests/inference_engine/bench/ \
             tests/sdk/python/ \
             tests/training/repr_align/ \
             tests/backends/mlx/test_env.py \

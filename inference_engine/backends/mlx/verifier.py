@@ -103,6 +103,25 @@ class MLXSinkWindowVerifier:
         self.quantization: QuantizationInfo = detect_quantization(self.model)
         self.stats = VerifierStats(weight_bytes=self.quantization.total_weight_bytes)
 
+        # PR-E1c: precompute per-K/V-token byte cost for the
+        # ``kv_live_bytes`` accessor. Mirrors the CPU verifier;
+        # reads dims from the wrapped HF config so GQA / MQA via
+        # ``num_key_value_heads`` is honored.
+        cfg = self.model.config if hasattr(self.model, "config") else self.model
+        num_layers = int(getattr(cfg, "num_hidden_layers"))
+        num_kv_heads = int(
+            getattr(cfg, "num_key_value_heads", None)
+            or getattr(cfg, "num_attention_heads")
+        )
+        head_dim = int(
+            getattr(cfg, "head_dim", None)
+            or (cfg.hidden_size // cfg.num_attention_heads)
+        )
+        itemsize = torch.tensor([], dtype=self.config.dtype).element_size()
+        self._bytes_per_kv_token = (
+            num_layers * num_kv_heads * head_dim * itemsize * 2
+        )
+
     # ---------------------------- public API ---------------------------- #
 
     def reset(self) -> None:
@@ -221,6 +240,17 @@ class MLXSinkWindowVerifier:
         """
         del session  # unused in v0.3 single-tenant scope
         return self._cache_buffer_size()
+
+    def kv_live_bytes(self, session: object) -> int:
+        """Return the live K/V cache size in bytes for ``session``.
+
+        Mirrors the CPU verifier's :meth:`kv_live_bytes`; computed as
+        ``k_seq_length × num_layers × num_kv_heads × head_dim ×
+        itemsize × 2``. PR-E1c — feeds ``GetSessionInfo.kv_live_bytes``
+        through the coordinator's slab-write-through.
+        """
+        del session  # unused in v0.3 single-tenant scope
+        return self._cache_buffer_size() * self._bytes_per_kv_token
 
     # --------------------------- internals --------------------------- #
 

@@ -51,7 +51,10 @@ from typing import Iterator, Optional, Union
 
 import torch
 
-from inference_engine.session.coordinator import VerifierProtocol
+from inference_engine.session.coordinator import (
+    VerifierProtocol,
+    _sync_slab_bytes,
+)
 from inference_engine.session.store import SessionStore
 
 
@@ -226,6 +229,12 @@ class GenerationCoordinator:
             yield TokenEvent(token_id=next_token)
 
             if next_token in eos_set:
+                # Mirror final KV bytes onto the slab so the next
+                # GetSessionInfo reads the correct live count
+                # (PR-E1c). Once the cache is at sink+window
+                # capacity, this value plateaus and the caller can
+                # observe the architectural KV bound empirically.
+                _sync_slab_bytes(session, self._verifier)
                 yield DoneEvent(
                     stop_reason=STOP_REASON_EOS,
                     generated_token_count=generated_count,
@@ -234,6 +243,7 @@ class GenerationCoordinator:
                 )
                 return
 
+        _sync_slab_bytes(session, self._verifier)
         yield DoneEvent(
             stop_reason=STOP_REASON_MAX_TOKENS,
             generated_token_count=generated_count,
