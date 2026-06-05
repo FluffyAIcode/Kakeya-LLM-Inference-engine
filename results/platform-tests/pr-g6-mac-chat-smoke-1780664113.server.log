@@ -1,0 +1,6 @@
+2026-06-05 20:55:15,083 kakeya.grpc-runtime INFO loading verifier backend=cpu id=Qwen/Qwen3-0.6B sink=4 window=64
+2026-06-05 20:55:17,120 kakeya.grpc-runtime INFO verifier dims: layers=28 kv_heads=8 head_dim=128 capacity=68
+2026-06-05 20:55:17,123 inference_engine.server.grpc_app INFO gRPC RuntimeService bound to 127.0.0.1:50098
+2026-06-05 20:55:17,124 kakeya.grpc-runtime INFO kakeya gRPC RuntimeService listening on 127.0.0.1:50098
+2026-06-05 20:55:21,921 kakeya.grpc-runtime INFO received signal 15; initiating graceful shutdown
+2026-06-05 20:55:21,921 kakeya.grpc-runtime INFO kakeya gRPC RuntimeService stopped cleanly

@@ -1,0 +1,13 @@
+[chat] loading tokenizer Qwen/Qwen3-0.6B ...
+Kakeya v0.3 chat — 127.0.0.1:50098  (Qwen/Qwen3-0.6B)
+Session-bound runtime: server keeps history, you only send new tokens per turn.
+Type /help for commands; Ctrl-D or empty line to quit.
+
+you> kakeya> Hello! How can I assist you today?
+you> kakeya> I don't have a favorite color, but I can help you with anything else! Let me know if there's something
+you>   history_length = 77
+  kv_live_bytes  = 7,798,784
+  idle_seconds   = 0.001
+  inv1_violations= 0
+  inv2_violations= 0
+you> [bye]

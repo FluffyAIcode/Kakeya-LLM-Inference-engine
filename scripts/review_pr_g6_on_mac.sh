@@ -75,7 +75,10 @@ What is your favorite color?
 INPUT
 
 # Acceptance: chat output contains at least 2 'kakeya>' response prompts.
-n_responses=$(grep -c '^kakeya> ' "$chat_log" || true)
+# With piped stdin, Python's input() prompt and the next printed prompt
+# share a line (for example: "you> kakeya> ..."), so count occurrences
+# instead of line starts.
+n_responses=$( (grep -o 'kakeya> ' "$chat_log" || true) | wc -l | tr -d '[:space:]')
 echo "    chat_log: $chat_log"
 echo "    response prompts: $n_responses (expect >=2)"
 

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "pr_g6_mac_chat_smoke",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "n_chat_responses": 2,
+  "passed": true
+}
