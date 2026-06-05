@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "pr_g5_mac_prewarm",
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "server_preflight_exit_code": 2,
+  "server_preflight_passed": true
+}

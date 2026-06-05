@@ -11,7 +11,9 @@ Kept under ``inference_engine.setup`` rather than under
 from .prewarm import (
     HF_CACHE_DEFAULT,
     PrewarmStatus,
+    assert_cached_or_raise,
     cache_dir_for_model,
+    free_disk_bytes,
     is_model_in_cache,
     prewarm_model_id,
     snapshot_size_bytes,
@@ -20,7 +22,9 @@ from .prewarm import (
 __all__ = [
     "HF_CACHE_DEFAULT",
     "PrewarmStatus",
+    "assert_cached_or_raise",
     "cache_dir_for_model",
+    "free_disk_bytes",
     "is_model_in_cache",
     "prewarm_model_id",
     "snapshot_size_bytes",
