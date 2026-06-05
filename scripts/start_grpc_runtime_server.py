@@ -108,6 +108,19 @@ async def _serve(args: argparse.Namespace) -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
+    # Pre-flight: fail fast on a cold HF cache instead of silently
+    # blocking server boot on a multi-GB download with no progress
+    # feedback. Skip when --skip-cache-check is set (useful in CI
+    # workflows that intentionally trigger first-run download in a
+    # controlled context).
+    if not args.skip_cache_check:
+        from inference_engine.setup import assert_cached_or_raise
+        try:
+            assert_cached_or_raise(args.verifier_id)
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
     _LOG.info(
         "loading verifier backend=%s id=%s sink=%d window=%d",
         args.backend, args.verifier_id, args.sink, args.window,
@@ -199,6 +212,14 @@ def main() -> int:
                          "SIGTERM/SIGINT before hard-aborting.")
     ap.add_argument("--log-level", default="INFO",
                     choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    ap.add_argument("--skip-cache-check", action="store_true",
+                    help="Skip the HF-cache pre-flight assertion. By "
+                         "default the server fails fast if the verifier "
+                         "model isn't already cached, pointing the user "
+                         "at scripts/kakeya_prewarm.py. Use this flag in "
+                         "CI workflows that have populated the cache "
+                         "out-of-band, or when intentionally accepting "
+                         "the first-run download.")
     args = ap.parse_args()
 
     return asyncio.run(_serve(args))
