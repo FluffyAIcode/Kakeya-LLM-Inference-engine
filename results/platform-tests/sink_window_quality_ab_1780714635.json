@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "kind": "full_context_1p7b_vs_kakeya_pv_sink_window_quality_ab",
+  "no_mock_no_fake_no_fallback": true,
+  "started_at": 1780714635.7792299,
+  "finished_at": 1780715237.851488,
+  "duration_s": 602.072258234024,
+  "host": {
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12"
+  },
+  "config": {
+    "backend": "cpu",
+    "verifier_id": "Qwen/Qwen3-1.7B",
+    "proposer_id": "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1",
+    "proposer_impl": "sparse",
+    "baseline": {
+      "arm": "full_context_1p7b_greedy",
+      "sink": 0,
+      "window": 2048,
+      "budget_tokens": 2048
+    },
+    "bounded": {
+      "arm": "kakeya_proposer_verifier_engine",
+      "sink": 4,
+      "window": 64,
+      "budget_tokens": 68,
+      "block_size": 8,
+      "num_diffusion_steps": 2
+    },
+    "max_new_tokens": 24,
+    "scoring": "deterministic exact string/number rules over real model outputs; no judge model, no retrieval, no summary fallback"
+  },
+  "aggregate": {
+    "n": 6,
+    "baseline_acc": 1.0,
+    "bounded_acc": 0.16666666666666666,
+    "quality_delta_vs_full_context": -0.8333333333333334,
+    "bounded_retention_given_baseline_success": 0.16666666666666666,
+    "by_category": {
+      "exact_quote_recall": {
+        "n": 1,
+        "baseline_acc": 1.0,
+        "bounded_acc": 0.0,
+        "quality_delta_vs_full_context": -1.0
+      },
+      "hallucination_guard_acc": {
+        "n": 1,
+        "baseline_acc": 1.0,
+        "bounded_acc": 0.0,
+        "quality_delta_vs_full_context": -1.0
+      },
+      "instruction_persistence_acc": {
+        "n": 1,
+        "baseline_acc": 1.0,
+        "bounded_acc": 0.0,
+        "quality_delta_vs_full_context": -1.0
+      },
+      "long_dependency_acc": {
+        "n": 1,
+        "baseline_acc": 1.0,
+        "bounded_acc": 0.0,
+        "quality_delta_vs_full_context": -1.0
+      },
+      "middle_fact_recall": {
+        "n": 1,
+        "baseline_acc": 1.0,
+        "bounded_acc": 0.0,
+        "quality_delta_vs_full_context": -1.0
+      },
+      "recent_window_acc": {
+        "n": 1,
+        "baseline_acc": 1.0,
+        "bounded_acc": 1.0,
+        "quality_delta_vs_full_context": 0.0
+      }
+    },
+    "kv": {
+      "baseline_max_kv_live_bytes": 56311808,
+      "bounded_max_kv_live_bytes": 7798784,
+      "bounded_kv_plateau_tokens": 68
+    },
+    "latency": {
+      "baseline_mean_s": 13.0713620344953,
+      "bounded_mean_s": 85.968310555676
+    }
+  },
+  "cases": [
+    {
+      "case": {
+        "case_id": "middle_fact_code",
+        "category": "middle_fact_recall",
+        "description": "Secret code is in the middle, outside a 4+64 live KV window.",
+        "user_prompt": "early note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nImportant fact: the checkpoint code is ORCHID-7429.\n\nmiddle note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 08: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 09: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nQuestion: what is the checkpoint code? Answer only the code.",
+        "expected": "ORCHID-7429",
+        "score_mode": "contains"
+      },
+      "baseline": {
+        "ok": true,
+        "output_text": "ORCHID-7429",
+        "latency_s": 15.367535416036844,
+        "prompt_tokens": 482,
+        "generated_tokens": 9,
+        "k_seq_length": 491,
+        "kv_live_bytes": 56311808,
+        "peak_kv_bytes": 56311808,
+        "forward_calls": 10,
+        "tokens_consumed": 491,
+        "truncated_dropped_tokens": 0,
+        "acceptance_rate": null,
+        "proposer_forward_calls": null,
+        "proposer_diffusion_steps": null,
+        "proposer_weight_bytes": null,
+        "proposer_peak_activation_bytes": null
+      },
+      "bounded": {
+        "ok": false,
+        "output_text": "ORCID: 0000-0003-4664-0261",
+        "latency_s": 235.94286629196722,
+        "prompt_tokens": 482,
+        "generated_tokens": 24,
+        "k_seq_length": 68,
+        "kv_live_bytes": 7798784,
+        "peak_kv_bytes": 7798784,
+        "forward_calls": 38,
+        "tokens_consumed": 624,
+        "truncated_dropped_tokens": 414,
+        "acceptance_rate": 0.04838709677419355,
+        "proposer_forward_calls": 37,
+        "proposer_diffusion_steps": 37,
+        "proposer_weight_bytes": 1192099840,
+        "proposer_peak_activation_bytes": 2430976
+      },
+      "quality_delta_vs_full_context": -1
+    },
+    {
+      "case": {
+        "case_id": "exact_variable_quote",
+        "category": "exact_quote_recall",
+        "description": "A variable name is buried in the middle context.",
+        "user_prompt": "early note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nImportant fact: the exact variable name is sapphire_delta_vector.\n\nmiddle note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 08: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 09: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nQuestion: what is the exact variable name? Answer only the variable name.",
+        "expected": "sapphire_delta_vector",
+        "score_mode": "contains"
+      },
+      "baseline": {
+        "ok": true,
+        "output_text": "sapphire_delta_vector",
+        "latency_s": 15.414451999939047,
+        "prompt_tokens": 481,
+        "generated_tokens": 5,
+        "k_seq_length": 486,
+        "kv_live_bytes": 55738368,
+        "peak_kv_bytes": 56311808,
+        "forward_calls": 16,
+        "tokens_consumed": 977,
+        "truncated_dropped_tokens": 0,
+        "acceptance_rate": null,
+        "proposer_forward_calls": null,
+        "proposer_diffusion_steps": null,
+        "proposer_weight_bytes": null,
+        "proposer_peak_activation_bytes": null
+      },
+      "bounded": {
+        "ok": false,
+        "output_text": "sensitive_variable_name",
+        "latency_s": 50.3047820830252,
+        "prompt_tokens": 481,
+        "generated_tokens": 5,
+        "k_seq_length": 68,
+        "kv_live_bytes": 7798784,
+        "peak_kv_bytes": 7798784,
+        "forward_calls": 6,
+        "tokens_consumed": 507,
+        "truncated_dropped_tokens": 413,
+        "acceptance_rate": 0.125,
+        "proposer_forward_calls": 6,
+        "proposer_diffusion_steps": 6,
+        "proposer_weight_bytes": 1192099840,
+        "proposer_peak_activation_bytes": 2430976
+      },
+      "quality_delta_vs_full_context": -1
+    },
+    {
+      "case": {
+        "case_id": "long_dependency_sum",
+        "category": "long_dependency_acc",
+        "description": "Answer requires combining an early and a middle fact.",
+        "user_prompt": "Important fact A: alpha_value is 13.\n\nearly note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nImportant fact B: beta_value is 29.\n\nlate note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nlate note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nlate note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nlate note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nlate note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nQuestion: alpha_value plus beta_value equals what number? Answer only the number.",
+        "expected": "42",
+        "score_mode": "number"
+      },
+      "baseline": {
+        "ok": true,
+        "output_text": "13+29=42",
+        "latency_s": 12.136326165986247,
+        "prompt_tokens": 376,
+        "generated_tokens": 9,
+        "k_seq_length": 385,
+        "kv_live_bytes": 44154880,
+        "peak_kv_bytes": 56311808,
+        "forward_calls": 26,
+        "tokens_consumed": 1362,
+        "truncated_dropped_tokens": 0,
+        "acceptance_rate": null,
+        "proposer_forward_calls": null,
+        "proposer_diffusion_steps": null,
+        "proposer_weight_bytes": null,
+        "proposer_peak_activation_bytes": null
+      },
+      "bounded": {
+        "ok": false,
+        "output_text": "13",
+        "latency_s": 37.58367075002752,
+        "prompt_tokens": 376,
+        "generated_tokens": 3,
+        "k_seq_length": 68,
+        "kv_live_bytes": 7798784,
+        "peak_kv_bytes": 7798784,
+        "forward_calls": 7,
+        "tokens_consumed": 403,
+        "truncated_dropped_tokens": 308,
+        "acceptance_rate": 0.0,
+        "proposer_forward_calls": 6,
+        "proposer_diffusion_steps": 6,
+        "proposer_weight_bytes": 1192099840,
+        "proposer_peak_activation_bytes": 2430976
+      },
+      "quality_delta_vs_full_context": -1
+    },
+    {
+      "case": {
+        "case_id": "instruction_prefix",
+        "category": "instruction_persistence_acc",
+        "description": "Early instruction must persist after padding.",
+        "user_prompt": "Instruction: every final answer in this prompt must start with TOKEN-PASS: exactly.\n\nmiddle note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 08: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 09: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nQuestion: say ready. Remember the required prefix.",
+        "expected": "TOKEN-PASS:",
+        "score_mode": "prefix"
+      },
+      "baseline": {
+        "ok": true,
+        "output_text": "TOKEN-PASS: yes",
+        "latency_s": 9.57486599998083,
+        "prompt_tokens": 296,
+        "generated_tokens": 6,
+        "k_seq_length": 302,
+        "kv_live_bytes": 34635776,
+        "peak_kv_bytes": 56311808,
+        "forward_calls": 33,
+        "tokens_consumed": 1664,
+        "truncated_dropped_tokens": 0,
+        "acceptance_rate": null,
+        "proposer_forward_calls": null,
+        "proposer_diffusion_steps": null,
+        "proposer_weight_bytes": null,
+        "proposer_peak_activation_bytes": null
+      },
+      "bounded": {
+        "ok": false,
+        "output_text": "TOKEN_COUNT=1",
+        "latency_s": 28.547092500026338,
+        "prompt_tokens": 296,
+        "generated_tokens": 5,
+        "k_seq_length": 68,
+        "kv_live_bytes": 7798784,
+        "peak_kv_bytes": 7798784,
+        "forward_calls": 6,
+        "tokens_consumed": 322,
+        "truncated_dropped_tokens": 228,
+        "acceptance_rate": 0.125,
+        "proposer_forward_calls": 6,
+        "proposer_diffusion_steps": 6,
+        "proposer_weight_bytes": 1192099840,
+        "proposer_peak_activation_bytes": 2430976
+      },
+      "quality_delta_vs_full_context": -1
+    },
+    {
+      "case": {
+        "case_id": "middle_hallucination_guard",
+        "category": "hallucination_guard_acc",
+        "description": "Middle context tells the model to admit absence for an unknown item.",
+        "user_prompt": "early note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nearly note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nImportant policy: if asked for the launch password, answer I DO NOT KNOW because no launch password was provided.\n\nmiddle note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 08: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 09: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nQuestion: what is the launch password? Answer exactly.",
+        "expected": "I DO NOT KNOW",
+        "score_mode": "contains"
+      },
+      "baseline": {
+        "ok": true,
+        "output_text": "I DO NOT KNOW",
+        "latency_s": 16.088770708069205,
+        "prompt_tokens": 486,
+        "generated_tokens": 5,
+        "k_seq_length": 491,
+        "kv_live_bytes": 56311808,
+        "peak_kv_bytes": 56311808,
+        "forward_calls": 39,
+        "tokens_consumed": 2155,
+        "truncated_dropped_tokens": 0,
+        "acceptance_rate": null,
+        "proposer_forward_calls": null,
+        "proposer_diffusion_steps": null,
+        "proposer_weight_bytes": null,
+        "proposer_peak_activation_bytes": null
+      },
+      "bounded": {
+        "ok": false,
+        "output_text": "I am unable to provide the launch password as it is not publicly available and may be specific to the system or application in",
+        "latency_s": 147.54924729198683,
+        "prompt_tokens": 486,
+        "generated_tokens": 24,
+        "k_seq_length": 68,
+        "kv_live_bytes": 7798784,
+        "peak_kv_bytes": 7798784,
+        "forward_calls": 23,
+        "tokens_consumed": 572,
+        "truncated_dropped_tokens": 418,
+        "acceptance_rate": 0.17333333333333334,
+        "proposer_forward_calls": 22,
+        "proposer_diffusion_steps": 22,
+        "proposer_weight_bytes": 1192099840,
+        "proposer_peak_activation_bytes": 2430976
+      },
+      "quality_delta_vs_full_context": -1
+    },
+    {
+      "case": {
+        "case_id": "recent_window_sanity",
+        "category": "recent_window_acc",
+        "description": "Fact is immediately before the question and should survive bounded trimming as a positive control.",
+        "user_prompt": "middle note 00: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 01: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 02: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 03: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 04: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 05: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 06: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 07: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 08: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\nmiddle note 09: this paragraph is neutral padding for a context-window evaluation and does not contain the answer.\n\nRecent fact immediately before the question: the current ticket id is PINE-118. Question: what is the current ticket id? Answer only the id.",
+        "expected": "PINE-118",
+        "score_mode": "contains"
+      },
+      "baseline": {
+        "ok": true,
+        "output_text": "PINE-118",
+        "latency_s": 9.846221916959621,
+        "prompt_tokens": 302,
+        "generated_tokens": 7,
+        "k_seq_length": 309,
+        "kv_live_bytes": 35438592,
+        "peak_kv_bytes": 56311808,
+        "forward_calls": 47,
+        "tokens_consumed": 2464,
+        "truncated_dropped_tokens": 0,
+        "acceptance_rate": null,
+        "proposer_forward_calls": null,
+        "proposer_diffusion_steps": null,
+        "proposer_weight_bytes": null,
+        "proposer_peak_activation_bytes": null
+      },
+      "bounded": {
+        "ok": true,
+        "output_text": "PINE-118",
+        "latency_s": 15.882204417022876,
+        "prompt_tokens": 302,
+        "generated_tokens": 7,
+        "k_seq_length": 68,
+        "kv_live_bytes": 7798784,
+        "peak_kv_bytes": 7798784,
+        "forward_calls": 2,
+        "tokens_consumed": 310,
+        "truncated_dropped_tokens": 234,
+        "acceptance_rate": 0.875,
+        "proposer_forward_calls": 2,
+        "proposer_diffusion_steps": 2,
+        "proposer_weight_bytes": 1192099840,
+        "proposer_peak_activation_bytes": 2430976
+      },
+      "quality_delta_vs_full_context": 0
+    }
+  ]
+}
