@@ -1,0 +1,240 @@
+bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+NVIDIA H200, 580.159.03, 143771 MiB, 9.0
+[run_on_vast] reusing venv at /workspace/kakeya-r1c/.venv-vast
+[run_on_vast] torch + transformers already importable; skipping install
+[run_on_vast] torch=2.11.0+cu128 cuda_available=True cuda=12.8
+[run_on_vast] device0=NVIDIA H200
+[run_on_vast] transformers=4.57.6
+[run_on_vast] launching toy: --model google/gemma-3-1b-it --cross-attn-depth 20 --sink 4 --window 64 --num-heads 16 --head-dim 128 --train-steps 2000 --o-proj-init-std 0.01 --lr 3e-4 --n-train 200 --n-eval 50 --eval-every 100 --haystack-min-tokens 256 --haystack-max-tokens 1024 --needle-debug-mode off --output results/research/cross_attn_toy_vast_full_1780806644.json
+[toy] loading google/gemma-3-1b-it
+[toy] device=cuda
+[toy] generating 200 train + 50 eval NIAH samples; needle vocab=off (135000 distinct answers)
+[toy] pre-train eval (full eval set, all 3 baselines)
+[toy] pre-train: oracle=1.000  bounded_baseline=0.000  cross_attn=0.000
+[toy] training 2000 steps
+[toy] step=10  loss(avg10)=6.9076
+[toy] step=20  loss(avg10)=3.8456
+[toy] step=30  loss(avg10)=2.7196
+[toy] step=40  loss(avg10)=2.9527
+[toy] step=50  loss(avg10)=2.9025
+[toy] step=60  loss(avg10)=2.2505
+[toy] step=70  loss(avg10)=2.5353
+[toy] step=80  loss(avg10)=2.3060
+[toy] step=90  loss(avg10)=2.5177
+[toy] step=100  loss(avg10)=2.2584
+[toy] step=100  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=110  loss(avg10)=2.0616
+[toy] step=120  loss(avg10)=2.1074
+[toy] step=130  loss(avg10)=1.8691
+[toy] step=140  loss(avg10)=2.3462
+[toy] step=150  loss(avg10)=1.8460
+[toy] step=160  loss(avg10)=1.8432
+[toy] step=170  loss(avg10)=2.0349
+[toy] step=180  loss(avg10)=2.2299
+[toy] step=190  loss(avg10)=2.0763
+[toy] step=200  loss(avg10)=1.8549
+[toy] step=200  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=210  loss(avg10)=1.9361
+[toy] step=220  loss(avg10)=2.0504
+[toy] step=230  loss(avg10)=1.6912
+[toy] step=240  loss(avg10)=1.6133
+[toy] step=250  loss(avg10)=2.0220
+[toy] step=260  loss(avg10)=1.8915
+[toy] step=270  loss(avg10)=2.0444
+[toy] step=280  loss(avg10)=1.8869
+[toy] step=290  loss(avg10)=1.8653
+[toy] step=300  loss(avg10)=1.6896
+[toy] step=300  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=310  loss(avg10)=1.8916
+[toy] step=320  loss(avg10)=1.6168
+[toy] step=330  loss(avg10)=1.7689
+[toy] step=340  loss(avg10)=1.4488
+[toy] step=350  loss(avg10)=1.6894
+[toy] step=360  loss(avg10)=1.7937
+[toy] step=370  loss(avg10)=1.6108
+[toy] step=380  loss(avg10)=1.4729
+[toy] step=390  loss(avg10)=1.7530
+[toy] step=400  loss(avg10)=1.3579
+[toy] step=400  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=410  loss(avg10)=1.5752
+[toy] step=420  loss(avg10)=1.6836
+[toy] step=430  loss(avg10)=1.5330
+[toy] step=440  loss(avg10)=1.4280
+[toy] step=450  loss(avg10)=1.3889
+[toy] step=460  loss(avg10)=1.3891
+[toy] step=470  loss(avg10)=1.4335
+[toy] step=480  loss(avg10)=1.4728
+[toy] step=490  loss(avg10)=1.5710
+[toy] step=500  loss(avg10)=1.5747
+[toy] step=500  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=510  loss(avg10)=1.5225
+[toy] step=520  loss(avg10)=1.4581
+[toy] step=530  loss(avg10)=1.4363
+[toy] step=540  loss(avg10)=1.4102
+[toy] step=550  loss(avg10)=1.5316
+[toy] step=560  loss(avg10)=1.4084
+[toy] step=570  loss(avg10)=1.3800
+[toy] step=580  loss(avg10)=1.4178
+[toy] step=590  loss(avg10)=1.3766
+[toy] step=600  loss(avg10)=1.4619
+[toy] step=600  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=610  loss(avg10)=1.4217
+[toy] step=620  loss(avg10)=1.2503
+[toy] step=630  loss(avg10)=1.4600
+[toy] step=640  loss(avg10)=1.3249
+[toy] step=650  loss(avg10)=1.4219
+[toy] step=660  loss(avg10)=1.6111
+[toy] step=670  loss(avg10)=1.2912
+[toy] step=680  loss(avg10)=1.4004
+[toy] step=690  loss(avg10)=1.3416
+[toy] step=700  loss(avg10)=1.4019
+[toy] step=700  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=710  loss(avg10)=1.2749
+[toy] step=720  loss(avg10)=1.4184
+[toy] step=730  loss(avg10)=1.4110
+[toy] step=740  loss(avg10)=1.3935
+[toy] step=750  loss(avg10)=1.4071
+[toy] step=760  loss(avg10)=1.3466
+[toy] step=770  loss(avg10)=1.2933
+[toy] step=780  loss(avg10)=1.3773
+[toy] step=790  loss(avg10)=1.3063
+[toy] step=800  loss(avg10)=1.4269
+[toy] step=800  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=810  loss(avg10)=1.3249
+[toy] step=820  loss(avg10)=1.2758
+[toy] step=830  loss(avg10)=1.2681
+[toy] step=840  loss(avg10)=1.3882
+[toy] step=850  loss(avg10)=1.3395
+[toy] step=860  loss(avg10)=1.3301
+[toy] step=870  loss(avg10)=1.3156
+[toy] step=880  loss(avg10)=1.3959
+[toy] step=890  loss(avg10)=1.2106
+[toy] step=900  loss(avg10)=1.4036
+[toy] step=900  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=910  loss(avg10)=1.1698
+[toy] step=920  loss(avg10)=1.2129
+[toy] step=930  loss(avg10)=1.1942
+[toy] step=940  loss(avg10)=1.2832
+[toy] step=950  loss(avg10)=1.3676
+[toy] step=960  loss(avg10)=1.1675
+[toy] step=970  loss(avg10)=1.2828
+[toy] step=980  loss(avg10)=1.2539
+[toy] step=990  loss(avg10)=1.2521
+[toy] step=1000  loss(avg10)=1.2586
+[toy] step=1000  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1010  loss(avg10)=1.1606
+[toy] step=1020  loss(avg10)=1.2773
+[toy] step=1030  loss(avg10)=1.2056
+[toy] step=1040  loss(avg10)=1.2097
+[toy] step=1050  loss(avg10)=1.2731
+[toy] step=1060  loss(avg10)=1.4185
+[toy] step=1070  loss(avg10)=1.2733
+[toy] step=1080  loss(avg10)=1.2012
+[toy] step=1090  loss(avg10)=1.3098
+[toy] step=1100  loss(avg10)=1.0544
+[toy] step=1100  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1110  loss(avg10)=1.3620
+[toy] step=1120  loss(avg10)=1.1985
+[toy] step=1130  loss(avg10)=1.2633
+[toy] step=1140  loss(avg10)=1.2850
+[toy] step=1150  loss(avg10)=1.0280
+[toy] step=1160  loss(avg10)=1.2227
+[toy] step=1170  loss(avg10)=1.1994
+[toy] step=1180  loss(avg10)=1.3973
+[toy] step=1190  loss(avg10)=1.1713
+[toy] step=1200  loss(avg10)=1.0870
+[toy] step=1200  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1210  loss(avg10)=1.1727
+[toy] step=1220  loss(avg10)=1.2983
+[toy] step=1230  loss(avg10)=0.8686
+[toy] step=1240  loss(avg10)=1.2129
+[toy] step=1250  loss(avg10)=1.0276
+[toy] step=1260  loss(avg10)=1.0636
+[toy] step=1270  loss(avg10)=1.1133
+[toy] step=1280  loss(avg10)=0.9697
+[toy] step=1290  loss(avg10)=1.2021
+[toy] step=1300  loss(avg10)=1.1348
+[toy] step=1300  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1310  loss(avg10)=1.3366
+[toy] step=1320  loss(avg10)=1.2909
+[toy] step=1330  loss(avg10)=1.1875
+[toy] step=1340  loss(avg10)=1.2442
+[toy] step=1350  loss(avg10)=1.0103
+[toy] step=1360  loss(avg10)=1.3903
+[toy] step=1370  loss(avg10)=1.2471
+[toy] step=1380  loss(avg10)=0.9250
+[toy] step=1390  loss(avg10)=1.4180
+[toy] step=1400  loss(avg10)=1.1132
+[toy] step=1400  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1410  loss(avg10)=1.0769
+[toy] step=1420  loss(avg10)=0.9093
+[toy] step=1430  loss(avg10)=1.2004
+[toy] step=1440  loss(avg10)=1.3096
+[toy] step=1450  loss(avg10)=1.1454
+[toy] step=1460  loss(avg10)=1.1317
+[toy] step=1470  loss(avg10)=1.0870
+[toy] step=1480  loss(avg10)=0.8568
+[toy] step=1490  loss(avg10)=0.9604
+[toy] step=1500  loss(avg10)=1.0643
+[toy] step=1500  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1510  loss(avg10)=1.2262
+[toy] step=1520  loss(avg10)=1.2124
+[toy] step=1530  loss(avg10)=1.0955
+[toy] step=1540  loss(avg10)=1.1053
+[toy] step=1550  loss(avg10)=1.2076
+[toy] step=1560  loss(avg10)=0.9967
+[toy] step=1570  loss(avg10)=1.0969
+[toy] step=1580  loss(avg10)=1.2679
+[toy] step=1590  loss(avg10)=0.8789
+[toy] step=1600  loss(avg10)=1.0548
+[toy] step=1600  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1610  loss(avg10)=1.1272
+[toy] step=1620  loss(avg10)=1.0925
+[toy] step=1630  loss(avg10)=1.0829
+[toy] step=1640  loss(avg10)=1.3985
+[toy] step=1650  loss(avg10)=1.2149
+[toy] step=1660  loss(avg10)=0.9145
+[toy] step=1670  loss(avg10)=0.9625
+[toy] step=1680  loss(avg10)=1.1363
+[toy] step=1690  loss(avg10)=0.8162
+[toy] step=1700  loss(avg10)=1.0960
+[toy] step=1700  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1710  loss(avg10)=0.7483
+[toy] step=1720  loss(avg10)=1.3752
+[toy] step=1730  loss(avg10)=1.2785
+[toy] step=1740  loss(avg10)=1.0505
+[toy] step=1750  loss(avg10)=0.8325
+[toy] step=1760  loss(avg10)=0.9413
+[toy] step=1770  loss(avg10)=0.9048
+[toy] step=1780  loss(avg10)=0.6712
+[toy] step=1790  loss(avg10)=0.7945
+[toy] step=1800  loss(avg10)=0.7028
+[toy] step=1800  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1810  loss(avg10)=0.8266
+[toy] step=1820  loss(avg10)=0.9935
+[toy] step=1830  loss(avg10)=1.0972
+[toy] step=1840  loss(avg10)=1.0544
+[toy] step=1850  loss(avg10)=0.6664
+[toy] step=1860  loss(avg10)=1.0324
+[toy] step=1870  loss(avg10)=0.9315
+[toy] step=1880  loss(avg10)=1.0607
+[toy] step=1890  loss(avg10)=0.8800
+[toy] step=1900  loss(avg10)=0.6219
+[toy] step=1900  cross_attn=0.000  bounded_baseline=0.000
+[toy] step=1910  loss(avg10)=0.9886
+[toy] step=1920  loss(avg10)=1.2707
+[toy] step=1930  loss(avg10)=1.4032
+[toy] step=1940  loss(avg10)=0.9846
+[toy] step=1950  loss(avg10)=0.9287
+[toy] step=1960  loss(avg10)=0.8519
+[toy] step=1970  loss(avg10)=0.7589
+[toy] step=1980  loss(avg10)=0.8165
+[toy] step=1990  loss(avg10)=0.8174
+[toy] step=2000  loss(avg10)=0.8296
+[toy] step=2000  cross_attn=0.000  bounded_baseline=0.000
+[toy] training done in 926.9s
+[toy] final eval on full eval set (all 3 baselines)
+[toy] FINAL: oracle=1.000  bounded_baseline=0.000  cross_attn=0.000
+[toy] Gate G-X1 predicates: oracle≥0.80 (1.000) -> OK  |  bounded≤0.30 (0.000) -> OK  |  cross≥0.80 (0.000) -> FAIL
+[toy] Gate G-X1 overall: FAIL
+[toy] report -> results/research/cross_attn_toy_vast_full_1780806644.json
