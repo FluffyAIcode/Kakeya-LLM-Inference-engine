@@ -1063,6 +1063,65 @@ class TestFindNeedleTokenRange:
         assert rng == (1, 2)
 
 
+class _BoundaryMergeTokenizer:
+    """Char-level surrogate that reproduces the R1d-β boundary bug.
+
+    Models a real BPE quirk: a newline at the *start* of a tokenized
+    string is a distinct token (900) from a newline that follows other
+    text (901). On a real tokenizer the analogous effect (leading/
+    trailing "\\n" merging with surrounding haystack text) made the
+    *raw* needle never match in context — 0/N — silently disabling the
+    retrieval-aux loss and the localization metric.
+    """
+
+    def __call__(self, text, **kwargs):
+        ids = []
+        for i, c in enumerate(text):
+            if c == "\n":
+                ids.append(900 if i == 0 else 901)
+            else:
+                ids.append(ord(c))
+
+        class _R:
+            pass
+        r = _R()
+        r.input_ids = ids
+        return r
+
+
+class TestFindNeedleTokenRangeBoundaryRobustness:
+    """Regression guard for the R1d-β silent-no-op bug: matching the raw
+    needle_text (with surrounding "\\n") fails under BPE boundary merges;
+    the stripped-candidate fallback must still locate it."""
+
+    def _prompt_ids(self, tok, text):
+        return torch.tensor([tok(text).input_ids])
+
+    def test_raw_needle_with_newlines_still_located(self):
+        tok = _BoundaryMergeTokenizer()
+        needle = "\nIMPORTANT-7.\n"
+        prompt_text = "haystack line\n" + needle + "more padding"
+        prompt_ids = self._prompt_ids(tok, prompt_text)
+        # Sanity: the RAW needle's leading "\n" tokenizes to 900 (start),
+        # but in context it's 901 — so a naive exact match on the raw
+        # needle WOULD fail. The fix's stripped candidate must save it.
+        rng = find_needle_token_range(tok, prompt_ids, needle, fuzz=0)
+        assert rng is not None, (
+            "stripped-candidate fallback must locate a needle whose raw "
+            "leading/trailing newline tokenizes differently in context"
+        )
+        start, end = rng
+        # The located span must cover the inner sentence tokens.
+        inner_ids = tok("IMPORTANT-7.").input_ids
+        seq = prompt_ids[0].tolist()
+        assert seq[start:end] == inner_ids
+
+    def test_pure_whitespace_needle_returns_none(self):
+        tok = _BoundaryMergeTokenizer()
+        prompt_ids = self._prompt_ids(tok, "abc\ndef")
+        assert find_needle_token_range(tok, prompt_ids, "\n  \n") is None
+
+
 # ---------------------------------------------------------------------------
 # NIAHSample.needle_text + dataset integration
 # ---------------------------------------------------------------------------

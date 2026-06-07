@@ -713,21 +713,50 @@ def find_needle_token_range(
     """
     if not needle_text:
         return None
-    needle_ids = tokenizer(
-        needle_text, add_special_tokens=False, return_tensors=None,
-    ).input_ids
-    if isinstance(needle_ids, list) and needle_ids and isinstance(needle_ids[0], list):
-        needle_ids = needle_ids[0]
-    needle_len = len(needle_ids)
-    if needle_len == 0:
-        return None
     seq = prompt_ids_with_chat_template[0].tolist()
     seq_len = len(seq)
-    for start in range(seq_len - needle_len + 1):
-        if seq[start : start + needle_len] == needle_ids:
-            lo = max(0, start - fuzz)
-            hi = min(seq_len, start + needle_len + fuzz)
-            return (lo, hi)
+
+    # R1d-β bugfix: matching the *raw* needle_text (with its leading and
+    # trailing "\n") never succeeds in practice — the haystack joins
+    # lines with "\n", so in context the needle is preceded/followed by
+    # additional newlines and the tokenizer merges those boundary "\n"s
+    # into different tokens than the standalone needle produces. The
+    # result was a silent 0/N match rate → the retrieval-aux loss and
+    # the localization metric were never computed (aux≡0, loc≡-1), so
+    # the aux=0.1 run was secretly identical to the aux=0 control.
+    #
+    # Fix: try a small set of boundary-robust candidates, most specific
+    # first, and accept the first whose tokens appear as a contiguous
+    # subsequence. Stripping the surrounding whitespace lets the inner
+    # sentence tokenize identically in- and out-of-context (empirically
+    # 20/20 on gemma-3-1b-it small-vocab samples vs 0/20 for the raw
+    # needle).
+    candidates: List[str] = []
+    stripped = needle_text.strip()
+    if stripped:
+        candidates.append(stripped)
+        if stripped.endswith("."):
+            candidates.append(stripped[:-1])
+    candidates.append(needle_text)  # original, last-resort
+
+    seen: set = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        needle_ids = tokenizer(
+            cand, add_special_tokens=False, return_tensors=None,
+        ).input_ids
+        if isinstance(needle_ids, list) and needle_ids and isinstance(needle_ids[0], list):
+            needle_ids = needle_ids[0]
+        needle_len = len(needle_ids)
+        if needle_len == 0:
+            continue
+        for start in range(seq_len - needle_len + 1):
+            if seq[start : start + needle_len] == needle_ids:
+                lo = max(0, start - fuzz)
+                hi = min(seq_len, start + needle_len + fuzz)
+                return (lo, hi)
     return None
 
 
