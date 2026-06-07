@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "kind": "adr_0011_toy_prototype_g_x1",
+  "config": {
+    "model": "google/gemma-3-1b-it",
+    "device": "mps",
+    "attn_implementation": "eager",
+    "cross_attn_depth": 20,
+    "sink": 4,
+    "window": 64,
+    "num_heads": 8,
+    "head_dim": 64,
+    "train_steps": 200,
+    "lr": 0.0003,
+    "n_train": 200,
+    "n_eval": 50,
+    "haystack_min_tokens": 256,
+    "haystack_max_tokens": 1024,
+    "seed": 42,
+    "uses_chat_template": true,
+    "verifier_layer_surgery": "forward_hook_on_layer_K_output"
+  },
+  "pre_train": {
+    "cross_attn_recall": 0.0,
+    "baseline_recall": 0.0,
+    "oracle_recall": 1.0
+  },
+  "training_history": [
+    {
+      "step": 50,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 2.9752116441726684
+    },
+    {
+      "step": 100,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 2.36273478269577
+    },
+    {
+      "step": 150,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 2.130994176864624
+    },
+    {
+      "step": 200,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 2.046009826660156
+    }
+  ],
+  "final": {
+    "cross_attn_recall": 0.0,
+    "baseline_recall": 0.0,
+    "oracle_recall": 1.0,
+    "elapsed_s": 3234.324201624957
+  },
+  "gate_predicates": {
+    "oracle_ge_080": true,
+    "bounded_le_030": true,
+    "cross_attn_ge_080": false
+  },
+  "gate_g_x1_pass": false
+}
