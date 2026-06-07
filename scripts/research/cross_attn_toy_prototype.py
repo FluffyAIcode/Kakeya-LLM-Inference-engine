@@ -64,7 +64,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import math
 import random
 import sys
 import time
@@ -104,8 +103,6 @@ class CrossAttentionBridge(nn.Module):
         attn_dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        if num_heads * head_dim != num_heads * head_dim:  # placeholder
-            pass
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = head_dim ** -0.5
@@ -199,22 +196,51 @@ def make_sink_window_attention_mask(
     For each query position q:
       - allowed key positions = {0, 1, ..., sink-1}              (sink)
                               ∪ {q-window+1, ..., q}             (window, capped at q)
-      - all other positions are masked out (-inf)
+      - all other positions are masked out (finfo.min for floats)
 
-    Returns a [seq_len, seq_len] bias tensor where masked positions
-    are -inf and allowed positions are 0.
+    Returns a [seq_len, seq_len] additive bias where masked positions
+    are dtype's finite minimum (== effective -inf inside attention
+    softmax) and allowed positions are 0.
+
+    bf16/fp16: ``finfo(dtype).min`` is used instead of ``float("-inf")``
+    because some attention kernels (notably bf16 SDPA on MPS) propagate
+    NaN through ``-inf + 0`` when the entire query row is masked. The
+    finite minimum has identical numerical effect through softmax.
     """
+    neg_inf = torch.finfo(dtype).min if dtype.is_floating_point else float("-inf")
     mask = torch.full(
-        (seq_len, seq_len), float("-inf"), device=device, dtype=dtype,
+        (seq_len, seq_len), neg_inf, device=device, dtype=dtype,
     )
     for q in range(seq_len):
-        # sink range
         sink_end = min(sink, q + 1)
         mask[q, :sink_end] = 0.0
-        # window range
         window_start = max(sink, q - window + 1)
         mask[q, window_start : q + 1] = 0.0
     return mask
+
+
+def make_sink_window_attention_mask_4d(
+    seq_len: int,
+    sink: int,
+    window: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """4D additive sink+window mask of shape ``[1, 1, seq_len, seq_len]``.
+
+    Same semantics as :func:`make_sink_window_attention_mask` but
+    pre-shaped so it can be passed directly into HuggingFace decoder
+    layers' eager attention path (``attn_weights + attention_mask``).
+
+    For Gemma3-class models that distinguish full vs sliding attention
+    layers, wrap this tensor in a dict
+    ``{"full_attention": mask, "sliding_attention": mask}`` and pass
+    that as the model's ``attention_mask`` keyword.
+    """
+    mask_2d = make_sink_window_attention_mask(
+        seq_len, sink, window, device=device, dtype=dtype,
+    )
+    return mask_2d.unsqueeze(0).unsqueeze(0)
 
 
 # ============================================================================
@@ -225,15 +251,27 @@ def make_sink_window_attention_mask(
 class CrossAttentionVerifier(nn.Module):
     """Wraps a HuggingFace causal LM with a cross-attention bridge.
 
-    The bridge is inserted as a residual addition AFTER the
-    transformer block at depth ``cross_attn_depth``. The wrapper
-    leaves the underlying model's weights frozen by default; only the
-    cross-attention bridge is trainable.
+    The bridge is inserted as a **residual addition on the OUTPUT of
+    decoder layer ``cross_attn_depth - 1``** (1-indexed), so the
+    augmented hidden state then propagates through the remaining
+    layers (K, K+1, ..., N-1), the final layernorm, and the language
+    modeling head — i.e., proper architectural integration, not a
+    bypassed lm_head shortcut. (R1b Bug A.2 fix.)
 
-    Modality-agnostic: ``input_ids`` for Phase 1 text; for Phase 2
-    multimodal, the wrapper passes through whatever input the
-    underlying model accepts (including multimodal token sequences
-    for Gemma 4-class models).
+    The verifier's self-attention is constrained to a sink+window
+    pattern by passing a 4D additive ``attention_mask`` through to
+    the base model's eager attention path. For Gemma3-class models
+    the mask is wrapped in the
+    ``{"full_attention": ..., "sliding_attention": ...}`` dict
+    convention so both layer types are bounded identically. For
+    other model families a raw 4D tensor is used. (R1b Bug B fix.)
+
+    The wrapper leaves the underlying model's weights frozen by
+    default; only the cross-attention bridge is trainable.
+
+    Modality-agnostic: ``input_ids`` for Phase 1 text; Phase 2
+    multimodal substitutes Gemma 4-class checkpoints; the bridge and
+    masking machinery are unchanged.
     """
 
     def __init__(
@@ -254,59 +292,121 @@ class CrossAttentionVerifier(nn.Module):
         if freeze_base:
             for p in self.base.parameters():
                 p.requires_grad = False
+        layers = self._layers_module()
+        if not 1 <= cross_attn_depth <= len(layers):
+            raise ValueError(
+                f"cross_attn_depth={cross_attn_depth} is out of range "
+                f"[1, {len(layers)}] for this base model"
+            )
 
     @property
     def config(self):
         return self.base.config
 
-    def _forward_layers_with_bridge(
+    def _layers_module(self) -> nn.ModuleList:
+        """Locate the decoder ``nn.ModuleList`` on the base model.
+
+        Supports HF Gemma3 / Llama / Qwen / Mistral families
+        (``base.model.layers``) and GPT-2 family (``base.transformer.h``).
+        Raises if neither shape is detected.
+        """
+        if hasattr(self.base, "model") and hasattr(self.base.model, "layers"):
+            return self.base.model.layers
+        if hasattr(self.base, "transformer") and hasattr(self.base.transformer, "h"):
+            return self.base.transformer.h
+        raise RuntimeError(
+            "CrossAttentionVerifier could not find decoder layers on the "
+            "base model (looked for base.model.layers and "
+            "base.transformer.h). Add a binding for the new model family."
+        )
+
+    def _build_sink_window_mask_kwarg(
+        self,
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ):
+        """Return the attention_mask kwarg for the base forward.
+
+        For Gemma3-class models that have separate full and sliding
+        layer types, returns a dict so BOTH categories use the same
+        sink+window restriction. For other families returns the bare
+        4D tensor.
+        """
+        mask_4d = make_sink_window_attention_mask_4d(
+            seq_len, self.sink, self.window, device=device, dtype=dtype,
+        )
+        cfg_arch = (getattr(self.config, "model_type", "") or "").lower()
+        if cfg_arch.startswith("gemma3"):
+            return {"full_attention": mask_4d, "sliding_attention": mask_4d}
+        return mask_4d
+
+    def _forward_with_bridge(
         self,
         input_ids: torch.Tensor,
         proposer_hidden_bank: torch.Tensor,
         proposer_attention_mask: Optional[torch.Tensor],
-        sink_window_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Forward through base model layers, injecting cross-attention.
+        """Run base model with a forward hook injecting cross-attention.
 
-        This implementation uses HuggingFace's `output_hidden_states`
-        path to extract intermediate states, then feeds modified
-        states back. Works for any AutoModelForCausalLM whose
-        forward accepts `attention_mask` and exposes the standard
-        decoder-block API.
+        We register a hook on decoder layer ``K-1`` (0-indexed) that:
 
-        For models that need a more invasive integration (e.g.,
-        custom attention kernels), ADR 0011 Phase 4 productionizes
-        a per-backend version. This toy is correctness-first.
+          1. Receives the layer's natural output ``h_K = layer_{K-1}(h_{K-1})``.
+          2. Computes ``delta = cross_attn(h_K, proposer_hidden_bank)``.
+          3. Returns ``h_K + delta`` so layers K..N-1, the final norm,
+             and the lm_head all receive the augmented hidden.
+
+        This is architecturally faithful to ADR 0011's design (cross-
+        attention residual injected mid-stack, propagating through
+        the rest of the verifier) without manually reimplementing HF's
+        layer dispatch (which is fragile across model families and
+        version pins).
         """
-        # Phase-1 simplification: rather than monkey-patching layers,
-        # we run the base model TWICE — once up to depth K to capture
-        # hidden, then once from depth K+1 with cross-attention added
-        # to the residual at the boundary. Full integration is in
-        # Phase 4. This is pedagogically clearer for the toy.
-        base_out = self.base(
-            input_ids=input_ids,
-            output_hidden_states=True,
-            return_dict=True,
+        layers = self._layers_module()
+        target_layer = layers[self.cross_attn_depth - 1]
+        cross_attn = self.cross_attn
+
+        def hook(module, layer_inputs, layer_output):
+            if isinstance(layer_output, tuple):
+                hidden_out = layer_output[0]
+                rest = layer_output[1:]
+            else:
+                hidden_out = layer_output
+                rest = None
+            delta = cross_attn(
+                verifier_hidden=hidden_out,
+                proposer_hidden_bank=proposer_hidden_bank,
+                proposer_attention_mask=proposer_attention_mask,
+            )
+            modified = hidden_out + delta
+            if rest is not None:
+                return (modified,) + rest
+            return modified
+
+        seq_len = input_ids.size(1)
+        attention_mask_kwarg = self._build_sink_window_mask_kwarg(
+            seq_len, device=input_ids.device, dtype=self._base_dtype(),
         )
-        # base_out.hidden_states is a tuple of (num_layers + 1)
-        # tensors; hidden_states[K] is the output of layer K.
-        # Apply cross-attention to that hidden, then re-feed through
-        # the remaining layers. Note: this is approximation because
-        # we lose the proper layer-norm + KV cache reuse; the toy
-        # validates the ARCHITECTURAL hypothesis, not production
-        # numerics.
-        hidden_at_K = base_out.hidden_states[self.cross_attn_depth]
-        delta = self.cross_attn(
-            verifier_hidden=hidden_at_K,
-            proposer_hidden_bank=proposer_hidden_bank,
-            proposer_attention_mask=proposer_attention_mask,
-        )
-        # The simplest validation harness: instead of re-running
-        # the upper layers (expensive), use a linear head on top of
-        # (hidden + delta) and predict next token. Proves the
-        # mechanism without requiring full HF layer surgery.
-        # Phase 4 will do real layer surgery for production.
-        return hidden_at_K + delta
+
+        handle = target_layer.register_forward_hook(hook)
+        try:
+            out = self.base(
+                input_ids=input_ids,
+                attention_mask=attention_mask_kwarg,
+                use_cache=False,
+                return_dict=True,
+            )
+        finally:
+            handle.remove()
+        return out.logits
+
+    def _base_dtype(self) -> torch.dtype:
+        """Best-effort dtype detection (HF doesn't always expose .dtype)."""
+        if hasattr(self.base, "dtype") and isinstance(self.base.dtype, torch.dtype):
+            return self.base.dtype
+        for p in self.base.parameters():
+            return p.dtype
+        return torch.float32
 
     def forward(
         self,
@@ -314,27 +414,46 @@ class CrossAttentionVerifier(nn.Module):
         proposer_hidden_bank: torch.Tensor,
         proposer_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Returns predicted-token-distribution-shaped logits.
-
-        Simplified forward for the toy: returns a hidden-state
-        approximation of "what the verifier would output if it had
-        the cross-attention bridge". Pre-trained LM head from base
-        model converts hidden → logits.
-        """
-        seq_len = input_ids.size(1)
-        sink_window_mask = make_sink_window_attention_mask(
-            seq_len, self.sink, self.window,
-            device=input_ids.device,
-            dtype=torch.float32,
-        )
-        hidden_with_bridge = self._forward_layers_with_bridge(
+        """Bounded verifier + cross-attention bridge → logits."""
+        return self._forward_with_bridge(
             input_ids=input_ids,
             proposer_hidden_bank=proposer_hidden_bank,
             proposer_attention_mask=proposer_attention_mask,
-            sink_window_mask=sink_window_mask,
         )
-        logits = self.base.lm_head(hidden_with_bridge)
-        return logits
+
+    def forward_bounded_no_bridge(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Bounded baseline: same sink+window mask, no cross-attention.
+
+        Used by the eval loop as the apples-to-apples baseline for the
+        bridge — same KV restriction, no rescue path. Should perform
+        like the v0.3 ``SinkWindowVerifier``.
+        """
+        seq_len = input_ids.size(1)
+        attention_mask_kwarg = self._build_sink_window_mask_kwarg(
+            seq_len, device=input_ids.device, dtype=self._base_dtype(),
+        )
+        out = self.base(
+            input_ids=input_ids,
+            attention_mask=attention_mask_kwarg,
+            use_cache=False,
+            return_dict=True,
+        )
+        return out.logits
+
+    def forward_full_attention(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Full-attention oracle: no sink+window, no bridge.
+
+        This is the eval pipeline's sanity anchor — if oracle recall is
+        not ~100% on these synthetic NIAH samples, the prompt format /
+        chat template / answer matching is broken and the bridge
+        comparison is uninformative. (R1b Bug D fix.)
+        """
+        out = self.base(
+            input_ids=input_ids,
+            use_cache=False,
+            return_dict=True,
+        )
+        return out.logits
 
 
 # ============================================================================
@@ -407,6 +526,56 @@ def make_niah_dataset(
 # ============================================================================
 
 
+def _encode_prompt_with_chat_template(
+    tokenizer, prompt_text: str, device: torch.device,
+) -> torch.Tensor:
+    """Tokenize ``prompt_text`` as a single user turn ready for generation.
+
+    Uses ``apply_chat_template(..., add_generation_prompt=True)`` so the
+    model receives the SFT-correct framing it was trained on. Required
+    for instruction-tuned checkpoints (e.g., ``gemma-3-1b-it``); raw
+    text prompts cause IT models to emit control tokens or refuse.
+    (R1b Bug C fix.)
+
+    Raises ``RuntimeError`` if the tokenizer has no chat template — the
+    project's ADR 0008 §6.2 forbids silent fallbacks.
+    """
+    if not getattr(tokenizer, "chat_template", None):
+        raise RuntimeError(
+            "tokenizer has no chat_template; pass an instruction-tuned "
+            "checkpoint (e.g., google/gemma-3-1b-it) or set a template "
+            "explicitly. ADR 0008 §6.2 forbids silent fallbacks."
+        )
+    messages = [{"role": "user", "content": prompt_text}]
+    enc = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_tensors="pt",
+    )
+    if isinstance(enc, list):
+        enc = torch.tensor([enc])
+    return enc.to(device)
+
+
+def _encode_answer_continuation(
+    tokenizer, answer_text: str, device: torch.device,
+) -> torch.Tensor:
+    """Tokenize the answer as a raw continuation (no special tokens).
+
+    This is concatenated with the chat-template-prefixed prompt to form
+    the supervised target for cross-entropy loss on answer positions.
+    """
+    enc = tokenizer(
+        answer_text,
+        return_tensors="pt",
+        add_special_tokens=False,
+        truncation=True,
+        max_length=128,
+    )
+    return enc.input_ids.to(device)
+
+
 def train_step(
     *,
     proposer,
@@ -419,48 +588,52 @@ def train_step(
 ) -> float:
     """One gradient step.
 
-    1. Tokenize sample's full prompt + answer.
-    2. Run proposer in full-attention mode to get hidden bank.
-    3. Run verifier with bounded local attention + cross-attention bridge.
-    4. Loss: cross-entropy at answer positions.
+    1. Tokenize sample's prompt via chat template; tokenize answer
+       as a raw continuation.
+    2. Run proposer in full-attention mode over the chat-template-
+       wrapped prompt to produce the hidden bank.
+    3. Run verifier (bounded local attention + cross-attention bridge)
+       on prompt+answer.
+    4. Loss: cross-entropy at answer positions only.
     """
-    full_text = sample.prompt_text + sample.answer_text
-    enc = tokenizer(
-        full_text, return_tensors="pt", truncation=True, max_length=2048,
+    prompt_ids = _encode_prompt_with_chat_template(
+        tokenizer, sample.prompt_text, device,
     )
-    input_ids = enc.input_ids.to(device)
-    if input_ids.size(1) < 8:
-        return 0.0  # skip degenerate
+    if prompt_ids.size(1) < 8:
+        return 0.0
+    answer_ids = _encode_answer_continuation(
+        tokenizer, sample.answer_text, device,
+    )
+    if answer_ids.numel() == 0:
+        return 0.0
+    full_input_ids = torch.cat([prompt_ids, answer_ids], dim=1)
+    if full_input_ids.size(1) > 4096:
+        return 0.0
 
-    # Proposer hidden bank: full attention over the prompt prefix.
-    prompt_enc = tokenizer(
-        sample.prompt_text, return_tensors="pt", truncation=True,
-        max_length=2048,
-    )
-    prompt_ids = prompt_enc.input_ids.to(device)
     with torch.no_grad():
         proposer_out = proposer(
             input_ids=prompt_ids,
             output_hidden_states=True,
             return_dict=True,
+            use_cache=False,
         )
     proposer_hidden_bank = proposer_out.hidden_states[-1]  # [1, T_p, hidden_p]
 
-    # Verifier with cross-attention bridge.
     logits = verifier_with_bridge(
-        input_ids=input_ids,
+        input_ids=full_input_ids,
         proposer_hidden_bank=proposer_hidden_bank,
     )
 
-    # Loss: predict each answer token from the preceding context.
-    # Shift logits + targets by 1.
     answer_start = prompt_ids.size(1)
-    target = input_ids[:, answer_start:].contiguous()
+    target = full_input_ids[:, answer_start:].contiguous()
     pred = logits[:, answer_start - 1 : -1, :].contiguous()
     if target.numel() == 0 or pred.size(1) != target.size(1):
         return 0.0
+    # Upcast logits to fp32 for numerically stable cross-entropy under
+    # bf16 base model weights — bf16 cross_entropy on MPS occasionally
+    # returns NaN on extreme logit magnitudes.
     loss = F.cross_entropy(
-        pred.reshape(-1, pred.size(-1)),
+        pred.reshape(-1, pred.size(-1)).float(),
         target.reshape(-1),
     )
 
@@ -481,108 +654,97 @@ def evaluate_recall(
     samples: List[NIAHSample],
     tokenizer,
     device: torch.device,
-    bounded_baseline_only: bool = False,
-) -> Tuple[float, float]:
-    """Measure NIAH recall: fraction of samples where greedy-decoded
-    answer contains the needle code.
+    max_new_tokens: int = 24,
+    include_oracle: bool = True,
+) -> Tuple[float, float, float]:
+    """Measure NIAH recall under three regimes.
 
-    Returns (cross_attn_recall, bounded_baseline_recall).
+    1. **cross_attn**: bounded verifier (sink+window mask) + bridge.
+    2. **bounded_baseline**: same bounded verifier, no bridge.
+    3. **full_attention oracle**: verifier with no sink+window mask,
+       no bridge — sanity anchor. If oracle ≪ 100 %, the prompt
+       template / answer matching is broken and the bridge comparison
+       cannot be trusted (Bug D fix).
+
+    Returns ``(cross_attn_recall, bounded_baseline_recall, oracle_recall)``.
+    If ``include_oracle=False``, the third value is ``-1.0`` to signal
+    "not measured" without inventing data.
     """
     cross_attn_correct = 0
-    baseline_correct = 0
+    bounded_correct = 0
+    oracle_correct = 0
     for sample in samples:
-        prompt_enc = tokenizer(
-            sample.prompt_text, return_tensors="pt", truncation=True,
-            max_length=2048,
+        prompt_ids = _encode_prompt_with_chat_template(
+            tokenizer, sample.prompt_text, device,
         )
-        prompt_ids = prompt_enc.input_ids.to(device)
-        # Proposer hidden bank
+
         proposer_out = proposer(
-            input_ids=prompt_ids, output_hidden_states=True, return_dict=True,
+            input_ids=prompt_ids,
+            output_hidden_states=True,
+            return_dict=True,
+            use_cache=False,
         )
         hidden_bank = proposer_out.hidden_states[-1]
 
-        # Cross-attention path: 16 greedy tokens
-        cross_attn_text = _greedy_decode_with_bridge(
-            verifier=verifier_with_bridge,
-            proposer_hidden_bank=hidden_bank,
-            input_ids=prompt_ids,
-            tokenizer=tokenizer,
-            max_new_tokens=16,
+        cross_attn_text = _greedy_decode(
+            forward_fn=lambda ids: verifier_with_bridge(
+                input_ids=ids, proposer_hidden_bank=hidden_bank,
+            ),
+            input_ids=prompt_ids, tokenizer=tokenizer,
+            max_new_tokens=max_new_tokens,
         )
         if sample.answer_text.strip() in cross_attn_text:
             cross_attn_correct += 1
 
-        if not bounded_baseline_only:
-            # Bounded baseline: same verifier WITHOUT cross-attention
-            baseline_text = _greedy_decode_baseline(
-                verifier_base=verifier_with_bridge.base,
-                input_ids=prompt_ids,
-                tokenizer=tokenizer,
-                sink=verifier_with_bridge.sink,
-                window=verifier_with_bridge.window,
-                max_new_tokens=16,
-            )
-            if sample.answer_text.strip() in baseline_text:
-                baseline_correct += 1
+        bounded_text = _greedy_decode(
+            forward_fn=lambda ids: verifier_with_bridge.forward_bounded_no_bridge(ids),
+            input_ids=prompt_ids, tokenizer=tokenizer,
+            max_new_tokens=max_new_tokens,
+        )
+        if sample.answer_text.strip() in bounded_text:
+            bounded_correct += 1
 
-    n = len(samples)
+        if include_oracle:
+            oracle_text = _greedy_decode(
+                forward_fn=lambda ids: verifier_with_bridge.forward_full_attention(ids),
+                input_ids=prompt_ids, tokenizer=tokenizer,
+                max_new_tokens=max_new_tokens,
+            )
+            if sample.answer_text.strip() in oracle_text:
+                oracle_correct += 1
+
+    n = max(len(samples), 1)
     return (
-        cross_attn_correct / max(n, 1),
-        baseline_correct / max(n, 1),
+        cross_attn_correct / n,
+        bounded_correct / n,
+        (oracle_correct / n) if include_oracle else -1.0,
     )
 
 
 @torch.no_grad()
-def _greedy_decode_with_bridge(
+def _greedy_decode(
     *,
-    verifier: CrossAttentionVerifier,
-    proposer_hidden_bank: torch.Tensor,
+    forward_fn,
     input_ids: torch.Tensor,
     tokenizer,
     max_new_tokens: int,
 ) -> str:
+    """Generic greedy decoder: takes a callable ``forward_fn(input_ids)``
+    that returns logits ``[B, T, V]`` and unrolls argmax up to
+    ``max_new_tokens`` or EOS.
+    """
     cur = input_ids
     for _ in range(max_new_tokens):
-        logits = verifier(
-            input_ids=cur,
-            proposer_hidden_bank=proposer_hidden_bank,
-        )
+        logits = forward_fn(cur)
         next_token = int(torch.argmax(logits[:, -1, :]).item())
         cur = torch.cat(
             [cur, torch.tensor([[next_token]], device=cur.device)], dim=1,
         )
         if next_token == tokenizer.eos_token_id:
             break
-    return tokenizer.decode(cur[0, input_ids.size(1):], skip_special_tokens=True)
-
-
-@torch.no_grad()
-def _greedy_decode_baseline(
-    *,
-    verifier_base,
-    input_ids: torch.Tensor,
-    tokenizer,
-    sink: int,
-    window: int,
-    max_new_tokens: int,
-) -> str:
-    """Bounded-KV baseline: emulate sink+window by truncating prefix."""
-    seq = input_ids[0].tolist()
-    cur_ids = list(seq)
-    for _ in range(max_new_tokens):
-        # Truncate prefix to (sink + window) tokens.
-        if len(cur_ids) > sink + window:
-            kept = cur_ids[:sink] + cur_ids[-window:]
-        else:
-            kept = list(cur_ids)
-        kept_t = torch.tensor([kept], device=input_ids.device)
-        logits = verifier_base(input_ids=kept_t).logits
-        next_token = int(torch.argmax(logits[:, -1, :]).item())
-        cur_ids.append(next_token)
-        if next_token == tokenizer.eos_token_id:
-            break
-    return tokenizer.decode(cur_ids[len(seq):], skip_special_tokens=True)
+    return tokenizer.decode(
+        cur[0, input_ids.size(1):], skip_special_tokens=True,
+    )
 
 
 # ============================================================================
@@ -601,9 +763,13 @@ def main() -> int:
         "--device", default="auto", choices=["auto", "cpu", "cuda", "mps"],
         help="auto picks mps on Mac, cuda on Linux+NVIDIA, else cpu",
     )
-    ap.add_argument("--cross-attn-depth", type=int, default=8,
-                    help="verifier layer K after which cross-attention is "
-                         "injected (default: layer 8 of typical 28-layer)")
+    ap.add_argument("--cross-attn-depth", type=int, default=20,
+                    help="verifier decoder layer index (1-indexed) on whose "
+                         "output the cross-attention residual is injected; "
+                         "the augmented hidden then flows through layers "
+                         "K+1..N, the final layernorm, and lm_head. Default "
+                         "20 is appropriate for Gemma 3-1B (26 layers); for "
+                         "other base models pick a depth ≈ 0.7 × num_layers.")
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--num-heads", type=int, default=8)
@@ -632,14 +798,17 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.multimodal_tokens != "none":
+        # ADR 0008 §6.2: no silent fallback. If the user explicitly
+        # asked for a Phase 2 mode, refuse rather than degrade silently.
         print(
-            f"[toy] --multimodal-tokens={args.multimodal_tokens} reserved "
-            "for Phase 2 of ADR 0011; Phase 1 validates text-only. "
-            "Phase 2 implementation is queued. Falling back to text mode.",
+            f"[toy] --multimodal-tokens={args.multimodal_tokens} is "
+            "reserved for Phase 2 (Gemma 4 multimodal). Phase 1 toy "
+            "validates text-only; aborting. Pass --multimodal-tokens "
+            "none to continue.",
             file=sys.stderr,
         )
+        return 2
 
-    # Lazy import HF transformers.
     print(f"[toy] loading {args.model}", file=sys.stderr, flush=True)
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -664,15 +833,20 @@ def main() -> int:
     # gets the cross-attention bridge added on top, proposer is frozen
     # full-attention reference. Phase 2 substitutes a Gemma 4 MM
     # checkpoint (same shape, different weights).
+    #
+    # attn_implementation="eager" is required so we can pass a 4D
+    # additive sink+window mask through to the attention forward.
+    # SDPA / FlashAttention paths normalize the mask in ways that
+    # silently drop our restriction.
     proposer = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=dtype,
+        args.model, dtype=dtype, attn_implementation="eager",
     ).to(device)
     proposer.eval()
     for p in proposer.parameters():
         p.requires_grad = False
 
     verifier_base = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=dtype,
+        args.model, dtype=dtype, attn_implementation="eager",
     ).to(device)
     verifier_base.eval()
 
@@ -719,10 +893,12 @@ def main() -> int:
         seed=args.seed + 1,
     )
 
-    # Pre-train evaluation: this is the bounded baseline pre-training
-    # (cross-attn output ≈ 0 so verifier ≡ baseline)
-    print("[toy] pre-train eval (baseline)", file=sys.stderr)
-    pre_xa, pre_baseline = evaluate_recall(
+    # Pre-train evaluation: cross-attn W_o is zero-init so the bridge
+    # contributes nothing → cross_attn ≡ bounded_baseline at step 0.
+    # Oracle measures the prompt/answer pipeline itself.
+    print("[toy] pre-train eval (full eval set, all 3 baselines)",
+          file=sys.stderr)
+    pre_xa, pre_bounded, pre_oracle = evaluate_recall(
         proposer=proposer,
         verifier_with_bridge=verifier,
         samples=eval_data,
@@ -730,17 +906,18 @@ def main() -> int:
         device=device,
     )
     print(
-        f"[toy] pre-train: bounded_baseline_recall={pre_baseline:.3f}  "
-        f"cross_attn_recall={pre_xa:.3f}",
+        f"[toy] pre-train: oracle={pre_oracle:.3f}  "
+        f"bounded_baseline={pre_bounded:.3f}  "
+        f"cross_attn={pre_xa:.3f}",
         file=sys.stderr,
     )
 
-    # Train
     history = []
     rng = random.Random(args.seed)
     print(f"[toy] training {args.train_steps} steps", file=sys.stderr)
     t0 = time.perf_counter()
     losses = []
+    avg = 0.0
     for step in range(1, args.train_steps + 1):
         sample = rng.choice(train_data)
         loss = train_step(
@@ -760,31 +937,33 @@ def main() -> int:
                 file=sys.stderr, flush=True,
             )
         if step % args.eval_every == 0:
-            xa, baseline = evaluate_recall(
+            # Periodic eval skips oracle (it's invariant — saves time).
+            xa, bounded, _ = evaluate_recall(
                 proposer=proposer,
                 verifier_with_bridge=verifier,
                 samples=eval_data[: max(20, len(eval_data) // 4)],
                 tokenizer=tokenizer,
                 device=device,
+                include_oracle=False,
             )
             print(
-                f"[toy] step={step}  cross_attn_recall={xa:.3f}  "
-                f"baseline_recall={baseline:.3f}",
+                f"[toy] step={step}  cross_attn={xa:.3f}  "
+                f"bounded_baseline={bounded:.3f}",
                 file=sys.stderr,
             )
             history.append({
                 "step": step,
                 "cross_attn_recall": xa,
-                "baseline_recall": baseline,
+                "baseline_recall": bounded,
                 "loss_avg10": avg,
             })
 
     elapsed = time.perf_counter() - t0
     print(f"[toy] training done in {elapsed:.1f}s", file=sys.stderr)
 
-    # Final eval on full eval set
-    print("[toy] final eval on full eval set", file=sys.stderr)
-    final_xa, final_baseline = evaluate_recall(
+    print("[toy] final eval on full eval set (all 3 baselines)",
+          file=sys.stderr)
+    final_xa, final_bounded, final_oracle = evaluate_recall(
         proposer=proposer,
         verifier_with_bridge=verifier,
         samples=eval_data,
@@ -792,29 +971,47 @@ def main() -> int:
         device=device,
     )
     print(
-        f"[toy] FINAL: cross_attn_recall={final_xa:.3f}  "
-        f"baseline_recall={final_baseline:.3f}",
+        f"[toy] FINAL: oracle={final_oracle:.3f}  "
+        f"bounded_baseline={final_bounded:.3f}  "
+        f"cross_attn={final_xa:.3f}",
         file=sys.stderr,
     )
 
-    # Gate G-X1 acceptance
-    gate_g_x1_pass = (
-        final_xa >= 0.80 and final_baseline <= 0.30
+    # Gate G-X1 acceptance — three predicates:
+    #   (a) cross_attn_recall  ≥ 0.80  (the hypothesis)
+    #   (b) bounded_baseline   ≤ 0.30  (memory bound is real)
+    #   (c) oracle             ≥ 0.80  (sanity: eval pipeline works)
+    # All three must hold. (R1b adds (c) as the new sanity gate;
+    # G-X1 attempt #1 silently failed (c) because the lm_head was
+    # consuming a layer-K hidden state.)
+    gate_oracle_ok = final_oracle >= 0.80
+    gate_bounded_ok = final_bounded <= 0.30
+    gate_cross_ok = final_xa >= 0.80
+    gate_g_x1_pass = gate_oracle_ok and gate_bounded_ok and gate_cross_ok
+    print(
+        f"[toy] Gate G-X1 predicates: "
+        f"oracle≥0.80 ({final_oracle:.3f}) -> "
+        f"{'OK' if gate_oracle_ok else 'FAIL'}  |  "
+        f"bounded≤0.30 ({final_bounded:.3f}) -> "
+        f"{'OK' if gate_bounded_ok else 'FAIL'}  |  "
+        f"cross≥0.80 ({final_xa:.3f}) -> "
+        f"{'OK' if gate_cross_ok else 'FAIL'}",
+        file=sys.stderr,
     )
     print(
-        f"[toy] Gate G-X1 (cross_attn>=0.80 AND baseline<=0.30): "
+        f"[toy] Gate G-X1 overall: "
         f"{'PASS' if gate_g_x1_pass else 'FAIL'}",
         file=sys.stderr,
     )
 
-    # Write report
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,  # bumped from v1 (R1 attempt #1) — adds oracle baseline + 3-predicate gate
         "kind": "adr_0011_toy_prototype_g_x1",
         "config": {
             "model": args.model,
             "device": str(device),
+            "attn_implementation": "eager",
             "cross_attn_depth": args.cross_attn_depth,
             "sink": args.sink,
             "window": args.window,
@@ -827,16 +1024,25 @@ def main() -> int:
             "haystack_min_tokens": args.haystack_min_tokens,
             "haystack_max_tokens": args.haystack_max_tokens,
             "seed": args.seed,
+            "uses_chat_template": True,
+            "verifier_layer_surgery": "forward_hook_on_layer_K_output",
         },
         "pre_train": {
             "cross_attn_recall": pre_xa,
-            "baseline_recall": pre_baseline,
+            "baseline_recall": pre_bounded,
+            "oracle_recall": pre_oracle,
         },
         "training_history": history,
         "final": {
             "cross_attn_recall": final_xa,
-            "baseline_recall": final_baseline,
+            "baseline_recall": final_bounded,
+            "oracle_recall": final_oracle,
             "elapsed_s": elapsed,
+        },
+        "gate_predicates": {
+            "oracle_ge_080": gate_oracle_ok,
+            "bounded_le_030": gate_bounded_ok,
+            "cross_attn_ge_080": gate_cross_ok,
         },
         "gate_g_x1_pass": gate_g_x1_pass,
     }

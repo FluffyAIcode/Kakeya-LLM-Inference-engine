@@ -184,7 +184,7 @@ This ADR is conditional on empirical validation. Three gates must pass before v0
 
 ### Gate G-X1: Toy prototype convergence
 
-* Setup: small Gemma family (Gemma 3-1B / Gemma 4-2B as both proposer and verifier), text-only, needle-in-haystack
+* Setup: small Gemma family (Gemma 3-1B / Gemma 4-2B as both proposer and verifier), text-only, needle-in-haystack. **2026-06-06 update (R1b)**: pass criterion is the conjunction of three predicates — `oracle ≥ 0.80` (full-attn sanity), `bounded_baseline ≤ 0.30` (memory bound is real), `cross_attn ≥ 0.80` (the hypothesis). All three must hold. See §10 for why the third predicate ("oracle sanity") was added after attempt #1 produced uninterpretable 0/0 results.
 * Compute: <$500 GPU rental, 2-4 weeks
 * Pass criterion: with bounded verifier (sink+window=128 over 1-2 k context) + cross-attention from full-attention proposer's hidden bank, recall on synthetic NIAH ≥ 80 % (vs full-attention baseline 100 %, vs bounded baseline ~20 %)
 * Fail action: stop. Switch to ADR 0010 + InfLLM hot/cold for v0.5
@@ -253,3 +253,30 @@ Total ADR 0011 lifecycle: ~12-18 months, ~$50-100k GPU + engineer time. Gate G-X
 ## 9. Implementation pointer
 
 Toy prototype scaffold lives at `scripts/research/cross_attn_toy_prototype.py` (this PR). Phase 1 (G-X1) target: text-only Gemma 3/4 family, 1-2 week feasibility study on Mac M4. Multimodal hooks documented inline so Phase 2/3 are mechanical extensions, not architectural rewrites.
+
+## 10. Postscript: 2026-06-06 G-X1 attempt #1 — toy was buggy, no signal
+
+**Run**: `results/research/cross_attn_toy_1780745401.json` (PR #63, R1 evidence)
+**Setup**: Gemma 3-1B-it × Gemma 3-1B-it, sink=4, window=64, cross_attn_depth=8, 200 train steps, n_eval=50, MPS bf16, ~28 min on Mac M4.
+
+**Outcome**: `gate_g_x1_pass: false` with `cross_attn_recall=0.000`, `baseline_recall=0.000`. Loss decreased meaningfully (65.85 → 31.58 → 21.98 → 23.24) but neither evaluation pathway produced a single correct answer. The result is **not interpretable as a refutation of §3** — the toy itself had four implementation defects:
+
+| Bug | Location | Impact |
+|---|---|---|
+| **A. Architectural bypass** | `CrossAttentionVerifier._forward_layers_with_bridge` | The toy returned `hidden_states[K=8] + delta` and applied `lm_head` directly to that mid-stack hidden. `lm_head` is trained on the post-final-layernorm hidden (layer 26 in Gemma 3-1B); applying it to layer 8 produces meaningless logits. Loss dropped because `cross_attn` learned to project layer-8 hidden into a direction `lm_head` happens to read as "low-entropy", but the resulting argmax tokens are not meaningful answers. |
+| **B. Mask was computed but never applied** | `CrossAttentionVerifier.forward` | `make_sink_window_attention_mask(...)` produced a 2D mask that was passed only as a function argument, never to `self.base(...)`. The verifier base model ran with default full causal attention. The "cross-attn path" was therefore "**full**-attention verifier + bridge delta" while the "bounded baseline" used hand-rolled prefix truncation — the A/B comparison was not apples-to-apples. |
+| **C. No chat template on instruction-tuned model** | `train_step`, `evaluate_recall` | Raw text fed into `gemma-3-1b-it`, which is SFT-trained to expect `<start_of_turn>user...<end_of_turn>\n<start_of_turn>model\n` framing. Without the template the model emits control tokens and refusal patterns. |
+| **D. No oracle baseline** | `evaluate_recall` | Without a "full-attention, no bridge" sanity line, a 0% recall on every path is uninformative — could be the mechanism failing or the prompt format failing. |
+
+**Resolution**: PR-R1b (`AgentMemory/v04-pr-r1b-cross-attn-toy-fix-8e7f`):
+
+1. **A.2 fix** — `CrossAttentionVerifier._forward_with_bridge` now uses a PyTorch forward hook on `base.model.layers[K-1]` whose output `h_K` flows into layer K. The hook returns `h_K + delta`; the augmented hidden then propagates through layers K+1..N-1, the final layernorm, and `lm_head` via HF's normal forward. This is architecturally faithful to §3 — cross-attention is a residual addition mid-stack, not a bypassed lm_head shortcut.
+2. **B fix** — `_build_sink_window_mask_kwarg` produces a 4D additive mask of shape `[1, 1, T, T]` and passes it to `self.base(..., attention_mask=...)`. For Gemma3-class models the mask is wrapped in the `{"full_attention": ..., "sliding_attention": ...}` dict so both layer types are bounded identically. `attn_implementation="eager"` is forced on model load to guarantee 4D mask acceptance.
+3. **C fix** — `_encode_prompt_with_chat_template` uses `tokenizer.apply_chat_template(messages, add_generation_prompt=True)`. Refuses to run on tokenizers without a template (no silent fallback per ADR 0008 §6.2).
+4. **D fix** — `evaluate_recall` returns `(cross_attn, bounded_baseline, oracle)`. Gate G-X1 acceptance is now three predicates: `oracle ≥ 0.80` (sanity), `bounded ≤ 0.30` (bound is real), `cross_attn ≥ 0.80` (hypothesis). All three must hold.
+
+**Default `--cross-attn-depth`** moved from 8 to 20 (≈ 0.77 × 26 layers in Gemma 3-1B). Empirically the right injection depth is late in the stack: early enough that several layers can still process the augmented hidden, late enough that the bridge isn't trying to seed information that will be overwritten by 18 more layers of self-attention.
+
+**Linux CI**: 28 unit tests in `tests/research/test_cross_attn_toy.py` cover (a) sink+window mask sparsity for every query position; (b) bridge zero-init invariant; (c) gradient flow through the bridge; (d) layer-module discovery on Gemma3-shape and GPT-2-shape surrogates; (e) hook injection actually changes logits, is removed after forward (including on exception), and the bounded-baseline / oracle paths do not register hooks; (f) softmax over `(scores + sink_window_4d)` zeros forbidden positions. The empirical question (does the bridge rescue recall on Gemma 3-1B-it?) remains gated on Mac M4 — Linux CI cannot answer it.
+
+**Schema bump**: report `schema_version` is now `2`. The G-X1 attempt #1 JSON (`cross_attn_toy_1780745401.json`) is preserved as v1 historical evidence and stays in the repo.
