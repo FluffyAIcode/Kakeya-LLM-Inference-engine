@@ -85,7 +85,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -173,13 +173,23 @@ class CrossAttentionBridge(nn.Module):
         verifier_hidden: torch.Tensor,        # [B, T_v, hidden_v]
         proposer_hidden_bank: torch.Tensor,   # [B, T_p, hidden_p]
         proposer_attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_attention_weights: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Apply cross-attention; returns delta to add to verifier residual.
 
         ``proposer_attention_mask``: optional [B, T_p] mask where 0
         indicates padding to ignore. Modality-agnostic — for text it
         masks pad tokens; for video it would mask out absent frames
         in a fixed-size buffer.
+
+        ``return_attention_weights``: if True, return
+        ``(delta, attn)`` where ``attn`` is the post-softmax weights of
+        shape ``[B, H, T_v, T_p]``. R1d-β uses these for the retrieval-
+        auxiliary loss and the attention-localization eval metric. The
+        weights tensor still has gradient information when training so
+        the auxiliary loss can backprop through them. (Default False
+        preserves the R1c forward-shape contract used by the unit
+        tests.)
         """
         B, T_v, _ = verifier_hidden.shape
         _, T_p, _ = proposer_hidden_bank.shape
@@ -213,6 +223,8 @@ class CrossAttentionBridge(nn.Module):
             B, T_v, self.num_heads * self.head_dim,
         )
         out = self.o_proj(out)        # [B, T_v, hidden_v]
+        if return_attention_weights:
+            return out, attn
         return out
 
 
@@ -319,6 +331,7 @@ class CrossAttentionVerifier(nn.Module):
         sink: int = 4,
         window: int = 64,
         freeze_base: bool = True,
+        capture_attention: bool = False,
     ) -> None:
         super().__init__()
         self.base = base_model
@@ -326,6 +339,14 @@ class CrossAttentionVerifier(nn.Module):
         self.cross_attn_depth = cross_attn_depth
         self.sink = sink
         self.window = window
+        # R1d-β: when True, the forward hook stashes the bridge's
+        # post-softmax attention weights on ``self._last_attention_weights``
+        # so the training loop can compute a retrieval-aux loss and the
+        # eval loop can compute attention-localization metrics. Default
+        # False keeps the R1c hot path allocation-identical (no extra
+        # tensor refs alive between forward and backward).
+        self.capture_attention = capture_attention
+        self._last_attention_weights: Optional[torch.Tensor] = None
         if freeze_base:
             for p in self.base.parameters():
                 p.requires_grad = False
@@ -402,6 +423,11 @@ class CrossAttentionVerifier(nn.Module):
         layers = self._layers_module()
         target_layer = layers[self.cross_attn_depth - 1]
         cross_attn = self.cross_attn
+        capture = self.capture_attention
+        # Reset before the forward so a stale tensor from a previous
+        # forward never leaks into a later loss / metric computation.
+        self._last_attention_weights = None
+        verifier_self = self  # closure pickup
 
         def hook(module, layer_inputs, layer_output):
             if isinstance(layer_output, tuple):
@@ -410,11 +436,22 @@ class CrossAttentionVerifier(nn.Module):
             else:
                 hidden_out = layer_output
                 rest = None
-            delta = cross_attn(
-                verifier_hidden=hidden_out,
-                proposer_hidden_bank=proposer_hidden_bank,
-                proposer_attention_mask=proposer_attention_mask,
-            )
+            if capture:
+                delta, attn_weights = cross_attn(
+                    verifier_hidden=hidden_out,
+                    proposer_hidden_bank=proposer_hidden_bank,
+                    proposer_attention_mask=proposer_attention_mask,
+                    return_attention_weights=True,
+                )
+                # Stash the live tensor (still in the autograd graph
+                # during training) so train_step / eval can read it.
+                verifier_self._last_attention_weights = attn_weights
+            else:
+                delta = cross_attn(
+                    verifier_hidden=hidden_out,
+                    proposer_hidden_bank=proposer_hidden_bank,
+                    proposer_attention_mask=proposer_attention_mask,
+                )
             modified = hidden_out + delta
             if rest is not None:
                 return (modified,) + rest
@@ -500,11 +537,19 @@ class CrossAttentionVerifier(nn.Module):
 
 @dataclasses.dataclass
 class NIAHSample:
-    """One needle-in-haystack training example."""
+    """One needle-in-haystack training example.
+
+    ``needle_text`` (R1d-β): the exact substring inserted into the
+    haystack — used to locate the needle's *token* range inside the
+    chat-template-tokenized prompt at training/eval time, which is in
+    turn used for the retrieval-auxiliary loss and the attention-
+    localization metric.
+    """
 
     prompt_text: str
     answer_text: str
-    needle_position: int  # token index where the needle lives
+    needle_position: int  # line index where the needle lives
+    needle_text: str = ""  # exact needle string for token-range lookup
 
 
 @dataclasses.dataclass(frozen=True)
@@ -628,9 +673,159 @@ def make_niah_dataset(
                 prompt_text=prompt,
                 answer_text=" " + code,
                 needle_position=insert_at,
+                needle_text=needle,
             )
         )
     return samples
+
+
+# ============================================================================
+# R1d-β: retrieval-auxiliary loss + attention localization
+# ============================================================================
+
+
+def find_needle_token_range(
+    tokenizer,
+    prompt_ids_with_chat_template: torch.Tensor,
+    needle_text: str,
+    *,
+    fuzz: int = 4,
+) -> Optional[Tuple[int, int]]:
+    """Locate the needle's token range inside an already chat-templated
+    ``prompt_ids`` tensor.
+
+    Strategy: tokenize ``needle_text`` on its own without special
+    tokens, then linearly scan ``prompt_ids[0]`` for the first match.
+    Returns ``(start, end_exclusive)`` if found; ``None`` otherwise.
+
+    The match is **exact** on the needle's tokens. ``fuzz`` is a slack
+    we expand the returned range by on each side to absorb tokenizer
+    boundary effects (BPE merges across the needle's leading/trailing
+    newlines), giving the retrieval-aux loss a slightly bigger target
+    so attention concentration on the immediate vicinity counts.
+
+    Returns ``None`` (not raises) so callers can decide whether the
+    aux loss should be skipped for that sample. ADR 0008 §6.2 forbids
+    silent fallbacks at the *engine* layer, but this is research code
+    where the natural action on a missing needle is to omit the
+    sample's aux loss term — a hard error would crash training on
+    rare tokenization edge cases.
+    """
+    if not needle_text:
+        return None
+    needle_ids = tokenizer(
+        needle_text, add_special_tokens=False, return_tensors=None,
+    ).input_ids
+    if isinstance(needle_ids, list) and needle_ids and isinstance(needle_ids[0], list):
+        needle_ids = needle_ids[0]
+    needle_len = len(needle_ids)
+    if needle_len == 0:
+        return None
+    seq = prompt_ids_with_chat_template[0].tolist()
+    seq_len = len(seq)
+    for start in range(seq_len - needle_len + 1):
+        if seq[start : start + needle_len] == needle_ids:
+            lo = max(0, start - fuzz)
+            hi = min(seq_len, start + needle_len + fuzz)
+            return (lo, hi)
+    return None
+
+
+def compute_retrieval_aux_loss(
+    attention_weights: torch.Tensor,
+    needle_token_start: int,
+    needle_token_end: int,
+    *,
+    answer_token_start: Optional[int] = None,
+    answer_token_end: Optional[int] = None,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Negative-log probability mass on the needle range under the
+    cross-attention bridge's post-softmax weights.
+
+    ``attention_weights``: ``[B, H, T_v, T_p]`` from
+    :meth:`CrossAttentionBridge.forward(..., return_attention_weights=True)`.
+
+    Pulls the bridge's attention probability onto the needle's
+    proposer-bank token range. By default averages across heads and
+    *all* verifier query positions; if ``answer_token_start`` /
+    ``answer_token_end`` are provided, restricts the verifier-query
+    average to the answer span — sharper signal because that's where
+    the bridge actually has to write the needle into the residual.
+
+    Returns a scalar tensor that adds straight into the cross-entropy
+    training loss. Magnitude is roughly ``-log(needle_mass)``: when
+    the bridge already attends fully to the needle, this is ~0; when
+    it ignores the needle entirely, this can grow up to ~ ``-log(eps)``
+    ≈ 18, so weight it conservatively (R1d-β default 0.1).
+
+    Raises ``ValueError`` if ``needle_token_end <= needle_token_start``
+    (an unusable empty range — caller should have skipped the sample).
+    """
+    if needle_token_end <= needle_token_start:
+        raise ValueError(
+            f"needle_token_end ({needle_token_end}) must exceed "
+            f"needle_token_start ({needle_token_start})"
+        )
+    # Restrict to answer-position queries if provided
+    if answer_token_start is not None and answer_token_end is not None:
+        if answer_token_end <= answer_token_start:
+            raise ValueError(
+                f"answer_token_end ({answer_token_end}) must exceed "
+                f"answer_token_start ({answer_token_start})"
+            )
+        attn = attention_weights[:, :, answer_token_start:answer_token_end, :]
+    else:
+        attn = attention_weights
+    # Average over heads + query positions → [B, T_p]
+    attn_mean = attn.mean(dim=(1, 2))
+    needle_mass = attn_mean[:, needle_token_start:needle_token_end].sum(dim=-1)
+    # Numerical safety: clamp to avoid -inf when mass underflows under
+    # bf16/fp16 accumulation. Same finfo-style trick as the sink+window
+    # mask construction.
+    needle_mass = needle_mass.clamp(min=eps)
+    return -torch.log(needle_mass).mean()
+
+
+def attention_localization_metrics(
+    attention_weights: torch.Tensor,
+    needle_token_start: int,
+    needle_token_end: int,
+    *,
+    answer_token_start: Optional[int] = None,
+    answer_token_end: Optional[int] = None,
+) -> Tuple[float, float]:
+    """Diagnostic: where IS the bridge attending?
+
+    Returns ``(localization_rate, mass_on_needle)``:
+
+    * ``localization_rate``: fraction of (sample, head)-pairs whose
+      argmax over the proposer-bank dimension falls inside
+      ``[needle_token_start, needle_token_end)``. Read as
+      "what fraction of the time does the bridge's most-attended
+      proposer position land in the needle area?".
+    * ``mass_on_needle``: the average probability mass falling inside
+      the needle range (over heads + queries + batch). Read as a
+      softer "how concentrated on the needle is the attention?".
+
+    Both metrics use the answer-query-position restriction if
+    provided (matching the retrieval-aux loss restriction), otherwise
+    average over all verifier queries. The two metrics together let
+    the post-mortem distinguish "attends sharply but on the wrong
+    place" from "attends diffusely everywhere including the needle".
+    """
+    if answer_token_start is not None and answer_token_end is not None:
+        attn = attention_weights[:, :, answer_token_start:answer_token_end, :]
+    else:
+        attn = attention_weights
+    # Argmax-based rate: per (B, H, T_v_slice), find argmax over T_p
+    argmax_pos = attn.argmax(dim=-1)  # [B, H, T_v_slice]
+    in_needle = (argmax_pos >= needle_token_start) & (argmax_pos < needle_token_end)
+    localization_rate = float(in_needle.float().mean().item())
+    # Mass-based: sum over needle positions, average over (B, H, T_v_slice)
+    needle_mass = attn[..., needle_token_start:needle_token_end].sum(dim=-1)
+    mass_on_needle = float(needle_mass.mean().item())
+    return localization_rate, mass_on_needle
 
 
 # ============================================================================
@@ -697,7 +892,8 @@ def train_step(
     optimizer,
     device: torch.device,
     dtype: torch.dtype,
-) -> float:
+    retrieval_aux_weight: float = 0.0,
+) -> Tuple[float, float, Optional[Tuple[int, int]]]:
     """One gradient step.
 
     1. Tokenize sample's prompt via chat template; tokenize answer
@@ -706,21 +902,31 @@ def train_step(
        wrapped prompt to produce the hidden bank.
     3. Run verifier (bounded local attention + cross-attention bridge)
        on prompt+answer.
-    4. Loss: cross-entropy at answer positions only.
+    4. Loss: cross-entropy at answer positions only, plus optional
+       retrieval-auxiliary loss (R1d-β) that pulls the bridge's
+       attention probability mass onto the needle's proposer-bank
+       token range.
+
+    Returns ``(ce_loss, aux_loss, needle_token_range)``. ``aux_loss``
+    is ``0.0`` when ``retrieval_aux_weight=0.0`` or the needle's
+    token range cannot be located. ``needle_token_range`` is the
+    located range or None — useful for the caller to track how often
+    the needle was found and as input to attention-localization
+    metrics during eval.
     """
     prompt_ids = _encode_prompt_with_chat_template(
         tokenizer, sample.prompt_text, device,
     )
     if prompt_ids.size(1) < 8:
-        return 0.0
+        return 0.0, 0.0, None
     answer_ids = _encode_answer_continuation(
         tokenizer, sample.answer_text, device,
     )
     if answer_ids.numel() == 0:
-        return 0.0
+        return 0.0, 0.0, None
     full_input_ids = torch.cat([prompt_ids, answer_ids], dim=1)
     if full_input_ids.size(1) > 4096:
-        return 0.0
+        return 0.0, 0.0, None
 
     with torch.no_grad():
         proposer_out = proposer(
@@ -731,31 +937,92 @@ def train_step(
         )
     proposer_hidden_bank = proposer_out.hidden_states[-1]  # [1, T_p, hidden_p]
 
-    logits = verifier_with_bridge(
-        input_ids=full_input_ids,
-        proposer_hidden_bank=proposer_hidden_bank,
-    )
+    # Aux loss requires the bridge to expose its post-softmax weights;
+    # toggle capture for this forward.
+    want_aux = retrieval_aux_weight > 0.0 and bool(sample.needle_text)
+    needle_range: Optional[Tuple[int, int]] = None
+    prev_capture = verifier_with_bridge.capture_attention
+    if want_aux:
+        verifier_with_bridge.capture_attention = True
+
+    try:
+        logits = verifier_with_bridge(
+            input_ids=full_input_ids,
+            proposer_hidden_bank=proposer_hidden_bank,
+        )
+    finally:
+        verifier_with_bridge.capture_attention = prev_capture
 
     answer_start = prompt_ids.size(1)
     target = full_input_ids[:, answer_start:].contiguous()
     pred = logits[:, answer_start - 1 : -1, :].contiguous()
     if target.numel() == 0 or pred.size(1) != target.size(1):
-        return 0.0
+        return 0.0, 0.0, None
     # Upcast logits to fp32 for numerically stable cross-entropy under
     # bf16 base model weights — bf16 cross_entropy on MPS occasionally
     # returns NaN on extreme logit magnitudes.
-    loss = F.cross_entropy(
+    ce_loss = F.cross_entropy(
         pred.reshape(-1, pred.size(-1)).float(),
         target.reshape(-1),
     )
 
+    aux_loss_value = 0.0
+    if want_aux:
+        # Locate the needle in the chat-template-tokenized prompt
+        # (NOT the full prompt+answer — the needle is in the prompt).
+        needle_range = find_needle_token_range(
+            tokenizer, prompt_ids, sample.needle_text,
+        )
+        attn_w = verifier_with_bridge._last_attention_weights
+        if needle_range is not None and attn_w is not None:
+            ns, ne = needle_range
+            # Restrict aux loss's verifier-query average to the answer
+            # span: that's where the bridge actually has to write the
+            # needle into the residual.
+            answer_end = full_input_ids.size(1)
+            aux = compute_retrieval_aux_loss(
+                attn_w,
+                ns, ne,
+                answer_token_start=answer_start,
+                answer_token_end=answer_end,
+            )
+            # Upcast for the same numerical reasons as ce_loss
+            aux_f = aux.float()
+            total = ce_loss + retrieval_aux_weight * aux_f
+            aux_loss_value = float(aux_f.item())
+        else:
+            total = ce_loss
+    else:
+        total = ce_loss
+
     optimizer.zero_grad()
-    loss.backward()
+    total.backward()
     torch.nn.utils.clip_grad_norm_(
         verifier_with_bridge.cross_attn.parameters(), max_norm=1.0,
     )
     optimizer.step()
-    return float(loss.item())
+    return float(ce_loss.item()), aux_loss_value, needle_range
+
+
+@dataclasses.dataclass
+class EvalResult:
+    """R1d-β: structured eval output. Recall numbers are the same shape
+    as before; the new ``attention_localization`` fields default to
+    -1.0 ("not measured") when ``capture_attention=False`` so the
+    schema is forward-compatible with consumers that don't yet expect
+    the diagnostic columns.
+    """
+
+    cross_attn_recall: float
+    bounded_baseline_recall: float
+    oracle_recall: float  # -1.0 when include_oracle=False
+    # Attention-localization (only populated when
+    # verifier_with_bridge.capture_attention=True at call time).
+    # `localization_rate` and `mass_on_needle` are averaged over the
+    # eval set; -1.0 means "not measured".
+    localization_rate: float = -1.0
+    mass_on_needle: float = -1.0
+    needle_found_rate: float = -1.0  # frac of samples where range was located
 
 
 @torch.no_grad()
@@ -768,23 +1035,32 @@ def evaluate_recall(
     device: torch.device,
     max_new_tokens: int = 24,
     include_oracle: bool = True,
-) -> Tuple[float, float, float]:
-    """Measure NIAH recall under three regimes.
+    measure_localization: bool = False,
+) -> EvalResult:
+    """Measure NIAH recall under three regimes, plus optional bridge
+    attention-localization diagnostics (R1d-β).
 
     1. **cross_attn**: bounded verifier (sink+window mask) + bridge.
     2. **bounded_baseline**: same bounded verifier, no bridge.
     3. **full_attention oracle**: verifier with no sink+window mask,
        no bridge — sanity anchor. If oracle ≪ 100 %, the prompt
        template / answer matching is broken and the bridge comparison
-       cannot be trusted (Bug D fix).
+       cannot be trusted (R1b Bug D fix).
 
-    Returns ``(cross_attn_recall, bounded_baseline_recall, oracle_recall)``.
-    If ``include_oracle=False``, the third value is ``-1.0`` to signal
-    "not measured" without inventing data.
+    When ``measure_localization=True`` the cross-attn forward also
+    captures the bridge's post-softmax attention weights and computes
+    the (localization_rate, mass_on_needle) pair averaged across the
+    eval set; otherwise those fields stay at ``-1.0`` ("not measured").
+    Localization is enabled separately from the gate predicates so the
+    aux-loss training experiment and the production-style eval can
+    reuse the same code path.
     """
     cross_attn_correct = 0
     bounded_correct = 0
     oracle_correct = 0
+    loc_rates: List[float] = []
+    loc_masses: List[float] = []
+    needles_found = 0
     for sample in samples:
         prompt_ids = _encode_prompt_with_chat_template(
             tokenizer, sample.prompt_text, device,
@@ -797,6 +1073,40 @@ def evaluate_recall(
             use_cache=False,
         )
         hidden_bank = proposer_out.hidden_states[-1]
+
+        # If localization is requested, do a single capturing forward
+        # over (prompt + dummy first-step) to compute the metric on
+        # the answer-write position; then proceed with normal greedy
+        # decode without capture (faster).
+        if measure_localization and sample.needle_text:
+            needle_range = find_needle_token_range(
+                tokenizer, prompt_ids, sample.needle_text,
+            )
+            if needle_range is not None:
+                needles_found += 1
+                prev_cap = verifier_with_bridge.capture_attention
+                verifier_with_bridge.capture_attention = True
+                try:
+                    _ = verifier_with_bridge(
+                        input_ids=prompt_ids,
+                        proposer_hidden_bank=hidden_bank,
+                    )
+                finally:
+                    verifier_with_bridge.capture_attention = prev_cap
+                attn_w = verifier_with_bridge._last_attention_weights
+                if attn_w is not None:
+                    ns, ne = needle_range
+                    # Use the last query position (about to predict the
+                    # first answer token under chat template's
+                    # generation-prompt suffix) as the "answer span" of 1.
+                    last_q = attn_w.size(2)
+                    rate, mass = attention_localization_metrics(
+                        attn_w, ns, ne,
+                        answer_token_start=last_q - 1,
+                        answer_token_end=last_q,
+                    )
+                    loc_rates.append(rate)
+                    loc_masses.append(mass)
 
         cross_attn_text = _greedy_decode(
             forward_fn=lambda ids: verifier_with_bridge(
@@ -826,10 +1136,21 @@ def evaluate_recall(
                 oracle_correct += 1
 
     n = max(len(samples), 1)
-    return (
-        cross_attn_correct / n,
-        bounded_correct / n,
-        (oracle_correct / n) if include_oracle else -1.0,
+    if measure_localization and loc_rates:
+        loc_rate = sum(loc_rates) / len(loc_rates)
+        mass = sum(loc_masses) / len(loc_masses)
+        found_rate = needles_found / n
+    else:
+        loc_rate = -1.0
+        mass = -1.0
+        found_rate = -1.0
+    return EvalResult(
+        cross_attn_recall=cross_attn_correct / n,
+        bounded_baseline_recall=bounded_correct / n,
+        oracle_recall=(oracle_correct / n) if include_oracle else -1.0,
+        localization_rate=loc_rate,
+        mass_on_needle=mass,
+        needle_found_rate=found_rate,
     )
 
 
@@ -915,6 +1236,15 @@ def main() -> int:
              "(20 answers); 'medium' = 4 prefixes × 2 digits (400). Use "
              "'small' to check the bridge mechanism works on an easy "
              "target before debugging the hard one.",
+    )
+    ap.add_argument(
+        "--retrieval-aux-weight", type=float, default=0.0,
+        help="R1d-β: weight on the retrieval-auxiliary loss that pulls "
+             "the bridge's cross-attention probability mass onto the "
+             "needle's proposer-bank token range. 0.0 (default) "
+             "disables it and reproduces R1c training step-for-step. "
+             "Recommended R1d-β value: 0.1. The auxiliary loss is "
+             "scaled by this weight and added to cross-entropy.",
     )
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--n-train", type=int, default=200)
@@ -1048,31 +1378,40 @@ def main() -> int:
     # residual slightly, so cross_attn may differ marginally from the
     # bounded baseline even before training. Oracle measures the
     # prompt/answer pipeline itself either way.
-    print("[toy] pre-train eval (full eval set, all 3 baselines)",
+    print("[toy] pre-train eval (full eval set, all 3 baselines + localization)",
           file=sys.stderr)
-    pre_xa, pre_bounded, pre_oracle = evaluate_recall(
+    pre_eval = evaluate_recall(
         proposer=proposer,
         verifier_with_bridge=verifier,
         samples=eval_data,
         tokenizer=tokenizer,
         device=device,
+        measure_localization=True,
     )
     print(
-        f"[toy] pre-train: oracle={pre_oracle:.3f}  "
-        f"bounded_baseline={pre_bounded:.3f}  "
-        f"cross_attn={pre_xa:.3f}",
+        f"[toy] pre-train: oracle={pre_eval.oracle_recall:.3f}  "
+        f"bounded_baseline={pre_eval.bounded_baseline_recall:.3f}  "
+        f"cross_attn={pre_eval.cross_attn_recall:.3f}  "
+        f"loc_rate={pre_eval.localization_rate:.3f}  "
+        f"mass_on_needle={pre_eval.mass_on_needle:.4f}",
         file=sys.stderr,
     )
 
     history = []
     rng = random.Random(args.seed)
-    print(f"[toy] training {args.train_steps} steps", file=sys.stderr)
+    print(
+        f"[toy] training {args.train_steps} steps  "
+        f"retrieval_aux_weight={args.retrieval_aux_weight}",
+        file=sys.stderr,
+    )
     t0 = time.perf_counter()
-    losses = []
-    avg = 0.0
+    ce_losses: List[float] = []
+    aux_losses: List[float] = []
+    avg_ce = 0.0
+    avg_aux = 0.0
     for step in range(1, args.train_steps + 1):
         sample = rng.choice(train_data)
-        loss = train_step(
+        ce_loss, aux_loss, _ = train_step(
             proposer=proposer,
             verifier_with_bridge=verifier,
             sample=sample,
@@ -1080,54 +1419,80 @@ def main() -> int:
             optimizer=optimizer,
             device=device,
             dtype=dtype,
+            retrieval_aux_weight=args.retrieval_aux_weight,
         )
-        losses.append(loss)
+        ce_losses.append(ce_loss)
+        aux_losses.append(aux_loss)
         if step % 10 == 0:
-            avg = sum(losses[-10:]) / max(len(losses[-10:]), 1)
+            avg_ce = sum(ce_losses[-10:]) / max(len(ce_losses[-10:]), 1)
+            avg_aux = sum(aux_losses[-10:]) / max(len(aux_losses[-10:]), 1)
             print(
-                f"[toy] step={step}  loss(avg10)={avg:.4f}",
+                f"[toy] step={step}  ce_loss(avg10)={avg_ce:.4f}  "
+                f"aux_loss(avg10)={avg_aux:.4f}",
                 file=sys.stderr, flush=True,
             )
         if step % args.eval_every == 0:
-            # Periodic eval skips oracle (it's invariant — saves time).
-            xa, bounded, _ = evaluate_recall(
+            # Periodic eval skips oracle (invariant), measures localization
+            # so the training-time history shows whether attention is
+            # converging onto the needle alongside cross_attn_recall.
+            ev = evaluate_recall(
                 proposer=proposer,
                 verifier_with_bridge=verifier,
                 samples=eval_data[: max(20, len(eval_data) // 4)],
                 tokenizer=tokenizer,
                 device=device,
                 include_oracle=False,
+                measure_localization=True,
             )
             print(
-                f"[toy] step={step}  cross_attn={xa:.3f}  "
-                f"bounded_baseline={bounded:.3f}",
+                f"[toy] step={step}  cross_attn={ev.cross_attn_recall:.3f}  "
+                f"bounded={ev.bounded_baseline_recall:.3f}  "
+                f"loc_rate={ev.localization_rate:.3f}  "
+                f"mass={ev.mass_on_needle:.4f}",
                 file=sys.stderr,
             )
             history.append({
                 "step": step,
-                "cross_attn_recall": xa,
-                "baseline_recall": bounded,
-                "loss_avg10": avg,
+                "cross_attn_recall": ev.cross_attn_recall,
+                "baseline_recall": ev.bounded_baseline_recall,
+                "ce_loss_avg10": avg_ce,
+                "aux_loss_avg10": avg_aux,
+                "localization_rate": ev.localization_rate,
+                "mass_on_needle": ev.mass_on_needle,
+                "needle_found_rate": ev.needle_found_rate,
             })
 
     elapsed = time.perf_counter() - t0
     print(f"[toy] training done in {elapsed:.1f}s", file=sys.stderr)
 
-    print("[toy] final eval on full eval set (all 3 baselines)",
-          file=sys.stderr)
-    final_xa, final_bounded, final_oracle = evaluate_recall(
+    print(
+        "[toy] final eval on full eval set "
+        "(all 3 baselines + localization)",
+        file=sys.stderr,
+    )
+    final_eval = evaluate_recall(
         proposer=proposer,
         verifier_with_bridge=verifier,
         samples=eval_data,
         tokenizer=tokenizer,
         device=device,
+        measure_localization=True,
     )
     print(
-        f"[toy] FINAL: oracle={final_oracle:.3f}  "
-        f"bounded_baseline={final_bounded:.3f}  "
-        f"cross_attn={final_xa:.3f}",
+        f"[toy] FINAL: oracle={final_eval.oracle_recall:.3f}  "
+        f"bounded_baseline={final_eval.bounded_baseline_recall:.3f}  "
+        f"cross_attn={final_eval.cross_attn_recall:.3f}  "
+        f"loc_rate={final_eval.localization_rate:.3f}  "
+        f"mass_on_needle={final_eval.mass_on_needle:.4f}  "
+        f"needle_found_rate={final_eval.needle_found_rate:.3f}",
         file=sys.stderr,
     )
+    final_xa = final_eval.cross_attn_recall
+    final_bounded = final_eval.bounded_baseline_recall
+    final_oracle = final_eval.oracle_recall
+    pre_xa = pre_eval.cross_attn_recall
+    pre_bounded = pre_eval.bounded_baseline_recall
+    pre_oracle = pre_eval.oracle_recall
 
     # Gate G-X1 acceptance — three predicates:
     #   (a) cross_attn_recall  ≥ 0.80  (the hypothesis)
@@ -1160,9 +1525,12 @@ def main() -> int:
     report = {
         # v1 (R1 #1) → v2 (R1b: oracle baseline + 3-predicate gate)
         # → v3 (R1c: o_proj_init_std + needle_debug_mode config fields,
-        #   capacity bump defaults). Consumers keyed on v2 must handle
-        #   the two new config keys.
-        "schema_version": 3,
+        #   capacity bump defaults)
+        # → v4 (R1d-β: retrieval_aux_weight config; localization fields
+        #   on pre/final/training_history; aux_loss_avg10 in history;
+        #   needle_found_rate). Consumers keyed on v3 must handle the
+        #   new fields gracefully (default to -1.0 = "not measured").
+        "schema_version": 4,
         "kind": "adr_0011_toy_prototype_g_x1",
         "config": {
             "model": args.model,
@@ -1176,6 +1544,7 @@ def main() -> int:
             "train_steps": args.train_steps,
             "lr": args.lr,
             "o_proj_init_std": args.o_proj_init_std,
+            "retrieval_aux_weight": args.retrieval_aux_weight,
             "needle_debug_mode": args.needle_debug_mode,
             "needle_vocab_size": (
                 needle_vocab or DEFAULT_NEEDLE_VOCAB
@@ -1192,12 +1561,18 @@ def main() -> int:
             "cross_attn_recall": pre_xa,
             "baseline_recall": pre_bounded,
             "oracle_recall": pre_oracle,
+            "localization_rate": pre_eval.localization_rate,
+            "mass_on_needle": pre_eval.mass_on_needle,
+            "needle_found_rate": pre_eval.needle_found_rate,
         },
         "training_history": history,
         "final": {
             "cross_attn_recall": final_xa,
             "baseline_recall": final_bounded,
             "oracle_recall": final_oracle,
+            "localization_rate": final_eval.localization_rate,
+            "mass_on_needle": final_eval.mass_on_needle,
+            "needle_found_rate": final_eval.needle_found_rate,
             "elapsed_s": elapsed,
         },
         "gate_predicates": {

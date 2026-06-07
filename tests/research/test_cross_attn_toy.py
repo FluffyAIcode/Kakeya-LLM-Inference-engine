@@ -33,6 +33,10 @@ from scripts.research.cross_attn_toy_prototype import (
     CrossAttentionBridge,
     CrossAttentionVerifier,
     NeedleVocab,
+    NIAHSample,
+    attention_localization_metrics,
+    compute_retrieval_aux_loss,
+    find_needle_token_range,
     make_niah_dataset,
     make_sink_window_attention_mask,
     make_sink_window_attention_mask_4d,
@@ -733,3 +737,360 @@ class TestForwardFullAttentionAndBoundedBaseline:
         v.forward_bounded_no_bridge(input_ids=torch.randint(0, 32, (1, 6)))
         after = len(target_layer._forward_hooks)
         assert after == before, "bounded baseline must not leave hooks"
+
+
+# ---------------------------------------------------------------------------
+# R1d-β: bridge attention-weight return + retrieval aux loss + localization
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeReturnAttentionWeights:
+    """`CrossAttentionBridge.forward(..., return_attention_weights=True)`
+    must return the post-softmax weights as a `[B, H, T_v, T_p]` tensor
+    that sums to 1 over the last dim, while preserving the original
+    `delta` output shape."""
+
+    def test_return_attention_weights_shape_and_normalization(self):
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=32, proposer_hidden_dim=24,
+            num_heads=4, head_dim=8, o_proj_init_std=0.05,
+        )
+        v_h = torch.randn(2, 5, 32)
+        bank = torch.randn(2, 7, 24)
+        out, attn = bridge(
+            verifier_hidden=v_h,
+            proposer_hidden_bank=bank,
+            return_attention_weights=True,
+        )
+        assert out.shape == (2, 5, 32)
+        assert attn.shape == (2, 4, 5, 7)
+        # softmax along T_p
+        sums = attn.sum(dim=-1)
+        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+
+    def test_default_forward_returns_only_delta(self):
+        """API back-compat: callers that don't ask for weights still
+        get a single tensor (not a tuple)."""
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+        )
+        v_h = torch.randn(1, 3, 16)
+        bank = torch.randn(1, 5, 16)
+        out = bridge(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        assert isinstance(out, torch.Tensor), "default forward must return tensor, not tuple"
+        assert out.shape == (1, 3, 16)
+
+    def test_attention_weights_carry_grad_when_training(self):
+        """Aux loss requires the weights to be in the autograd graph."""
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+        )
+        bridge.train()
+        v_h = torch.randn(1, 3, 16, requires_grad=False)
+        bank = torch.randn(1, 5, 16, requires_grad=False)
+        out, attn = bridge(
+            verifier_hidden=v_h, proposer_hidden_bank=bank,
+            return_attention_weights=True,
+        )
+        # synthetic aux loss on attention weights
+        aux = -torch.log(attn.mean() + 1e-8)
+        aux.backward()
+        # Q/K/V projections feed into attn; their grads should be non-None.
+        assert bridge.q_proj.weight.grad is not None
+        assert bridge.k_proj.weight.grad is not None
+        # V doesn't directly affect softmax weights — its grad would be
+        # zero from THIS particular aux loss alone (mean is over weights,
+        # not over V). That's fine; we just need the graph not to break.
+
+
+# ---------------------------------------------------------------------------
+# Verifier capture_attention end-to-end
+# ---------------------------------------------------------------------------
+
+
+class TestCapturedAttentionIntegration:
+    def test_capture_attention_stashes_weights_after_forward(self):
+        torch.manual_seed(0)
+        # Local Gemma3-shape surrogate (mirrors `_Gemma3LikeBase` above
+        # but with hidden 16, 4 layers; the bridge is at depth 2).
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.1,
+        )
+        v = CrossAttentionVerifier(
+            base_model=base, cross_attn=bridge, cross_attn_depth=2,
+            capture_attention=True,
+        )
+        input_ids = torch.randint(0, 32, (1, 7))
+        bank = torch.randn(1, 7, 16)
+        v(input_ids=input_ids, proposer_hidden_bank=bank)
+        attn = v._last_attention_weights
+        assert attn is not None
+        assert attn.shape == (1, 2, 7, 7)  # [B, H, T_v, T_p]
+        sums = attn.sum(dim=-1)
+        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+
+    def test_capture_attention_default_off_does_not_allocate(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+        )
+        v = CrossAttentionVerifier(
+            base_model=base, cross_attn=bridge, cross_attn_depth=2,
+            # capture_attention defaults to False
+        )
+        v(
+            input_ids=torch.randint(0, 32, (1, 5)),
+            proposer_hidden_bank=torch.randn(1, 5, 16),
+        )
+        assert v._last_attention_weights is None
+
+    def test_capture_attention_resets_between_forwards(self):
+        """No stale tensor leak: each forward must reset the slot
+        before the hook fires."""
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.1,
+        )
+        v = CrossAttentionVerifier(
+            base_model=base, cross_attn=bridge, cross_attn_depth=2,
+            capture_attention=True,
+        )
+        v(
+            input_ids=torch.randint(0, 32, (1, 5)),
+            proposer_hidden_bank=torch.randn(1, 5, 16),
+        )
+        first = v._last_attention_weights
+        assert first is not None
+
+        # Second forward with capture off — must clear
+        v.capture_attention = False
+        v(
+            input_ids=torch.randint(0, 32, (1, 5)),
+            proposer_hidden_bank=torch.randn(1, 5, 16),
+        )
+        assert v._last_attention_weights is None
+
+
+# ---------------------------------------------------------------------------
+# Retrieval-aux loss math
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievalAuxLoss:
+    def test_loss_zero_when_attention_perfectly_concentrates(self):
+        """If 100% of mass is on the needle range, -log(1) = 0."""
+        # [B=1, H=2, T_v=3, T_p=10]
+        # Force all mass on positions 4,5
+        attn = torch.zeros(1, 2, 3, 10)
+        attn[:, :, :, 4] = 0.5
+        attn[:, :, :, 5] = 0.5
+        loss = compute_retrieval_aux_loss(attn, needle_token_start=4, needle_token_end=6)
+        assert float(loss.item()) < 1e-5
+
+    def test_loss_increases_when_attention_drifts_off_needle(self):
+        attn = torch.zeros(1, 2, 3, 10)
+        attn[:, :, :, 4] = 1.0
+        loss_on = compute_retrieval_aux_loss(attn, 4, 5)
+
+        attn2 = torch.zeros(1, 2, 3, 10)
+        attn2[:, :, :, 9] = 1.0
+        loss_off = compute_retrieval_aux_loss(attn2, 4, 5)
+
+        assert float(loss_on.item()) < float(loss_off.item())
+
+    def test_loss_with_uniform_attention_equals_negative_log_window_frac(self):
+        """Uniform attention over T_p=10 with 2-token needle → mass=0.2.
+        Loss should be approximately -log(0.2) ≈ 1.609."""
+        attn = torch.full((1, 2, 3, 10), 0.1)  # uniform → sums to 1 over T_p
+        loss = compute_retrieval_aux_loss(attn, 4, 6)
+        import math
+        assert abs(float(loss.item()) - math.log(5.0)) < 1e-4
+
+    def test_invalid_needle_range_raises(self):
+        attn = torch.full((1, 1, 1, 5), 0.2)
+        with pytest.raises(ValueError, match="needle_token_end"):
+            compute_retrieval_aux_loss(attn, 5, 5)
+        with pytest.raises(ValueError, match="needle_token_end"):
+            compute_retrieval_aux_loss(attn, 5, 3)
+
+    def test_answer_position_restriction(self):
+        """When answer_token_start/end are provided, only the restricted
+        verifier queries should contribute to the loss."""
+        # Set up: query positions 0,1,2,3
+        # On positions 0-1 attention is OFF needle (on token 9)
+        # On positions 2-3 attention is ON needle (on tokens 4-5)
+        attn = torch.zeros(1, 1, 4, 10)
+        attn[:, :, 0, 9] = 1.0
+        attn[:, :, 1, 9] = 1.0
+        attn[:, :, 2, 4] = 0.5
+        attn[:, :, 2, 5] = 0.5
+        attn[:, :, 3, 4] = 0.5
+        attn[:, :, 3, 5] = 0.5
+
+        # Without restriction: half the queries miss, half hit → mean mass = 0.5
+        loss_all = compute_retrieval_aux_loss(attn, 4, 6)
+        # With restriction to answer positions [2,4): both hit → mean mass = 1.0
+        loss_ans = compute_retrieval_aux_loss(
+            attn, 4, 6, answer_token_start=2, answer_token_end=4,
+        )
+        assert float(loss_ans.item()) < float(loss_all.item())
+        assert float(loss_ans.item()) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Attention localization metrics
+# ---------------------------------------------------------------------------
+
+
+class TestAttentionLocalizationMetrics:
+    def test_perfect_localization_rate_one_when_argmax_in_range(self):
+        attn = torch.zeros(1, 2, 3, 10)
+        attn[:, :, :, 5] = 0.9
+        attn[:, :, :, 0] = 0.1
+        rate, mass = attention_localization_metrics(attn, 4, 7)
+        assert rate == 1.0
+        assert abs(mass - 0.9) < 1e-5
+
+    def test_zero_localization_when_argmax_outside_range(self):
+        attn = torch.zeros(1, 2, 3, 10)
+        attn[:, :, :, 9] = 1.0
+        rate, mass = attention_localization_metrics(attn, 4, 7)
+        assert rate == 0.0
+        assert mass == 0.0
+
+    def test_partial_localization(self):
+        # Half of (B*H*T_v) entries argmax in needle, half outside
+        attn = torch.zeros(2, 2, 3, 10)
+        attn[0, :, :, 5] = 1.0  # in needle [4,7)
+        attn[1, :, :, 9] = 1.0  # outside
+        rate, _ = attention_localization_metrics(attn, 4, 7)
+        assert abs(rate - 0.5) < 1e-5
+
+    def test_answer_position_restriction(self):
+        attn = torch.zeros(1, 1, 4, 10)
+        attn[:, :, 0:2, 9] = 1.0  # outside on positions 0-1
+        attn[:, :, 2:4, 5] = 1.0  # inside on positions 2-3
+        rate_all, _ = attention_localization_metrics(attn, 4, 7)
+        rate_ans, _ = attention_localization_metrics(
+            attn, 4, 7, answer_token_start=2, answer_token_end=4,
+        )
+        assert abs(rate_all - 0.5) < 1e-5
+        assert abs(rate_ans - 1.0) < 1e-5
+
+
+# ---------------------------------------------------------------------------
+# find_needle_token_range
+# ---------------------------------------------------------------------------
+
+
+class _MiniTokenizer:
+    """Character-level tokenizer surrogate for needle-range tests:
+    each character is one token id (ord(c) % 256)."""
+
+    def __init__(self):
+        pass
+
+    def __call__(self, text, **kwargs):
+        ids = [ord(c) for c in text]
+        if kwargs.get("return_tensors") == "pt":
+            class _R:
+                def __init__(self, ids):
+                    self.input_ids = torch.tensor([ids])
+            return _R(ids)
+        # called as `tokenizer(text, add_special_tokens=False)` returns object with .input_ids
+        class _R2:
+            pass
+        r = _R2()
+        r.input_ids = ids
+        return r
+
+
+class TestFindNeedleTokenRange:
+    def test_finds_exact_match(self):
+        tok = _MiniTokenizer()
+        prompt = "hello THE NEEDLE world"
+        # tokenize prompt as if chat-templated (single string here, no template)
+        prompt_ids = torch.tensor([[ord(c) for c in prompt]])
+        rng = find_needle_token_range(tok, prompt_ids, "THE NEEDLE", fuzz=0)
+        assert rng is not None
+        start, end = rng
+        # 'THE NEEDLE' starts at index 6 (after 'hello ')
+        assert start == 6
+        assert end == 6 + len("THE NEEDLE")
+
+    def test_fuzz_expands_range_symmetrically(self):
+        tok = _MiniTokenizer()
+        prompt = "abcDEFghi"
+        prompt_ids = torch.tensor([[ord(c) for c in prompt]])
+        rng = find_needle_token_range(tok, prompt_ids, "DEF", fuzz=2)
+        assert rng is not None
+        start, end = rng
+        # 'DEF' at index 3..6, fuzz=2 → [1, 8]
+        assert start == 1
+        assert end == 8
+
+    def test_returns_none_on_missing_needle(self):
+        tok = _MiniTokenizer()
+        prompt = "abcdef"
+        prompt_ids = torch.tensor([[ord(c) for c in prompt]])
+        assert find_needle_token_range(tok, prompt_ids, "XYZ") is None
+
+    def test_returns_none_on_empty_needle(self):
+        tok = _MiniTokenizer()
+        prompt_ids = torch.tensor([[1, 2, 3]])
+        assert find_needle_token_range(tok, prompt_ids, "") is None
+
+    def test_clamps_at_sequence_boundaries(self):
+        """fuzz must not push range below 0 or above seq length."""
+        tok = _MiniTokenizer()
+        prompt_ids = torch.tensor([[ord(c) for c in "abc"]])
+        rng = find_needle_token_range(tok, prompt_ids, "a", fuzz=10)
+        assert rng == (0, 3)
+
+    def test_finds_first_occurrence_when_repeated(self):
+        tok = _MiniTokenizer()
+        prompt_ids = torch.tensor([[ord(c) for c in "aXbXcXd"]])
+        rng = find_needle_token_range(tok, prompt_ids, "X", fuzz=0)
+        # First 'X' at index 1
+        assert rng == (1, 2)
+
+
+# ---------------------------------------------------------------------------
+# NIAHSample.needle_text + dataset integration
+# ---------------------------------------------------------------------------
+
+
+class TestNeedleTextOnSample:
+    def test_niah_sample_default_needle_text_empty(self):
+        s = NIAHSample(prompt_text="x", answer_text="y", needle_position=0)
+        assert s.needle_text == ""
+
+    def test_make_niah_dataset_populates_needle_text(self):
+        # Use a stub tokenizer (not actually invoked by make_niah_dataset
+        # for the 'needle_text' field — the dataset just records the
+        # string).
+        class _StubTok:
+            pass
+        tok = _StubTok()
+        from scripts.research.cross_attn_toy_prototype import make_niah_dataset
+        samples = make_niah_dataset(
+            tokenizer=tok, n_samples=5,
+            haystack_min_tokens=64, haystack_max_tokens=96,
+            seed=42,
+        )
+        for s in samples:
+            assert s.needle_text != "", (
+                "every sample should record its needle string for "
+                "find_needle_token_range later"
+            )
+            assert "IMPORTANT: the secret code is" in s.needle_text
+            # answer code should appear inside the recorded needle text
+            assert s.answer_text.strip() in s.needle_text
