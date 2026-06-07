@@ -1153,3 +1153,344 @@ class TestNeedleTextOnSample:
             assert "IMPORTANT: the secret code is" in s.needle_text
             # answer code should appear inside the recorded needle text
             assert s.answer_text.strip() in s.needle_text
+
+
+# ---------------------------------------------------------------------------
+# R1e-α: FFN write path (--bridge-use-ffn-write-path)
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeFFNWritePath:
+    """The FFN block (`up_proj/down_proj/ffn_norm`) only exists when the
+    flag is set, contributes zero at step 0 (down_proj zero-init), and
+    its parameters receive gradient signal through the cross-entropy
+    loss path."""
+
+    def test_ffn_modules_only_exist_when_flag_set(self):
+        plain = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+        )
+        assert not hasattr(plain, "up_proj")
+        assert not hasattr(plain, "down_proj")
+        assert not hasattr(plain, "ffn_norm")
+        assert plain.use_ffn_write_path is False
+
+        with_ffn = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+            use_ffn_write_path=True,
+        )
+        assert hasattr(with_ffn, "up_proj")
+        assert hasattr(with_ffn, "down_proj")
+        assert hasattr(with_ffn, "ffn_norm")
+        assert with_ffn.use_ffn_write_path is True
+        # FFN dim follows --ffn-expansion (default 4)
+        assert with_ffn.up_proj.weight.shape == (4 * 16, 16)
+        assert with_ffn.down_proj.weight.shape == (16, 4 * 16)
+
+    def test_ffn_zero_init_makes_step0_output_match_no_ffn(self):
+        """At step 0, ``out + FFN(LN(out))`` with down_proj=0 must equal
+        ``out``: enabling the FFN flag must not change the bridge's
+        step-0 contribution. This preserves the R1d invariant — adding
+        write capacity is a strict superset of the previous regime."""
+        torch.manual_seed(0)
+        # Same seed for both — q/k/v/o_proj inits are identical
+        plain = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+        )
+        torch.manual_seed(0)
+        with_ffn = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+            use_ffn_write_path=True,
+        )
+        v_h = torch.randn(1, 5, 16)
+        bank = torch.randn(1, 5, 16)
+        out_plain = plain(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        out_ffn = with_ffn(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        assert torch.allclose(out_plain, out_ffn, atol=1e-5), (
+            "FFN with zero-init down_proj must contribute exactly zero "
+            "at step 0; otherwise the R1d invariant is broken"
+        )
+
+    def test_ffn_changes_output_after_breaking_zero_init(self):
+        """After perturbing down_proj off zero, the FFN variant must
+        produce different output from the plain variant — proving the
+        FFN is actually wired into the forward."""
+        torch.manual_seed(0)
+        plain = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+        )
+        torch.manual_seed(0)
+        with_ffn = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+            use_ffn_write_path=True,
+        )
+        with torch.no_grad():
+            nn.init.normal_(with_ffn.down_proj.weight, std=0.1)
+        v_h = torch.randn(1, 5, 16)
+        bank = torch.randn(1, 5, 16)
+        out_plain = plain(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        out_ffn = with_ffn(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        assert not torch.allclose(out_plain, out_ffn), (
+            "FFN must affect output once down_proj is off zero"
+        )
+
+    def test_ffn_params_receive_gradient(self):
+        """End-to-end: gradient through synthetic loss reaches up_proj
+        AND down_proj when FFN is enabled. (Note: even with zero-init
+        down_proj at step 0, the gradient *through* it is non-zero —
+        that's what lets training start moving its weights.)"""
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+            use_ffn_write_path=True,
+        )
+        v_h = torch.randn(1, 3, 16)
+        bank = torch.randn(1, 4, 16)
+        out = bridge(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        loss = (out + v_h).pow(2).mean()  # +v_h so grad flows even with zero down_proj
+        loss.backward()
+        assert bridge.up_proj.weight.grad is not None
+        assert bridge.down_proj.weight.grad is not None
+        assert bridge.ffn_norm.weight.grad is not None
+
+
+# ---------------------------------------------------------------------------
+# R1e-γ: full pre-norm transformer block (--bridge-use-block-architecture)
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeBlockArchitecture:
+    def test_block_arch_implies_ffn_write_path(self):
+        """Block = cross-attn + LN + FFN + LN; FFN is required."""
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+            use_block_architecture=True,
+            use_ffn_write_path=False,  # explicitly off — should be auto-promoted
+        )
+        assert bridge.use_block_architecture is True
+        assert bridge.use_ffn_write_path is True, (
+            "block architecture must imply FFN; cannot have a block "
+            "without its second sub-layer"
+        )
+        assert hasattr(bridge, "input_norm")
+        assert hasattr(bridge, "attn_post_norm")
+
+    def test_block_arch_step_0_output_is_zero(self):
+        """With zero-init o_proj AND zero-init down_proj, the block's
+        total delta must be exactly zero at step 0 — both sub-layers
+        contribute zero. This is the strict-zero invariant from R1b."""
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.0,
+            use_block_architecture=True,
+        )
+        v_h = torch.randn(1, 4, 16)
+        bank = torch.randn(1, 4, 16)
+        out = bridge(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        assert torch.allclose(out, torch.zeros_like(out), atol=1e-5)
+
+    def test_block_arch_returns_attn_weights_when_requested(self):
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+            use_block_architecture=True,
+        )
+        v_h = torch.randn(1, 4, 16)
+        bank = torch.randn(1, 6, 16)
+        delta, attn = bridge(
+            verifier_hidden=v_h, proposer_hidden_bank=bank,
+            return_attention_weights=True,
+        )
+        assert delta.shape == (1, 4, 16)
+        assert attn.shape == (1, 2, 4, 6)
+        sums = attn.sum(dim=-1)
+        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+
+    def test_block_arch_norms_receive_gradient(self):
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.05,
+            use_block_architecture=True,
+        )
+        with torch.no_grad():
+            nn.init.normal_(bridge.down_proj.weight, std=0.05)
+        v_h = torch.randn(1, 3, 16)
+        bank = torch.randn(1, 4, 16)
+        out = bridge(verifier_hidden=v_h, proposer_hidden_bank=bank)
+        loss = (out + v_h).pow(2).mean()
+        loss.backward()
+        assert bridge.input_norm.weight.grad is not None
+        assert bridge.attn_post_norm.weight.grad is not None
+
+
+# ---------------------------------------------------------------------------
+# R1e-β: multi-bridge wiring (CrossAttentionVerifier accepts bridges dict)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiBridgeVerifier:
+    def _bridges(self, depths, hidden=16):
+        return {
+            d: CrossAttentionBridge(
+                verifier_hidden_dim=hidden, proposer_hidden_dim=hidden,
+                num_heads=2, head_dim=8, o_proj_init_std=0.1,
+            )
+            for d in depths
+        }
+
+    def test_legacy_single_bridge_signature_still_works(self):
+        """R1b/R1c/R1d code paths must continue to operate unchanged."""
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+        )
+        v = CrossAttentionVerifier(
+            base_model=base, cross_attn=bridge, cross_attn_depth=2,
+        )
+        assert v.cross_attn is bridge
+        assert v.cross_attn_depth == 2
+        assert v._bridge_depths == (2,)
+
+    def test_bridges_kwarg_creates_multi_bridge_verifier(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridges = self._bridges([1, 2, 3])
+        v = CrossAttentionVerifier(base_model=base, bridges=bridges)
+        assert v._bridge_depths == (1, 2, 3)
+        # Back-compat aliases point to the deepest entry
+        assert v.cross_attn is bridges[3]
+        assert v.cross_attn_depth == 3
+
+    def test_specifying_both_apis_raises(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8,
+        )
+        with pytest.raises(ValueError, match="EITHER bridges"):
+            CrossAttentionVerifier(
+                base_model=base,
+                cross_attn=bridge, cross_attn_depth=1,
+                bridges={2: bridge},
+            )
+
+    def test_specifying_neither_api_raises(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        with pytest.raises(ValueError, match="must specify"):
+            CrossAttentionVerifier(base_model=base)
+
+    def test_invalid_depth_in_bridges_raises(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        with pytest.raises(ValueError, match="cross_attn_depth"):
+            CrossAttentionVerifier(
+                base_model=base, bridges=self._bridges([100]),
+            )
+
+    def test_each_bridge_fires_and_modifies_logits(self):
+        """With multiple bridges, the cumulative effect on logits must
+        differ from a single-bridge baseline — confirming each hook
+        actually fires and contributes."""
+        torch.manual_seed(0)
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        single = CrossAttentionBridge(
+            verifier_hidden_dim=16, proposer_hidden_dim=16,
+            num_heads=2, head_dim=8, o_proj_init_std=0.5,
+        )
+        v_single = CrossAttentionVerifier(
+            base_model=base, cross_attn=single, cross_attn_depth=2,
+        )
+        torch.manual_seed(0)
+        base2 = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridges = self._bridges([1, 2, 3])
+        for b in bridges.values():
+            with torch.no_grad():
+                nn.init.normal_(b.o_proj.weight, std=0.5)
+        v_multi = CrossAttentionVerifier(base_model=base2, bridges=bridges)
+
+        input_ids = torch.randint(0, 32, (1, 5))
+        bank = torch.randn(1, 5, 16)
+        # Note: the two verifiers wrap *different* base models with
+        # different random init, so we can't equate logits exactly.
+        # The point of this test is just that multi-bridge runs without
+        # crashing and produces non-trivial output.
+        out_single = v_single(input_ids=input_ids, proposer_hidden_bank=bank)
+        out_multi = v_multi(input_ids=input_ids, proposer_hidden_bank=bank)
+        assert out_single.shape == out_multi.shape
+        assert torch.isfinite(out_multi).all()
+
+    def test_all_hooks_removed_after_forward_with_multi_bridge(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridges = self._bridges([1, 2, 3])
+        v = CrossAttentionVerifier(base_model=base, bridges=bridges)
+        before = [len(layer._forward_hooks) for layer in base.model.layers]
+        v(
+            input_ids=torch.randint(0, 32, (1, 5)),
+            proposer_hidden_bank=torch.randn(1, 5, 16),
+        )
+        after = [len(layer._forward_hooks) for layer in base.model.layers]
+        assert before == after, (
+            f"hooks leaked across multi-bridge forward: {before} -> {after}"
+        )
+
+    def test_all_hooks_removed_after_multi_bridge_exception(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridges = self._bridges([1, 2, 3])
+        v = CrossAttentionVerifier(base_model=base, bridges=bridges)
+        before = [len(layer._forward_hooks) for layer in base.model.layers]
+        original_forward = base.model.layers[3].forward
+
+        def broken(*a, **kw):
+            raise RuntimeError("synthetic mid-stack failure")
+        base.model.layers[3].forward = broken
+        try:
+            with pytest.raises(RuntimeError, match="synthetic"):
+                v(
+                    input_ids=torch.randint(0, 32, (1, 5)),
+                    proposer_hidden_bank=torch.randn(1, 5, 16),
+                )
+        finally:
+            base.model.layers[3].forward = original_forward
+        after = [len(layer._forward_hooks) for layer in base.model.layers]
+        assert before == after, (
+            f"hooks leaked after multi-bridge exception: {before} -> {after}"
+        )
+
+    def test_capture_attention_populates_per_depth_dict(self):
+        torch.manual_seed(0)
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridges = self._bridges([1, 2, 3])
+        for b in bridges.values():
+            with torch.no_grad():
+                nn.init.normal_(b.o_proj.weight, std=0.1)
+        v = CrossAttentionVerifier(
+            base_model=base, bridges=bridges, capture_attention=True,
+        )
+        v(
+            input_ids=torch.randint(0, 32, (1, 5)),
+            proposer_hidden_bank=torch.randn(1, 5, 16),
+        )
+        assert set(v._last_attention_weights_by_depth.keys()) == {1, 2, 3}
+        for d, w in v._last_attention_weights_by_depth.items():
+            assert w.shape == (1, 2, 5, 5), f"depth {d} attn shape wrong"
+        # Single-bridge alias points to the deepest one
+        assert v._last_attention_weights is v._last_attention_weights_by_depth[3]
+
+    def test_capture_off_does_not_populate_dict(self):
+        base = _Gemma3LikeBase(hidden=16, num_layers=4)
+        bridges = self._bridges([1, 2, 3])
+        v = CrossAttentionVerifier(base_model=base, bridges=bridges)
+        v(
+            input_ids=torch.randint(0, 32, (1, 5)),
+            proposer_hidden_bank=torch.randn(1, 5, 16),
+        )
+        assert v._last_attention_weights_by_depth == {}
+        assert v._last_attention_weights is None

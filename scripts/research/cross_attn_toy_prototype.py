@@ -132,12 +132,23 @@ class CrossAttentionBridge(nn.Module):
         head_dim: int = 64,
         attn_dropout: float = 0.0,
         o_proj_init_std: float = 0.0,
+        use_ffn_write_path: bool = False,
+        use_block_architecture: bool = False,
+        ffn_expansion: int = 4,
     ) -> None:
         super().__init__()
+        # R1e-γ implies FFN: a transformer block is cross-attn + LN + FFN + LN.
+        # Force consistency rather than letting the two flags disagree.
+        if use_block_architecture and not use_ffn_write_path:
+            use_ffn_write_path = True
+
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = head_dim ** -0.5
         self.o_proj_init_std = o_proj_init_std
+        self.use_ffn_write_path = use_ffn_write_path
+        self.use_block_architecture = use_block_architecture
+        self.ffn_expansion = ffn_expansion
 
         self.q_proj = nn.Linear(
             verifier_hidden_dim, num_heads * head_dim, bias=False,
@@ -168,33 +179,51 @@ class CrossAttentionBridge(nn.Module):
         else:
             nn.init.zeros_(self.o_proj.weight)
 
-    def forward(
+        # R1e-α: FFN write path. After the main cross-attention residual
+        # ``out = o_proj(ctx)`` lands in verifier-hidden space, run a
+        # SiLU-gated two-layer FFN on top. Zero-init ``down_proj`` so at
+        # step 0 the FFN's contribution is exactly zero — total bridge
+        # output reduces to the R1d-β single-linear write path. Trained
+        # weights then steer the FFN to add nonlinear write capacity.
+        # R1e exists because R1d-β proved that doubling localization
+        # (read accuracy) does not move recall: the bottleneck is the
+        # write path, not the read path. This block tests "is more write
+        # capacity (4× hidden width + nonlinearity) enough?".
+        if self.use_ffn_write_path:
+            ffn_dim = ffn_expansion * verifier_hidden_dim
+            self.ffn_norm = nn.LayerNorm(verifier_hidden_dim)
+            self.up_proj = nn.Linear(verifier_hidden_dim, ffn_dim, bias=False)
+            self.down_proj = nn.Linear(ffn_dim, verifier_hidden_dim, bias=False)
+            nn.init.normal_(self.up_proj.weight, std=0.02)
+            nn.init.zeros_(self.down_proj.weight)
+
+        # R1e-γ: full pre-norm transformer block wrapping the cross-attn
+        # + FFN. Adds a LayerNorm at the bridge input (before Q/K/V) and
+        # another between the cross-attn residual and the FFN. With
+        # zero-init ``down_proj`` (FFN contribution = 0) and zero-init
+        # ``o_proj`` (cross-attn delta = 0) at step 0, the block reduces
+        # to identity and the verifier behaves like its baseline at
+        # step 0. Tests "is the missing piece a complete transformer
+        # block (norm + nonlinearity + width) rather than capacity per
+        # se?".
+        if self.use_block_architecture:
+            self.input_norm = nn.LayerNorm(verifier_hidden_dim)
+            self.attn_post_norm = nn.LayerNorm(verifier_hidden_dim)
+
+    def _cross_attn_qkv(
         self,
-        verifier_hidden: torch.Tensor,        # [B, T_v, hidden_v]
-        proposer_hidden_bank: torch.Tensor,   # [B, T_p, hidden_p]
-        proposer_attention_mask: Optional[torch.Tensor] = None,
-        return_attention_weights: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """Apply cross-attention; returns delta to add to verifier residual.
-
-        ``proposer_attention_mask``: optional [B, T_p] mask where 0
-        indicates padding to ignore. Modality-agnostic — for text it
-        masks pad tokens; for video it would mask out absent frames
-        in a fixed-size buffer.
-
-        ``return_attention_weights``: if True, return
-        ``(delta, attn)`` where ``attn`` is the post-softmax weights of
-        shape ``[B, H, T_v, T_p]``. R1d-β uses these for the retrieval-
-        auxiliary loss and the attention-localization eval metric. The
-        weights tensor still has gradient information when training so
-        the auxiliary loss can backprop through them. (Default False
-        preserves the R1c forward-shape contract used by the unit
-        tests.)
+        verifier_hidden_for_q: torch.Tensor,
+        proposer_hidden_bank: torch.Tensor,
+        proposer_attention_mask: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute the multi-head cross-attention output ``[B, T_v, H*D]``
+        and the post-softmax weights ``[B, H, T_v, T_p]``. Helper so the
+        block-architecture (R1e-γ) and the plain bridge share one path.
         """
-        B, T_v, _ = verifier_hidden.shape
+        B, T_v, _ = verifier_hidden_for_q.shape
         _, T_p, _ = proposer_hidden_bank.shape
 
-        Q = self.q_proj(verifier_hidden).view(
+        Q = self.q_proj(verifier_hidden_for_q).view(
             B, T_v, self.num_heads, self.head_dim,
         ).transpose(1, 2)  # [B, H, T_v, D]
         K = self.k_proj(proposer_hidden_bank).view(
@@ -204,25 +233,85 @@ class CrossAttentionBridge(nn.Module):
             B, T_p, self.num_heads, self.head_dim,
         ).transpose(1, 2)  # [B, H, T_p, D]
 
-        # [B, H, T_v, T_p]
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-
         if proposer_attention_mask is not None:
-            # mask: [B, T_p]; broadcast to [B, 1, 1, T_p]
-            mask = proposer_attention_mask[:, None, None, :].to(
-                attn_scores.dtype,
-            )
+            mask = proposer_attention_mask[:, None, None, :].to(attn_scores.dtype)
             attn_scores = attn_scores.masked_fill(mask == 0, float("-inf"))
 
         attn = F.softmax(attn_scores, dim=-1)
         if self.training and self.attn_dropout > 0:
             attn = F.dropout(attn, p=self.attn_dropout)
 
-        out = torch.matmul(attn, V)  # [B, H, T_v, D]
-        out = out.transpose(1, 2).contiguous().view(
+        ctx = torch.matmul(attn, V)  # [B, H, T_v, D]
+        ctx = ctx.transpose(1, 2).contiguous().view(
             B, T_v, self.num_heads * self.head_dim,
         )
-        out = self.o_proj(out)        # [B, T_v, hidden_v]
+        return ctx, attn
+
+    def _ffn_write(self, h: torch.Tensor) -> torch.Tensor:
+        """SiLU-gated two-layer FFN with pre-norm. Returns a delta to
+        add to ``h`` (residual is taken in the caller). With zero-init
+        ``down_proj`` this is identically zero at step 0 — the bridge's
+        write capacity is then exactly the R1d single-linear path until
+        the FFN learns nonzero down_proj weights.
+        """
+        return self.down_proj(F.silu(self.up_proj(self.ffn_norm(h))))
+
+    def forward(
+        self,
+        verifier_hidden: torch.Tensor,        # [B, T_v, hidden_v]
+        proposer_hidden_bank: torch.Tensor,   # [B, T_p, hidden_p]
+        proposer_attention_mask: Optional[torch.Tensor] = None,
+        return_attention_weights: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Apply cross-attention; returns ``delta`` to add to the verifier
+        residual.
+
+        ``proposer_attention_mask``: optional ``[B, T_p]`` mask where 0
+        indicates padding to ignore. Modality-agnostic — for text it
+        masks pad tokens; for video it would mask out absent frames in
+        a fixed-size buffer.
+
+        ``return_attention_weights``: if True, return ``(delta, attn)``
+        where ``attn`` is the post-softmax weights of shape
+        ``[B, H, T_v, T_p]``. (R1d-β behaviour preserved.)
+
+        Three architectural variants live in this single method:
+
+        * Plain bridge (default): ``delta = o_proj(cross_attn(h, bank))``.
+        * R1e-α (``use_ffn_write_path=True``): plain output plus a
+          residual SiLU-gated FFN with pre-norm.
+        * R1e-γ (``use_block_architecture=True``, implies α): a full
+          pre-norm transformer block wrapping cross-attn + FFN. With
+          zero-init ``o_proj`` and ``down_proj`` the bridge is exact-
+          zero at step 0 in every variant.
+        """
+        if self.use_block_architecture:
+            # Pre-norm cross-attn + FFN block. Total delta returned to
+            # the verifier hook = (residual added by attn) + (residual
+            # added by FFN). Internal residuals are accumulated here
+            # so the hook keeps its simple "h + delta" semantics.
+            h_in = verifier_hidden
+            h_norm1 = self.input_norm(h_in)
+            ctx, attn = self._cross_attn_qkv(
+                h_norm1, proposer_hidden_bank, proposer_attention_mask,
+            )
+            attn_delta = self.o_proj(ctx)
+            h_after_attn = h_in + attn_delta
+            ffn_delta = self._ffn_write(self.attn_post_norm(h_after_attn))
+            total_delta = attn_delta + ffn_delta
+            if return_attention_weights:
+                return total_delta, attn
+            return total_delta
+
+        ctx, attn = self._cross_attn_qkv(
+            verifier_hidden, proposer_hidden_bank, proposer_attention_mask,
+        )
+        out = self.o_proj(ctx)
+        if self.use_ffn_write_path:
+            # Residual FFN: ``out + FFN(LN(out))`` so down_proj zero-init
+            # leaves out unchanged at step 0.
+            out = out + self._ffn_write(out)
         if return_attention_weights:
             return out, attn
         return out
@@ -326,17 +415,46 @@ class CrossAttentionVerifier(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
-        cross_attn: CrossAttentionBridge,
-        cross_attn_depth: int,
+        cross_attn: Optional[CrossAttentionBridge] = None,
+        cross_attn_depth: Optional[int] = None,
         sink: int = 4,
         window: int = 64,
         freeze_base: bool = True,
         capture_attention: bool = False,
+        bridges: Optional[dict] = None,
     ) -> None:
+        """Wrap ``base_model`` with one or more cross-attention bridges.
+
+        Two argument shapes are supported:
+
+        * **Single-layer (legacy)**: ``cross_attn=<bridge>,
+          cross_attn_depth=<int>``. Equivalent to
+          ``bridges={cross_attn_depth: cross_attn}``. Preserves the
+          R1b/R1c/R1d API.
+        * **Multi-layer (R1e-β)**: ``bridges={depth: bridge, ...}``.
+          Each ``(depth, bridge)`` pair registers an independent
+          forward hook on the corresponding decoder layer. Bridges
+          fire in increasing-depth order; each adds its own delta to
+          the residual stream.
+
+        Pass exactly one of the two — supplying both raises
+        ``ValueError`` (ADR 0008 §6.2: no silent fallback).
+        """
         super().__init__()
+        if bridges is not None and (cross_attn is not None or cross_attn_depth is not None):
+            raise ValueError(
+                "specify EITHER bridges={depth: bridge} OR (cross_attn + "
+                "cross_attn_depth), not both"
+            )
+        if bridges is None:
+            if cross_attn is None or cross_attn_depth is None:
+                raise ValueError(
+                    "must specify either bridges={depth: bridge} OR "
+                    "(cross_attn + cross_attn_depth)"
+                )
+            bridges = {cross_attn_depth: cross_attn}
+
         self.base = base_model
-        self.cross_attn = cross_attn
-        self.cross_attn_depth = cross_attn_depth
         self.sink = sink
         self.window = window
         # R1d-β: when True, the forward hook stashes the bridge's
@@ -346,16 +464,35 @@ class CrossAttentionVerifier(nn.Module):
         # False keeps the R1c hot path allocation-identical (no extra
         # tensor refs alive between forward and backward).
         self.capture_attention = capture_attention
+        # Single-bridge alias: the deepest bridge's most-recent attention
+        # weights. Multi-bridge runs additionally populate
+        # ``_last_attention_weights_by_depth`` for per-depth diagnostics.
         self._last_attention_weights: Optional[torch.Tensor] = None
+        self._last_attention_weights_by_depth: dict = {}
         if freeze_base:
             for p in self.base.parameters():
                 p.requires_grad = False
         layers = self._layers_module()
-        if not 1 <= cross_attn_depth <= len(layers):
-            raise ValueError(
-                f"cross_attn_depth={cross_attn_depth} is out of range "
-                f"[1, {len(layers)}] for this base model"
-            )
+        for d in bridges.keys():
+            if not 1 <= d <= len(layers):
+                raise ValueError(
+                    f"cross_attn_depth={d} is out of range "
+                    f"[1, {len(layers)}] for this base model"
+                )
+        # Sort by depth ascending — hooks fire in layer order during
+        # the base forward, and the deepest one is the canonical
+        # "primary" bridge for back-compat.
+        sorted_depths = tuple(sorted(bridges.keys()))
+        self.bridges_by_depth = nn.ModuleDict(
+            {str(d): bridges[d] for d in sorted_depths}
+        )
+        self._bridge_depths = sorted_depths
+        # Back-compat surface — single-bridge attribute names map to
+        # the (single) or deepest entry. Tests, train_step, eval all
+        # still read `verifier.cross_attn` / `cross_attn_depth`.
+        primary_depth = sorted_depths[-1]
+        self.cross_attn = bridges[primary_depth]
+        self.cross_attn_depth = primary_depth
 
     @property
     def config(self):
@@ -421,49 +558,63 @@ class CrossAttentionVerifier(nn.Module):
         version pins).
         """
         layers = self._layers_module()
-        target_layer = layers[self.cross_attn_depth - 1]
-        cross_attn = self.cross_attn
         capture = self.capture_attention
         # Reset before the forward so a stale tensor from a previous
         # forward never leaks into a later loss / metric computation.
         self._last_attention_weights = None
+        self._last_attention_weights_by_depth = {}
         verifier_self = self  # closure pickup
 
-        def hook(module, layer_inputs, layer_output):
-            if isinstance(layer_output, tuple):
-                hidden_out = layer_output[0]
-                rest = layer_output[1:]
-            else:
-                hidden_out = layer_output
-                rest = None
-            if capture:
-                delta, attn_weights = cross_attn(
-                    verifier_hidden=hidden_out,
-                    proposer_hidden_bank=proposer_hidden_bank,
-                    proposer_attention_mask=proposer_attention_mask,
-                    return_attention_weights=True,
-                )
-                # Stash the live tensor (still in the autograd graph
-                # during training) so train_step / eval can read it.
-                verifier_self._last_attention_weights = attn_weights
-            else:
-                delta = cross_attn(
-                    verifier_hidden=hidden_out,
-                    proposer_hidden_bank=proposer_hidden_bank,
-                    proposer_attention_mask=proposer_attention_mask,
-                )
-            modified = hidden_out + delta
-            if rest is not None:
-                return (modified,) + rest
-            return modified
+        def make_hook(bridge_module: CrossAttentionBridge, depth: int):
+            """Closure factory so each registered hook captures its own
+            (bridge, depth) pair correctly. Without this, all hooks would
+            close over the loop-final values of bridge/depth."""
+
+            def hook(module, layer_inputs, layer_output):
+                if isinstance(layer_output, tuple):
+                    hidden_out = layer_output[0]
+                    rest = layer_output[1:]
+                else:
+                    hidden_out = layer_output
+                    rest = None
+                if capture:
+                    delta, attn_weights = bridge_module(
+                        verifier_hidden=hidden_out,
+                        proposer_hidden_bank=proposer_hidden_bank,
+                        proposer_attention_mask=proposer_attention_mask,
+                        return_attention_weights=True,
+                    )
+                    verifier_self._last_attention_weights_by_depth[depth] = attn_weights
+                    # Maintain the single-bridge alias as the deepest
+                    # bridge's weights (back-compat with R1c/R1d code).
+                    if depth == verifier_self._bridge_depths[-1]:
+                        verifier_self._last_attention_weights = attn_weights
+                else:
+                    delta = bridge_module(
+                        verifier_hidden=hidden_out,
+                        proposer_hidden_bank=proposer_hidden_bank,
+                        proposer_attention_mask=proposer_attention_mask,
+                    )
+                modified = hidden_out + delta
+                if rest is not None:
+                    return (modified,) + rest
+                return modified
+
+            return hook
 
         seq_len = input_ids.size(1)
         attention_mask_kwarg = self._build_sink_window_mask_kwarg(
             seq_len, device=input_ids.device, dtype=self._base_dtype(),
         )
 
-        handle = target_layer.register_forward_hook(hook)
+        handles = []
         try:
+            for depth in self._bridge_depths:
+                bridge = self.bridges_by_depth[str(depth)]
+                target_layer = layers[depth - 1]
+                handles.append(
+                    target_layer.register_forward_hook(make_hook(bridge, depth))
+                )
             out = self.base(
                 input_ids=input_ids,
                 attention_mask=attention_mask_kwarg,
@@ -471,7 +622,8 @@ class CrossAttentionVerifier(nn.Module):
                 return_dict=True,
             )
         finally:
-            handle.remove()
+            for h in handles:
+                h.remove()
         return out.logits
 
     def _base_dtype(self) -> torch.dtype:
@@ -1231,7 +1383,41 @@ def main() -> int:
                          "the augmented hidden then flows through layers "
                          "K+1..N, the final layernorm, and lm_head. Default "
                          "20 is appropriate for Gemma 3-1B (26 layers); for "
-                         "other base models pick a depth ≈ 0.7 × num_layers.")
+                         "other base models pick a depth ≈ 0.7 × num_layers. "
+                         "Used when --cross-attn-depths is not set.")
+    ap.add_argument(
+        "--cross-attn-depths", type=str, default=None,
+        help="R1e-β: comma-separated list of decoder-layer depths at "
+             "which to inject independent cross-attention bridges, e.g., "
+             "'8,14,20'. When provided, overrides --cross-attn-depth and "
+             "creates one bridge per depth (each with its own Q/K/V/O "
+             "projections + optional FFN). Hooks fire in increasing-"
+             "depth order; each bridge adds its own delta to the residual "
+             "stream. Tests 'is the bottleneck a single chance to write? "
+             "i.e., would multiple injection points help?'.",
+    )
+    ap.add_argument(
+        "--bridge-use-ffn-write-path", action="store_true",
+        help="R1e-α: enable a SiLU-gated 4× FFN with pre-norm after the "
+             "cross-attn output projection. Down-proj zero-init keeps "
+             "the bridge's step-0 output identical to the R1d-β single-"
+             "linear write path. Tests 'is more write capacity the "
+             "missing piece?'.",
+    )
+    ap.add_argument(
+        "--bridge-use-block-architecture", action="store_true",
+        help="R1e-γ: replace the bridge with a full pre-norm transformer "
+             "block (cross-attn + LN + FFN + LN). Implies "
+             "--bridge-use-ffn-write-path. With zero-init o_proj and "
+             "down_proj, step-0 contribution is exactly zero. Tests "
+             "'is a complete transformer block (norm + nonlinearity + "
+             "width) what's needed, rather than just capacity?'.",
+    )
+    ap.add_argument(
+        "--ffn-expansion", type=int, default=4,
+        help="hidden_v -> ffn_expansion × hidden_v expansion ratio for "
+             "R1e-α / R1e-γ FFN. Standard transformer convention is 4.",
+    )
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--num-heads", type=int, default=16,
@@ -1354,26 +1540,57 @@ def main() -> int:
     verifier_hidden_dim = config.hidden_size
     proposer_hidden_dim = proposer.config.hidden_size
 
-    cross_attn = CrossAttentionBridge(
-        verifier_hidden_dim=verifier_hidden_dim,
-        proposer_hidden_dim=proposer_hidden_dim,
-        num_heads=args.num_heads,
-        head_dim=args.head_dim,
-        o_proj_init_std=args.o_proj_init_std,
-    ).to(device).to(dtype)
+    if args.cross_attn_depths:
+        try:
+            depths = tuple(
+                int(s.strip()) for s in args.cross_attn_depths.split(",")
+                if s.strip()
+            )
+        except ValueError as e:
+            print(
+                f"[toy] --cross-attn-depths must be comma-separated ints; "
+                f"got {args.cross_attn_depths!r}: {e}",
+                file=sys.stderr,
+            )
+            return 2
+        if not depths:
+            print("[toy] --cross-attn-depths is empty", file=sys.stderr)
+            return 2
+    else:
+        depths = (args.cross_attn_depth,)
+
+    bridges = {}
+    for d in depths:
+        bridges[d] = CrossAttentionBridge(
+            verifier_hidden_dim=verifier_hidden_dim,
+            proposer_hidden_dim=proposer_hidden_dim,
+            num_heads=args.num_heads,
+            head_dim=args.head_dim,
+            o_proj_init_std=args.o_proj_init_std,
+            use_ffn_write_path=args.bridge_use_ffn_write_path,
+            use_block_architecture=args.bridge_use_block_architecture,
+            ffn_expansion=args.ffn_expansion,
+        ).to(device).to(dtype)
 
     verifier = CrossAttentionVerifier(
         base_model=verifier_base,
-        cross_attn=cross_attn,
-        cross_attn_depth=args.cross_attn_depth,
+        bridges=bridges,
         sink=args.sink,
         window=args.window,
         freeze_base=True,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(
-        [p for p in cross_attn.parameters() if p.requires_grad],
-        lr=args.lr,
+    bridge_params = []
+    for b in bridges.values():
+        bridge_params.extend(p for p in b.parameters() if p.requires_grad)
+    optimizer = torch.optim.AdamW(bridge_params, lr=args.lr)
+    n_bridge_params = sum(p.numel() for p in bridge_params)
+    print(
+        f"[toy] bridges: depths={depths}  per-bridge params="
+        f"{n_bridge_params // max(len(depths), 1):,}  total trainable params="
+        f"{n_bridge_params:,}  ffn_write={args.bridge_use_ffn_write_path}  "
+        f"block_arch={args.bridge_use_block_architecture}",
+        file=sys.stderr,
     )
 
     # Data
@@ -1557,15 +1774,21 @@ def main() -> int:
         #   capacity bump defaults)
         # → v4 (R1d-β: retrieval_aux_weight config; localization fields
         #   on pre/final/training_history; aux_loss_avg10 in history;
-        #   needle_found_rate). Consumers keyed on v3 must handle the
-        #   new fields gracefully (default to -1.0 = "not measured").
-        "schema_version": 4,
+        #   needle_found_rate)
+        # → v5 (R1e: cross_attn_depths is now a list; bridge_use_ffn_write_path
+        #   and bridge_use_block_architecture config fields;
+        #   ffn_expansion; n_trainable_params). Consumers keyed on v4 must
+        #   handle (a) cross_attn_depths being a list (defaults to a
+        #   single-element list when only --cross-attn-depth was used)
+        #   and (b) the three new write-path config keys.
+        "schema_version": 5,
         "kind": "adr_0011_toy_prototype_g_x1",
         "config": {
             "model": args.model,
             "device": str(device),
             "attn_implementation": "eager",
-            "cross_attn_depth": args.cross_attn_depth,
+            "cross_attn_depth": depths[-1],  # back-compat: deepest
+            "cross_attn_depths": list(depths),
             "sink": args.sink,
             "window": args.window,
             "num_heads": args.num_heads,
@@ -1573,6 +1796,10 @@ def main() -> int:
             "train_steps": args.train_steps,
             "lr": args.lr,
             "o_proj_init_std": args.o_proj_init_std,
+            "bridge_use_ffn_write_path": args.bridge_use_ffn_write_path,
+            "bridge_use_block_architecture": args.bridge_use_block_architecture,
+            "ffn_expansion": args.ffn_expansion,
+            "n_trainable_params": n_bridge_params,
             "retrieval_aux_weight": args.retrieval_aux_weight,
             "needle_debug_mode": args.needle_debug_mode,
             "needle_vocab_size": (
