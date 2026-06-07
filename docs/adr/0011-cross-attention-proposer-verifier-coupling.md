@@ -1,5 +1,19 @@
 # ADR 0011 — Cross-attention proposer/verifier coupling for bounded-KV global-context inference
 
+> **Status: WITHDRAWN (2026-06-07). This ADR's motivating premise — that
+> the verifier's KV cache must be structurally bounded (`sink+window`)
+> and that intelligence loss therefore needs to be recovered through
+> a cross-attention rescue mechanism — is itself superseded by
+> [KakeyaLattice](https://github.com/FluffyAIcode/LLM-KV--Cache-compress)
+> (D4/E8 nested-lattice KV codec, beats Google TurboQuant 12/12 on
+> H200, 2.4×–2.8× compression at <1 % perplexity loss). KakeyaLattice
+> preserves full attention while compressing the KV bytes, eliminating
+> the need to bound attention in the first place. The R1c → R1e
+> empirical falsification of the §3 frozen-base subspace is preserved
+> as scientific record (see §10) but is no longer strategically
+> relevant. v0.4 GA proceeds via KakeyaLattice integration. See §11
+> for full postscript.**
+
 * **Status**: Proposed
 * **Date**: 2026-06-06
 * **Supersedes**: nothing
@@ -280,3 +294,61 @@ Toy prototype scaffold lives at `scripts/research/cross_attn_toy_prototype.py` (
 **Linux CI**: 28 unit tests in `tests/research/test_cross_attn_toy.py` cover (a) sink+window mask sparsity for every query position; (b) bridge zero-init invariant; (c) gradient flow through the bridge; (d) layer-module discovery on Gemma3-shape and GPT-2-shape surrogates; (e) hook injection actually changes logits, is removed after forward (including on exception), and the bounded-baseline / oracle paths do not register hooks; (f) softmax over `(scores + sink_window_4d)` zeros forbidden positions. The empirical question (does the bridge rescue recall on Gemma 3-1B-it?) remains gated on Mac M4 — Linux CI cannot answer it.
 
 **Schema bump**: report `schema_version` is now `2`. The G-X1 attempt #1 JSON (`cross_attn_toy_1780745401.json`) is preserved as v1 historical evidence and stays in the repo.
+
+## 11. Postscript: 2026-06-07 — Withdrawn (premise superseded by KakeyaLattice)
+
+After R1e (PR #68) closed the cross-attention bridge subspace empirically, the broader question "should the verifier's KV cache be bounded at all?" was reopened. The answer turned out to be no — KakeyaLattice ([github.com/FluffyAIcode/LLM-KV--Cache-compress](https://github.com/FluffyAIcode/LLM-KV--Cache-compress), v1.4 D4 / v1.5 E8) provides full-attention KV at 2.4×–2.8× compression with < 1 % perplexity loss, validated on real vLLM + H200 across Qwen3, GLM-4, Gemma 4, DeepSeek (12/12 wins on K-MSE / V-MSE / |Δppl| against Google's TurboQuant at matched bit budgets). Deployment-relevant compression-ratio advantage at |Δppl| ≤ 2 %: +26.9 % on Qwen3-4B, +37.8 % on GLM-4-9B-Chat, tied on Gemma 4-E4B (saturated), +3.3 % on DeepSeek-1.5B.
+
+### What this means for ADR 0011
+
+ADR 0011 §3 was constructed to answer "given that v0.3's `SinkWindowVerifier` evicts mid-context K/V tensors and loses 83 % of mid-context recall (per [`results/platform-tests/sink_window_quality_ab_1780714635.json`](../../results/platform-tests/sink_window_quality_ab_1780714635.json)), how can the proposer's full-attention representation be used to rescue the lost information?". The R1c–R1e research trajectory exhausted the cheaply-explorable subspace and falsified the frozen-base + trainable single-instance bridge variant. KakeyaLattice supplies a different and stronger answer: **don't lose the K/V tensors in the first place — keep full attention, compress the storage**. Under that frame, the rescue problem ADR 0011 was solving does not exist.
+
+### Strategic consequences
+
+1. **v0.3 `SinkWindowVerifier` is itself a suboptimal design choice in retrospect.** With KakeyaLattice available, the v0.3 GA memory budget on Mac mini 24 GB targeting Gemma 4-9B-class is comfortably met by full-attention KV at 2.4×–2.8× compression — no need to evict tokens at the application level. v0.3 ships as deployed for backward compatibility, but `SinkWindowVerifier` is no longer the recommended default in v0.4.
+2. **R1c–R1e PRs (#65, #67, #68) are preserved as research record** — the toy prototype, the four-bug fix in R1b, the retrieval-aux instrumentation in R1d-β, and the write-path expansion in R1e are all kept on their branches with their JSON evidence under `results/research/`. They demonstrate that the §3 frozen-base subspace cannot reach G-X1 ≥ 80 % under cheap exploration. They do **not** show that "cross-attention training cannot work as a paradigm" (see §11.1 below for the table of subspaces R1c–R1e did not test).
+3. **ADR 0010 (full-attention + INT8/NF4 KV quant) is also superseded.** That draft (PR #66) was a fallback baseline reaching for a goal KakeyaLattice already exceeds. Withdrawn as obsolete.
+4. **v0.4 GA implements KakeyaLattice integration** as the primary KV memory strategy. A new ADR (0012, planned) defines the integration surface: backend coverage (PyTorch+CUDA drop-in via the published `kakeyalattice` package; MLX port for Apple Silicon as separate engineering work), v1.4 vs v1.5 default selection, interaction with the AR-verifier + DLM-proposer architecture (orthogonal — KakeyaLattice is a per-vector storage codec, the speculative-decoding contract is unchanged).
+
+### §11.1 — What R1c–R1e did NOT test (preserved future-work record)
+
+The R1c → R1e trajectory tested the following narrow subspace: **frozen verifier weights + frozen proposer (same Gemma 3-1B checkpoint) + trainable single-instance cross-attention bridge (regardless of capacity, supervision, multi-layer, or full-block structure) at one or more middle-stack depths + 200 train samples × 2000 steps + synthetic NIAH task**. The following design axes were untouched:
+
+| Axis | R1c–R1e | Untested alternatives | Why R1e doesn't speak to them |
+|---|---|---|---|
+| Verifier trainability | fully frozen | LoRA on layers K..N; full SFT (EAGLE-3-style joint training) | Frozen base prevented `lm_head` adaptation to bridge delta; joint training would let the verifier learn to use the bridge's contribution |
+| Proposer trainability | fully frozen | Train proposer to produce "summary tokens" admitted into verifier's bounded window; proposer LoRA tuned for needle-friendly hidden states | Frozen proposer means it cannot adapt its output representation to be more bridge-readable or KV-preservable |
+| Proposer hidden source | `hidden_states[-1]` (post final RMSNorm) | layer-K matched depth; explicit KV (not hidden); learned compressed representations; multi-source fusion | We tested only one extraction point |
+| Injection mechanism | cross-attention residual at one layer | hypernet-style modulation; FiLM; retrieval-augmented FFN; gated cross-attention; token-level prefix injection (Compressive Transformers, RETRO) | Cross-attention is one of many possible injection mechanisms |
+| Training scale | 200 samples × 2000 steps | EAGLE-3-scale: ~50 M tokens of long-context data | Our scale is ~10⁻⁴ of production alignment training |
+| Training objective | next-token CE + retrieval-aux | distillation match against full-attention oracle's argmax distribution; RL-on-recall | Different objective shapes optimize different surfaces |
+| Task | synthetic NIAH | RULER, NarrativeQA, real long-context chat, multi-hop QA | NIAH is one specific retrieval pattern; real workloads have distributed dependencies |
+| Model + depth | Gemma 3-1B-it at depth 20 | Qwen3, Llama-3.x, DeepSeek-V4, varying depths | Depth-20 may have specific dead-zone properties of Gemma 3-1B |
+
+Any of these axes could in principle yield a working cross-attention training paradigm. **None of them are required for v0.4 GA**, because KakeyaLattice already meets the memory + intelligence goal. Future work that revisits this trajectory should start from the §11.1 axes, not from the §3 frozen-base subspace already known to fail.
+
+### §11.2 — Empirical record (preserved)
+
+| Run | Mechanism | Localization | Recall | JSON |
+|---|---|---|---|---|
+| R1 attempt #1 | Naive toy (4 bugs) | n/a | 0.000 | `results/research/cross_attn_toy_1780745401.json` |
+| R1b | Bug-fixed toy | n/a | 0.000 | `results/research/cross_attn_toy_1780755059.json` |
+| R1c-A (full vocab, 135k) | Capacity bump (heads=16, head_dim=128, W_o init 0.01) | n/a | 0.000 | `results/research/cross_attn_toy_vast_full_1780806644.json` |
+| R1c-B (small vocab, 20) | Capacity bump | n/a | 0.16 | `results/research/cross_attn_toy_vast_needle_small_1780806644.json` |
+| R1d-β control (small, aux=0) | Retrieval-aux disabled | 0.25 | 0.12 | `results/research/cross_attn_toy_vast_r1d_small_aux0_1780812759.json` |
+| R1d-β experiment (small, aux=0.1) | Retrieval-aux enabled | **0.50** | 0.10 | `results/research/cross_attn_toy_vast_r1d_small_aux0p1_1780812759.json` |
+| R1e-α (small, aux=0.1, FFN write) | + 4× SiLU FFN | 0.375 | 0.14 | `results/research/cross_attn_toy_vast_r1e_alpha_ffn_aux0p1_1780817369.json` |
+| R1e-β (small, aux=0.1, depths 8/14/20) | + multi-layer | 0.125 (multi-bridge supervision gap) | 0.10 | `results/research/cross_attn_toy_vast_r1e_beta_multilayer_aux0p1_1780817369.json` |
+| **R1e-γ (small, aux=0.1, full block)** | + complete pre-norm transformer block | **0.819** | 0.12 | `results/research/cross_attn_toy_vast_r1e_gamma_block_aux0p1_1780817369.json` |
+
+R1e-γ (loc=0.82, recall=0.12) is the decisive evidence: even with 82 % attention mass on the needle and a full transformer block as the write path, the bridge cannot translate the located content into the right token via frozen verifier layers K+1..N + final norm + lm_head. Within the §11.1 row "Verifier trainability = fully frozen", this is settled.
+
+### §11.3 — What replaces this ADR
+
+[KakeyaLattice integration ADR 0012](0012-kakeyalattice-kv-codec-integration.md) (planned), defining:
+
+- KV codec backend module (`inference_engine.backends.kv_codec.kakeyalattice`) wrapping the published `kakeyalattice` package as the primary GPU/CUDA path
+- MLX port specification (Hadamard rotation + D4/E8 closest-point on Apple Silicon)
+- `KakeyaLatticeBackedVerifier` replacing `SinkWindowVerifier` as the v0.4 default
+- v1.4 (D4) vs v1.5 (E8) selection policy
+- Phase A–F implementation plan with empirical gates on Mac M4 + vast NVIDIA
