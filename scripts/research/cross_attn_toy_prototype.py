@@ -25,12 +25,29 @@ into the verifier's residual stream.
 
 Usage::
 
-    # Smallest viable toy: single-batch text NIAH on Apple Silicon
+    # Smallest viable toy: single-batch text NIAH on Apple Silicon.
+    # R1c defaults are heavier (2000 steps, 16 heads × 128 dim); pass
+    # --train-steps 200 for a quick smoke run.
     PYTHONPATH=. python3 scripts/research/cross_attn_toy_prototype.py \\
         --model google/gemma-3-1b-it \\
         --device mps \\
         --train-steps 200 \\
         --eval-every 50
+
+    # R1c full capacity-bumped run (Gate G-X1, ~2000 steps):
+    PYTHONPATH=. python3 scripts/research/cross_attn_toy_prototype.py \\
+        --model google/gemma-3-1b-it \\
+        --device auto \\
+        --train-steps 2000 \\
+        --o-proj-init-std 0.01 \\
+        --needle-debug-mode off
+
+    # R1c easy-target debug probe (does the bridge work at all?):
+    PYTHONPATH=. python3 scripts/research/cross_attn_toy_prototype.py \\
+        --model google/gemma-3-1b-it \\
+        --device auto \\
+        --train-steps 2000 \\
+        --needle-debug-mode small
 
     # Larger toy (Mac M4 24 GB, careful with memory):
     PYTHONPATH=. python3 scripts/research/cross_attn_toy_prototype.py \\
@@ -87,11 +104,24 @@ class CrossAttentionBridge(nn.Module):
     K, V from proposer hidden bank (full-attention representation of the
     same prefix).
 
-    Initialized so that ``W_o = 0`` — at step 0 the layer contributes
-    zero to the verifier's residual stream. Stability: the verifier
-    behaves identically to its baseline for the first few gradient
-    steps, then progressively incorporates cross-attention as the
-    output projection learns non-zero weights.
+    Initialized so that ``W_o`` is small (``o_proj_init_std``) — at step 0
+    the layer contributes (near-)zero to the verifier's residual stream.
+    Stability: the verifier behaves (almost) identically to its baseline
+    for the first few gradient steps, then progressively incorporates
+    cross-attention as the output projection learns larger weights.
+
+    R1c note — ``o_proj_init_std``: PR-R1b used a strict ``W_o = 0``
+    init. The R1b run showed loss decreasing but plateauing slowly
+    (step 50→2.975 … 200→2.046), with per-token answer probability only
+    ~13 % — far from the < ~0.7 loss where ``cross_attn_recall`` first
+    turns non-zero. A strict-zero ``W_o`` makes the bridge's *initial*
+    gradient signal flow only through ``ctx`` (the ``W_o`` row gradient
+    is ``ctx``-shaped but the residual sees zero contribution on the
+    forward pass for many steps). Seeding ``W_o`` with a small non-zero
+    std lets the bridge contribute — and therefore be shaped by the loss
+    — from step 1, trading a little step-0 stability for faster escape
+    from the plateau. ``o_proj_init_std=0.0`` recovers the exact R1b
+    zero-init behaviour (and keeps the step-0 ``output == 0`` invariant).
     """
 
     def __init__(
@@ -101,11 +131,13 @@ class CrossAttentionBridge(nn.Module):
         num_heads: int = 8,
         head_dim: int = 64,
         attn_dropout: float = 0.0,
+        o_proj_init_std: float = 0.0,
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = head_dim ** -0.5
+        self.o_proj_init_std = o_proj_init_std
 
         self.q_proj = nn.Linear(
             verifier_hidden_dim, num_heads * head_dim, bias=False,
@@ -121,15 +153,20 @@ class CrossAttentionBridge(nn.Module):
         )
         self.attn_dropout = attn_dropout
 
-        # IDENTITY INITIALIZATION — the most important training-stability
-        # trick in this prototype. At step 0, output is zero; the
-        # verifier's residual stream is unchanged. Gradient flow is
-        # non-zero (W_q, W_k, W_v are nonzero), so W_o moves off zero
-        # gradually as the model learns to use the cross-attention.
+        # NEAR-IDENTITY INITIALIZATION — the most important training-
+        # stability trick in this prototype. W_q/W_k/W_v get the usual
+        # small-normal init so gradient flow is non-zero. W_o is seeded
+        # with std=``o_proj_init_std``: at exactly 0.0 the bridge output
+        # is zero at step 0 (strict R1b behaviour); at a small positive
+        # value (R1c default 0.01) the bridge contributes a small delta
+        # immediately so the loss can shape W_o from step 1.
         nn.init.normal_(self.q_proj.weight, std=0.02)
         nn.init.normal_(self.k_proj.weight, std=0.02)
         nn.init.normal_(self.v_proj.weight, std=0.02)
-        nn.init.zeros_(self.o_proj.weight)
+        if o_proj_init_std > 0.0:
+            nn.init.normal_(self.o_proj.weight, std=o_proj_init_std)
+        else:
+            nn.init.zeros_(self.o_proj.weight)
 
     def forward(
         self,
@@ -470,6 +507,75 @@ class NIAHSample:
     needle_position: int  # token index where the needle lives
 
 
+@dataclasses.dataclass(frozen=True)
+class NeedleVocab:
+    """Closed vocabulary the needle's secret code is drawn from.
+
+    The answer string is ``"{prefix}-{code}"`` with ``prefix`` drawn
+    uniformly from :attr:`prefixes` and ``code`` an integer in
+    ``[code_min, code_max]``. Shrinking this vocabulary lowers the
+    per-token entropy of the answer, which is the entire point of the
+    R1c ``--needle-debug-mode`` knob: it lets us check whether the
+    cross-attention bridge mechanism works *at all* on an easy target
+    before asking it to memorise the full 15-prefix × 4-digit space
+    (~135 k distinct answers) that R1b struggled to reach inside 200
+    steps.
+    """
+
+    prefixes: Tuple[str, ...]
+    code_min: int
+    code_max: int
+
+    def size(self) -> int:
+        """Number of distinct answers this vocabulary can produce."""
+        return len(self.prefixes) * (self.code_max - self.code_min + 1)
+
+
+# Full-difficulty vocabulary — identical to the R1/R1b hard-coded set so
+# that ``--needle-debug-mode off`` reproduces prior runs bit-for-bit
+# under a fixed seed (same RNG draw order).
+DEFAULT_NEEDLE_VOCAB = NeedleVocab(
+    prefixes=(
+        "ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON", "ZETA",
+        "ETA", "THETA", "IOTA", "KAPPA", "ORCHID", "PINE",
+        "MAPLE", "OAK", "BIRCH",
+    ),
+    code_min=1000,
+    code_max=9999,
+)
+
+
+def needle_vocab_for_mode(mode: str) -> Optional[NeedleVocab]:
+    """Map a ``--needle-debug-mode`` value to a :class:`NeedleVocab`.
+
+    * ``off``    → ``None`` (full default vocabulary, ~135 k answers).
+    * ``small``  → 2 prefixes × single digit (20 answers) — the easiest
+      probe: a single answer token range the bridge can plausibly nail
+      inside a couple thousand steps, so a *non-zero* ``cross_attn``
+      recall here isolates "is the bridge mechanism working?" from "is
+      the target simply too hard?".
+    * ``medium`` → 4 prefixes × two digits (400 answers) — an
+      intermediate difficulty between ``small`` and ``off``.
+
+    Raises ``ValueError`` on an unknown mode (ADR 0008 §6.2: no silent
+    fallback).
+    """
+    if mode == "off":
+        return None
+    if mode == "small":
+        return NeedleVocab(prefixes=("ALPHA", "BETA"), code_min=0, code_max=9)
+    if mode == "medium":
+        return NeedleVocab(
+            prefixes=("ALPHA", "BETA", "GAMMA", "DELTA"),
+            code_min=0,
+            code_max=99,
+        )
+    raise ValueError(
+        f"unknown needle_debug_mode={mode!r}; expected one of "
+        "{'off', 'small', 'medium'}"
+    )
+
+
 def make_niah_dataset(
     *,
     tokenizer,
@@ -477,6 +583,7 @@ def make_niah_dataset(
     haystack_min_tokens: int = 256,
     haystack_max_tokens: int = 1024,
     seed: int = 42,
+    needle_vocab: Optional[NeedleVocab] = None,
 ) -> List[NIAHSample]:
     """Synthetic NIAH samples: hide a fact in random padding, ask for it.
 
@@ -484,18 +591,23 @@ def make_niah_dataset(
 
         <padding>... <NEEDLE>: the secret code is XXX-9999. <padding>...
         Question: what is the secret code? Answer:
+
+    ``needle_vocab`` selects the closed set the secret code is drawn
+    from; ``None`` uses :data:`DEFAULT_NEEDLE_VOCAB` (full difficulty,
+    bit-for-bit identical to R1/R1b). A smaller vocabulary (see
+    :func:`needle_vocab_for_mode`) lowers answer entropy for the R1c
+    debug modes.
     """
+    vocab = needle_vocab if needle_vocab is not None else DEFAULT_NEEDLE_VOCAB
     rng = random.Random(seed)
     samples: List[NIAHSample] = []
     for _ in range(n_samples):
         haystack_len = rng.randint(haystack_min_tokens, haystack_max_tokens)
-        # Synthetic codes: e.g., ALPHA-1234, BETA-5678, etc.
-        prefix = rng.choice([
-            "ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON", "ZETA",
-            "ETA", "THETA", "IOTA", "KAPPA", "ORCHID", "PINE",
-            "MAPLE", "OAK", "BIRCH",
-        ])
-        code = f"{prefix}-{rng.randint(1000, 9999)}"
+        # Synthetic codes: e.g., ALPHA-1234, BETA-5678, etc. RNG draw
+        # order (haystack_len, prefix, code) is preserved from R1b so a
+        # fixed seed reproduces the full-vocab dataset exactly.
+        prefix = rng.choice(vocab.prefixes)
+        code = f"{prefix}-{rng.randint(vocab.code_min, vocab.code_max)}"
         needle = f"\nIMPORTANT: the secret code is {code}.\n"
 
         padding_lines = []
@@ -772,9 +884,38 @@ def main() -> int:
                          "other base models pick a depth ≈ 0.7 × num_layers.")
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
-    ap.add_argument("--num-heads", type=int, default=8)
-    ap.add_argument("--head-dim", type=int, default=64)
-    ap.add_argument("--train-steps", type=int, default=200)
+    ap.add_argument("--num-heads", type=int, default=16,
+                    help="R1c: bumped 8→16. More heads give the bridge "
+                         "finer-grained routing over the proposer bank.")
+    ap.add_argument("--head-dim", type=int, default=128,
+                    help="R1c: bumped 64→128. Wider per-head dim gives "
+                         "the bridge more capacity to memorise needle "
+                         "codes (the R1b bottleneck was capacity, not "
+                         "gradient flow).")
+    ap.add_argument("--train-steps", type=int, default=2000,
+                    help="R1c: bumped 200→2000. The R1b loss curve was "
+                         "still descending at step 200 (2.046, slope ~ "
+                         "-0.001/step); extrapolation puts the < ~0.7 "
+                         "loss where cross_attn_recall turns non-zero at "
+                         "~1500-2500 steps.")
+    ap.add_argument("--o-proj-init-std", type=float, default=0.01,
+                    help="std for the cross-attention output projection "
+                         "init. R1c default 0.01 (R1b used strict 0.0). "
+                         "0.0 keeps the step-0 zero-contribution "
+                         "invariant; a small positive value lets the "
+                         "bridge contribute — and be shaped by the loss "
+                         "— from step 1.")
+    ap.add_argument(
+        "--needle-debug-mode",
+        choices=["off", "small", "medium"],
+        default="off",
+        help="shrink the needle answer vocabulary to lower per-token "
+             "entropy. 'off' = full 15-prefix × 4-digit set (~135 k "
+             "answers, the real task); 'small' = 2 prefixes × 1 digit "
+             "(20 answers); 'medium' = 4 prefixes × 2 digits (400). Use "
+             "'small' to check the bridge mechanism works on an easy "
+             "target before debugging the hard one.",
+    )
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--n-train", type=int, default=200)
     ap.add_argument("--n-eval", type=int, default=50)
@@ -859,6 +1000,7 @@ def main() -> int:
         proposer_hidden_dim=proposer_hidden_dim,
         num_heads=args.num_heads,
         head_dim=args.head_dim,
+        o_proj_init_std=args.o_proj_init_std,
     ).to(device).to(dtype)
 
     verifier = CrossAttentionVerifier(
@@ -876,26 +1018,36 @@ def main() -> int:
     )
 
     # Data
+    needle_vocab = needle_vocab_for_mode(args.needle_debug_mode)
+    vocab_desc = (
+        f"{args.needle_debug_mode} "
+        f"({(needle_vocab or DEFAULT_NEEDLE_VOCAB).size()} distinct answers)"
+    )
     print(
         f"[toy] generating {args.n_train} train + {args.n_eval} eval "
-        f"NIAH samples", file=sys.stderr,
+        f"NIAH samples; needle vocab={vocab_desc}", file=sys.stderr,
     )
     train_data = make_niah_dataset(
         tokenizer=tokenizer, n_samples=args.n_train,
         haystack_min_tokens=args.haystack_min_tokens,
         haystack_max_tokens=args.haystack_max_tokens,
         seed=args.seed,
+        needle_vocab=needle_vocab,
     )
     eval_data = make_niah_dataset(
         tokenizer=tokenizer, n_samples=args.n_eval,
         haystack_min_tokens=args.haystack_min_tokens,
         haystack_max_tokens=args.haystack_max_tokens,
         seed=args.seed + 1,
+        needle_vocab=needle_vocab,
     )
 
-    # Pre-train evaluation: cross-attn W_o is zero-init so the bridge
-    # contributes nothing → cross_attn ≡ bounded_baseline at step 0.
-    # Oracle measures the prompt/answer pipeline itself.
+    # Pre-train evaluation: with o_proj_init_std=0 the bridge
+    # contributes nothing → cross_attn ≡ bounded_baseline at step 0;
+    # with the R1c default (0.01) the bridge already perturbs the
+    # residual slightly, so cross_attn may differ marginally from the
+    # bounded baseline even before training. Oracle measures the
+    # prompt/answer pipeline itself either way.
     print("[toy] pre-train eval (full eval set, all 3 baselines)",
           file=sys.stderr)
     pre_xa, pre_bounded, pre_oracle = evaluate_recall(
@@ -1006,7 +1158,11 @@ def main() -> int:
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     report = {
-        "schema_version": 2,  # bumped from v1 (R1 attempt #1) — adds oracle baseline + 3-predicate gate
+        # v1 (R1 #1) → v2 (R1b: oracle baseline + 3-predicate gate)
+        # → v3 (R1c: o_proj_init_std + needle_debug_mode config fields,
+        #   capacity bump defaults). Consumers keyed on v2 must handle
+        #   the two new config keys.
+        "schema_version": 3,
         "kind": "adr_0011_toy_prototype_g_x1",
         "config": {
             "model": args.model,
@@ -1019,6 +1175,11 @@ def main() -> int:
             "head_dim": args.head_dim,
             "train_steps": args.train_steps,
             "lr": args.lr,
+            "o_proj_init_std": args.o_proj_init_std,
+            "needle_debug_mode": args.needle_debug_mode,
+            "needle_vocab_size": (
+                needle_vocab or DEFAULT_NEEDLE_VOCAB
+            ).size(),
             "n_train": args.n_train,
             "n_eval": args.n_eval,
             "haystack_min_tokens": args.haystack_min_tokens,

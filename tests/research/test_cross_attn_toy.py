@@ -29,10 +29,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from scripts.research.cross_attn_toy_prototype import (
+    DEFAULT_NEEDLE_VOCAB,
     CrossAttentionBridge,
     CrossAttentionVerifier,
+    NeedleVocab,
+    make_niah_dataset,
     make_sink_window_attention_mask,
     make_sink_window_attention_mask_4d,
+    needle_vocab_for_mode,
 )
 
 
@@ -258,6 +262,140 @@ class TestCrossAttentionBridge:
         ctx = torch.matmul(w, V).transpose(1, 2).contiguous().view(1, 3, 16)
         expected = bridge.o_proj(ctx)
         assert torch.allclose(out_masked, expected, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# R1c: o_proj_init_std init behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestOProjInitStd:
+    def test_default_is_strict_zero(self):
+        """Default (no arg) keeps the R1b strict-zero W_o invariant — the
+        step-0 bridge output must be exactly zero."""
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=32, proposer_hidden_dim=32,
+            num_heads=4, head_dim=8,
+        )
+        assert bridge.o_proj_init_std == 0.0
+        assert torch.count_nonzero(bridge.o_proj.weight) == 0
+
+    def test_explicit_zero_matches_default(self):
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=32, proposer_hidden_dim=32,
+            num_heads=4, head_dim=8, o_proj_init_std=0.0,
+        )
+        v_h = torch.randn(1, 5, 32)
+        p_b = torch.randn(1, 7, 32)
+        out = bridge(verifier_hidden=v_h, proposer_hidden_bank=p_b)
+        assert torch.allclose(out, torch.zeros_like(out))
+
+    def test_positive_std_makes_o_proj_nonzero(self):
+        """A positive std seeds W_o so the bridge contributes from step 0
+        — this is the R1c plateau-escape change."""
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=64, proposer_hidden_dim=64,
+            num_heads=8, head_dim=16, o_proj_init_std=0.05,
+        )
+        assert bridge.o_proj_init_std == 0.05
+        assert torch.count_nonzero(bridge.o_proj.weight) > 0
+        # std of the init should be in the right ballpark (large enough
+        # matrix that the empirical std is close to the requested value).
+        emp_std = bridge.o_proj.weight.detach().float().std().item()
+        assert 0.02 < emp_std < 0.10, f"empirical std {emp_std} off target"
+
+    def test_positive_std_makes_step0_output_nonzero(self):
+        """With a positive std the bridge output at step 0 is NOT zero —
+        the whole point: the loss can shape W_o from step 1."""
+        torch.manual_seed(0)
+        bridge = CrossAttentionBridge(
+            verifier_hidden_dim=32, proposer_hidden_dim=32,
+            num_heads=4, head_dim=8, o_proj_init_std=0.02,
+        )
+        v_h = torch.randn(1, 5, 32)
+        p_b = torch.randn(1, 7, 32)
+        out = bridge(verifier_hidden=v_h, proposer_hidden_bank=p_b)
+        assert out.abs().max().item() > 0.0
+
+
+# ---------------------------------------------------------------------------
+# R1c: needle vocabulary / debug modes
+# ---------------------------------------------------------------------------
+
+
+class TestNeedleVocabForMode:
+    def test_off_is_none(self):
+        assert needle_vocab_for_mode("off") is None
+
+    def test_small_is_low_entropy(self):
+        v = needle_vocab_for_mode("small")
+        assert isinstance(v, NeedleVocab)
+        assert v.size() == 20  # 2 prefixes × 10 codes (0..9)
+        assert v.size() < DEFAULT_NEEDLE_VOCAB.size()
+
+    def test_medium_between_small_and_off(self):
+        small = needle_vocab_for_mode("small")
+        medium = needle_vocab_for_mode("medium")
+        assert medium.size() == 400  # 4 prefixes × 100 codes (0..99)
+        assert small.size() < medium.size() < DEFAULT_NEEDLE_VOCAB.size()
+
+    def test_unknown_mode_raises(self):
+        with pytest.raises(ValueError, match="needle_debug_mode"):
+            needle_vocab_for_mode("tiny")
+
+    def test_default_vocab_size_is_full(self):
+        # 15 prefixes × (9999-1000+1)=9000 codes = 135000
+        assert DEFAULT_NEEDLE_VOCAB.size() == 135000
+
+
+class TestMakeNiahDatasetVocab:
+    def test_small_vocab_restricts_answers(self):
+        """Every answer must come from the small closed set."""
+        vocab = needle_vocab_for_mode("small")
+        data = make_niah_dataset(
+            tokenizer=None, n_samples=40, seed=7, needle_vocab=vocab,
+            haystack_min_tokens=64, haystack_max_tokens=128,
+        )
+        allowed = set()
+        for prefix in vocab.prefixes:
+            for code in range(vocab.code_min, vocab.code_max + 1):
+                allowed.add(f" {prefix}-{code}")
+        for sample in data:
+            assert sample.answer_text in allowed, (
+                f"answer {sample.answer_text!r} not in small vocab"
+            )
+        # With only 20 possible answers and 40 samples, we must see
+        # repeats — confirms the vocabulary is genuinely small.
+        distinct = {s.answer_text for s in data}
+        assert len(distinct) <= vocab.size()
+
+    def test_off_mode_matches_default_vocab_dataset(self):
+        """``needle_vocab=None`` reproduces the default-vocab dataset
+        bit-for-bit (same seed → same RNG draw order)."""
+        a = make_niah_dataset(
+            tokenizer=None, n_samples=10, seed=123, needle_vocab=None,
+            haystack_min_tokens=64, haystack_max_tokens=128,
+        )
+        b = make_niah_dataset(
+            tokenizer=None, n_samples=10, seed=123,
+            needle_vocab=DEFAULT_NEEDLE_VOCAB,
+            haystack_min_tokens=64, haystack_max_tokens=128,
+        )
+        assert [s.answer_text for s in a] == [s.answer_text for s in b]
+        assert [s.prompt_text for s in a] == [s.prompt_text for s in b]
+
+    def test_default_answers_use_four_digit_codes(self):
+        data = make_niah_dataset(
+            tokenizer=None, n_samples=20, seed=1, needle_vocab=None,
+            haystack_min_tokens=64, haystack_max_tokens=128,
+        )
+        for sample in data:
+            # " PREFIX-NNNN" — code is in [1000, 9999], i.e. 4 digits.
+            code_part = sample.answer_text.strip().split("-")[1]
+            assert 1000 <= int(code_part) <= 9999
 
 
 # ---------------------------------------------------------------------------
