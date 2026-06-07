@@ -1,0 +1,259 @@
+{
+  "schema_version": 5,
+  "kind": "adr_0011_toy_prototype_g_x1",
+  "config": {
+    "model": "google/gemma-3-1b-it",
+    "device": "cuda",
+    "attn_implementation": "eager",
+    "cross_attn_depth": 20,
+    "cross_attn_depths": [
+      20
+    ],
+    "sink": 4,
+    "window": 64,
+    "num_heads": 16,
+    "head_dim": 128,
+    "train_steps": 2000,
+    "lr": 0.0003,
+    "o_proj_init_std": 0.01,
+    "bridge_use_ffn_write_path": true,
+    "bridge_use_block_architecture": false,
+    "ffn_expansion": 4,
+    "n_trainable_params": 20056320,
+    "retrieval_aux_weight": 0.1,
+    "needle_debug_mode": "small",
+    "needle_vocab_size": 20,
+    "n_train": 200,
+    "n_eval": 50,
+    "haystack_min_tokens": 256,
+    "haystack_max_tokens": 1024,
+    "seed": 42,
+    "uses_chat_template": true,
+    "verifier_layer_surgery": "forward_hook_on_layer_K_output"
+  },
+  "pre_train": {
+    "cross_attn_recall": 0.0,
+    "baseline_recall": 0.0,
+    "oracle_recall": 1.0,
+    "localization_rate": 0.135,
+    "mass_on_needle": 0.13375000000000087,
+    "needle_found_rate": 1.0
+  },
+  "training_history": [
+    {
+      "step": 100,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.816216093301773,
+      "aux_loss_avg10": 1.2515625,
+      "localization_rate": 0.290625,
+      "mass_on_needle": 0.290625,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 200,
+      "cross_attn_recall": 0.25,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.8468579649925232,
+      "aux_loss_avg10": 1.26640625,
+      "localization_rate": 0.28125,
+      "mass_on_needle": 0.28125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 300,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.9260371834039688,
+      "aux_loss_avg10": 1.13984375,
+      "localization_rate": 0.28125,
+      "mass_on_needle": 0.28125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 400,
+      "cross_attn_recall": 0.05,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7788902819156647,
+      "aux_loss_avg10": 1.05390625,
+      "localization_rate": 0.34375,
+      "mass_on_needle": 0.34375,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 500,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7642070293426514,
+      "aux_loss_avg10": 1.15703125,
+      "localization_rate": 0.3125,
+      "mass_on_needle": 0.3125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 600,
+      "cross_attn_recall": 0.2,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7696174263954163,
+      "aux_loss_avg10": 1.1640625,
+      "localization_rate": 0.3125,
+      "mass_on_needle": 0.3125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 700,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.6628526449203491,
+      "aux_loss_avg10": 1.145703125,
+      "localization_rate": 0.321875,
+      "mass_on_needle": 0.3203125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 800,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.8468569949269295,
+      "aux_loss_avg10": 1.1390625,
+      "localization_rate": 0.31875,
+      "mass_on_needle": 0.3171875,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 900,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7523266643285751,
+      "aux_loss_avg10": 1.0953125,
+      "localization_rate": 0.31875,
+      "mass_on_needle": 0.31875,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1000,
+      "cross_attn_recall": 0.05,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7162347197532654,
+      "aux_loss_avg10": 1.1640625,
+      "localization_rate": 0.31875,
+      "mass_on_needle": 0.31875,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1100,
+      "cross_attn_recall": 0.15,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7101544559001922,
+      "aux_loss_avg10": 1.1640625,
+      "localization_rate": 0.3125,
+      "mass_on_needle": 0.3125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1200,
+      "cross_attn_recall": 0.2,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7298780381679535,
+      "aux_loss_avg10": 1.1234375,
+      "localization_rate": 0.3125,
+      "mass_on_needle": 0.3125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1300,
+      "cross_attn_recall": 0.05,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.6709768295288085,
+      "aux_loss_avg10": 1.1375,
+      "localization_rate": 0.3125,
+      "mass_on_needle": 0.3125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1400,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.9122021347284317,
+      "aux_loss_avg10": 1.15390625,
+      "localization_rate": 0.3125,
+      "mass_on_needle": 0.3125,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1500,
+      "cross_attn_recall": 0.15,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.43685243688523767,
+      "aux_loss_avg10": 1.07109375,
+      "localization_rate": 0.3625,
+      "mass_on_needle": 0.3625,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1600,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.739033830165863,
+      "aux_loss_avg10": 1.051953125,
+      "localization_rate": 0.346875,
+      "mass_on_needle": 0.346875,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1700,
+      "cross_attn_recall": 0.2,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.895532414317131,
+      "aux_loss_avg10": 1.04609375,
+      "localization_rate": 0.375,
+      "mass_on_needle": 0.375,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1800,
+      "cross_attn_recall": 0.1,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.823189201951027,
+      "aux_loss_avg10": 1.051171875,
+      "localization_rate": 0.375,
+      "mass_on_needle": 0.375,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 1900,
+      "cross_attn_recall": 0.25,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.8548207342624664,
+      "aux_loss_avg10": 0.995703125,
+      "localization_rate": 0.375,
+      "mass_on_needle": 0.375,
+      "needle_found_rate": 1.0
+    },
+    {
+      "step": 2000,
+      "cross_attn_recall": 0.15,
+      "baseline_recall": 0.0,
+      "ce_loss_avg10": 0.7280006021261215,
+      "aux_loss_avg10": 0.98046875,
+      "localization_rate": 0.375,
+      "mass_on_needle": 0.375,
+      "needle_found_rate": 1.0
+    }
+  ],
+  "final": {
+    "cross_attn_recall": 0.14,
+    "baseline_recall": 0.0,
+    "oracle_recall": 1.0,
+    "localization_rate": 0.375,
+    "mass_on_needle": 0.375,
+    "needle_found_rate": 1.0,
+    "elapsed_s": 732.4580546410289
+  },
+  "gate_predicates": {
+    "oracle_ge_080": true,
+    "bounded_le_030": true,
+    "cross_attn_ge_080": false
+  },
+  "gate_g_x1_pass": false
+}

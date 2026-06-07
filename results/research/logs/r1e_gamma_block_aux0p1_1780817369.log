@@ -1,0 +1,241 @@
+bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+NVIDIA H200, 580.159.03, 143771 MiB, 9.0
+[run_on_vast] reusing venv at /workspace/kakeya-r1c/.venv-vast
+[run_on_vast] torch + transformers already importable; skipping install
+[run_on_vast] torch=2.11.0+cu128 cuda_available=True cuda=12.8
+[run_on_vast] device0=NVIDIA H200
+[run_on_vast] transformers=4.57.6
+[run_on_vast] launching toy: --model google/gemma-3-1b-it --sink 4 --window 64 --num-heads 16 --head-dim 128 --train-steps 2000 --o-proj-init-std 0.01 --retrieval-aux-weight 0.1 --needle-debug-mode small --lr 3e-4 --n-train 200 --n-eval 50 --eval-every 100 --haystack-min-tokens 256 --haystack-max-tokens 1024 --cross-attn-depth 20 --bridge-use-block-architecture --ffn-expansion 4 --output results/research/cross_attn_toy_vast_r1e_gamma_block_aux0p1_1780817369.json
+[toy] loading google/gemma-3-1b-it
+[toy] device=cuda
+[toy] bridges: depths=(20,)  per-bridge params=20,060,928  total trainable params=20,060,928  ffn_write=False  block_arch=True
+[toy] generating 200 train + 50 eval NIAH samples; needle vocab=small (20 distinct answers)
+[toy] pre-train eval (full eval set, all 3 baselines + localization)
+[toy] pre-train: oracle=1.000  bounded_baseline=0.000  cross_attn=0.000  loc_rate=0.168  mass_on_needle=0.0363
+[toy] training 2000 steps  retrieval_aux_weight=0.1
+[toy] step=10  ce_loss(avg10)=5.2477  aux_loss(avg10)=1.3469
+[toy] step=20  ce_loss(avg10)=1.6836  aux_loss(avg10)=1.1617
+[toy] step=30  ce_loss(avg10)=1.5171  aux_loss(avg10)=1.1656
+[toy] step=40  ce_loss(avg10)=1.6691  aux_loss(avg10)=1.2031
+[toy] step=50  ce_loss(avg10)=1.1382  aux_loss(avg10)=1.1641
+[toy] step=60  ce_loss(avg10)=1.3036  aux_loss(avg10)=1.1641
+[toy] step=70  ce_loss(avg10)=1.1006  aux_loss(avg10)=1.1586
+[toy] step=80  ce_loss(avg10)=1.1595  aux_loss(avg10)=1.1641
+[toy] step=90  ce_loss(avg10)=0.8385  aux_loss(avg10)=1.1633
+[toy] step=100  ce_loss(avg10)=0.8262  aux_loss(avg10)=1.1633
+[toy] step=100  cross_attn=0.150  bounded=0.000  loc_rate=0.312  mass=0.3144
+[toy] step=110  ce_loss(avg10)=0.9720  aux_loss(avg10)=1.0832
+[toy] step=120  ce_loss(avg10)=0.7720  aux_loss(avg10)=0.9805
+[toy] step=130  ce_loss(avg10)=0.9194  aux_loss(avg10)=0.9770
+[toy] step=140  ce_loss(avg10)=0.7812  aux_loss(avg10)=0.9781
+[toy] step=150  ce_loss(avg10)=0.9639  aux_loss(avg10)=0.9781
+[toy] step=160  ce_loss(avg10)=0.8279  aux_loss(avg10)=0.9496
+[toy] step=170  ce_loss(avg10)=0.7878  aux_loss(avg10)=0.6992
+[toy] step=180  ce_loss(avg10)=0.8164  aux_loss(avg10)=0.6789
+[toy] step=190  ce_loss(avg10)=0.9066  aux_loss(avg10)=0.6789
+[toy] step=200  ce_loss(avg10)=0.8333  aux_loss(avg10)=0.6871
+[toy] step=200  cross_attn=0.250  bounded=0.000  loc_rate=0.503  mass=0.5031
+[toy] step=210  ce_loss(avg10)=0.7887  aux_loss(avg10)=0.6797
+[toy] step=220  ce_loss(avg10)=0.8791  aux_loss(avg10)=0.6797
+[toy] step=230  ce_loss(avg10)=0.8121  aux_loss(avg10)=0.6797
+[toy] step=240  ce_loss(avg10)=0.7751  aux_loss(avg10)=0.6797
+[toy] step=250  ce_loss(avg10)=0.7998  aux_loss(avg10)=0.6586
+[toy] step=260  ce_loss(avg10)=0.7391  aux_loss(avg10)=0.6914
+[toy] step=270  ce_loss(avg10)=0.7804  aux_loss(avg10)=0.6914
+[toy] step=280  ce_loss(avg10)=0.7846  aux_loss(avg10)=0.6914
+[toy] step=290  ce_loss(avg10)=0.6691  aux_loss(avg10)=0.6914
+[toy] step=300  ce_loss(avg10)=0.8307  aux_loss(avg10)=0.6914
+[toy] step=300  cross_attn=0.000  bounded=0.000  loc_rate=0.503  mass=0.5031
+[toy] step=310  ce_loss(avg10)=0.7884  aux_loss(avg10)=0.6797
+[toy] step=320  ce_loss(avg10)=0.7762  aux_loss(avg10)=0.5768
+[toy] step=330  ce_loss(avg10)=0.7852  aux_loss(avg10)=0.5639
+[toy] step=340  ce_loss(avg10)=0.7469  aux_loss(avg10)=0.5742
+[toy] step=350  ce_loss(avg10)=0.8168  aux_loss(avg10)=0.5639
+[toy] step=360  ce_loss(avg10)=0.7461  aux_loss(avg10)=0.5742
+[toy] step=370  ce_loss(avg10)=0.8256  aux_loss(avg10)=0.5639
+[toy] step=380  ce_loss(avg10)=0.8027  aux_loss(avg10)=0.5635
+[toy] step=390  ce_loss(avg10)=0.8228  aux_loss(avg10)=0.5742
+[toy] step=400  ce_loss(avg10)=0.7468  aux_loss(avg10)=0.5742
+[toy] step=400  cross_attn=0.000  bounded=0.000  loc_rate=0.566  mass=0.5656
+[toy] step=410  ce_loss(avg10)=0.7260  aux_loss(avg10)=0.5535
+[toy] step=420  ce_loss(avg10)=0.7444  aux_loss(avg10)=0.5742
+[toy] step=430  ce_loss(avg10)=0.7757  aux_loss(avg10)=0.5742
+[toy] step=440  ce_loss(avg10)=0.7790  aux_loss(avg10)=0.5738
+[toy] step=450  ce_loss(avg10)=0.7997  aux_loss(avg10)=0.5738
+[toy] step=460  ce_loss(avg10)=0.7891  aux_loss(avg10)=0.5639
+[toy] step=470  ce_loss(avg10)=0.7206  aux_loss(avg10)=0.5742
+[toy] step=480  ce_loss(avg10)=0.8141  aux_loss(avg10)=0.5742
+[toy] step=490  ce_loss(avg10)=0.7402  aux_loss(avg10)=0.5639
+[toy] step=500  ce_loss(avg10)=0.7264  aux_loss(avg10)=0.5639
+[toy] step=500  cross_attn=0.050  bounded=0.000  loc_rate=0.566  mass=0.5656
+[toy] step=510  ce_loss(avg10)=0.7878  aux_loss(avg10)=0.5742
+[toy] step=520  ce_loss(avg10)=0.6420  aux_loss(avg10)=0.5025
+[toy] step=530  ce_loss(avg10)=0.7462  aux_loss(avg10)=0.3889
+[toy] step=540  ce_loss(avg10)=0.7838  aux_loss(avg10)=0.3662
+[toy] step=550  ce_loss(avg10)=0.7905  aux_loss(avg10)=0.3574
+[toy] step=560  ce_loss(avg10)=0.8061  aux_loss(avg10)=0.2812
+[toy] step=570  ce_loss(avg10)=0.7550  aux_loss(avg10)=0.2713
+[toy] step=580  ce_loss(avg10)=0.7143  aux_loss(avg10)=0.2713
+[toy] step=590  ce_loss(avg10)=0.7831  aux_loss(avg10)=0.2792
+[toy] step=600  ce_loss(avg10)=0.7507  aux_loss(avg10)=0.2871
+[toy] step=600  cross_attn=0.200  bounded=0.000  loc_rate=0.753  mass=0.7531
+[toy] step=610  ce_loss(avg10)=0.7260  aux_loss(avg10)=0.2871
+[toy] step=620  ce_loss(avg10)=0.8993  aux_loss(avg10)=0.2792
+[toy] step=630  ce_loss(avg10)=0.7468  aux_loss(avg10)=0.2871
+[toy] step=640  ce_loss(avg10)=0.7346  aux_loss(avg10)=0.2871
+[toy] step=650  ce_loss(avg10)=0.7227  aux_loss(avg10)=0.2792
+[toy] step=660  ce_loss(avg10)=0.7785  aux_loss(avg10)=0.2871
+[toy] step=670  ce_loss(avg10)=0.6577  aux_loss(avg10)=0.2871
+[toy] step=680  ce_loss(avg10)=0.8654  aux_loss(avg10)=0.2713
+[toy] step=690  ce_loss(avg10)=0.7902  aux_loss(avg10)=0.2792
+[toy] step=700  ce_loss(avg10)=0.7445  aux_loss(avg10)=0.2792
+[toy] step=700  cross_attn=0.250  bounded=0.000  loc_rate=0.753  mass=0.7531
+[toy] step=710  ce_loss(avg10)=0.7622  aux_loss(avg10)=0.2792
+[toy] step=720  ce_loss(avg10)=0.8333  aux_loss(avg10)=0.2871
+[toy] step=730  ce_loss(avg10)=0.8241  aux_loss(avg10)=0.2871
+[toy] step=740  ce_loss(avg10)=0.7867  aux_loss(avg10)=0.2792
+[toy] step=750  ce_loss(avg10)=0.7778  aux_loss(avg10)=0.2871
+[toy] step=760  ce_loss(avg10)=0.7275  aux_loss(avg10)=0.2871
+[toy] step=770  ce_loss(avg10)=0.7596  aux_loss(avg10)=0.2871
+[toy] step=780  ce_loss(avg10)=0.7692  aux_loss(avg10)=0.2792
+[toy] step=790  ce_loss(avg10)=0.7425  aux_loss(avg10)=0.2713
+[toy] step=800  ce_loss(avg10)=0.7659  aux_loss(avg10)=0.2871
+[toy] step=800  cross_attn=0.250  bounded=0.000  loc_rate=0.753  mass=0.7531
+[toy] step=810  ce_loss(avg10)=0.7744  aux_loss(avg10)=0.2792
+[toy] step=820  ce_loss(avg10)=0.7213  aux_loss(avg10)=0.2713
+[toy] step=830  ce_loss(avg10)=0.7758  aux_loss(avg10)=0.2713
+[toy] step=840  ce_loss(avg10)=0.7006  aux_loss(avg10)=0.2713
+[toy] step=850  ce_loss(avg10)=0.6890  aux_loss(avg10)=0.2792
+[toy] step=860  ce_loss(avg10)=0.6964  aux_loss(avg10)=0.2180
+[toy] step=870  ce_loss(avg10)=0.8152  aux_loss(avg10)=0.2080
+[toy] step=880  ce_loss(avg10)=0.7627  aux_loss(avg10)=0.1932
+[toy] step=890  ce_loss(avg10)=0.8113  aux_loss(avg10)=0.2006
+[toy] step=900  ce_loss(avg10)=0.7780  aux_loss(avg10)=0.1932
+[toy] step=900  cross_attn=0.200  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=910  ce_loss(avg10)=0.7630  aux_loss(avg10)=0.1932
+[toy] step=920  ce_loss(avg10)=0.7650  aux_loss(avg10)=0.2080
+[toy] step=930  ce_loss(avg10)=0.7498  aux_loss(avg10)=0.2006
+[toy] step=940  ce_loss(avg10)=0.7768  aux_loss(avg10)=0.1932
+[toy] step=950  ce_loss(avg10)=0.7693  aux_loss(avg10)=0.2006
+[toy] step=960  ce_loss(avg10)=0.7230  aux_loss(avg10)=0.2080
+[toy] step=970  ce_loss(avg10)=0.6959  aux_loss(avg10)=0.2080
+[toy] step=980  ce_loss(avg10)=0.7830  aux_loss(avg10)=0.2006
+[toy] step=990  ce_loss(avg10)=0.7843  aux_loss(avg10)=0.2080
+[toy] step=1000  ce_loss(avg10)=0.7443  aux_loss(avg10)=0.2006
+[toy] step=1000  cross_attn=0.050  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1010  ce_loss(avg10)=0.7548  aux_loss(avg10)=0.1857
+[toy] step=1020  ce_loss(avg10)=0.7266  aux_loss(avg10)=0.2006
+[toy] step=1030  ce_loss(avg10)=0.7553  aux_loss(avg10)=0.2006
+[toy] step=1040  ce_loss(avg10)=0.6921  aux_loss(avg10)=0.2080
+[toy] step=1050  ce_loss(avg10)=0.7427  aux_loss(avg10)=0.1857
+[toy] step=1060  ce_loss(avg10)=0.8293  aux_loss(avg10)=0.2080
+[toy] step=1070  ce_loss(avg10)=0.7533  aux_loss(avg10)=0.2080
+[toy] step=1080  ce_loss(avg10)=0.7881  aux_loss(avg10)=0.2080
+[toy] step=1090  ce_loss(avg10)=0.7513  aux_loss(avg10)=0.2006
+[toy] step=1100  ce_loss(avg10)=0.7395  aux_loss(avg10)=0.2080
+[toy] step=1100  cross_attn=0.100  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1110  ce_loss(avg10)=0.8681  aux_loss(avg10)=0.2006
+[toy] step=1120  ce_loss(avg10)=0.7476  aux_loss(avg10)=0.2006
+[toy] step=1130  ce_loss(avg10)=0.7777  aux_loss(avg10)=0.2080
+[toy] step=1140  ce_loss(avg10)=0.7094  aux_loss(avg10)=0.2080
+[toy] step=1150  ce_loss(avg10)=0.6892  aux_loss(avg10)=0.2080
+[toy] step=1160  ce_loss(avg10)=0.7441  aux_loss(avg10)=0.1932
+[toy] step=1170  ce_loss(avg10)=0.6809  aux_loss(avg10)=0.2080
+[toy] step=1180  ce_loss(avg10)=0.7059  aux_loss(avg10)=0.2080
+[toy] step=1190  ce_loss(avg10)=0.7865  aux_loss(avg10)=0.2006
+[toy] step=1200  ce_loss(avg10)=0.7105  aux_loss(avg10)=0.2006
+[toy] step=1200  cross_attn=0.150  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1210  ce_loss(avg10)=0.7071  aux_loss(avg10)=0.2006
+[toy] step=1220  ce_loss(avg10)=0.8500  aux_loss(avg10)=0.2006
+[toy] step=1230  ce_loss(avg10)=0.7421  aux_loss(avg10)=0.1932
+[toy] step=1240  ce_loss(avg10)=0.7515  aux_loss(avg10)=0.2080
+[toy] step=1250  ce_loss(avg10)=0.7341  aux_loss(avg10)=0.2080
+[toy] step=1260  ce_loss(avg10)=0.7514  aux_loss(avg10)=0.2080
+[toy] step=1270  ce_loss(avg10)=0.8044  aux_loss(avg10)=0.2080
+[toy] step=1280  ce_loss(avg10)=0.7218  aux_loss(avg10)=0.2080
+[toy] step=1290  ce_loss(avg10)=0.7617  aux_loss(avg10)=0.2006
+[toy] step=1300  ce_loss(avg10)=0.7355  aux_loss(avg10)=0.2006
+[toy] step=1300  cross_attn=0.050  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1310  ce_loss(avg10)=0.7423  aux_loss(avg10)=0.1857
+[toy] step=1320  ce_loss(avg10)=0.7485  aux_loss(avg10)=0.2080
+[toy] step=1330  ce_loss(avg10)=0.7422  aux_loss(avg10)=0.1932
+[toy] step=1340  ce_loss(avg10)=0.7815  aux_loss(avg10)=0.2080
+[toy] step=1350  ce_loss(avg10)=0.6385  aux_loss(avg10)=0.2080
+[toy] step=1360  ce_loss(avg10)=0.7570  aux_loss(avg10)=0.2006
+[toy] step=1370  ce_loss(avg10)=0.6827  aux_loss(avg10)=0.2080
+[toy] step=1380  ce_loss(avg10)=0.7475  aux_loss(avg10)=0.2080
+[toy] step=1390  ce_loss(avg10)=0.6891  aux_loss(avg10)=0.2006
+[toy] step=1400  ce_loss(avg10)=0.7485  aux_loss(avg10)=0.2080
+[toy] step=1400  cross_attn=0.150  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1410  ce_loss(avg10)=0.7570  aux_loss(avg10)=0.2080
+[toy] step=1420  ce_loss(avg10)=0.6673  aux_loss(avg10)=0.2080
+[toy] step=1430  ce_loss(avg10)=0.7920  aux_loss(avg10)=0.2006
+[toy] step=1440  ce_loss(avg10)=0.7618  aux_loss(avg10)=0.2006
+[toy] step=1450  ce_loss(avg10)=0.8218  aux_loss(avg10)=0.2006
+[toy] step=1460  ce_loss(avg10)=0.7240  aux_loss(avg10)=0.1932
+[toy] step=1470  ce_loss(avg10)=0.7702  aux_loss(avg10)=0.2006
+[toy] step=1480  ce_loss(avg10)=0.7216  aux_loss(avg10)=0.2006
+[toy] step=1490  ce_loss(avg10)=0.6945  aux_loss(avg10)=0.2006
+[toy] step=1500  ce_loss(avg10)=0.5390  aux_loss(avg10)=0.2006
+[toy] step=1500  cross_attn=0.150  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1510  ce_loss(avg10)=0.5770  aux_loss(avg10)=0.2080
+[toy] step=1520  ce_loss(avg10)=0.8969  aux_loss(avg10)=0.2080
+[toy] step=1530  ce_loss(avg10)=0.7774  aux_loss(avg10)=0.1783
+[toy] step=1540  ce_loss(avg10)=0.6760  aux_loss(avg10)=0.2080
+[toy] step=1550  ce_loss(avg10)=0.7862  aux_loss(avg10)=0.2080
+[toy] step=1560  ce_loss(avg10)=0.6828  aux_loss(avg10)=0.2080
+[toy] step=1570  ce_loss(avg10)=0.7060  aux_loss(avg10)=0.2080
+[toy] step=1580  ce_loss(avg10)=0.7023  aux_loss(avg10)=0.1932
+[toy] step=1590  ce_loss(avg10)=0.6647  aux_loss(avg10)=0.2006
+[toy] step=1600  ce_loss(avg10)=0.8412  aux_loss(avg10)=0.2006
+[toy] step=1600  cross_attn=0.050  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1610  ce_loss(avg10)=0.7042  aux_loss(avg10)=0.2006
+[toy] step=1620  ce_loss(avg10)=0.7333  aux_loss(avg10)=0.2006
+[toy] step=1630  ce_loss(avg10)=0.7669  aux_loss(avg10)=0.1936
+[toy] step=1640  ce_loss(avg10)=0.8467  aux_loss(avg10)=0.1932
+[toy] step=1650  ce_loss(avg10)=0.6723  aux_loss(avg10)=0.2006
+[toy] step=1660  ce_loss(avg10)=0.7914  aux_loss(avg10)=0.2006
+[toy] step=1670  ce_loss(avg10)=0.6905  aux_loss(avg10)=0.2006
+[toy] step=1680  ce_loss(avg10)=0.6884  aux_loss(avg10)=0.1932
+[toy] step=1690  ce_loss(avg10)=0.6984  aux_loss(avg10)=0.2006
+[toy] step=1700  ce_loss(avg10)=0.7828  aux_loss(avg10)=0.2080
+[toy] step=1700  cross_attn=0.150  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1710  ce_loss(avg10)=0.7063  aux_loss(avg10)=0.2080
+[toy] step=1720  ce_loss(avg10)=0.6216  aux_loss(avg10)=0.2080
+[toy] step=1730  ce_loss(avg10)=0.8000  aux_loss(avg10)=0.2006
+[toy] step=1740  ce_loss(avg10)=0.8324  aux_loss(avg10)=0.2080
+[toy] step=1750  ce_loss(avg10)=0.7106  aux_loss(avg10)=0.2006
+[toy] step=1760  ce_loss(avg10)=0.6852  aux_loss(avg10)=0.1932
+[toy] step=1770  ce_loss(avg10)=0.6884  aux_loss(avg10)=0.2080
+[toy] step=1780  ce_loss(avg10)=0.6615  aux_loss(avg10)=0.2080
+[toy] step=1790  ce_loss(avg10)=0.6476  aux_loss(avg10)=0.2080
+[toy] step=1800  ce_loss(avg10)=0.7987  aux_loss(avg10)=0.1932
+[toy] step=1800  cross_attn=0.200  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] step=1810  ce_loss(avg10)=0.7021  aux_loss(avg10)=0.2006
+[toy] step=1820  ce_loss(avg10)=0.7082  aux_loss(avg10)=0.2006
+[toy] step=1830  ce_loss(avg10)=0.8715  aux_loss(avg10)=0.1932
+[toy] step=1840  ce_loss(avg10)=0.7297  aux_loss(avg10)=0.2006
+[toy] step=1850  ce_loss(avg10)=0.7498  aux_loss(avg10)=0.2080
+[toy] step=1860  ce_loss(avg10)=0.6179  aux_loss(avg10)=0.2006
+[toy] step=1870  ce_loss(avg10)=0.6911  aux_loss(avg10)=0.1932
+[toy] step=1880  ce_loss(avg10)=0.6740  aux_loss(avg10)=0.2006
+[toy] step=1890  ce_loss(avg10)=0.8142  aux_loss(avg10)=0.2006
+[toy] step=1900  ce_loss(avg10)=0.7544  aux_loss(avg10)=0.2080
+[toy] step=1900  cross_attn=0.200  bounded=0.000  loc_rate=0.816  mass=0.8148
+[toy] step=1910  ce_loss(avg10)=0.7274  aux_loss(avg10)=0.2006
+[toy] step=1920  ce_loss(avg10)=0.8522  aux_loss(avg10)=0.2080
+[toy] step=1930  ce_loss(avg10)=0.8121  aux_loss(avg10)=0.2080
+[toy] step=1940  ce_loss(avg10)=0.7099  aux_loss(avg10)=0.2006
+[toy] step=1950  ce_loss(avg10)=0.7532  aux_loss(avg10)=0.2080
+[toy] step=1960  ce_loss(avg10)=0.7801  aux_loss(avg10)=0.2006
+[toy] step=1970  ce_loss(avg10)=0.6915  aux_loss(avg10)=0.2006
+[toy] step=1980  ce_loss(avg10)=0.7483  aux_loss(avg10)=0.2006
+[toy] step=1990  ce_loss(avg10)=0.7621  aux_loss(avg10)=0.2080
+[toy] step=2000  ce_loss(avg10)=0.7362  aux_loss(avg10)=0.2006
+[toy] step=2000  cross_attn=0.150  bounded=0.000  loc_rate=0.816  mass=0.8156
+[toy] training done in 726.1s
+[toy] final eval on full eval set (all 3 baselines + localization)
+[toy] FINAL: oracle=1.000  bounded_baseline=0.000  cross_attn=0.120  loc_rate=0.819  mass_on_needle=0.8187  needle_found_rate=1.000
+[toy] Gate G-X1 predicates: oracle≥0.80 (1.000) -> OK  |  bounded≤0.30 (0.000) -> OK  |  cross≥0.80 (0.120) -> FAIL
+[toy] Gate G-X1 overall: FAIL
+[toy] report -> results/research/cross_attn_toy_vast_r1e_gamma_block_aux0p1_1780817369.json
