@@ -1,0 +1,86 @@
+bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+NVIDIA H200, 580.159.03, 143771 MiB, 9.0
+[run_on_vast] reusing venv at /workspace/kakeya-r1c/.venv-vast
+[run_on_vast] torch + transformers already importable; skipping install
+[run_on_vast] torch=2.11.0+cu128 cuda_available=True cuda=12.8
+[run_on_vast] device0=NVIDIA H200
+[run_on_vast] transformers=4.57.6
+[run_on_vast] launching scripts/research/k1e_niah_validation.py: --model google/gemma-3-1b-it --device cuda --n-samples 20 --sink-size 4 --window-size 64 --max-new-tokens 24 --seed 42 --haystack-min-lines 3825 --haystack-max-lines 5175 --output results/research/k1e_niah_vast_ctx4500_1780913169.json
+[k1e] device=cuda
+[k1e] loading google/gemma-3-1b-it
+[k1e] dataset: 20 samples, prompt token len min=77753 max=103073 mean=88713
+[k1e] (a) full-attention oracle
+Traceback (most recent call last):
+  File "/workspace/kakeya-r1c/scripts/research/k1e_niah_validation.py", line 328, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/workspace/kakeya-r1c/scripts/research/k1e_niah_validation.py", line 178, in main
+    oracle = evaluate("oracle_full_attention", samples, oracle_decode)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/inference_engine/v04/niah_eval.py", line 496, in evaluate
+    text, latency = decode_fn(sample)
+                    ^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/scripts/research/k1e_niah_validation.py", line 172, in oracle_decode
+    text = greedy_decode_oracle(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/inference_engine/v04/niah_eval.py", line 369, in greedy_decode_oracle
+    out = model(input_ids=cur, use_cache=False)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/utils/generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 658, in forward
+    outputs: BaseModelOutputWithPast = self.model(
+                                       ^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/utils/generic.py", line 1072, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 570, in forward
+    layer_outputs = decoder_layer(
+                    ^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/modeling_layers.py", line 94, in __call__
+    return super().__call__(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/utils/deprecation.py", line 172, in wrapped_func
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 382, in forward
+    hidden_states, self_attn_weights = self.self_attn(
+                                       ^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/utils/deprecation.py", line 172, in wrapped_func
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 327, in forward
+    attn_output, attn_weights = attention_interface(
+                                ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/kakeya-r1c/.venv-vast/lib/python3.12/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 245, in eager_attention_forward
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 78.60 GiB. GPU 0 has a total capacity of 139.80 GiB of which 9.02 GiB is free. Process 3937389 has 130.77 GiB memory in use. Of the allocated memory 120.79 GiB is allocated by PyTorch, and 9.32 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
