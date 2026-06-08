@@ -1,0 +1,15 @@
+[k2a-smoke] device=mps
+[k2a-smoke] config: head_dim=256 n_positions=256 num_kv_heads=1 lattice=D4 q_range=38
+[k2a-smoke] constructing V14KakeyaZamirLatticeGPU on mps
+[k2a-smoke]   constructed in 18.5 ms
+[k2a-smoke]   direct codec K rmse=7.053e-04 (73.6 ms)  V rmse=7.068e-04 (1.0 ms)
+[k2a-smoke]   identity adapter exact round-trip=True  memory=524288 B
+[k2a-smoke]   KL adapter K rmse=7.053e-04  V rmse=7.068e-04  evict_works=True
+[k2a-smoke]   factory picked=kakeyalattice-D4-Q38-D256
+[k2a-smoke] report -> results/research/k2a_kl_mac_smoke_1780962831.json
+[k2a-smoke] ─── SUMMARY ────────────────────────────────────
+[k2a-smoke]   device=mps  status=pass
+[k2a-smoke]   direct codec  K=7.053e-04  V=7.068e-04  (bound 1.500e-03)
+[k2a-smoke]   adapter KL    K=7.053e-04  V=7.068e-04
+[k2a-smoke]   identity oracle exact=True
+[k2a-smoke]   factory picked KL: True

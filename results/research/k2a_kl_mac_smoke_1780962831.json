@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "k2a_kl_mac_smoke",
+  "config": {
+    "device": "mps",
+    "head_dim": 256,
+    "n_positions": 256,
+    "num_kv_heads": 1,
+    "lattice": "D4",
+    "q_range": 38,
+    "rmse_bound": 0.0015,
+    "seed": 42
+  },
+  "checks": {
+    "codec_construct_ms": 18.456249963492155,
+    "direct_codec": {
+      "K_roundtrip_ms": 73.60250013880432,
+      "V_roundtrip_ms": 1.026832964271307,
+      "K_relative_mse": 0.0007052922737784684,
+      "V_relative_mse": 0.0007067677797749639,
+      "pass": true
+    },
+    "identity_adapter": {
+      "K_relative_mse": 0.0,
+      "V_relative_mse": 0.0,
+      "exact_round_trip": true,
+      "memory_bytes": 524288
+    },
+    "kakeyalattice_adapter": {
+      "codec_name": "kakeyalattice-D4-Q38-D256",
+      "K_relative_mse": 0.0007052922737784684,
+      "V_relative_mse": 0.0007067677797749639,
+      "pass": true,
+      "memory_bytes_after_full_compress": 524288,
+      "evict_works": true,
+      "evict_error": null
+    },
+    "factory": {
+      "picked_kakeyalattice": true,
+      "codec_name": "kakeyalattice-D4-Q38-D256"
+    }
+  },
+  "summary": {
+    "kakeyalattice_installed": true,
+    "status": "pass",
+    "mps_active": true
+  }
+}
