@@ -1678,3 +1678,151 @@ both necessary (throughput is unmeasurable without it under the
 fixed-memory budget) and sufficient (the architecture has just
 been proven in K1, so KL can be added without simultaneously
 defending the architecture).
+
+#### 11.11.9 Mac M4 portability for K2.A (added 2026-06-08, post-K1.H)
+
+User directive 2026-06-08: "k2 的 Mac mini 版本的也要支持。所以
+要把 kakeyalattice 适配到 Mac mini 上." K2.A must run on Apple
+Silicon (Mac M4 24 GB) on PyTorch's MPS backend, not just on
+NVIDIA H200 / H100 (which are KakeyaLattice's published
+benchmark hardware). This subsection documents how that's
+achievable with no changes to the codec library and what
+empirical evidence is required.
+
+**Why portability is the default state, not a separate engineering
+project.**  KakeyaLattice's hot-path source
+(`kakeyalattice/python/kakeyalattice/lattice_codebooks.py`,
+inspected 2026-06-08) is **pure PyTorch**:
+
+* Sylvester–Hadamard rotation: `torch.cat`, `torch.tensor`
+  initialisation, matmul.
+* Per-vector qmax: `.abs().max()`, `.clamp(min=eps)`, division.
+* Conway–Sloane closest-lattice-point (D4 / E8): `torch.round`,
+  `argmax`, `gather`, `scatter_`, `where`, `sum`.
+* Dtype handling: `to(torch.float16)` for storage; the codec
+  internally up-casts to fp32 for the lattice math.
+
+None of these ops require CUDA-specific kernels. The "GPU" in the
+class name `V14KakeyaZamirLatticeGPU` is a project naming
+convention ("strict GPU — no numpy, no CPU detour" per the
+module docstring), not a platform restriction. The constructor
+accepts `device: str` and forwards it verbatim to PyTorch tensor
+creation calls.
+
+**Implementation plumbing in this repo (PR-K2.A.0).**  The K2.A
+integration scaffold (`inference_engine/v04/kv_compressor.py`)
+forwards the verifier's active device through the
+`KakeyaLatticeCompressor` constructor unchanged:
+
+```python
+KakeyaLatticeCompressor(
+    head_dim=256,
+    device=torch.device("mps"),   # the K2.A Mac M4 dispatch
+    lattice="D4",
+    q_range=38,
+)
+```
+
+The adapter coerces the device to a string (`str(device) == "mps"`)
+because KakeyaLattice's published API takes a `str`. This is the
+**load-bearing line** for Mac M4 portability — without it, the
+codec would silently materialise tensors on CPU even though the
+verifier is on MPS, the device-mismatch overhead per decode step
+would dwarf the K2.A throughput win. A unit test
+(`test_mps_device_forwarded_as_string` in
+`tests/inference_engine/v04/test_kv_compressor.py`) pins this
+behaviour against future regression.
+
+**`kakeyalattice` as an optional dependency.** The K2.A integration
+treats `kakeyalattice` as optional (`pip install kakeyalattice`
+not in the runtime's `install_requires` until K2.A integration
+PR ships). When the package is missing, `KakeyaLatticeCompressor`
+construction raises `KakeyaLatticeUnavailable` with an actionable
+install hint, and `make_default_compressor(prefer_kakeya=True)`
+catches that error and falls back to `IdentityCompressor` with a
+warning. The runtime continues to operate in K1-equivalent mode
+on hosts where KL isn't installed yet. This is deliberate: it
+lets the K2.A scaffold land before the production deployment
+story for `kakeyalattice` distribution is settled.
+
+**Mac M4 acceptance gate (separate from the K2.A integration
+gates of §11.11.5).**  Empirical evidence required from the Mac
+M4 reviewer aid `scripts/review_pr_k2a_kl_smoke_on_mac.sh`,
+running `scripts/research/k2a_kl_mac_smoke.py`:
+
+1. **Direct codec round-trip on MPS.** `V14KakeyaZamirLatticeGPU
+   (D=256, q_range=38, device='mps').roundtrip(K)` produces a
+   reconstruction with relative MSE ≤ 5e-4 — the bound is 10×
+   the published CUDA fidelity envelope (which is ~3e-5 for D4
+   Q=38 on typical K/V) to absorb MPS bf16 reduction-order
+   numerics. If MPS produces materially worse reconstruction
+   than CUDA at the same Q, that's a finding to escalate to
+   the KakeyaLattice repository, not a blocker for K2.A in
+   this repo.
+2. **Adapter-level round-trip.**
+   `KakeyaLatticeCompressor.compress / decompress` on synthetic
+   `[num_kv_heads=1, n_positions=256, head_dim=256]` K/V tensors
+   on MPS produces `K, V` reconstructions whose RMS error matches
+   the direct-codec result within numerical noise (≤ 1.05× the
+   direct rmse). Validates the adapter's reshape / clone
+   logic.
+3. **Eviction state machine on MPS.** After `compress(positions
+   [0..255])` followed by `evict(positions[128..255])`,
+   `decompress(positions[0..127])` succeeds and
+   `decompress(positions[128..255])` raises `KeyError`. Validates
+   that the per-position dictionary state machine works on MPS
+   (it doesn't depend on tensor device, but pinning the
+   behaviour catches future tensor-device-bookkeeping regressions).
+4. **Factory dispatch on MPS.**
+   `make_default_compressor(device=torch.device('mps'),
+   prefer_kakeya=True)` returns an instance of
+   `KakeyaLatticeCompressor` (not the Identity fallback) AND
+   the codec name reflects the requested lattice / Q. Validates
+   that the dispatch correctly recognises `kakeyalattice` is
+   available on the active device.
+
+The Mac smoke script emits a JSON report at
+`results/research/k2a_kl_mac_smoke_<stamp>.json` with
+`summary.status == "pass"` and `summary.mps_active == true` when
+all four checks pass. That file is the K2.A Mac M4 portability
+evidence, committed alongside the K2.A integration PR.
+
+**What `kakeyalattice` install on Mac M4 looks like.**  PyPI
+release: `pip install kakeyalattice`. Source install (recommended
+during early K2.A iteration so changes to the codec are local):
+clone `github.com/FluffyAIcode/LLM-KV--Cache-compress`, then
+`pip install -e <clone>/kakeyalattice/python`. The package's
+`pyproject.toml` declares only PyTorch as a hard dependency, so
+the install is fast (~10 s) on Mac M4. The `vllm_backend/` plugin
+of the upstream repo is **not** installed on Mac (vLLM is a
+CUDA-only stack); only the pure-Python codec layer is needed for
+K2.A.
+
+**Which lattice on Mac M4.** D4 (v1.4) is the K2.A default for
+Mac because it has lower per-block compute (4-D blocks vs 8-D
+for E8) and the per-decode-step latency budget on Mac M4 is
+tighter than on H100 / H200. E8 (v1.5) gives +0.29 dB shaping
+gain over D4 at matched bit budget but takes ~25–30 % more
+compute per block; on Mac M4 this trade-off favours D4 unless
+empirical Mac latency under E8 is materially better than D4
+(possible if MPS dispatches D4's parity-flip branch poorly), to
+be measured in the K2.A throughput rung at 22k+ context.
+
+**What we do not commit to in this amendment.**
+
+* MLX (Apple's native framework) backend for KakeyaLattice. MLX
+  is typically 1.5–3× faster than PyTorch MPS on Apple Silicon
+  for matmul-heavy workloads, so an MLX backend for KL would
+  improve Mac M4 K2.A throughput further. That's a separate
+  workstream, not a Mac portability requirement: PyTorch MPS is
+  sufficient for the K2.A acceptance gates above, and porting
+  KakeyaLattice's codec to MLX requires upstream coordination
+  with the `kakeyalattice` repository. Track as a future K4-slot
+  optimisation.
+* Bit-exact parity between the Mac M4 KL output and the H200 KL
+  output. bf16 reduction order differs across backends; we accept
+  the 10× rmse slack in gate (1) above to absorb this. If the
+  difference grows beyond 10× during K2.B cross-model training,
+  the discipline note of §11.11.6 ("train `f_θ` against KL-on")
+  applies — train against the **deployed** backend's output, not
+  CUDA's.
