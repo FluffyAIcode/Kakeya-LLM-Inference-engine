@@ -42,6 +42,7 @@ from inference_engine.v04.restored_attention import (
     prepare_restored_attention_kv,
     slice_position_embeddings,
 )
+from inference_engine.v04.dlm_restored_verifier import DLMRestoredVerifier
 
 __all__ = [
     # K1.A — capture
@@ -55,4 +56,6 @@ __all__ = [
     "apply_rope_to_k_at_positions",
     "prepare_restored_attention_kv",
     "slice_position_embeddings",
+    # K1.D — end-to-end wrapper
+    "DLMRestoredVerifier",
 ]
