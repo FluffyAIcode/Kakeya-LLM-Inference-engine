@@ -37,6 +37,11 @@ from inference_engine.v04.kv_merge import (
     compute_evicted_positions,
     merge_kv_at_evicted_positions,
 )
+from inference_engine.v04.restored_attention import (
+    apply_rope_to_k_at_positions,
+    prepare_restored_attention_kv,
+    slice_position_embeddings,
+)
 
 __all__ = [
     # K1.A — capture
@@ -46,4 +51,8 @@ __all__ = [
     # K1.B — merge
     "compute_evicted_positions",
     "merge_kv_at_evicted_positions",
+    # K1.C — restored attention K/V preparation
+    "apply_rope_to_k_at_positions",
+    "prepare_restored_attention_kv",
+    "slice_position_embeddings",
 ]
