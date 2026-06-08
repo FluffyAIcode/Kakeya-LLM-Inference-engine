@@ -1,8 +1,9 @@
-# ADR 0008 — Session-bound runtime + gRPC protocol
+# ADR 0008 — Session-bound runtime + gRPC protocol; v0.4 GA dLM K/V Restoration architecture
 
-- **Status**: Accepted (2026-06-01)
-- **Date**: 2026-06-01
-- **Decision drivers**:
+- **Status**: Accepted (2026-06-01) for v0.3 GA scope (§1–§10);
+  Accepted (2026-06-08) for v0.4 GA architecture amendment (§11).
+- **Date**: 2026-06-01 (original); 2026-06-08 (v0.4 amendment)
+- **Decision drivers (original, v0.3)**:
   - Empirical failure of ADR 0007's automatic prefix matching against
     Qwen3's `enable_thinking=False` chat template (local-only smoke
     evidence, 2026-06-01).
@@ -13,6 +14,22 @@
   - The need to make the v0.3 GA criterion "long-session usability"
     falsifiable on hardware (Mac M4 24 GB) without depending on the
     accident of any one model's tokenization round-trip stability.
+- **Decision drivers (v0.4 amendment, §11)**:
+  - 2026-06-06 sink+window quality A/B benchmark
+    (`results/platform-tests/sink_window_quality_ab_1780714635.json`)
+    measured −83 % mid-context fact recall under v0.3's `sink=4 +
+    window=64`. Source of intelligence regression isolated as the
+    structurally-bounded verifier KV cache.
+  - 2026-06-07 R1c–R1e empirical research (PR #65 / #67 / #68)
+    falsified the cross-attention-bridge subspace of ADR 0011
+    (frozen-base verifier + frozen-base proposer + trainable
+    single-instance bridge). R1e-γ at localization 0.82 with recall
+    0.12 is the decisive datum.
+  - User-recognised architectural insight 2026-06-08: dLM proposer
+    has no KV cache (forward is parallel diffusion, not autoregressive
+    sequential), so its K/V tensors at every position are computed
+    transiently each forward and discarded. This makes the proposer
+    a constant-memory K/V reconstruction source for the verifier.
 - **Depends on**: ADR 0001 (proposer sizing + verifier decoupling),
   ADR 0002 (verifier selection), ADR 0003 (slab pool), ADR 0006
   (positioning + §2.3 sub-claims).
@@ -23,6 +40,28 @@
   context was finalized) is present on `main` as of this ADR's merge
   commit and is treated as a historical code layer that Phases A-E
   (§6) will replace incrementally; see §6.6.
+- **Rejects (v0.4 amendment)**:
+  - **ADR 0010 draft** (full-attention verifier + low-precision INT8/NF4
+    KV cache). Rejected because it proposed a generic literature
+    baseline (NF4) inferior to the project's existing production-grade
+    KV codec, and because its core premise (linear-but-thinner KV
+    storage) does not satisfy the constant-memory requirement that v0.4
+    targets. The draft's tombstone lives on its branch (PR #66, to be
+    closed) and the original 351-line proposal is recoverable from git
+    history if anyone needs to read why we did not implement it.
+  - **ADR 0011 draft** (cross-attention proposer/verifier coupling).
+    Rejected because the §3 frozen-base subspace was empirically
+    falsified by R1c–R1e on the toy NIAH task, and because the
+    motivating premise — that the verifier's KV cache must be
+    structurally bounded and intelligence loss must therefore be
+    recovered through a residual-stream rescue mechanism — is itself
+    superseded by the §11 architecture in this ADR. ADR 0011's
+    research evidence is preserved in `results/research/` and on
+    its branch (PR #68, to be closed) as scientific record.
+  - These rejections are **part of this ADR's scope, not separate
+    documents**. The project does not maintain a sprawl of half-baked
+    parallel ADRs; ADR 0008 is the single authoritative architectural
+    record and this amendment integrates the v0.4 GA design into it.
 
 ---
 
@@ -272,9 +311,20 @@ application that has its own tokenization (e.g., a code agent with a
 custom BPE) just constructs token-id arrays directly and never calls
 the helper.
 
-### 2.3 KV cache binding: byte-exact contract, sink+window per session
+### 2.3 KV cache binding: byte-exact contract, sink+window per session (v0.3 GA scope)
 
-**Decision**: on every `Generate` call, the verifier's KV cache state
+> **v0.4 GA scope note**: this section describes the **v0.3 GA**
+> verifier KV cache architecture (sink+window only, no reconstruction).
+> The 2026-06-06 A/B benchmark measured −83 % mid-context recall under
+> this design. **§11 of this ADR (v0.4 GA architecture amendment)
+> supersedes the "sink+window only" clause below** by adding a dLM
+> proposer-mediated K/V reconstruction layer that restores
+> approximately full-attention intelligence at constant memory.
+> The session model, byte-exact contract, INV-1/INV-2/INV-3
+> determinism guarantees, and SessionStore central abstraction
+> below remain unchanged in v0.4.
+
+**Decision (v0.3 GA)**: on every `Generate` call, the verifier's KV cache state
 is **byte-exact-bound** to the (session_id, history_token_ids) pair
 the server has on file. Specifically:
 
@@ -1023,3 +1073,332 @@ runtime code.
   — Node.js native gRPC client.
 - [`protoc-gen-ts_proto`](https://github.com/stephenh/ts-proto) —
   TypeScript stub generator.
+
+---
+
+## 11. v0.4 GA architecture amendment (2026-06-08)
+
+### 11.1 Scope of this amendment
+
+§1–§10 above documented the v0.3 GA design as shipped on `main`. This
+§11 is the **v0.4 GA architecture amendment**. It supersedes the
+"sink+window only" verifier KV strategy of §2.3 with a constant-memory
+dLM-mediated K/V reconstruction architecture, and it explicitly
+**rejects the parallel-track ADR 0010 and ADR 0011 drafts** that
+emerged on branches but never landed on `main`. Everything else in
+§1–§10 (session model, gRPC protocol, byte-exact contract, INV-1 /
+INV-2 / INV-3 determinism, SDK delivery, observability, deprecation
+of HTTP+SSE shim) carries over to v0.4 unchanged.
+
+### 11.2 Reasoning chain leading to this amendment
+
+The v0.4 architecture has been arrived at by working backward from
+two empirical observations on top of v0.3:
+
+1. **v0.3 sink+window=64 destroys mid-context recall**. The 2026-06-06
+   A/B benchmark (`results/platform-tests/sink_window_quality_ab_1780714635.json`)
+   measured 1/6 (16.7 %) mid-context fact retrieval under the v0.3
+   design, vs 6/6 (100 %) under the full-attention oracle. The
+   intelligence regression is structural: K/V tensors at evicted
+   positions are gone, and no inference-time mechanism within v0.3
+   can reconstruct them.
+2. **R1c–R1e (PR #65 / #67 / #68) falsified the cross-attention
+   bridge subspace** as a means to compensate. The decisive datum is
+   R1e-γ at localization 0.82 with cross_attn_recall 0.12: even when
+   the bridge attends to the needle 82 % of the time and a full
+   pre-norm transformer block sits on the write path, frozen verifier
+   layers downstream of the injection point cannot translate the
+   located content into the right argmax. ADR 0011 §3 (the specific
+   mechanism we tested) is settled-falsified for the frozen-base
+   regime; the broader cross-attention training paradigm has untested
+   subspaces (see ADR 0011 §11.1 on the R1e branch) but none are
+   needed once the §11 design here is adopted.
+
+These two together pushed the design space toward "do not bound the
+verifier KV at all". From there, the path that satisfies all five of
+the project's hard constraints (§11.4 below) is the one in §11.5.
+
+### 11.3 The dLM proposer's no-cache property is the load-bearing fact
+
+The v0.4 architecture is enabled by a property of the dLM proposer
+that v0.3 documented but did not fully exploit:
+
+> **dLM proposer has no KV cache.** Diffusion language models (MDLM,
+> ELF, and the variants ADR 0001 / ADR 0002 select) operate by
+> parallel denoising over the entire sequence in each iteration. K
+> and V tensors at every position are computed transiently inside the
+> forward and discarded afterward. There is no persistent cache that
+> grows with context length — the proposer's sustained memory
+> footprint is its weights and (small, fixed) activation buffers.
+
+This means the dLM proposer can serve as a **constant-memory K/V
+reconstruction source** for the verifier's evicted positions: when
+the proposer runs its standard forward (which it has to do anyway for
+drafting), the K/V tensors it computes at every position — including
+positions the verifier has evicted — are available transiently for
+the verifier to consume in the same step. After the step they are
+freed; nothing accumulates.
+
+This property is the difference between v0.3 (where the proposer was
+a black-box "drafts come out, no introspection") and v0.4 (where the
+proposer is also the verifier's transient memory).
+
+### 11.4 The five hard constraints v0.4 must satisfy
+
+The user-stated v0.4 strategic frame has five non-negotiable
+constraints:
+
+1. **Constant memory in context length** — the sustained memory
+   footprint must not grow with prompt size. Rules out KakeyaLattice-
+   alone (linear memory at 2.4–2.8× thinner) and full-attention KV
+   storage (linear at full bytes).
+2. **Zero intelligence regression** — the model must produce the same
+   argmax distribution as a full-attention oracle (subject to
+   well-bounded reconstruction noise). Rules out v0.3 sink+window-
+   only.
+3. **Speculative decoding correctness contract preserved** — output
+   distribution under speculative decoding must equal the
+   distribution of the verifier-as-implemented running standalone
+   (Leviathan et al. 2023, Theorem 1). Rules out "trust the proposer"
+   shortcuts that break rejection sampling.
+4. **No cross-attention bridge** — R1c–R1e empirically settled this
+   path is not viable in the cheap-to-explore subspace, and the
+   broader paradigm requires training scales (10⁵–10⁶ tokens) and
+   joint-training assumptions that violate the project's
+   "no-deadline + cheap-validation" research discipline. Rules out
+   ADR 0011 §3 family.
+5. **Fits Mac mini 24 GB targeting Gemma 4-9B-class verifier** — the
+   sustained memory must leave headroom for verifier weights (~5 GB),
+   proposer weights (~2 GB), and standard activation/working memory.
+
+§11.5 below is the narrowest design that satisfies all five.
+
+### 11.5 v0.4 GA architecture: dLM K/V Restoration
+
+**Decision**: the v0.4 verifier maintains a minimal sink+window cache
+(same machinery as v0.3 §2.3) AND, at every generation step, accepts
+transient K/V tensors at evicted positions reconstructed from the
+dLM proposer's parallel forward. The verifier performs standard
+softmax attention over (sink+window K/V from cache) ⊕ (reconstructed
+K/V from proposer transient). After the step, reconstructed K/V are
+discarded.
+
+In one diagram:
+
+```
+  Per generation step:
+  
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                 │
+  │  dLM proposer (full attention, NO cache)                        │
+  │                                                                 │
+  │   Inputs: prompt + drafts_so_far                                │
+  │   Forward: 1 parallel denoising pass over all positions         │
+  │   Outputs (transient — freed after this step):                  │
+  │     • k draft tokens for verification (standard SD)             │
+  │     • K, V tensors at every position (the new byproduct)        │
+  │                                                                 │
+  └────┬─────────────────────────────────────────────┬──────────────┘
+       │ drafts                                      │ proposer K/V at all positions
+       │                                             │
+       ▼                                             ▼
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                 │
+  │  Cross-model K/V projection f_θ                                 │
+  │   (per-layer, per-head adapter; identity if proposer = verifier │
+  │    same checkpoint; learned if cross-model)                     │
+  │                                                                 │
+  │  Inputs:  proposer's K/V at evicted positions                   │
+  │  Outputs: verifier-shape K/V at the same positions              │
+  │                                                                 │
+  └────────────────────────┬────────────────────────────────────────┘
+                           │ reconstructed K/V (transient)
+                           │
+                           ▼
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                 │
+  │  AR verifier (per-session sink+window cache + reconstruction)   │
+  │                                                                 │
+  │  Inputs: drafts to verify                                       │
+  │  Cache content for this attention:                              │
+  │     • sink + window K/V from session cache (sustained, ~3 MB)   │
+  │     • reconstructed K/V at evicted positions (transient)        │
+  │  Forward: standard softmax attention over the union             │
+  │  Output: per-draft logits, accept/reject via rejection sampling │
+  │                                                                 │
+  │  After step:                                                    │
+  │     • Append accepted drafts' K/V into sink+window cache        │
+  │       (with FIFO eviction maintaining (sink, window) shape)     │
+  │     • Discard reconstructed K/V (not stored)                    │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+The five properties this design realises:
+
+1. **Constant memory in context length**. Sustained verifier KV
+   footprint is `sink + window` (≈ 3 MB for typical settings),
+   independent of prompt size. Sustained proposer footprint is its
+   weights only (no cache). Transient peak compute memory grows with
+   context but is freed each step.
+2. **Intelligence approximates full attention**. The verifier's
+   attention input at every step is (sink + window + reconstructed),
+   which is a superset of the full-attention input modulo
+   reconstruction noise. The argmax distribution is `p_v_restored`
+   ≈ `p_v_full` to the limit of `f_θ`'s reconstruction fidelity.
+3. **Speculative decoding correctness contract preserved**. Rejection
+   sampling guarantees the final output token distribution equals the
+   distribution of the verifier-as-implemented (i.e., `p_v_restored`).
+   This is mathematically the same contract as v0.3 — what changes is
+   that `p_v_restored` is much closer to `p_v_full` than v0.3's
+   `p_v_bounded` was.
+4. **No cross-attention bridge**. The reconstruction injects K/V
+   directly into the verifier's standard cache. The verifier's
+   frozen attention machinery consumes K/V naturally — no "translate
+   cross-attn delta into argmax-flipping signal" step. The R1c–R1e
+   failure mode (frozen layers don't decode bridge delta) does not
+   apply because the integration point is pre-attention, not
+   mid-stack residual.
+5. **Fits Mac mini 24 GB**. Sustained: weights (~7 GB) + sink+window
+   cache (~3 MB) ≈ 7 GB. Transient peak (Gemma 4-2B proposer
+   forward + Gemma 4-9B verifier forward + reconstruction projection)
+   stays under ~10 GB even for 100 k-token contexts. Headroom of
+   ~14 GB.
+
+### 11.6 Cross-model K/V projection f_θ
+
+The architecture is parameterised by a learned projection
+`f_θ: proposer_K/V → verifier_K/V` (one for K, one for V; per-layer;
+per-head). Two cases:
+
+1. **Same-model setup (Phase 1 toy / debugging)**: proposer and
+   verifier share weights. `f_θ = identity`. K and V tensors at
+   any position computed by either model are bit-identical. No
+   training needed; this case is for end-to-end pipeline validation
+   (does the routing work, does memory stay bounded, does the
+   correctness contract hold under round-trip).
+2. **Cross-model setup (production)**: proposer is a small dLM (e.g.,
+   Gemma 4-2B-class), verifier is a larger AR model (Gemma 4-9B-
+   class). Hidden dimensions, head counts, and layer counts differ.
+   `f_θ` is a learned per-layer projection that maps a proposer
+   `K[L', p, ...]` to a verifier `K[L, p, ...]` (similarly for V),
+   trained to minimise `||verifier(reconstructed K/V at evicted) -
+   verifier(ground-truth K/V at evicted)||` on logits or a
+   downstream-task surrogate. Layer alignment `L' → L` is itself a
+   design parameter (uniform, attention-pooled, or learned).
+
+The cross-model projection is structurally easier than the R1c–R1e
+cross-attention bridge for three reasons that the R1e-γ (loc=0.82,
+recall=0.12) datum makes precise:
+
+| | R1c–R1e bridge | v0.4 K/V projection (this ADR) |
+|---|---|---|
+| Injection point | Verifier mid-stack hidden state | Verifier KV cache (pre-attention) |
+| What downstream frozen verifier does | Must "decode" cross-attn delta | Standard softmax attention |
+| Source representation | Proposer post-final-norm hidden (answer space) | Proposer mid-layer K/V (same role as verifier's K/V) |
+| Cross-abstraction translation needed | Yes (layer-K hidden → layer-N residual) | No (K/V → K/V, same role) |
+| Training objective | Implicit (let bridge learn translation end-to-end) | Explicit (`||K_recon - K_truth||²` per layer per head) |
+
+### 11.7 Implementation phases (v0.4 GA)
+
+Each phase has Linux CI gates plus Mac M4 / vast.ai empirical gates
+per ADR 0008 §9.
+
+| Phase | Scope | Linux CI gate | Empirical gate |
+|---|---|---|---|
+| **K1** | Same-model toy: proposer and verifier share Gemma 3-1B weights. Implement K/V routing infrastructure (reconstruction hook, cache concatenation, transient memory management). Validate on synthetic NIAH that recall ≈ oracle when projection is identity. | round-trip K/V bit-identical when `f_θ = id`; no leaks across forward steps; INV-3 byte-exact under reconstruction | Mac M4: NIAH small-vocab recall ≥ 95 % at sink+window=4+64 + reconstruction (vs 16 % v0.3) |
+| **K2** | Cross-model toy: proposer = Gemma 3-1B, verifier = Gemma 3-4B. Train `f_θ` per-layer linear projection with L2 reconstruction loss on long-context corpus. Measure `\|p_v_restored - p_v_full\|`. | reconstruction loss reaches plateau on calibration set; coverage metric for layer alignment | vast H200: NIAH recall ≥ 90 % cross-model at sink+window=4+64 |
+| **K3** | Production scale: proposer = Gemma 4-2B-MDLM, verifier = Gemma 4-9B-class. Full alignment training of `f_θ` on long-context corpus (RULER, NarrativeQA). | training pipeline reproducible; checkpoint integrity manifest | Mac M4: 4 h `bench_session_long_run.py` at 100 k-token context, kv_live_bytes flat, latency p95 stable, INV-3 holds |
+| **K4** | KakeyaLattice composition: optionally compress sink+window K/V at byte level using KakeyaLattice (`pip install kakeyalattice`). Reduces sustained ~3 MB → ~1.2 MB; no architectural change. | drop-in codec; correctness preserved | Mac M4: A/B with and without KakeyaLattice, recall and latency curves |
+| **K5** | Default flip + docs | feature flag `kv_strategy=dlm_restore` becomes default for v0.4; sink+window-only retained as opt-in for memory-constrained edge cases | quickstart updated; v0.3 → v0.4 migration documented |
+
+K1 is doable on Mac M4 alone (no GPU training). K2 requires vast or
+similar single-GPU training; budget ~$5–10. K3 is the production
+training and requires real long-context corpus — ~$200–1000 GPU
+budget depending on corpus size and number of training tokens.
+
+### 11.8 v0.4 GA validation criteria
+
+A v0.4 release shipping §11 must demonstrate, on reproducible
+artifacts in `results/platform-tests/` or `results/research/`:
+
+1. **Quality parity vs full-attention oracle**: NIAH mid-context
+   recall ≥ 95 % at 100 k-token context (vs v0.3's 16.7 %).
+2. **Constant sustained memory**: `GetSessionInfo.kv_live_bytes`
+   does not grow beyond the sink+window slab capacity over a 4 h
+   `bench_session_long_run.py` run, regardless of cumulative
+   context. Predicted slope = 0.
+3. **Determinism preserved**: ADR 0008 §6.5 INV-3 gate passes
+   bit-exact between continuation and reset paths under the
+   reconstruction layer.
+4. **Speculative decoding contract proof**: empirical verification
+   that final output distribution under §11 matches running the
+   `verifier_with_reconstruction` standalone on the same prompt
+   (not the full-attention oracle — that would be a stronger but
+   different claim). Sample-based KS test on logit distributions
+   at a held-out set of 1k positions.
+5. **Cross-platform**: MLX (Apple Silicon) and PyTorch (CUDA)
+   backends produce matching argmax across a 50-prompt eval set
+   (subject to projection numerics; tolerance < 1 % token disagreement).
+6. **Long-session stability**: 4 h benchmark with no errors,
+   p95 latency stable, memory flat.
+
+### 11.9 Open questions for v0.4 GA
+
+- **Q11.1**: Optimal layer alignment for cross-model `f_θ`. Linear
+  in proposer-layer / verifier-layer ratio? Attention-pooled across
+  proposer layers? Per-verifier-layer learned routing? Initial
+  recommendation: linear ratio with learned residual; revisit in
+  Phase K2 ablation.
+- **Q11.2**: How aggressive can sink+window be once reconstruction
+  is on? `sink=0 + window=0` (no cache, all reconstruction) vs
+  `sink=4 + window=64` (anchor + locality)? Probably want `sink>0`
+  to anchor instruction, but `window` could shrink to ~16. Validate
+  in K1.
+- **Q11.3**: When the proposer's draft is rejected, the
+  reconstruction step's K/V are still computed (proposer ran its
+  forward). Is there a way to amortize? Probably no within one
+  step, but across steps with KV-cache-style proposer (which
+  contradicts the dLM no-cache property) — defer.
+- **Q11.4**: Composition with KakeyaLattice on the proposer's
+  transient K/V (compress proposer's K/V before reconstruction
+  projection). Only meaningful if `f_θ`'s output is already learned
+  to be lattice-quantization-tolerant. Phase K4 work.
+- **Q11.5**: Multi-tenant scheduling. With the proposer running a
+  full forward per generation step, throughput is bottlenecked by
+  proposer cost, not memory. Compute-throughput vs memory-density
+  trade-off shifts vs v0.3 — schedule design needs revisiting in
+  v0.4.
+
+### 11.10 Why ADR 0010 and ADR 0011 drafts were specifically wrong
+
+To document the lesson for future contributors:
+
+- **ADR 0010 (NF4 KV quant)** was wrong because it proposed a
+  generic literature baseline that was already inferior to the
+  project's existing in-house KV codec
+  (`github.com/FluffyAIcode/LLM-KV--Cache-compress`, KakeyaLattice
+  v1.4 D4 / v1.5 E8, beats Google TurboQuant 12/12 on H200) AND
+  because its target compression shape (linear-but-thinner) does
+  not satisfy the constant-memory requirement of v0.4. The agent
+  drafting ADR 0010 was unaware of the in-house codec; the lesson
+  is that future ADRs touching KV memory must explicitly survey
+  the project owner's existing repos before recommending external
+  baselines.
+- **ADR 0011 (cross-attention bridge)** was wrong in its problem
+  framing, not its mechanism. It tried to solve "how do we recover
+  the intelligence loss from sink+window?" — but sink+window=64
+  itself was a v0.3 budget compromise (memory budget on Mac mini
+  24 GB without KV compression), not a design decision that needed
+  defending. The real fix was always to remove the structural
+  bound on the verifier's effective attention range, not to
+  build a residual-stream rescue mechanism for an artificially-
+  bounded view. The agent drafting ADR 0011 (and the R1c–R1e
+  research that followed) treated sink+window as a fixed constraint
+  rather than as a contingent v0.3 implementation choice. The
+  lesson is that future ADRs proposing "rescue mechanisms" must
+  first argue why the underlying constraint cannot be removed.
+
+Both lessons are deposited in this ADR (rather than as separate
+"rejected ADR" tombstones) so future readers see them in the
+context of the architecture that replaces them.
