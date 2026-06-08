@@ -27,8 +27,11 @@ import torch
 from inference_engine.v04.niah_eval import (
     NIAHEvalResult,
     NIAHSample,
+    aggregate_attention_window_metrics,
     aggregate_recall,
+    compute_effective_attention_window,
     evaluate,
+    format_attention_window_summary,
     make_niah_dataset,
     make_sink_window_4d_mask,
     recall_predicate,
@@ -530,3 +533,267 @@ class TestFormatMemorySummary:
         }
         s = format_memory_summary(snapshot)
         assert "\n" not in s
+
+
+# ---------------------------------------------------------------------------
+# K1.H: effective attention-window metric
+# ---------------------------------------------------------------------------
+
+
+class TestComputeEffectiveAttentionWindow:
+    def test_oracle_returns_full_seq_len(self):
+        m = compute_effective_attention_window(
+            "oracle_full_attention",
+            seq_len=1428, sink_size=4, window_size=64,
+        )
+        assert m["effective_keys_at_last_query"] == 1428
+        assert m["effective_attention_fraction"] == 1.0
+        assert m["structural_constraint"] == "causal"
+
+    def test_v04_returns_full_seq_len_independent_of_local_cache(self):
+        m = compute_effective_attention_window(
+            "v04_dlm_restored",
+            seq_len=1428, sink_size=4, window_size=64,
+        )
+        # Even with a tiny local cache, the structural attention
+        # range is the full preceding context because evicted
+        # positions are reconstructed by the dLM proposer.
+        assert m["effective_keys_at_last_query"] == 1428
+        assert m["effective_attention_fraction"] == 1.0
+        assert "causal_with_dlm_reconstruction" in m["structural_constraint"]
+        assert "sink=4" in m["structural_constraint"]
+        assert "window=64" in m["structural_constraint"]
+
+    def test_v03_capped_at_sink_plus_window_when_long(self):
+        m = compute_effective_attention_window(
+            "v03_sink_window",
+            seq_len=1428, sink_size=4, window_size=64,
+        )
+        assert m["effective_keys_at_last_query"] == 68
+        assert m["effective_attention_fraction"] == pytest.approx(68 / 1428)
+        assert m["structural_constraint"] == "sink=4+window=64"
+
+    def test_v03_uncapped_when_seq_len_fits(self):
+        # If seq_len < sink + window, the cap doesn't bind.
+        m = compute_effective_attention_window(
+            "v03_sink_window",
+            seq_len=32, sink_size=4, window_size=64,
+        )
+        assert m["effective_keys_at_last_query"] == 32
+        assert m["effective_attention_fraction"] == 1.0
+
+    def test_v03_fraction_collapses_at_long_context(self):
+        # The intelligence cap of v0.3 is the headline finding —
+        # at 100k context, sink+window=68 is 0.07 % coverage.
+        m = compute_effective_attention_window(
+            "v03_sink_window",
+            seq_len=100_000, sink_size=4, window_size=64,
+        )
+        assert m["effective_keys_at_last_query"] == 68
+        assert m["effective_attention_fraction"] == pytest.approx(
+            68 / 100_000
+        )
+
+    def test_zero_seq_len_returns_zero(self):
+        m = compute_effective_attention_window(
+            "oracle_full_attention",
+            seq_len=0, sink_size=4, window_size=64,
+        )
+        assert m["effective_keys_at_last_query"] == 0
+        assert m["effective_attention_fraction"] == 0.0
+
+    def test_unknown_config_raises(self):
+        with pytest.raises(ValueError, match="unknown config_name"):
+            compute_effective_attention_window(
+                "kakeya_lattice",
+                seq_len=100, sink_size=4, window_size=64,
+            )
+
+    def test_negative_seq_len_raises(self):
+        with pytest.raises(ValueError, match="seq_len"):
+            compute_effective_attention_window(
+                "oracle_full_attention",
+                seq_len=-1, sink_size=4, window_size=64,
+            )
+
+    def test_negative_sink_or_window_raises(self):
+        with pytest.raises(ValueError, match="sink_size"):
+            compute_effective_attention_window(
+                "v03_sink_window",
+                seq_len=100, sink_size=-1, window_size=64,
+            )
+        with pytest.raises(ValueError, match="window_size"):
+            compute_effective_attention_window(
+                "v03_sink_window",
+                seq_len=100, sink_size=4, window_size=-1,
+            )
+
+    def test_returned_dict_keys_are_self_describing(self):
+        m = compute_effective_attention_window(
+            "oracle_full_attention",
+            seq_len=10, sink_size=4, window_size=64,
+        )
+        # JSON evidence consumers depend on these exact keys.
+        assert set(m.keys()) == {
+            "config",
+            "seq_len",
+            "effective_keys_at_last_query",
+            "effective_attention_fraction",
+            "structural_constraint",
+        }
+
+
+class TestAggregateAttentionWindowMetrics:
+    def test_oracle_aggregate_full(self):
+        agg = aggregate_attention_window_metrics(
+            "oracle_full_attention",
+            prompt_token_lens=[100, 200, 300],
+            sink_size=4, window_size=64,
+        )
+        assert agg["samples_total"] == 3
+        assert agg["effective_keys_at_last_query_mean"] == 200.0
+        assert agg["effective_keys_at_last_query_min"] == 100
+        assert agg["effective_keys_at_last_query_max"] == 300
+        assert agg["effective_keys_at_last_query_median"] == 200.0
+        assert agg["effective_attention_fraction_mean"] == 1.0
+        assert agg["effective_attention_fraction_min"] == 1.0
+        assert agg["effective_attention_fraction_max"] == 1.0
+
+    def test_v03_aggregate_capped(self):
+        agg = aggregate_attention_window_metrics(
+            "v03_sink_window",
+            prompt_token_lens=[1000, 2000, 4000],
+            sink_size=4, window_size=64,
+        )
+        # All three are above sink+window, so all clamp to 68.
+        assert agg["effective_keys_at_last_query_mean"] == 68.0
+        assert agg["effective_keys_at_last_query_min"] == 68
+        assert agg["effective_keys_at_last_query_max"] == 68
+        # Fractions diverge: 68/1000, 68/2000, 68/4000.
+        assert agg["effective_attention_fraction_max"] == pytest.approx(
+            68 / 1000
+        )
+        assert agg["effective_attention_fraction_min"] == pytest.approx(
+            68 / 4000
+        )
+
+    def test_v04_aggregate_matches_oracle_shape(self):
+        # v0.4's contract: structural attention range = oracle.
+        # Only the constraint label differs.
+        oracle = aggregate_attention_window_metrics(
+            "oracle_full_attention",
+            prompt_token_lens=[1000, 2000, 4000],
+            sink_size=4, window_size=64,
+        )
+        v04 = aggregate_attention_window_metrics(
+            "v04_dlm_restored",
+            prompt_token_lens=[1000, 2000, 4000],
+            sink_size=4, window_size=64,
+        )
+        assert v04["effective_keys_at_last_query_mean"] == oracle[
+            "effective_keys_at_last_query_mean"
+        ]
+        assert v04["effective_attention_fraction_mean"] == oracle[
+            "effective_attention_fraction_mean"
+        ]
+        assert "dlm_reconstruction" in v04["structural_constraint"]
+        assert "dlm_reconstruction" not in oracle["structural_constraint"]
+
+    def test_per_sample_list_preserved(self):
+        agg = aggregate_attention_window_metrics(
+            "v03_sink_window",
+            prompt_token_lens=[100, 200],
+            sink_size=4, window_size=64,
+        )
+        assert len(agg["per_sample"]) == 2
+        assert agg["per_sample"][0]["seq_len"] == 100
+        assert agg["per_sample"][1]["seq_len"] == 200
+        # All entries reuse the structural_constraint label.
+        for s in agg["per_sample"]:
+            assert s["structural_constraint"] == "sink=4+window=64"
+
+    def test_median_with_even_count(self):
+        agg = aggregate_attention_window_metrics(
+            "oracle_full_attention",
+            prompt_token_lens=[100, 200, 300, 400],
+            sink_size=4, window_size=64,
+        )
+        # Median of [100, 200, 300, 400] = 250
+        assert agg["effective_keys_at_last_query_median"] == 250.0
+
+    def test_median_with_odd_count(self):
+        agg = aggregate_attention_window_metrics(
+            "oracle_full_attention",
+            prompt_token_lens=[100, 200, 300],
+            sink_size=4, window_size=64,
+        )
+        assert agg["effective_keys_at_last_query_median"] == 200.0
+
+    def test_empty_prompt_lens_raises(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            aggregate_attention_window_metrics(
+                "oracle_full_attention",
+                prompt_token_lens=[],
+                sink_size=4, window_size=64,
+            )
+
+    def test_single_sample_aggregate(self):
+        agg = aggregate_attention_window_metrics(
+            "v03_sink_window",
+            prompt_token_lens=[1000],
+            sink_size=4, window_size=64,
+        )
+        assert agg["samples_total"] == 1
+        assert agg["effective_keys_at_last_query_min"] == 68
+        assert agg["effective_keys_at_last_query_max"] == 68
+        assert agg["effective_keys_at_last_query_median"] == 68.0
+
+
+class TestFormatAttentionWindowSummary:
+    def test_oracle_formats_with_full_coverage(self):
+        agg = aggregate_attention_window_metrics(
+            "oracle_full_attention",
+            prompt_token_lens=[1428, 1500, 1600],
+            sink_size=4, window_size=64,
+        )
+        s = format_attention_window_summary(agg)
+        assert "100.00%" in s
+        assert "causal" in s
+
+    def test_v03_formats_with_low_coverage(self):
+        agg = aggregate_attention_window_metrics(
+            "v03_sink_window",
+            prompt_token_lens=[1428, 1500, 1600],
+            sink_size=4, window_size=64,
+        )
+        s = format_attention_window_summary(agg)
+        # 68 / ~1500 ≈ 4.5% — far from 100%
+        assert "sink=4+window=64" in s
+        assert "%" in s
+
+    def test_v04_formats_distinct_constraint(self):
+        agg = aggregate_attention_window_metrics(
+            "v04_dlm_restored",
+            prompt_token_lens=[1428],
+            sink_size=4, window_size=64,
+        )
+        s = format_attention_window_summary(agg)
+        assert "100.00%" in s
+        assert "dlm_reconstruction" in s
+
+    def test_summary_is_single_line(self):
+        agg = aggregate_attention_window_metrics(
+            "oracle_full_attention",
+            prompt_token_lens=[100],
+            sink_size=4, window_size=64,
+        )
+        s = format_attention_window_summary(agg)
+        assert "\n" not in s
+
+    def test_missing_metrics_falls_through(self):
+        # Defensive: if a caller passes an incomplete dict, format
+        # should not crash.
+        s = format_attention_window_summary(
+            {"structural_constraint": "unknown"}
+        )
+        assert "n/a" in s

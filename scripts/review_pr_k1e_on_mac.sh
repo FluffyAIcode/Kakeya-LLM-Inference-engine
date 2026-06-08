@@ -28,6 +28,18 @@
 #     2026-06-06 A/B benchmark in
 #     results/platform-tests/sink_window_quality_ab_1780714635.json)
 #
+# Three orthogonal metrics are reported per config (in JSON +
+# stderr summary):
+#
+#   * recall              — behavioural intelligence (does the
+#                           model actually answer correctly)
+#   * peak / current mem  — sustained memory cost (K1.G)
+#   * attn_window         — structural attention coverage as a
+#                           fraction of preceding context (K1.H);
+#                           v0.3 caps at sink+window regardless of
+#                           T, v0.4's dLM K/V Restoration restores
+#                           the full causal range
+#
 # Time-saving knobs (env vars):
 #
 #   N_SAMPLES         (default 20)   how many NIAH samples per config
