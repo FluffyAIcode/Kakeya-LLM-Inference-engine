@@ -226,15 +226,15 @@ def main() -> int:
     if not args.skip_oracle:
         print("[k1e] (a) full-attention oracle", file=sys.stderr, flush=True)
 
-        def oracle_decode(sample) -> Tuple[str, float]:
+        def oracle_decode(sample) -> Tuple[str, float, int]:
             idx = samples.index(sample)
             prompt_ids = sample_ids[idx]
             t0 = time.perf_counter()
-            text = greedy_decode_oracle(
+            text, decode_tokens = greedy_decode_oracle(
                 model=model, prompt_ids=prompt_ids, tokenizer=tokenizer,
                 max_new_tokens=args.max_new_tokens,
             )
-            return text, time.perf_counter() - t0
+            return text, time.perf_counter() - t0, decode_tokens
 
         reset_memory_peak(device)
         oracle = evaluate("oracle_full_attention", samples, oracle_decode)
@@ -244,7 +244,8 @@ def main() -> int:
         print(
             f"[k1e]    oracle recall={oracle.recall:.3f} "
             f"({oracle.samples_correct}/{oracle.samples_total})  "
-            f"mean_latency={oracle.mean_latency_s:.2f}s",
+            f"mean_latency={oracle.mean_latency_s:.2f}s  "
+            f"throughput={oracle.mean_throughput_tokens_per_sec:.3f} tok/s",
             file=sys.stderr,
         )
         print(
@@ -262,17 +263,17 @@ def main() -> int:
             f"window={args.window_size})", file=sys.stderr, flush=True,
         )
 
-        def v03_decode(sample) -> Tuple[str, float]:
+        def v03_decode(sample) -> Tuple[str, float, int]:
             idx = samples.index(sample)
             prompt_ids = sample_ids[idx]
             t0 = time.perf_counter()
-            text = greedy_decode_sink_window(
+            text, decode_tokens = greedy_decode_sink_window(
                 model=model, prompt_ids=prompt_ids, tokenizer=tokenizer,
                 sink_size=args.sink_size, window_size=args.window_size,
                 is_gemma3=True,
                 max_new_tokens=args.max_new_tokens,
             )
-            return text, time.perf_counter() - t0
+            return text, time.perf_counter() - t0, decode_tokens
 
         reset_memory_peak(device)
         v03 = evaluate("v03_sink_window", samples, v03_decode)
@@ -282,7 +283,8 @@ def main() -> int:
         print(
             f"[k1e]    v0.3 recall={v03.recall:.3f} "
             f"({v03.samples_correct}/{v03.samples_total})  "
-            f"mean_latency={v03.mean_latency_s:.2f}s",
+            f"mean_latency={v03.mean_latency_s:.2f}s  "
+            f"throughput={v03.mean_throughput_tokens_per_sec:.3f} tok/s",
             file=sys.stderr,
         )
         print(
@@ -303,18 +305,18 @@ def main() -> int:
             model, sink_size=args.sink_size, window_size=args.window_size,
         )
 
-        def v04_decode(sample) -> Tuple[str, float]:
+        def v04_decode(sample) -> Tuple[str, float, int]:
             idx = samples.index(sample)
             prompt_ids = sample_ids[idx]
             t0 = time.perf_counter()
-            text = greedy_decode_v04(
+            text, decode_tokens = greedy_decode_v04(
                 verifier=verifier, prompt_ids=prompt_ids, tokenizer=tokenizer,
                 apply_rotary_pos_emb=apply_rotary_pos_emb,
                 eager_attention_forward=eager_attention_forward,
                 all_attention_functions=ALL_ATTENTION_FUNCTIONS,
                 max_new_tokens=args.max_new_tokens,
             )
-            return text, time.perf_counter() - t0
+            return text, time.perf_counter() - t0, decode_tokens
 
         reset_memory_peak(device)
         v04 = evaluate("v04_dlm_restored", samples, v04_decode)
@@ -324,7 +326,8 @@ def main() -> int:
         print(
             f"[k1e]    v0.4 recall={v04.recall:.3f} "
             f"({v04.samples_correct}/{v04.samples_total})  "
-            f"mean_latency={v04.mean_latency_s:.2f}s",
+            f"mean_latency={v04.mean_latency_s:.2f}s  "
+            f"throughput={v04.mean_throughput_tokens_per_sec:.3f} tok/s",
             file=sys.stderr,
         )
         print(
@@ -352,11 +355,14 @@ def main() -> int:
             gate["v04_dominates_v03"] = v04_recall > v03_recall
 
     report = {
-        # schema v3: K1.H adds 'attention_window' block. v1/v2
-        # consumers must default the attention_window block to {}
-        # on read; v1 consumers must also default the memory blocks
-        # to {} (carryover from K1.G).
-        "schema_version": 3,
+        # schema v4: K1.I adds throughput fields inside each
+        # results.<config> block (mean/median/min/max
+        # throughput_tokens_per_sec + per-sample arrays). v3
+        # consumers see additional keys in the per-config dict and
+        # should ignore unknown keys (forward-compatible).
+        # K1.H (v3) added 'attention_window'; K1.G (v2) added
+        # 'memory'. v1 consumers must default both to {}.
+        "schema_version": 4,
         "kind": "k1e_niah_validation",
         "config": {
             "model": args.model,
@@ -408,9 +414,11 @@ def main() -> int:
         keys = attn.get("effective_keys_at_last_query_mean")
         if frac is not None and keys is not None:
             attn_str = f"  attn_window={keys:.0f} ({frac * 100:.2f}%)"
+        thr = r.get("mean_throughput_tokens_per_sec")
+        thr_str = f"  thr={thr:.3f}tok/s" if thr is not None else ""
         print(
             f"[k1e]   {name:<24s}  recall={r['recall']:.3f}  "
-            f"mean_latency={r['mean_latency_s']:.2f}s{mem_str}{attn_str}",
+            f"mean_latency={r['mean_latency_s']:.2f}s{thr_str}{mem_str}{attn_str}",
             file=sys.stderr,
         )
     if gate:
@@ -430,6 +438,15 @@ def _result_to_dict(r) -> dict:
         "median_latency_s": r.median_latency_s,
         "per_sample_decoded": r.per_sample_decoded,
         "per_sample_correct": r.per_sample_correct,
+        # K1.I throughput fields. Per-sample decode_tokens is the
+        # natural denominator (≤ max_new_tokens; lower if EOS hit).
+        # tok/s is decode_tokens / latency_s for each sample.
+        "per_sample_decode_tokens": r.per_sample_decode_tokens,
+        "per_sample_throughput_tokens_per_sec": r.per_sample_throughput_tokens_per_sec,
+        "mean_throughput_tokens_per_sec": r.mean_throughput_tokens_per_sec,
+        "median_throughput_tokens_per_sec": r.median_throughput_tokens_per_sec,
+        "min_throughput_tokens_per_sec": r.min_throughput_tokens_per_sec,
+        "max_throughput_tokens_per_sec": r.max_throughput_tokens_per_sec,
     }
 
 

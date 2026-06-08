@@ -198,11 +198,18 @@ class TestAggregateRecall:
             for c in codes
         ]
 
+    @staticmethod
+    def _toks(n: int, value: int = 24) -> list:
+        """Helper: dummy decode_token_counts of length n."""
+        return [value] * n
+
     def test_all_correct(self):
         samples = self._samples(["A-1", "B-2", "C-3"])
         decoded = ["A-1", "B-2", "C-3"]
         latencies = [0.1, 0.2, 0.3]
-        result = aggregate_recall("test", samples, decoded, latencies)
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, self._toks(3),
+        )
         assert result.recall == 1.0
         assert result.samples_correct == 3
         assert result.samples_total == 3
@@ -211,7 +218,9 @@ class TestAggregateRecall:
         samples = self._samples(["A-1", "B-2", "C-3"])
         decoded = ["X-9", "Y-8", "Z-7"]
         latencies = [0.1, 0.2, 0.3]
-        result = aggregate_recall("test", samples, decoded, latencies)
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, self._toks(3),
+        )
         assert result.recall == 0.0
         assert result.samples_correct == 0
 
@@ -219,7 +228,9 @@ class TestAggregateRecall:
         samples = self._samples(["A-1", "B-2", "C-3", "D-4"])
         decoded = ["A-1", "wrong", "C-3", "wrong"]
         latencies = [0.1, 0.2, 0.3, 0.4]
-        result = aggregate_recall("test", samples, decoded, latencies)
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, self._toks(4),
+        )
         assert result.recall == 0.5
         assert result.samples_correct == 2
         assert result.per_sample_correct == [True, False, True, False]
@@ -228,7 +239,9 @@ class TestAggregateRecall:
         samples = self._samples(["A-1", "B-2", "C-3"])
         decoded = ["A-1", "B-2", "C-3"]
         latencies = [1.0, 2.0, 3.0]
-        result = aggregate_recall("test", samples, decoded, latencies)
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, self._toks(3),
+        )
         assert result.mean_latency_s == 2.0
         assert result.median_latency_s == 2.0
 
@@ -236,7 +249,9 @@ class TestAggregateRecall:
         samples = self._samples(["A-1", "B-2", "C-3", "D-4"])
         decoded = ["A-1", "B-2", "C-3", "D-4"]
         latencies = [1.0, 2.0, 3.0, 4.0]
-        result = aggregate_recall("test", samples, decoded, latencies)
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, self._toks(4),
+        )
         # median of [1, 2, 3, 4] = (2 + 3) / 2 = 2.5
         assert result.median_latency_s == 2.5
 
@@ -245,24 +260,166 @@ class TestAggregateRecall:
         decoded = ["A-1"]
         latencies = [0.1, 0.2]
         with pytest.raises(ValueError, match="decoded_texts"):
-            aggregate_recall("test", samples, decoded, latencies)
+            aggregate_recall(
+                "test", samples, decoded, latencies, self._toks(2),
+            )
 
     def test_latency_count_mismatch_raises(self):
         samples = self._samples(["A-1", "B-2"])
         decoded = ["A-1", "B-2"]
         latencies = [0.1]
         with pytest.raises(ValueError, match="latencies_s"):
-            aggregate_recall("test", samples, decoded, latencies)
+            aggregate_recall(
+                "test", samples, decoded, latencies, self._toks(2),
+            )
 
     def test_empty_samples_raises(self):
         with pytest.raises(ValueError, match="samples must be non-empty"):
-            aggregate_recall("test", [], [], [])
+            aggregate_recall("test", [], [], [], [])
 
     def test_per_sample_decoded_preserved(self):
         samples = self._samples(["A-1", "B-2"])
         decoded = ["yes A-1 here", "no answer"]
-        result = aggregate_recall("test", samples, decoded, [0.1, 0.1])
+        result = aggregate_recall(
+            "test", samples, decoded, [0.1, 0.1], self._toks(2),
+        )
         assert result.per_sample_decoded == ["yes A-1 here", "no answer"]
+
+
+# ---------------------------------------------------------------------------
+# K1.I — token-throughput accounting
+# ---------------------------------------------------------------------------
+
+
+class TestThroughputAccounting:
+    """K1.I: aggregate_recall computes per-sample throughput as
+    decode_tokens / latency_s, and aggregates mean / median / min /
+    max across samples. Used by ADR 0008 §11.8 v0.4 GA acceptance
+    criterion 7 (throughput floor; see ADR §11.11 K2 KakeyaLattice
+    composition for the cross-config target ratios)."""
+
+    @staticmethod
+    def _samples(codes):
+        return [
+            NIAHSample(
+                prompt_text="Q?", answer_text=c,
+                needle_line_index=10, needle_text=f"code {c}",
+            )
+            for c in codes
+        ]
+
+    def test_basic_throughput_arithmetic(self):
+        # 24 tokens in 1s → 24 tok/s for every sample
+        samples = self._samples(["A-1", "B-2", "C-3"])
+        decoded = ["A-1", "B-2", "C-3"]
+        latencies = [1.0, 1.0, 1.0]
+        decode_tokens = [24, 24, 24]
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, decode_tokens,
+        )
+        assert result.per_sample_throughput_tokens_per_sec == [24.0, 24.0, 24.0]
+        assert result.mean_throughput_tokens_per_sec == 24.0
+        assert result.median_throughput_tokens_per_sec == 24.0
+        assert result.min_throughput_tokens_per_sec == 24.0
+        assert result.max_throughput_tokens_per_sec == 24.0
+
+    def test_throughput_varies_with_latency(self):
+        # All 24 tokens, but different latencies → different tok/s
+        samples = self._samples(["A-1", "B-2", "C-3"])
+        decoded = ["A-1", "B-2", "C-3"]
+        latencies = [1.0, 2.0, 4.0]
+        decode_tokens = [24, 24, 24]
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, decode_tokens,
+        )
+        # Throughputs: 24, 12, 6
+        assert result.per_sample_throughput_tokens_per_sec == [24.0, 12.0, 6.0]
+        assert result.mean_throughput_tokens_per_sec == pytest.approx(14.0)
+        # Median of [24, 12, 6] (sorted: [6, 12, 24]) = 12
+        assert result.median_throughput_tokens_per_sec == 12.0
+        assert result.min_throughput_tokens_per_sec == 6.0
+        assert result.max_throughput_tokens_per_sec == 24.0
+
+    def test_throughput_varies_with_decode_count(self):
+        # EOS-terminated samples: same latency, fewer tokens → lower tok/s
+        samples = self._samples(["A-1", "B-2", "C-3"])
+        decoded = ["A-1", "B-2", "C-3"]
+        latencies = [1.0, 1.0, 1.0]
+        # Sample 0 hit EOS at 12 tokens; sample 1 at 18; sample 2 ran full 24.
+        decode_tokens = [12, 18, 24]
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, decode_tokens,
+        )
+        assert result.per_sample_throughput_tokens_per_sec == [12.0, 18.0, 24.0]
+        assert result.mean_throughput_tokens_per_sec == 18.0
+        assert result.median_throughput_tokens_per_sec == 18.0
+
+    def test_zero_latency_yields_zero_throughput_no_div_by_zero(self):
+        # Synthetic / test: latency 0 must not raise; throughput→0
+        samples = self._samples(["A-1", "B-2"])
+        decoded = ["A-1", "B-2"]
+        latencies = [0.0, 1.0]
+        decode_tokens = [24, 24]
+        result = aggregate_recall(
+            "test", samples, decoded, latencies, decode_tokens,
+        )
+        assert result.per_sample_throughput_tokens_per_sec == [0.0, 24.0]
+
+    def test_decode_token_count_mismatch_raises(self):
+        samples = self._samples(["A-1", "B-2"])
+        decoded = ["A-1", "B-2"]
+        with pytest.raises(ValueError, match="decode_token_counts"):
+            aggregate_recall(
+                "test", samples, decoded, [0.1, 0.1], [24],
+            )
+
+    def test_negative_decode_tokens_raises(self):
+        samples = self._samples(["A-1", "B-2"])
+        decoded = ["A-1", "B-2"]
+        with pytest.raises(ValueError, match="non-negative"):
+            aggregate_recall(
+                "test", samples, decoded, [0.1, 0.1], [24, -1],
+            )
+
+    def test_negative_latency_raises(self):
+        samples = self._samples(["A-1", "B-2"])
+        decoded = ["A-1", "B-2"]
+        with pytest.raises(ValueError, match="non-negative"):
+            aggregate_recall(
+                "test", samples, decoded, [0.1, -0.1], [24, 24],
+            )
+
+    def test_per_sample_decode_tokens_preserved(self):
+        # Order and values must reach the result unchanged
+        samples = self._samples(["A-1", "B-2", "C-3", "D-4", "E-5"])
+        decoded = ["A-1", "B-2", "C-3", "D-4", "E-5"]
+        decode_tokens = [10, 12, 14, 16, 18]
+        result = aggregate_recall(
+            "test", samples, decoded, [1.0] * 5, decode_tokens,
+        )
+        assert result.per_sample_decode_tokens == decode_tokens
+
+    def test_median_with_even_count(self):
+        # 4 samples: throughputs [10, 20, 30, 40] → median = (20+30)/2 = 25
+        samples = self._samples(["A", "B", "C", "D"])
+        decoded = list(samples[i].answer_text for i in range(4))
+        result = aggregate_recall(
+            "test", samples, decoded, [1.0, 1.0, 1.0, 1.0], [10, 20, 30, 40],
+        )
+        assert result.median_throughput_tokens_per_sec == 25.0
+        assert result.mean_throughput_tokens_per_sec == 25.0
+
+    def test_throughput_independent_of_correctness(self):
+        # A wrong decode still has a real wall time and decode count;
+        # throughput accounting must not depend on recall outcome.
+        samples = self._samples(["A-1", "B-2", "C-3"])
+        decoded = ["wrong", "wrong", "wrong"]
+        result = aggregate_recall(
+            "test", samples, decoded, [1.0, 2.0, 4.0], [24, 24, 24],
+        )
+        assert result.recall == 0.0
+        assert result.per_sample_throughput_tokens_per_sec == [24.0, 12.0, 6.0]
+        assert result.mean_throughput_tokens_per_sec == pytest.approx(14.0)
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +524,7 @@ class TestEvaluateOrchestration:
 
         def fake_decode(sample):
             call_count[0] += 1
-            return sample.answer_text, 0.1  # always correct
+            return sample.answer_text, 0.1, 24  # always correct
 
         result = evaluate("fake", samples, fake_decode)
         assert call_count[0] == 5
@@ -379,11 +536,10 @@ class TestEvaluateOrchestration:
         samples = make_niah_dataset(n_samples=10, seed=0)
 
         def fake_decode(sample):
-            # Only odd indices get the answer right
             idx = samples.index(sample)
             if idx % 2 == 1:
-                return sample.answer_text, 0.5
-            return "wrong", 0.5
+                return sample.answer_text, 0.5, 24
+            return "wrong", 0.5, 24
 
         result = evaluate("fake", samples, fake_decode)
         # 5 odd indices in [0..9]
@@ -397,11 +553,36 @@ class TestEvaluateOrchestration:
         def fake_decode(sample):
             t = latencies[i[0]]
             i[0] += 1
-            return sample.answer_text, t
+            return sample.answer_text, t, 24
 
         result = evaluate("fake", samples, fake_decode)
         assert result.mean_latency_s == sum(latencies) / 3
         assert result.median_latency_s == 0.5
+
+    def test_decode_token_count_threaded_to_throughput(self):
+        # K1.I: decode_fn's third return element must reach the
+        # aggregated throughput stats unchanged.
+        samples = make_niah_dataset(n_samples=4, seed=0)
+        # All samples take 1.0s, generate {12, 18, 24, 24} tokens.
+        # Throughputs: 12, 18, 24, 24 tok/s. Mean 19.5, median 21.
+        token_counts = [12, 18, 24, 24]
+        i = [0]
+
+        def fake_decode(sample):
+            tc = token_counts[i[0]]
+            i[0] += 1
+            return sample.answer_text, 1.0, tc
+
+        result = evaluate("fake", samples, fake_decode)
+        assert result.per_sample_decode_tokens == token_counts
+        assert result.per_sample_throughput_tokens_per_sec == [
+            12.0, 18.0, 24.0, 24.0,
+        ]
+        assert result.mean_throughput_tokens_per_sec == 19.5
+        # median of [12, 18, 24, 24] = (18 + 24) / 2 = 21
+        assert result.median_throughput_tokens_per_sec == 21.0
+        assert result.min_throughput_tokens_per_sec == 12.0
+        assert result.max_throughput_tokens_per_sec == 24.0
 
 
 # ---------------------------------------------------------------------------
