@@ -69,14 +69,34 @@
 #   WINDOW            (default 64)
 #   MAX_NEW_TOKENS    (default 24)
 #   SEED              (default 42)
+#   ATTN_IMPL         (default sdpa) 'eager' (full [B,H,T,T] matrix, OOMs
+#                                    at >= 88k tokens on H200) vs 'sdpa'
+#                                    (memory-efficient, fits 100k+).
 #   SKIP_V03=1                       skip the v0.3 baseline
 #   SKIP_V04=1                       skip v0.4 (oracle-only smoke)
 #   SKIP_ORACLE=1                    skip the oracle (not recommended)
 #   MULTI_CONTEXT=1                  enable multi-context scan
-#   CONTEXT_LADDER='40 80 320 1280'  (only used when MULTI_CONTEXT=1)
+#   CONTEXT_LADDER='70 280 1100'     (only used when MULTI_CONTEXT=1)
 #                                    space-separated padding-line counts;
-#                                    each entry yields a haystack range of
-#                                    [n × 0.85, n × 1.15] for variability.
+#                                    line ≈ 20 tokens with chat template
+#                                    (empirical from 2026-06-08 run);
+#                                    each entry yields a haystack range
+#                                    of [n × 0.85, n × 1.15] for variability.
+#
+# Examples:
+#
+#   # Default scan (1k / 4k / 16k tokens) with SDPA — fits H100/H200:
+#   bash scripts/review_pr_k1e_on_vast.sh
+#
+#   # Long-context scan reaching the canonical 100k gate (a) target:
+#   MULTI_CONTEXT=1 \
+#   CONTEXT_LADDER='70 280 1100 3200 5000' \
+#       bash scripts/review_pr_k1e_on_vast.sh
+#   # Lines × 20 tok/line ≈ 1.4k / 5.6k / 22k / 64k / 100k tokens.
+#
+#   # Force eager (reproducibility with the 2026-06-08 short-context
+#   # baseline; do NOT use at long context — will OOM):
+#   ATTN_IMPL=eager bash scripts/review_pr_k1e_on_vast.sh
 
 set -euo pipefail
 
@@ -94,7 +114,19 @@ SKIP_V03="${SKIP_V03:-0}"
 SKIP_V04="${SKIP_V04:-0}"
 SKIP_ORACLE="${SKIP_ORACLE:-0}"
 MULTI_CONTEXT="${MULTI_CONTEXT:-0}"
-# Default ladder: ~1k, ~4k, ~16k tokens (line ≈ 14 tokens)
+# K1.F: HF attention implementation. 'eager' materialises [B, H, T, T]
+# per layer — at 88k tokens that's 62 GB just for one layer's attention
+# matrix in bf16, which OOMs even an H200's 141 GB. 'sdpa' uses HF's
+# memory-efficient scaled-dot-product-attention path; the K1.D patched
+# forward already dispatches through ALL_ATTENTION_FUNCTIONS[impl] when
+# impl != 'eager', so v0.4 K/V Restoration also works under SDPA.
+# Default 'sdpa' on vast because the whole point is to push past the
+# 88k OOM and reach the canonical 100k gate (a) target.
+ATTN_IMPL="${ATTN_IMPL:-sdpa}"
+# Default ladder: ~1k, ~4k, ~16k tokens (line ≈ 20 tokens with chat
+# template — empirically observed in the 2026-06-08 run, not 14 as
+# initially estimated, so the previous 4500/7000 ladder produced
+# ~88k / ~140k token prompts, both of which OOM'd under eager).
 CONTEXT_LADDER="${CONTEXT_LADDER:-70 280 1100}"
 
 stamp="$(date +%s)"
@@ -105,6 +137,7 @@ mkdir -p "$out_dir" "$log_dir"
 flags_common=(
     --model google/gemma-3-1b-it
     --device cuda
+    --attn-impl "$ATTN_IMPL"
     --n-samples "$N_SAMPLES"
     --sink-size "$SINK"
     --window-size "$WINDOW"
