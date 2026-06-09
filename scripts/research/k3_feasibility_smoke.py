@@ -214,8 +214,171 @@ def _load_verifier_cuda(verifier_id: str) -> Dict[str, Any]:
     }
 
 
+def _diagnose_mlx_load_failure(
+    verifier_path: str, exc: BaseException,
+) -> Dict[str, Any]:
+    """Build a structured diagnostic for an mlx_lm.load failure.
+
+    Returns a JSON-serialisable dict containing:
+
+      * ``error_type`` / ``error_message`` — exception identity
+      * ``traceback`` — full Python traceback as a string list
+      * ``config_json`` — content of the model dir's config.json
+        (the most likely place the upstream bug is triggered)
+      * ``manifest`` — content of k3_setup_manifest.json if present
+        (records which HF id was downloaded and when)
+      * ``files`` — listing of files in the verifier dir + sizes
+      * ``mlx_lm_version`` — installed version (None if not installed)
+      * ``known_bug_fingerprints`` — list of patterns matched in the
+        traceback or config that map to the documented mlx-lm Gemma 4
+        MoE bugs we've previously seen
+
+    Used by ``_load_verifier_mac``'s failure handler so the JSON
+    evidence carries enough information to write a targeted fix
+    on the next iteration, rather than a one-line error string.
+    """
+    import traceback as _tb
+    p = Path(verifier_path)
+    diag: Dict[str, Any] = {
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "traceback": _tb.format_exc().splitlines(),
+        "verifier_path": str(p),
+    }
+
+    config_path = p / "config.json"
+    if config_path.exists():
+        try:
+            diag["config_json"] = json.loads(config_path.read_text())
+        except Exception as cfg_e:
+            diag["config_json_parse_error"] = f"{type(cfg_e).__name__}: {cfg_e}"
+    else:
+        diag["config_json"] = None
+
+    manifest_path = p / "k3_setup_manifest.json"
+    if manifest_path.exists():
+        try:
+            diag["manifest"] = json.loads(manifest_path.read_text())
+        except Exception as mf_e:
+            diag["manifest_parse_error"] = f"{type(mf_e).__name__}: {mf_e}"
+
+    if p.exists() and p.is_dir():
+        try:
+            files = []
+            for entry in sorted(p.iterdir()):
+                try:
+                    files.append({
+                        "name": entry.name,
+                        "size_bytes": (
+                            entry.stat().st_size if entry.is_file() else None
+                        ),
+                        "is_dir": entry.is_dir(),
+                    })
+                except OSError:
+                    continue
+            diag["files"] = files
+        except Exception:
+            diag["files"] = None
+
+    try:
+        import mlx_lm  # type: ignore
+        diag["mlx_lm_version"] = getattr(mlx_lm, "__version__", "unknown")
+    except ImportError:
+        diag["mlx_lm_version"] = None
+
+    fingerprints = []
+    error_text = (
+        diag["error_message"] + "\n" + "\n".join(diag.get("traceback") or [])
+    ).lower()
+    config = diag.get("config_json") or {}
+
+    if "'list' object has no attribute 'keys'" in error_text:
+        fingerprints.append({
+            "id": "bug1_quant_config_list_vs_dict",
+            "evidence": "AttributeError on .keys() suggests upstream code "
+                        "treats config['quantization'] (or quantization_config) "
+                        "as a dict but the variant ships it as a list.",
+            "suggested_workaround": (
+                "Patch config.json: if quantization_config is a list of dicts "
+                "(per-layer), squash to a single dict at the top level. Re-run."
+            ),
+        })
+
+    if "switch_glu" in error_text or "experts.gate_up_proj" in error_text:
+        fingerprints.append({
+            "id": "bug2_moe_expert_key_mismatch",
+            "evidence": "Traceback references DFlash-style switch_glu or "
+                        "experts.gate_up_proj — the sanitize step did not "
+                        "transform the keys this variant ships.",
+            "suggested_workaround": (
+                "The PLE-safe community variant may use different MoE "
+                "key names; inspect a few keys via 'safe_open' and align "
+                "with mlx_lm.models.gemma4_text.Gemma4Model.sanitize."
+            ),
+        })
+
+    if "ple" in error_text or "per_layer_inputs" in error_text:
+        fingerprints.append({
+            "id": "bug3_ple_per_layer_input_handling",
+            "evidence": "Traceback references PLE / per-layer inputs — the "
+                        "PLE-safe variant might still trigger an mlx_lm path "
+                        "expecting standard PLE structure.",
+            "suggested_workaround": (
+                "Confirm the variant labels the relevant tensors as expected "
+                "by mlx_lm.models.gemma4_text.Gemma4Model.__call__'s "
+                "per_layer_inputs parameter."
+            ),
+        })
+
+    quantization = config.get("quantization")
+    quantization_config = config.get("quantization_config")
+    if isinstance(quantization, list):
+        fingerprints.append({
+            "id": "config_check_quantization_is_list",
+            "evidence": (
+                f"config.json's 'quantization' field is a list "
+                f"(len={len(quantization)}); mlx_lm._quantize expects a dict."
+            ),
+            "suggested_workaround": (
+                "Edit config.json: change 'quantization' from a list to a "
+                "single dict (use the first list entry, or merge per-layer "
+                "specs as appropriate)."
+            ),
+        })
+    if isinstance(quantization_config, list):
+        fingerprints.append({
+            "id": "config_check_quantization_config_is_list",
+            "evidence": (
+                f"config.json's 'quantization_config' field is a list "
+                f"(len={len(quantization_config)}); mlx_lm utils.py treats "
+                "it as a dict and reads 'quant_method' from it."
+            ),
+            "suggested_workaround": (
+                "Edit config.json: change 'quantization_config' from a list "
+                "to a single dict."
+            ),
+        })
+
+    diag["known_bug_fingerprints"] = fingerprints
+    diag["actionable_next_steps"] = [
+        "1. Push this JSON to origin so the loader bug can be diagnosed "
+           "from the actual traceback + config.json.",
+        "2. If known_bug_fingerprints flagged a config-shape issue, try the "
+           "suggested_workaround inline (edit the local config.json + re-run).",
+        "3. If no fingerprint matched, the bug is novel — open a tracker "
+           "issue with this JSON attached.",
+    ]
+    return diag
+
+
 def _load_verifier_mac(verifier_path: str) -> Dict[str, Any]:
-    """Load 4-bit MLX-quantized Gemma 4 26B-A4B-it on Mac M4."""
+    """Load 4-bit MLX-quantized Gemma 4 26B-A4B-it on Mac M4.
+
+    On failure, raises with ``exc.kakeya_diagnostic`` set to a
+    structured dict (see :func:`_diagnose_mlx_load_failure`) so the
+    smoke's main() handler can record actionable evidence rather
+    than a one-line error string.
+    """
     p = Path(verifier_path)
     if not p.exists() or not p.is_dir():
         print(
@@ -253,7 +416,28 @@ def _load_verifier_mac(verifier_path: str) -> Dict[str, Any]:
         file=sys.stderr, flush=True,
     )
     t0 = time.perf_counter()
-    model, tokenizer = mlx_lm.load(verifier_path)
+    try:
+        model, tokenizer = mlx_lm.load(verifier_path)
+    except Exception as e:
+        diagnostic = _diagnose_mlx_load_failure(verifier_path, e)
+        try:
+            setattr(e, "kakeya_diagnostic", diagnostic)
+        except Exception:
+            pass
+        print(
+            f"[k3-smoke] mlx_lm.load FAILED: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+        if diagnostic.get("known_bug_fingerprints"):
+            print("[k3-smoke] matched known-bug fingerprints:", file=sys.stderr)
+            for fp in diagnostic["known_bug_fingerprints"]:
+                print(f"    * {fp['id']}: {fp['suggested_workaround']}",
+                      file=sys.stderr)
+        else:
+            print("[k3-smoke] no known-bug fingerprint matched — novel "
+                  "failure mode; full traceback + config dumped to JSON "
+                  "evidence for diagnosis.", file=sys.stderr)
+        raise
     elapsed = time.perf_counter() - t0
     print(
         f"[k3-smoke] verifier loaded in {elapsed:.1f}s",
@@ -555,11 +739,22 @@ def main() -> int:
             "verifier_kind": ver["kind"],
         })
     except Exception as e:
-        report["stages"].append({
+        stage = {
             "stage": "verifier_load_FAIL",
             "error": f"{type(e).__name__}: {e}",
-        })
-        report["summary"] = {"status": "fail_at_verifier_load"}
+        }
+        diagnostic = getattr(e, "kakeya_diagnostic", None)
+        if diagnostic is not None:
+            stage["diagnostic"] = diagnostic
+        report["stages"].append(stage)
+        report["summary"] = {
+            "status": "fail_at_verifier_load",
+            "diagnostic_present": diagnostic is not None,
+            "known_bug_fingerprints_matched": (
+                [fp["id"] for fp in diagnostic.get("known_bug_fingerprints", [])]
+                if diagnostic else []
+            ),
+        }
         _emit(report, args.output)
         return 20
 
