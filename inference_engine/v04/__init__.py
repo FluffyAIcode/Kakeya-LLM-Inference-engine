@@ -50,6 +50,7 @@ from inference_engine.v04.dflash_loader import (
     inspect_dflash_checkpoint,
     load_dflash_drafter,
 )
+from inference_engine.v04.dflash_drafter import DFlashDrafter
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -97,6 +98,8 @@ __all__ = [
     "EMBED_TOKENS_TRAINED_VAR_THRESHOLD",
     "inspect_dflash_checkpoint",
     "load_dflash_drafter",
+    # K3 Block B — DFlash drafter product API (per ADR §11.7.0)
+    "DFlashDrafter",
     # K1.E — NIAH validation harness
     "DEFAULT_NEEDLE_PREFIXES",
     "NIAHEvalResult",
