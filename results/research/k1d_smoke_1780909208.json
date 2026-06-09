@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "kind": "k1d_dlm_restored_verifier_smoke",
+  "model": "google/gemma-3-1b-it",
+  "device": "mps",
+  "dtype": "torch.bfloat16",
+  "seq_len": 256,
+  "configs": [
+    {
+      "name": "oracle_full_attention",
+      "shape": [
+        1,
+        256,
+        262144
+      ],
+      "last_token_norm": 1232.609130859375,
+      "last_token_argmax": 52564,
+      "last_token_max": 10.875,
+      "last_token_min": -9.6875,
+      "any_nan": false,
+      "any_inf": false,
+      "elapsed_s": 0.3479745000367984
+    },
+    {
+      "name": "v04_sink_4_window_64",
+      "shape": [
+        1,
+        256,
+        262144
+      ],
+      "last_token_norm": 1232.609130859375,
+      "last_token_argmax": 52564,
+      "last_token_max": 10.875,
+      "last_token_min": -9.6875,
+      "any_nan": false,
+      "any_inf": false,
+      "elapsed_s": 0.5252928750123829,
+      "kl_vs_oracle": 0.0,
+      "argmax_matches_oracle": true
+    },
+    {
+      "name": "v04_no_eviction",
+      "shape": [
+        1,
+        256,
+        262144
+      ],
+      "last_token_norm": 1232.609130859375,
+      "last_token_argmax": 52564,
+      "last_token_max": 10.875,
+      "last_token_min": -9.6875,
+      "any_nan": false,
+      "any_inf": false,
+      "elapsed_s": 0.4693464580923319,
+      "kl_vs_oracle": 0.0,
+      "argmax_matches_oracle": true
+    }
+  ],
+  "smoke_gate": {
+    "pass": true,
+    "failures": [],
+    "no_eviction_kl_threshold": 0.001
+  }
+}

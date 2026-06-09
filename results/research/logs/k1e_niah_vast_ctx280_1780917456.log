@@ -1,0 +1,29 @@
+bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+NVIDIA H200, 580.159.03, 143771 MiB, 9.0
+[run_on_vast] reusing venv at /workspace/kakeya-r1c/.venv-vast
+[run_on_vast] torch + transformers already importable; skipping install
+[run_on_vast] torch=2.11.0+cu128 cuda_available=True cuda=12.8
+[run_on_vast] device0=NVIDIA H200
+[run_on_vast] transformers=4.57.6
+[run_on_vast] launching scripts/research/k1e_niah_validation.py: --model google/gemma-3-1b-it --device cuda --attn-impl sdpa --n-samples 20 --sink-size 4 --window-size 64 --max-new-tokens 24 --seed 42 --haystack-min-lines 238 --haystack-max-lines 322 --output results/research/k1e_niah_vast_ctx280_1780917456.json
+[k1e] device=cuda
+[k1e] loading google/gemma-3-1b-it
+[k1e] attn_implementation=sdpa
+[k1e] dataset: 20 samples, prompt token len min=4853 max=6474 mean=5598
+[k1e] (a) full-attention oracle
+[k1e]    oracle recall=0.350 (7/20)  mean_latency=22.51s
+[k1e] (b) v0.3 sink+window (sink=4, window=64)
+[k1e]    v0.3 recall=0.000 (0/20)  mean_latency=3.16s
+[k1e] (c) v0.4 DLMRestoredVerifier (sink=4, window=64)
+[k1e]    v0.4 recall=0.350 (7/20)  mean_latency=4.18s
+[k1e] report -> results/research/k1e_niah_vast_ctx280_1780917456.json
+[k1e] ─── SUMMARY ──────────────────────────────────────
+[k1e]   oracle_full_attention     recall=0.350  mean_latency=22.51s
+[k1e]   v03_sink_window           recall=0.000  mean_latency=3.16s
+[k1e]   v04_dlm_restored          recall=0.350  mean_latency=4.18s
+[k1e] Gate predicates:
+[k1e]   v04_vs_oracle_delta: 0.0
+[k1e]   v04_recall_ge_0_95: False
+[k1e]   v04_within_5pct_of_oracle: True
+[k1e]   v04_vs_v03_improvement: 0.35
+[k1e]   v04_dominates_v03: True
