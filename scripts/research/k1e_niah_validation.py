@@ -75,6 +75,21 @@ def parse_args() -> argparse.Namespace:
              "oracle is the upper-bound reference.",
     )
     ap.add_argument(
+        "--attn-impl",
+        choices=["eager", "sdpa"],
+        default="eager",
+        help="HF transformers attention implementation for the wrapped model. "
+             "'eager' (default) materialises the full [B, H, T, T] attention "
+             "matrix per layer — fits comfortably at <= 16k context but OOMs "
+             "long-context oracle/v0.3/v0.4 forwards on a single H200 at >= 88k "
+             "tokens (62 GB just for one layer's attention matrix at 88k bf16). "
+             "'sdpa' uses HF's memory-efficient scaled-dot-product-attention path; "
+             "the K1.D patched forward already dispatches through ALL_ATTENTION_"
+             "FUNCTIONS[impl] when impl != 'eager', so v0.4 K/V Restoration also "
+             "works under SDPA. Use 'sdpa' for the 64k+ context rungs that "
+             "validate ADR 0008 §11.8 gate (a) at canonical scale.",
+    )
+    ap.add_argument(
         "--output", default=None,
         help="JSON report path. Default: results/research/k1e_niah_<stamp>.json",
     )
@@ -110,8 +125,9 @@ def main() -> int:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     dtype = torch.bfloat16 if device.type != "cpu" else torch.float32
+    print(f"[k1e] attn_implementation={args.attn_impl}", file=sys.stderr)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=dtype, attn_implementation="eager",
+        args.model, dtype=dtype, attn_implementation=args.attn_impl,
     ).to(device)
     model.eval()
     for p in model.parameters():
@@ -273,6 +289,7 @@ def main() -> int:
             "model": args.model,
             "device": str(device),
             "dtype": str(dtype),
+            "attn_impl": args.attn_impl,
             "n_samples": args.n_samples,
             "haystack_min_lines": args.haystack_min_lines,
             "haystack_max_lines": args.haystack_max_lines,

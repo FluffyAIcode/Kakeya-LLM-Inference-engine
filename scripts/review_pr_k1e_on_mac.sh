@@ -35,6 +35,14 @@
 #   HAYSTACK_MAX      (default 80)   max padding-line count
 #   SINK              (default 4)    sink size
 #   WINDOW            (default 64)   window size
+#   ATTN_IMPL         (default eager) 'eager' (matches the 2026-06-08
+#                                    Mac M4 baseline recorded in ADR
+#                                    0008 §11.11) vs 'sdpa' (memory-
+#                                    efficient; needed for >= 16k context
+#                                    even on Mac, but introduces small
+#                                    bf16 reduction-order numerical
+#                                    differences vs eager — slightly
+#                                    different recall numbers possible).
 #   SKIP_V03=1                       skip the v0.3 baseline (saves ~5 min)
 #   SKIP_V04=1                       skip v0.4 (smoke-only the oracle path)
 #
@@ -58,6 +66,7 @@ HAYSTACK_MIN="${HAYSTACK_MIN:-60}"
 HAYSTACK_MAX="${HAYSTACK_MAX:-80}"
 SINK="${SINK:-4}"
 WINDOW="${WINDOW:-64}"
+ATTN_IMPL="${ATTN_IMPL:-eager}"
 SKIP_V03="${SKIP_V03:-0}"
 SKIP_V04="${SKIP_V04:-0}"
 
@@ -82,6 +91,7 @@ echo
 flags=(
   --model google/gemma-3-1b-it
   --device auto
+  --attn-impl "$ATTN_IMPL"
   --n-samples "$N_SAMPLES"
   --haystack-min-lines "$HAYSTACK_MIN"
   --haystack-max-lines "$HAYSTACK_MAX"
