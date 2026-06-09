@@ -54,15 +54,17 @@ PROMPTS = [
     "Write a haiku about speculative decoding.",
 ]
 
-# Disjoint from the alignment trainer's prompt set — for honest held-out
-# acceptance after alignment training.
+# Disjoint from the alignment trainer's prompt corpus — for honest held-out
+# acceptance after alignment training (no topic/phrasing near-duplicates).
 HELD_OUT_PROMPTS = [
-    "Write a Python function to check whether a string is a palindrome.",
-    "In two sentences, explain what a transformer attention head does.",
-    "Name two differences between TCP and UDP.",
+    "Write a Python function that counts vowels in a string.",
+    "Name two differences between a list and a tuple in Python.",
+    "What is the boiling point of water at sea level in Celsius?",
     "Write a short rhyming couplet about a robot learning to paint.",
-    "What is the boiling point of water at sea level, in Celsius and Fahrenheit?",
-    "Give two reasons unit tests are useful.",
+    "Explain what a database index is and when to use one.",
+    "Who painted the Mona Lisa?",
+    "Write a function that returns whether a year is a leap year.",
+    "Give two reasons code review is valuable.",
 ]
 
 

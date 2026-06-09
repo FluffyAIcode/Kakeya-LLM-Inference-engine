@@ -35,16 +35,73 @@ from inference_engine.v04.dflash_drafter import DFlashDrafter
 
 
 PROMPTS = [
+    # coding
     "Write a Python function that returns the n-th Fibonacci number.",
-    "Explain in two sentences why the sky is blue.",
-    "List three prime numbers greater than 100.",
-    "Summarize the plot of Romeo and Juliet in one sentence.",
-    "What is the capital of Australia, and why is it not Sydney?",
-    "Write a haiku about speculative decoding.",
-    "Describe how a hash map works in one paragraph.",
-    "Give three tips for writing clear commit messages.",
+    "Write a Python function to reverse a linked list.",
+    "Implement binary search in Python with comments.",
+    "Write a function to compute the factorial of n iteratively.",
+    "Write a Python class for a simple stack with push/pop/peek.",
+    "Implement quicksort in Python.",
+    "Write a regex that matches a valid IPv4 address and explain it.",
+    "Write a Python decorator that times a function and prints the duration.",
+    "Implement a function to merge two sorted lists.",
+    "Write a SQL query to find the second-highest salary in an Employees table.",
+    "Write a bash one-liner to count lines in all .py files under a directory.",
+    "Implement a debounce function in JavaScript.",
+    "Write a Python generator that yields prime numbers.",
+    "Explain and implement memoization for a recursive Fibonacci.",
+    "Write a function to detect a cycle in a directed graph.",
+    "Implement a least-recently-used (LRU) cache in Python.",
+    # math / reasoning
+    "Compute the sum of the first 100 positive integers and show your reasoning.",
+    "If a train travels 60 km in 45 minutes, what is its speed in km/h?",
+    "Solve for x: 3x + 7 = 22.",
+    "What is the derivative of x^3 + 2x with respect to x?",
+    "Explain the Pythagorean theorem with an example.",
+    "A bag has 3 red and 2 blue balls; what is the probability of drawing red?",
+    "List the first eight powers of two.",
+    "Explain why the square root of 2 is irrational.",
+    "Convert 0.625 to a fraction and simplify.",
+    "What is 15% of 240? Show the steps.",
+    # QA / factual
+    "What is the capital of Japan?",
+    "Who wrote the play Hamlet?",
+    "What is photosynthesis in one sentence?",
+    "Name the four fundamental forces of physics.",
+    "What gas do plants absorb from the atmosphere?",
+    "What is the largest planet in the solar system?",
+    "Who developed the theory of general relativity?",
+    "What is the chemical symbol for gold?",
+    "What year did the first human land on the moon?",
+    "What is the speed of light in a vacuum (approximate)?",
+    # explanations
+    "Explain how a hash map works in one paragraph.",
+    "Explain the difference between a process and a thread.",
+    "Explain what a REST API is to a beginner.",
+    "Describe how TCP establishes a connection (three-way handshake).",
+    "Explain what overfitting is in machine learning.",
+    "Explain the concept of recursion with a simple analogy.",
+    "Describe what a transformer attention mechanism does at a high level.",
+    "Explain the difference between supervised and unsupervised learning.",
+    "What is a deadlock and how can it be avoided?",
+    "Explain garbage collection in managed languages.",
+    # writing / misc
+    "Write a haiku about autumn leaves.",
+    "Write a two-sentence horror story.",
+    "Compose a short motivational quote about perseverance.",
+    "Write a limerick about a programmer who loves coffee.",
+    "Draft a one-line git commit message for a bug fix in the parser.",
+    "Summarize the water cycle in two sentences.",
+    "Write a polite email asking to reschedule a meeting.",
+    "Give three tips for writing clear documentation.",
+    "Write a short poem about the ocean at night.",
+    "Describe a sunset using vivid imagery in two sentences.",
+    "Explain why the sky appears blue.",
+    "Summarize the plot of Cinderella in one sentence.",
+    "List three benefits of regular exercise.",
     "What causes the seasons on Earth?",
-    "Write a short limerick about a cat who loves GPUs.",
+    "Give two reasons why version control is important.",
+    "Write a tagline for a fictional eco-friendly water bottle.",
 ]
 
 
@@ -67,15 +124,12 @@ def _embed_lm_head(model, hidden_size, softcap):
 
 @torch.no_grad()
 def greedy_seq(model, prompt_ids, gen_len, device, eos_ids):
-    cur = list(prompt_ids)
-    for _ in range(gen_len):
-        inp = torch.tensor([cur], dtype=torch.long, device=device)
-        out = model(input_ids=inp, use_cache=False)
-        nxt = int(torch.argmax(out.logits[0, -1]).item())
-        cur.append(nxt)
-        if nxt in eos_ids:
-            break
-    return cur
+    # KV-cached greedy generation (fast) — data gen only, no grad.
+    inp = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+    out = model.generate(
+        input_ids=inp, max_new_tokens=gen_len, do_sample=False, use_cache=True,
+    )
+    return out[0].tolist()
 
 
 @torch.no_grad()
