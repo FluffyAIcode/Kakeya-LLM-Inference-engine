@@ -182,9 +182,13 @@ def main() -> int:
     for pi in range(min(args.n_prompts, len(PROMPTS))):
         prompt = PROMPTS[pi]
         msgs = [{"role": "user", "content": prompt}]
-        ids = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True)
-        if isinstance(ids, torch.Tensor):
-            ids = ids[0].tolist()
+        enc = tok.apply_chat_template(
+            msgs, add_generation_prompt=True, tokenize=True, return_tensors="pt",
+        )
+        # transformers 5.x may return a Tensor or a BatchEncoding/dict.
+        if hasattr(enc, "keys"):
+            enc = enc["input_ids"]
+        ids = enc[0].tolist()
         committed = list(ids)
         generated: List[int] = []
         blk_accepts = []
