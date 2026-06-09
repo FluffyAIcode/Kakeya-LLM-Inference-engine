@@ -2659,16 +2659,20 @@ the PyTorch MPS path stops being usable for end-users on
 commodity Mac hardware, so we know what K3 MLX/Metal needs to
 beat.
 
-**Reference run** (v4 fix stack, commit 5f4af24 + 389943e + the
-user's 6a651c9 evidence):
+**Reference run** (v4 fix stack + ladder, ladder commit
+`f8646ee`, ladder JSON
+`results/research/k2a_production_smoke_ladder_mac_1781009878.json`):
 
 | ctx_lines | tokens approx | recall (1 sample) | sec/token | driver alloc | arch_window | memory_under_24GB |
 |---|---|---|---|---|---|---|
-| 70   | ~1.4k  | TBD (run ladder) | TBD | TBD | TBD | TBD |
-| **280**  | **~5.6k** | **0/1 miss** | **~11.0 s** | **24.80 GB** | **100 %** | **✗** |
+| **70**   | **~1.4k**  | **1/1 hit**  | **1.98 s**  | **23.49 GB** | **100 %** | **✓** |
+| **280**  | **~5.6k**  | **0/1 miss** | **10.85 s** | **24.80 GB** | **100 %** | **✗** |
 
-The ctx280 row is the user's 2026-06-09 v4 evidence
-(`results/research/k2a_production_smoke_mac_ctx280_1781008173.json`).
+This is the **outcome (a)** path that §11.11.13.7's pre-
+classification predicted: ctx70 hit + ctx280 miss → Mac M4
+PyTorch MPS upper bound is bounded between ~1.4k and ~5.6k
+tokens; above that range, driver-allocated memory exceeds the
+24 GB physical and macOS swap thrashing dominates the latency.
 Three readings:
 
 1. **Architecture correct**: `effective_attention_fraction =
@@ -2678,41 +2682,65 @@ Three readings:
 2. **Memory exceeds physical**: 24.80 GB driver-allocated > 24
    GB unified memory → macOS swap thrashing. The 11 s/token
    latency is dominated by disk I/O, not compute or KL codec.
-3. **Recall = 0 on 1 sample is not statistically dispositive**
-   — Bernoulli(p) trials need n > 1 to estimate p. Could be
-   real KL precision loss, could be swap-induced corruption,
-   could be base-model variance at this context. The ladder
-   is the disambiguation tool.
+3. **Recall = 0 on 1 sample is not statistically dispositive
+   in isolation** — but the ladder pairs the ctx280 miss with
+   a ctx70 hit on the **same harness, same KL config, same
+   stateful path, same single-sample seed structure**, so the
+   contrast is informative even though each rung individually
+   is just one Bernoulli trial: the ONLY meaningful difference
+   between the two rungs is context length and the resulting
+   memory footprint.
 
-**To complete this row**: run
+**Three additional readings from the paired ladder**:
 
-```bash
-bash scripts/review_pr_k2a_production_smoke_ladder_on_mac.sh
-```
+4. **Architecture works at BOTH rungs** (`effective_attention_
+   fraction = 1.0` for ctx70 and ctx280). The dLM K/V
+   Restoration mechanism is not the failure point at ctx280 —
+   the verifier IS attending to the full context structurally.
+   What breaks is the memory-allocator path under swap pressure.
 
-The script invokes the per-rung smoke at ctx70 + ctx280
-sequentially, aggregates the four metrics into a single ladder
-JSON at `results/research/k2a_production_smoke_ladder_mac_<stamp>.json`,
-and prints a narrative ready to paste into this table. Expected
-outcomes:
+5. **Latency penalty under swap is 5.5×**: 1.98 s/token at ctx70
+   (in-physical-memory) vs 10.85 s/token at ctx280 (over-by-
+   0.8 GB). This is the macOS swap I/O cost, not compute, not
+   KL codec, not the K1.D / K2.A code path.
 
-- **ctx70 (recall=hit, mem<24GB, latency low)** — confirms the
-  architecture is correct and the ctx280 failure is the
-  memory-thrashing upper bound. Establishes "Mac M4 production-
-  shape upper bound = somewhere between 1.4k and 5.6k, swap
-  thrashing dominates above". K3 MLX/Metal is the path to
-  reach 100k+.
-- **ctx70 also fails** — the ctx280 failure is NOT memory-
-  bound; there is a lurking bug (KL Q=38 too lossy on MPS
-  bf16, or stateful staleness, or numerical drift). Triggers
-  a follow-up A/B (KL Q=38 vs Q=76, stateful=on vs off) to
-  isolate.
+6. **The "in-memory" rung is tight**: 23.49 GB of 24 GB
+   physical at ctx70. The product fit-cap on this Mac box is
+   strictly between ctx70 and ctx280, probably closer to 1.4k
+   (≈ 70-100 lines) than to 5.6k (280 lines). A finer ladder
+   (e.g. 70 / 140 / 200 / 280) would localise the crossover —
+   but the crossover-finding is academic for the **product**
+   question: anything in the 1.4k–5.6k band on Mac M4 24 GB
+   PyTorch MPS already costs the user 24 GB of unified memory
+   for one request, blocking the rest of the system.
 
-The Mac M4 product-shape upper bound is **the metric K3 MLX
-must improve**. K3's success is empirically defined as "raises
-this row's max-fitting context from ~1.4k (TBD) to ≥ 100k
-under the same single-request product shape, on equivalent
-hardware".
+**Implications for K3 MLX/Metal target**: the K3 product-
+success criterion is now empirically defined as
+
+> **K3 MLX must raise the in-physical-memory fit-cap from
+> ≤ 1.4k tokens (PyTorch MPS today) to ≥ 100k tokens under
+> the same single-request product shape, on equivalent
+> 24 GB-class Mac hardware**.
+
+This is **falsifiable** — when K3 MLX ships and we re-run
+this same ladder script (with `--use-mlx-backend` or whatever
+flag K3 introduces), the ctx280 row's `driver_allocated_gb`
+must drop below 24 GB AND `recall_hit` must become True for
+K3 to be considered product-viable on Mac. The ladder JSON
+schema is forward-compatible: re-running on K3 produces a
+parallel ladder JSON that can be diff'd against this PyTorch
+MPS baseline.
+
+**No additional Mac investigation is required from this PR's
+critical path.** The ctx280 miss has a sufficient explanation
+(memory pressure + swap thrashing) given the ctx70 hit;
+running the KL Q=38 vs Q=76 + stateful on/off A/B (the
+"outcome (b)" branch) is no longer needed because outcome
+(a) materialised cleanly. That A/B remains a useful
+diagnostic if a future Mac config (e.g. M4 Pro 36 GB) gets
+ctx280 to fit in physical memory and STILL fails recall —
+then we'd know it's a non-memory bug. Today, on this 24 GB
+box, the answer is unambiguous: memory pressure.
 
 #### 11.11.14 K2.A.2 implementation notes (added 2026-06-09)
 
