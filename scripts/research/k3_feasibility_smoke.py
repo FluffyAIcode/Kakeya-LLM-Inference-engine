@@ -98,6 +98,24 @@ def parse_args() -> argparse.Namespace:
         help="Skip loading the drafter (verifier-only smoke). Useful for "
              "isolating verifier load from joint memory.",
     )
+    ap.add_argument(
+        "--use-dflash-loader",
+        choices=["on", "off"], default="on",
+        help="Use the DFlash custom loader from "
+             "inference_engine.v04.dflash_loader (ADR 0008 §11.15.3 prereq 4) "
+             "instead of plain AutoModelForCausalLM. Default 'on' validates "
+             "Block B prereq 4 — checks expected_class, runs key remap, "
+             "verifies embed_tokens.weight.var() above the trained-init "
+             "threshold, and writes architectural_warnings into the JSON "
+             "report. Set 'off' to reproduce the legacy plain-load behaviour "
+             "for A/B comparison.",
+    )
+    ap.add_argument(
+        "--inspect-only", action="store_true",
+        help="Run inspect_dflash_checkpoint on the drafter and write its "
+             "JSON to --output, then exit 0 without loading either model. "
+             "Use this on vast as the diagnose-phase before the full smoke.",
+    )
     return ap.parse_args()
 
 
@@ -267,48 +285,115 @@ def _load_verifier_mac(verifier_path: str) -> Dict[str, Any]:
     }
 
 
-def _load_drafter(drafter_id: str, platform: str) -> Dict[str, Any]:
-    """Load DFlash drafter. Always via transformers (drafter is small and
-    PyTorch on both CUDA and MPS handles it without the bf16/MLX
-    quantization decision."""
+def _load_drafter(
+    drafter_id: str, platform: str, *, use_dflash_loader: bool,
+) -> Dict[str, Any]:
+    """Load DFlash drafter.
+
+    Two paths:
+
+      * use_dflash_loader=True (default; ADR 0008 §11.15.3 prereq 4):
+        load via inference_engine.v04.dflash_loader.load_dflash_drafter.
+        Asserts expected_class == Qwen3ForCausalLM, performs key remap,
+        attaches fc + hidden_norm extras, and verifies
+        embed_tokens.weight.var() above the trained-init threshold.
+
+      * use_dflash_loader=False: legacy AutoModelForCausalLM path.
+        For A/B comparison of the warnings the prereq-4 corrected
+        loader emits vs HF's stock loader. The smoke will then NOT
+        report the architectural_warnings field meaningfully.
+    """
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
     print(
-        f"[k3-smoke] loading drafter ({platform}): {drafter_id}",
+        f"[k3-smoke] loading drafter ({platform}, "
+        f"loader={'dflash' if use_dflash_loader else 'plain'}): {drafter_id}",
         file=sys.stderr, flush=True,
     )
     t0 = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(drafter_id, trust_remote_code=True)
-    if platform == "cuda":
-        model = AutoModelForCausalLM.from_pretrained(
-            drafter_id, dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-            device_map="auto",
+
+    dtype_map = {
+        "cuda": torch.bfloat16, "mac": torch.bfloat16, "cpu": torch.float32,
+    }
+    dtype = dtype_map.get(platform, torch.float32)
+    device = {"cuda": "cuda", "mac": "mps", "cpu": "cpu"}.get(platform, "cpu")
+
+    architectural_warnings: list[str] = []
+    inspection_payload: Optional[Dict[str, Any]] = None
+    embed_tokens_var: Optional[float] = None
+    embed_tokens_trained: Optional[bool] = None
+    extras_module = None
+    expected_class: Optional[str] = None
+
+    if use_dflash_loader:
+        from inference_engine.v04.dflash_loader import load_dflash_drafter
+        result = load_dflash_drafter(
+            drafter_id,
+            dtype=dtype,
+            device=device if platform != "cuda" else None,
             trust_remote_code=True,
         )
-    elif platform == "mac":
-        model = AutoModelForCausalLM.from_pretrained(
-            drafter_id, dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-            trust_remote_code=True,
-        ).to("mps")
+        model = result.model
+        if platform == "cuda":
+            model = model.to("cuda")
+        expected_class = result.expected_class_name
+        embed_tokens_var = result.embed_tokens_var
+        embed_tokens_trained = result.embed_tokens_trained
+        architectural_warnings = list(result.architectural_warnings)
+        extras_module = result.extras
+        inspection_payload = {
+            "qwen3_unmapped_count": len(result.inspection.qwen3_unmapped),
+            "checkpoint_extras_count": len(result.inspection.checkpoint_extras),
+            "fc_keys": result.inspection.fc_keys,
+            "hidden_norm_keys": result.inspection.hidden_norm_keys,
+            "warnings": result.inspection.warnings,
+        }
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            drafter_id, dtype=torch.float32,
-            trust_remote_code=True,
-        )
+        from transformers import AutoModelForCausalLM
+        if platform == "cuda":
+            model = AutoModelForCausalLM.from_pretrained(
+                drafter_id, dtype=dtype,
+                attn_implementation="sdpa",
+                device_map="auto",
+                trust_remote_code=True,
+            )
+        elif platform == "mac":
+            model = AutoModelForCausalLM.from_pretrained(
+                drafter_id, dtype=dtype,
+                attn_implementation="sdpa",
+                trust_remote_code=True,
+            ).to("mps")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                drafter_id, dtype=dtype, trust_remote_code=True,
+            )
+        expected_class = type(model).__name__
+
     model.eval()
     elapsed = time.perf_counter() - t0
     print(
-        f"[k3-smoke] drafter loaded in {elapsed:.1f}s",
+        f"[k3-smoke] drafter loaded in {elapsed:.1f}s "
+        f"(class={expected_class}, embed_tokens_trained={embed_tokens_trained})",
         file=sys.stderr,
     )
+    if architectural_warnings:
+        print("[k3-smoke] architectural_warnings:", file=sys.stderr)
+        for w in architectural_warnings:
+            print(f"    * {w}", file=sys.stderr)
     return {
         "kind": f"transformers_{platform}",
         "model": model,
         "tokenizer": tokenizer,
         "load_seconds": elapsed,
+        "expected_class": expected_class,
+        "embed_tokens_var": embed_tokens_var,
+        "embed_tokens_trained": embed_tokens_trained,
+        "architectural_warnings": architectural_warnings,
+        "inspection": inspection_payload,
+        "extras_module": extras_module,
+        "loader_path": "dflash" if use_dflash_loader else "plain",
     }
 
 
@@ -452,7 +537,7 @@ def main() -> int:
     print(f"[k3-smoke] gen n:     {args.gen_tokens}", file=sys.stderr)
 
     report: Dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "k3_feasibility_smoke",
         "config": {
             "platform": platform,
@@ -462,9 +547,35 @@ def main() -> int:
             "gen_tokens": args.gen_tokens,
             "seed": args.seed,
             "skip_drafter": bool(args.skip_drafter),
+            "use_dflash_loader": bool(args.use_dflash_loader == "on"),
+            "inspect_only": bool(args.inspect_only),
         },
         "stages": [],
     }
+
+    if args.inspect_only:
+        from inference_engine.v04.dflash_loader import inspect_dflash_checkpoint
+        print(
+            f"[k3-smoke] inspect-only mode: dumping DFlash checkpoint "
+            f"inspection JSON for {args.drafter_id}",
+            file=sys.stderr,
+        )
+        inspection = inspect_dflash_checkpoint(args.drafter_id)
+        report["stages"].append({
+            "stage": "drafter_inspection",
+            "inspection": inspection.to_json(),
+        })
+        report["summary"] = {
+            "status": "inspect_only",
+            "qwen3_unmapped_count": len(inspection.qwen3_unmapped),
+            "fc_keys_present": bool(inspection.fc_keys),
+            "hidden_norm_keys_present": bool(inspection.hidden_norm_keys),
+            "warnings_count": len(inspection.warnings),
+        }
+        _emit(report, args.output)
+        for w in inspection.warnings:
+            print(f"[k3-smoke] WARN: {w}", file=sys.stderr)
+        return 0
 
     # Baseline memory snapshot before any model load.
     _reset_peak(platform)
@@ -498,13 +609,33 @@ def main() -> int:
     drafter = None
     if not args.skip_drafter:
         try:
-            drafter = _load_drafter(args.drafter_id, platform)
-            report["stages"].append({
+            drafter = _load_drafter(
+                args.drafter_id, platform,
+                use_dflash_loader=(args.use_dflash_loader == "on"),
+            )
+            stage = {
                 "stage": "drafter_loaded",
                 "memory": _record_memory(platform, "after_drafter_load"),
                 "drafter_load_seconds": drafter["load_seconds"],
                 "drafter_kind": drafter["kind"],
-            })
+                "loader_path": drafter["loader_path"],
+                "expected_class": drafter["expected_class"],
+                "embed_tokens_var": drafter.get("embed_tokens_var"),
+                "embed_tokens_trained": drafter.get("embed_tokens_trained"),
+                "architectural_warnings": drafter.get("architectural_warnings", []),
+                "inspection": drafter.get("inspection"),
+                "extras_attached": drafter.get("extras_module") is not None,
+            }
+            report["stages"].append(stage)
+            assert drafter["expected_class"] == "Qwen3ForCausalLM", (
+                "ADR 0008 §11.15.3 prereq 4 expected_class assert failed: "
+                f"got {drafter['expected_class']!r}, expected "
+                "'Qwen3ForCausalLM' (DFlash declares model_type: qwen3 "
+                "and ships no auto_map / modeling_dflash.py — Qwen3 dispatch "
+                "is correct). If the loaded class differs, the upstream "
+                "DFlash repo has likely changed its config.json — re-fetch "
+                "and update §11.15.2.1 / §11.15.3."
+            )
         except Exception as e:
             report["stages"].append({
                 "stage": "drafter_load_FAIL",
@@ -578,6 +709,23 @@ def main() -> int:
             drafter is not None
             and report["stages"][-1].get("stage") == "drafter_forward"
         ),
+        "drafter_expected_class": (
+            drafter["expected_class"] if drafter is not None else None
+        ),
+        "drafter_embed_tokens_trained": (
+            drafter.get("embed_tokens_trained") if drafter is not None else None
+        ),
+        "drafter_architectural_warnings_count": (
+            len(drafter.get("architectural_warnings", []))
+            if drafter is not None else None
+        ),
+        "drafter_extras_attached": (
+            drafter.get("extras_module") is not None
+            if drafter is not None else None
+        ),
+        "loader_path": (
+            drafter["loader_path"] if drafter is not None else None
+        ),
     }
     _emit(report, args.output)
     print("[k3-smoke] PASS", file=sys.stderr)
@@ -590,7 +738,7 @@ def _emit(report: Dict[str, Any], output: Optional[str]) -> None:
         else Path(f"results/research/k3_feasibility_smoke_{int(time.time())}.json")
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(f"[k3-smoke] report -> {out_path}", file=sys.stderr)
 
 

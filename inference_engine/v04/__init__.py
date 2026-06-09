@@ -43,6 +43,13 @@ from inference_engine.v04.restored_attention import (
     slice_position_embeddings,
 )
 from inference_engine.v04.dlm_restored_verifier import DLMRestoredVerifier
+from inference_engine.v04.dflash_loader import (
+    DFlashCheckpointInspection,
+    DFlashLoadResult,
+    EMBED_TOKENS_TRAINED_VAR_THRESHOLD,
+    inspect_dflash_checkpoint,
+    load_dflash_drafter,
+)
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -84,6 +91,12 @@ __all__ = [
     "slice_position_embeddings",
     # K1.D — end-to-end wrapper
     "DLMRestoredVerifier",
+    # K3 Block B prereq 4 — DFlash drafter loader (ADR 0008 §11.15.3)
+    "DFlashCheckpointInspection",
+    "DFlashLoadResult",
+    "EMBED_TOKENS_TRAINED_VAR_THRESHOLD",
+    "inspect_dflash_checkpoint",
+    "load_dflash_drafter",
     # K1.E — NIAH validation harness
     "DEFAULT_NEEDLE_PREFIXES",
     "NIAHEvalResult",
