@@ -124,6 +124,47 @@ echo "    Proposer KV capture:  $PROPOSER_KV_CAPTURE"
 echo "    Report:               $report"
 echo
 
+# Pre-flight 0: drafter source check (skipped when SKIP_DRAFTER=1).
+#
+# When DRAFTER_ID is a local path (starts with 'models/', './', '../', '/'),
+# verify the directory exists with config.json + safetensors before
+# invoking Python — a missing local path otherwise silently falls through
+# to HF Hub fetch, which 404s with a misleading error message far from
+# the actual root cause (commonly a missing 'git lfs pull' or wrong cwd).
+if [[ "$SKIP_DRAFTER" != "1" ]]; then
+    case "$DRAFTER_ID" in
+        models/*|./*|../*|/*)
+            if [[ ! -d "$DRAFTER_ID" ]]; then
+                echo "ERROR: DRAFTER_ID='$DRAFTER_ID' looks like a local path but does not exist."
+                echo
+                echo "Common causes:"
+                echo "  1. The Git LFS pointer for the model has not been pulled."
+                echo "     Run from the repo root:"
+                echo "         git lfs install"
+                echo "         git lfs pull"
+                echo
+                echo "  2. The current working directory is not the repo root."
+                echo "         pwd        # should be the repo root"
+                echo "         ls models/ # should list dflash-kakeya-baseline"
+                echo
+                echo "  3. You are on a worktree without the model checkpoint."
+                echo "         git status   # confirm worktree"
+                echo
+                echo "If you intended a HuggingFace repo id instead, override:"
+                echo "    DRAFTER_ID=z-lab/gemma-4-26B-A4B-it-DFlash bash $0"
+                echo "    (note: that variant is NOT alignment-trained — research only)"
+                exit 1
+            fi
+            if [[ ! -f "$DRAFTER_ID/config.json" ]]; then
+                echo "ERROR: DRAFTER_ID='$DRAFTER_ID' is a directory but lacks config.json."
+                echo "       The model checkpoint at this path is incomplete or corrupted."
+                ls -la "$DRAFTER_ID" 2>&1 | head -20
+                exit 1
+            fi
+            ;;
+    esac
+fi
+
 # Pre-flight 1: quantized verifier exists? (skipped when SKIP_VERIFIER=1)
 if [[ "$SKIP_VERIFIER" == "1" ]]; then
     echo "[pre-flight] SKIP_VERIFIER=1 set; bypassing verifier-dir check."

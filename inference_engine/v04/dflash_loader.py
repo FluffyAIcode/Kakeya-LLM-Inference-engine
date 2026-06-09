@@ -143,11 +143,64 @@ _KNOWN_PREFIX_STRIPS = (
 )
 
 
+_LOCAL_PATH_HEURISTICS = (
+    "models/",
+    "./",
+    "../",
+    "/",
+)
+
+
+def _looks_like_local_path(repo_or_path: str) -> bool:
+    """Heuristic: does the input look like a local filesystem path
+    rather than a HuggingFace ``org/repo`` repo id?
+
+    Returns True for inputs starting with ``models/``, ``./``, ``../``,
+    or ``/`` — the common project-relative or absolute path prefixes.
+    HF repo ids are ``<user_or_org>/<repo>`` (exactly one slash, no
+    leading slash, no relative-path component); inputs matching the
+    HF format return False.
+
+    This heuristic is used to **fail fast** when a user passes a
+    project-relative path (like ``models/dflash-kakeya-baseline``)
+    that doesn't exist on disk, instead of silently falling through
+    to HF Hub (which then returns 404 with a confusing error message
+    far from the actual root cause).
+    """
+    return repo_or_path.startswith(_LOCAL_PATH_HEURISTICS)
+
+
 def _resolve_local_dir(repo_or_path: str, hf_kwargs: Mapping[str, Any]) -> Path:
-    """Resolve repo id to a local snapshot. Pure HF-hub call; no model load."""
+    """Resolve repo id to a local snapshot. Pure HF-hub call; no model load.
+
+    If ``repo_or_path`` looks like a local path (per
+    :func:`_looks_like_local_path`) but does NOT exist on disk, this
+    raises :class:`FileNotFoundError` with an actionable message instead
+    of silently falling through to ``huggingface_hub.snapshot_download``
+    (which then emits a 404 error far from the actual root cause —
+    typically a missing ``git lfs pull`` or wrong cwd).
+    """
     p = Path(repo_or_path)
     if p.exists() and p.is_dir():
         return p
+    if _looks_like_local_path(repo_or_path):
+        raise FileNotFoundError(
+            f"DFlash drafter source {repo_or_path!r} looks like a local "
+            f"path but does not exist on disk (resolved to "
+            f"{p.absolute()}). Common causes:\n"
+            f"  1. The Git LFS pointer for the model has not been pulled "
+            f"yet — run 'git lfs install && git lfs pull' from the repo "
+            f"root.\n"
+            f"  2. The current working directory is not the repo root — "
+            f"verify with 'pwd' and 'ls models/' before re-running.\n"
+            f"  3. You are on a worktree that does not have the model "
+            f"checkpoint — use a worktree where 'git lfs pull' has run.\n"
+            f"\n"
+            f"If you actually intended a HuggingFace repo id, use the "
+            f"'<user_or_org>/<repo>' format (no leading 'models/', './' "
+            f"or '/'). Refusing to silently fall through to HF Hub fetch "
+            f"because that would 404 with a misleading error message."
+        )
     from huggingface_hub import snapshot_download
     cache_dir = hf_kwargs.get("cache_dir")
     token = hf_kwargs.get("token") or hf_kwargs.get("use_auth_token")

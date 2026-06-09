@@ -34,7 +34,9 @@ transformers = pytest.importorskip("transformers")
 from inference_engine.v04 import dflash_loader  # noqa: E402
 from inference_engine.v04.dflash_loader import (  # noqa: E402
     EMBED_TOKENS_TRAINED_VAR_THRESHOLD,
+    _looks_like_local_path,
     _propose_key_remap,
+    _resolve_local_dir,
     inspect_dflash_checkpoint,
     load_dflash_drafter,
 )
@@ -368,3 +370,89 @@ class TestCLIInspect:
         assert "key_remap" in payload
         assert "fc.weight" in payload["fc_keys"]
         assert "hidden_norm.weight" in payload["hidden_norm_keys"]
+
+
+# ---------------------------------------------------------------------------
+# 5. Local-path heuristic + fail-fast resolver
+#    (Regression for 2026-06-09 user-side bug: DRAFTER_ID=models/dflash-
+#    kakeya-baseline silently fell through to HF Hub fetch when the local
+#    LFS-pulled directory wasn't present, and HF returned 404 with a
+#    misleading error message far from the root cause.)
+# ---------------------------------------------------------------------------
+
+
+class TestLooksLikeLocalPath:
+
+    def test_models_prefix(self):
+        assert _looks_like_local_path("models/dflash-kakeya-baseline") is True
+        assert _looks_like_local_path("models/foo") is True
+
+    def test_relative_prefixes(self):
+        assert _looks_like_local_path("./models/foo") is True
+        assert _looks_like_local_path("../models/foo") is True
+
+    def test_absolute_prefix(self):
+        assert _looks_like_local_path("/Users/me/models/foo") is True
+        assert _looks_like_local_path("/tmp/checkpoint") is True
+
+    def test_hf_repo_id_does_not_match(self):
+        assert _looks_like_local_path("z-lab/gemma-4-26B-A4B-it-DFlash") is False
+        assert _looks_like_local_path("google/gemma-3-1b-it") is False
+        assert _looks_like_local_path("FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit") is False
+        assert _looks_like_local_path("dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1") is False
+
+
+class TestResolveLocalDirFailFast:
+    """Regression for 2026-06-09 user-side bug.
+
+    User report: ``DRAFTER_ID=models/dflash-kakeya-baseline`` was treated
+    as an HF repo id and the script tried to download from HF, which
+    returned 404. Pre-fix _resolve_local_dir silently fell through to
+    huggingface_hub.snapshot_download for any non-existent local path.
+    Post-fix it raises FileNotFoundError with an actionable message.
+    """
+
+    def test_local_path_that_exists_is_returned(self, tmp_path):
+        d = _write_tiny_checkpoint(
+            tmp_path / "models" / "dflash-kakeya-baseline",
+            use_drafter_prefix=False, include_extras=True,
+            embed_tokens_trained=True,
+        )
+        result = _resolve_local_dir(str(d), {})
+        assert result == d
+
+    def test_local_path_that_does_not_exist_raises(self):
+        with pytest.raises(FileNotFoundError) as excinfo:
+            _resolve_local_dir("models/dflash-kakeya-baseline", {})
+        msg = str(excinfo.value)
+        assert "does not exist on disk" in msg
+        assert "git lfs pull" in msg
+        assert "current working directory" in msg.lower()
+
+    def test_relative_path_that_does_not_exist_raises(self):
+        with pytest.raises(FileNotFoundError):
+            _resolve_local_dir("./models/missing", {})
+        with pytest.raises(FileNotFoundError):
+            _resolve_local_dir("../models/missing", {})
+
+    def test_absolute_path_that_does_not_exist_raises(self):
+        with pytest.raises(FileNotFoundError):
+            _resolve_local_dir("/tmp/definitely-not-a-real-checkpoint", {})
+
+    def test_hf_repo_id_falls_through_to_hf_hub(self, monkeypatch):
+        """For a non-local-looking input (HF repo id format), the resolver
+        should still call huggingface_hub.snapshot_download — the fail-fast
+        path is local-path-specific."""
+        called = {}
+
+        def fake_snapshot_download(**kwargs):
+            called["kwargs"] = kwargs
+            return "/tmp/fake-cached-snapshot"
+
+        import huggingface_hub
+        monkeypatch.setattr(
+            huggingface_hub, "snapshot_download", fake_snapshot_download,
+        )
+        result = _resolve_local_dir("z-lab/gemma-4-26B-A4B-it-DFlash", {})
+        assert called["kwargs"]["repo_id"] == "z-lab/gemma-4-26B-A4B-it-DFlash"
+        assert str(result) == "/tmp/fake-cached-snapshot"
