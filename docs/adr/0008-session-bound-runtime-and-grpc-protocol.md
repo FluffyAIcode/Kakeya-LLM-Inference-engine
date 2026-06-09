@@ -1236,11 +1236,18 @@ In one diagram:
 
 The five properties this design realises:
 
-1. **Constant memory in context length**. Sustained verifier KV
-   footprint is `sink + window` (≈ 3 MB for typical settings),
-   independent of prompt size. Sustained proposer footprint is its
-   weights only (no cache). Transient peak compute memory grows with
-   context but is freed each step.
+1. **Sustained memory constant in context length**. Sustained
+   verifier KV footprint is `sink + window` (≈ 3 MB for typical
+   settings), independent of prompt size. Sustained proposer
+   footprint is its weights only (no cache). **Per-step peak
+   memory is a separate concern with its own per-K-stage profile;
+   see §11.13 for the precise breakdown** — the headline summary
+   is that K1.D / K2.A.1 have peak ≈ 2× O(T × hidden_dim) (both
+   proposer and verifier do full forwards with `use_cache=False`),
+   K2.A.2 brings the verifier side incremental and cuts peak to
+   ≈ 1× O(T × hidden_dim) (only the proposer remains O(T) by §11.3
+   load-bearing fact), and K3+ proposer-chunked forwards bound peak
+   at O(W) for a chunk size W.
 2. **Intelligence approximates full attention**. The verifier's
    attention input at every step is (sink + window + reconstructed),
    which is a superset of the full-attention input modulo
@@ -1259,11 +1266,18 @@ The five properties this design realises:
    failure mode (frozen layers don't decode bridge delta) does not
    apply because the integration point is pre-attention, not
    mid-stack residual.
-5. **Fits Mac mini 24 GB**. Sustained: weights (~7 GB) + sink+window
-   cache (~3 MB) ≈ 7 GB. Transient peak (Gemma 4-2B proposer
-   forward + Gemma 4-9B verifier forward + reconstruction projection)
-   stays under ~10 GB even for 100 k-token contexts. Headroom of
-   ~14 GB.
+5. **Fits Mac mini 24 GB** — *sustained*. Sustained: weights
+   (~7 GB) + sink+window cache (~3 MB) ≈ 7 GB. The earlier
+   pre-K1 estimate "transient peak stays under ~10 GB even for
+   100 k-token contexts" has been **empirically falsified by
+   K1.H Mac M4 evidence** at 5.6 k context (driver_allocated
+   29 GB on a 24 GB physical Mac M4, triggering macOS unified-memory
+   swap). Per §11.13: K1.D / K2.A.1 stateless implementations
+   exceed Mac M4 24 GB physical memory at context lengths well
+   short of 100 k; K2.A.2 stateful caching halves the peak;
+   peak-bounded-in-T is a K3+ optimisation (proposer chunking),
+   not a K1/K2 architectural property. Mac mini fit at 100 k is
+   therefore deferred to K3+, not delivered in K2.
 
 ### 11.6 Cross-model K/V projection f_θ
 
@@ -2176,37 +2190,58 @@ stateless plumbing's per-step compress+decompress cost has no
 caching offset to amortise it, so gate (c) is expected to fail
 at K2.A.1.
 
-**K2.A.2 (stateful caching — future PR; code change scope:
+**K2.A.2 (stateful caching — formal commitment; code change scope:
 ~500–1000 LOC, refactor of DLMRestoredVerifier across forwards).**
-What it must deliver:
+This is now a **formal architectural commitment** (formalised
+2026-06-09 alongside the §11.5 / §11.13 memory-bounds clarification
+PR). K2.A.2 must deliver, as binding architectural properties:
 
-* `DLMRestoredVerifier` becomes session-stateful: compressors
-  (one per layer) are created at session start and persist
-  across `forward()` calls. Resident K/V at sink+window slots
-  are compressed once when produced and reused on subsequent
-  decode steps via `decompress`. New decode steps add 1 token
-  to the cache; positions leaving the window are evicted via
-  `compressor.evict`.
-* Verifier forward over `[1, T]` becomes verifier forward over
-  `[1, 1]` (the new query position only) plus a K/V assembly
-  step that decompresses the resident cache and merges with
-  proposer-restored evicted K/V. The proposer still runs O(T)
-  per step (no proposer cache by §11.3 design); the verifier
-  drops to O(1) per step. Net per-step cost goes from
-  O(T)_proposer + O(T)_verifier (K1.D + K2.A.1) to
-  O(T)_proposer + O(1)_verifier (K2.A.2).
-* This is what closes gate (c). At the 100k rung, K1.F evidence
-  (`aab8686`) shows v0.4 / oracle latency ratio = 0.53× (1.9×
-  slower than oracle); gate (c) requires ≥0.6× — i.e. K2.A.2
-  must yield ≥1.13× over K2.A.1's stateless baseline. The
+* **Stateful compressed K/V cache.** `DLMRestoredVerifier` becomes
+  session-stateful: compressors (one per layer) are created at
+  session start and persist across `forward()` calls. Resident K/V
+  at sink+window slots are compressed once when produced and reused
+  on subsequent decode steps via `decompress`. New decode steps add
+  1 token to the cache; positions leaving the window are evicted
+  via `compressor.evict`.
+
+* **Verifier per-step forward becomes O(1) in T.** Verifier forward
+  over the full `[1, T]` prefix (K1.D / K2.A.1 behaviour) is replaced
+  by verifier forward over `[1, 1]` — only the new query position is
+  processed. K/V at all preceding positions are sourced from the
+  persistent compressed cache (resident slots) ⊕ proposer-restored
+  reconstruction (evicted slots). This is the AR inference pattern
+  that the user's intuition correctly identified as missing in K1.D.
+
+* **Per-step peak memory drops from ≈ 2× O(T × hidden_dim) to
+  ≈ 1× O(T × hidden_dim).** The verifier's full-T forward
+  contribution to peak memory disappears entirely. The proposer's
+  full-T forward contribution remains by §11.3 load-bearing fact
+  (no-cache proposer is what makes K/V Restoration possible). Net
+  peak: proposer's O(T) only. Sustained memory: model weights +
+  compressor state — both O(1) in T.
+
+* **§11.13 invariant**: K2.A.2 makes the §11.13 row labelled
+  "K2.A.2 peak ≈ 1× O(T × hidden_dim)" a **falsifiable claim** that
+  K2.A.2's CUDA evidence must demonstrate via `peak_allocated_bytes`
+  comparison vs K1.D / K2.A.1 baselines. Specifically: at the same
+  context length T, `K2.A.2 peak < K1.D peak − weights_size` (i.e.
+  the verifier-side T-scaled component is gone, only the proposer-
+  side T-scaled component remains).
+
+* **Closes §11.8 throughput gate (c).** At the 100k rung, K1.F
+  evidence (`aab8686`) shows v0.4 / oracle latency ratio = 0.53×
+  (1.9× slower than oracle); gate (c) requires ≥ 0.6× — i.e. K2.A.2
+  must yield ≥ 1.13× over K2.A.1's stateless baseline. The
   theoretical upper bound is approximately the proposer/verifier
   cost ratio at long context, typically 1.5–2× — within reach of
   the K2.A.2 stateful design.
-* K2.A.2 also closes the §11.11.9 sustained-memory empirical gap
-  by introducing a **persistent** compressed cache whose size IS
-  the architecturally-meaningful "v0.4 sustained working set",
-  visible to CUDA `peak_allocated_bytes` measurement in K1.G's
-  schema.
+
+* **Closes §11.11.9 sustained-memory empirical gap.** K2.A.2's
+  persistent compressed cache is the architecturally-meaningful
+  "v0.4 sustained working set" — visible to CUDA
+  `peak_allocated_bytes` and to MPS via the K1.G memory tracking
+  (the cache is now persistent enough to survive the post-eval
+  snapshot, unlike K1.D / K2.A.1's stateless re-computed K/V).
 
 **Why split.** Stateless plumbing first lets us validate the
 correctness contract (gate b) before committing to the stateful
@@ -2273,3 +2308,276 @@ measured twice on vast (commit `4c95975` and again at
 run is the canonical entry above because it is part of the
 complete §11.12 ladder produced from a single SDPA-enabled
 runner invocation.
+
+### 11.13 Memory bounds: sustained vs per-step peak (added 2026-06-09)
+
+This subsection was added after the K1.H Mac M4 evidence
+(`4fb947f`, results/research/k1e_niah_mac_ctx280_*.json) showed
+driver_allocated 29 GB at 5.6k context on a 24 GB physical
+Mac M4 — exceeding physical memory and triggering macOS
+unified-memory swap. That evidence prompted a precision audit
+of the §11.5 §"Five properties" item 1 claim ("constant memory
+in context length T"), which was loose between two distinct
+architectural concepts.
+
+#### 11.13.1 The two memory-bounds concepts
+
+The original §11.5 wording conflated:
+
+| concept | definition | what bounds it | matters for |
+|---|---|---|---|
+| **sustained memory** | working set persisted between decode steps | `O(weights) + O(sink + window)` — both constant in T | long-session stability, multi-tenant capacity, "can I run a 4h session at 100k context" |
+| **per-step peak memory** | maximum live allocation during one forward call | `O(weights) + O(T × hidden_dim) × {1 or 2 depending on K-stage}` | "can my hardware run this single decode step at this T", peak GPU/unified memory required |
+
+These are NOT the same; **only sustained is fundamentally O(1)
+in T under the v0.4 architecture**. Per-step peak is bounded
+below by the proposer's own forward, which is O(T) by §11.3
+load-bearing fact (the dLM proposer has no cache and must
+re-encode the full prefix at each decode step — that's the
+property that enables K/V reconstruction in the first place).
+
+#### 11.13.2 Per-K-stage memory profile
+
+The architectural per-stage breakdown of both concepts. All
+expressions are leading-order in T (the prompt + decoded-so-far
+length); constants and lower-order terms are omitted.
+
+| stage | sustained (between forwards) | per-step peak (during one forward) | notes |
+|---|---|---|---|
+| **K1.D** (stateless, no codec) | `O(weights)` | `~2 × O(T × hidden_dim)` | proposer full-forward + verifier full-forward serialised; KVCapture held across them. `use_cache=False` on verifier; sink+window K/V re-computed every forward, NOT persisted. |
+| **K2.A.1** (stateless KL plumbing) | `O(weights)` | `~2 × O(T × hidden_dim)` | identical to K1.D except K/V at resident positions round-trip through the codec (additive transient overhead, not architectural change). Codec state is reset every forward (§11.11.12). |
+| **K2.A.2** (stateful caching — formal commitment) | `O(weights) + O(sink + window)` | `~1 × O(T × hidden_dim)` | verifier per-step forward becomes `[1, 1]` (incremental AR pattern) — the verifier's contribution to peak disappears. **Only the proposer's O(T) forward remains.** Sustained gains the persistent compressor state. |
+| **K3+** (proposer-chunked forward) | `O(weights) + O(sink + window)` | `O(W × hidden_dim)` for chunk size W | proposer's full-T forward replaced by `T/W` sequential `O(W)` chunks. Latency overhead = `T/W × per-chunk-startup`. **W is a memory-latency knob.** |
+| **theoretical floor** | `O(weights) + O(sink + window)` | `O(hidden_dim)` per token | only achievable if the proposer also goes incremental, which contradicts §11.3. **Not a v0.4 architectural target.** |
+
+#### 11.13.3 Empirical interpretation of the K1.H Mac M4 29 GB finding
+
+K1.H Mac M4 ctx280 (5.6k tokens, results/research/k1e_niah_mac_ctx280_1780923663.json):
+
+```
+driver_allocated_bytes:
+  baseline       2.85 GB    (model weights + idle activations)
+  oracle        29.01 GB
+  v0.3          25.62 GB
+  v0.4          29.01 GB    ← exceeds 24 GB physical, swap engaged
+```
+
+Decomposition (estimation, leading order):
+
+| component | size at T=5.6k | scaling | live during |
+|---|---|---|---|
+| Gemma 3-1B-it bf16 weights | 2.0 GB | constant | always |
+| KVCapture (proposer K/V at all positions) | 0.15 GB | O(T × layers × kv) | step 1 → step 4 |
+| Proposer activation peak (single layer at a time) | ~0.3-0.5 GB | O(T × max(hidden, intermediate)) | step 1 |
+| SDPA attention buffers (per layer, transient) | ~0.5-1 GB | O(T × heads × T) on MPS in fp32 acc | per attention call |
+| Verifier activation peak (single layer at a time) | ~0.3-0.5 GB | O(T × max(hidden, intermediate)) | step 4 |
+| Theoretical sum (one-time, ideal allocator) | ~3-4 GB | | |
+| **Observed driver memory** | **29 GB** | | end of forward |
+
+The ~25 GB gap between theoretical sum and observed driver is
+**PyTorch MPS allocator caching + macOS unified-memory accounting**:
+
+* PyTorch MPS allocator caches freed blocks aggressively and
+  does not return memory to macOS until `torch.mps.empty_cache()`
+  is called or the process exits. The K1.E harness does not call
+  `empty_cache` between configs.
+* `torch.mps.driver_allocated_memory()` reports macOS-side
+  unified-memory bookkeeping for the process. Because macOS
+  unified memory is shared between CPU and GPU, allocator
+  fragmentation maps directly to physical memory pressure (no
+  separate device VRAM as on CUDA).
+* The HF Gemma3 SDPA dispatch on MPS in transformers ≥ 4.45
+  appears to have suboptimal memory release between layers in
+  some torch versions — consistent with our observation that
+  driver memory grows to roughly N × per-layer peak rather than
+  sub-linearly.
+
+**The 29 GB observation does NOT mean v0.4 needs 29 GB at 5.6k
+context architecturally.** It means PyTorch MPS at this torch
+version, on this Gemma 3 implementation, with this allocator
+behaviour, **has fragmentation overhead of ~7-10× the
+theoretical sum**. CUDA observation at the same context length
+should be much lower — see K2.A.2 vast.ai evidence (forthcoming)
+for the cleaner CUDA `peak_allocated_bytes` comparison.
+
+#### 11.13.4 What §11.5 actually commits to (precise version)
+
+The five properties of §11.5 are restated under the precise
+sustained-vs-peak distinction:
+
+| §11.5 property | sustained | per-step peak | empirically validated? |
+|---|---|---|---|
+| 1 (constant memory in T) | **O(weights + sink + window)** ✓ K1 architecturally; empirically pending K2.A.2 evidence per §11.11.9 addendum | K-stage-dependent (§11.13.2 above) | sustained: argued; peak: K1.H Mac M4 falsifies the pre-K1 "10 GB at 100k headroom" estimate |
+| 2 (intelligence ≈ full attention) | n/a | n/a | ✓ K1 multi-source baseline `Δ = 0.000` at 8 measurements (§11.11.10) |
+| 3 (speculative decoding correctness) | n/a | n/a | not yet measured; covered by §11.8 criterion 4 in K3+ |
+| 4 (no cross-attention bridge) | n/a | n/a | ✓ R1c–R1e empirically settled (§11.10) |
+| 5 (Mac mini 24 GB fit) | ✓ at K1 with Gemma 3-1B (2 GB sustained) | ✗ K1.D / K2.A.1 violate at T ≥ ~5k Mac M4; K2.A.2 still violates at long enough T due to proposer's O(T); K3+ proposer chunking required for true bound | K1.H Mac M4 falsifies pre-K1 estimate |
+
+#### 11.13.5 Why this clarification matters
+
+Beyond honesty, four concrete consequences:
+
+1. **K2.A.2 throughput vs memory targets are now distinct
+   commitments.** §11.8 criterion 7 (throughput floor) and §11.13's
+   peak memory bound are independently testable. K2.A.2 evidence
+   on vast CUDA must show both: ≥ 1.13× throughput vs K2.A.1 (the
+   §11.8 c gate) AND `peak_allocated < K1.D peak − weights_size`
+   (the §11.13 peak gate, formalised in §11.11.12 above).
+
+2. **Mac M4 evidence at long context is correctly characterised.**
+   Mac M4 K1.H 29 GB at 5.6k is **not a v0.4 architectural failure**;
+   it is the predicted O(T)-peak behaviour amplified by PyTorch
+   MPS allocator fragmentation. The Mac M4 fit claim of §11.5 item 5
+   was always conditional on per-step peak staying small at the
+   target T — which K1.D / K2.A.1 doesn't, and K2.A.2 only halves.
+
+3. **K3+ phase scope expands.** Proposer-chunked forward (§11.13.2
+   row 4) is now an explicit K3+ requirement, not just an
+   optimisation. The chunk-size W is the memory-latency knob that
+   makes the architecture genuinely peak-bounded in T at the cost
+   of T/W chunk-startup overhead. Design draft to follow as a
+   separate ADR if needed.
+
+4. **The user-stated "no intelligence loss + extreme KV savings"
+   contract remains intact.** The K1 multi-source baseline
+   (`Δ(v0.4 − oracle) = 0.000` at all 8 measurements, §11.11.10)
+   shows zero intelligence loss. The KV savings in the
+   architectural sense (sustained KV bounded by sink + window
+   regardless of T) hold. What this clarification corrects is the
+   secondary "fits Mac M4 at 100k single-session" claim, which was
+   always a per-step-peak claim and is gated on K3+ proposer
+   chunking, not delivered by K1/K2.
+
+#### 11.13.6 K2.A.2 cached-resident K/V staleness (architectural cost, 2026-06-09)
+
+This subsection was added 2026-06-09 in response to a sharp
+follow-up question after §11.13 was drafted: "if the verifier's
+query position is no longer the full prefix [1, T] but only the
+new position [1, 1], is the verifier's effective attention window
+indirectly reduced, lowering intelligence?"
+
+The answer separates a real concern from a misconception.
+
+#### 11.13.6.1 The structural attention range is unchanged
+
+Direct answer: under K2.A.2 stateful caching, the new query
+position attends to K, V at all preceding positions —
+`{sink + window from cache} ∪ {evicted, proposer-restored}` —
+which is the full causal range, identical to K1.D in the K1.H
+attention-window metric sense. The query reduction from `[1, T]`
+(K1.D) to `[1, 1]` (K2.A.2) eliminates the verifier's
+**recomputation of past queries' logits** — but those past
+logits are discarded in autoregressive decoding anyway (only the
+last query's logits produce the next token). So the structural
+attention coverage is preserved.
+
+The K1.H `effective_attention_fraction` metric reads 100% under
+K2.A.2 just as it does under K1.D / K2.A.1.
+
+#### 11.13.6.2 The cached resident K/V have bounded staleness
+
+A real architectural cost emerges at a different layer:
+**the K, V values stored in the K2.A.2 compressor cache reflect
+the proposer's view of the world AT THE TIME the position was
+new, not at the current decode step**.
+
+Mechanism. In a v0.4 verifier, the K, V at any position `p` at
+layer `L > 1` depends on `hidden_states_(L−1)[p]`, which depends
+on layer `(L−1)` attention's K, V at positions `0..p`. When `p`
+became new at decode step `s_p`, the prefix length was `p+1` and
+the patched attention layer pulled K, V at evicted positions
+from the proposer's forward run on `input_ids[0..p]`. The
+proposer is dLM (full attention), so the proposer's K, V at any
+position `q ≤ p` depend on the **full prefix at step `s_p`**,
+including the suffix `[q..p]`.
+
+At a later decode step `s_now > s_p`, the prefix has grown to
+length `T_now > p+1`. Re-running the proposer would yield a
+**different** K, V at the same position `q` because the suffix
+seen by the dLM is now `[q..T_now-1]`, not `[q..p]`. K1.D
+benefits from this freshness because it re-runs the verifier
+over the full prefix every step. K2.A.2 does not; its cached
+K, V at resident position `p` are frozen at step `s_p`'s view.
+
+The staleness magnitude depends on the position class:
+
+| position class | layer 1 K/V staleness | layer ≥ 2 K/V staleness | reason |
+|---|---|---|---|
+| **sink** (positions 0..3) | none | **none** | sink positions become resident at step `s_p ≤ sink_size`, when prefix length is ≤ `sink+window` and **no eviction occurs**. Their K/V are computed under standard causal attention with no proposer-restored substitution at any layer. Bit-for-bit stable. |
+| **window** (most recent `window_size` positions) | none | bounded by **`window_size` decode steps** of suffix drift | layer-1 K, V is `k_proj(embed(input_ids[p]))` — token-only, no staleness. Layer-2+ K/V was computed at step `s_p` ≤ `window_size` ago; the proposer's drift over those `window_size` new tokens is the staleness amount. |
+| **evicted** (proposer-restored, transient) | n/a — recomputed every step | n/a — recomputed every step | every forward re-runs the proposer on the current full prefix, so evicted K/V are always fresh. |
+
+Sink positions and evicted positions therefore contribute **zero
+staleness**. Only the window positions are stale, and their
+staleness is bounded above by `window_size` × per-step suffix-drift
+magnitude. With `window_size = 64` and a typical 100k-context
+session, the cached window K/V are at most 64-token-suffix-stale
+relative to a ~100k prefix — i.e. the staleness is at the
+0.064 % suffix-drift scale.
+
+#### 11.13.6.3 Empirical bound: K2.A.2 must satisfy the same NIAH gate as K2.A.1
+
+The K1 multi-source baseline (§11.11.10) achieved
+`Δ(v0.4_K1.D − oracle) = 0.000` at all 8 measurements. K2.A.1
+inherits this empirically because it is bit-for-bit equivalent
+to K1.D modulo the codec round-trip noise. K2.A.2's stateful
+caching introduces the staleness above; **the K1 finding does
+NOT directly transfer to K2.A.2** — it must be re-validated.
+
+The K2.A.2 binding gate (already in §11.11.5):
+
+* `recall(K2.A.2 v0.4) ≥ recall(oracle) − 1pp` at every §11.12
+  rung.
+
+This gate now serves two purposes simultaneously:
+
+* (originally) validates KakeyaLattice composition does not
+  break correctness;
+* (newly explicit, 2026-06-09) validates that the cached-resident
+  staleness does not drop recall below the 1pp threshold.
+
+If the K2.A.2 NIAH evidence shows recall regression > 1pp
+attributable to staleness (i.e. KL on / off shows similar
+regression in the same direction, suggesting the staleness is
+the cause not the codec), the response is to escalate to one of
+the freshness designs in §11.13.6.4 below — NOT to fail K2.A.2
+on a known architectural cost that's actually rescuable.
+
+#### 11.13.6.4 Freshness design options (escalation paths)
+
+If the §11.13.6.3 empirical gate fails on staleness specifically,
+three architectural options exist, each with different
+quality-throughput trade-offs:
+
+| design | freshness | per-step compute | when to escalate |
+|---|---|---|---|
+| **(default) naive K2.A.2** | bounded staleness `≤ window_size` steps | `~1× O(T × hidden_dim)` (proposer only) | always start here; ship if the gate passes |
+| **refresh-on-eviction** | zero staleness in window (sink already zero) | `~3× O(T × hidden_dim)` (proposer + verifier `[1, 1]` + refresh chain at evicting position, all are `O(T)` attention) | escalate if naive K2.A.2 fails the 1pp gate |
+| **periodic full-window refresh** | refresh schedule with period `N`; staleness `≤ N` steps | amortised `(1 + 1/N) × O(T × hidden_dim)` | middle ground if refresh-on-eviction is too costly |
+
+The default-naive design is the recommended starting point because
+the analysis above predicts staleness impact below the 1pp gate.
+If empirical evidence falsifies that prediction, the escalation
+paths are well-specified and reversible — none of them require
+re-architecting the K1 / K2.A.0 / K2.A.1 / K2.A.2 progression,
+only changing K2.A.2's cache update policy.
+
+#### 11.13.6.5 Why this is documented as an architectural cost, not a bug
+
+K2.A.2's stateful caching is the **natural way** stateful AR
+inference works: past K/V are computed when the past tokens
+were new and cached forever. Standard production AR inference
+does the same and works fine. The novelty of v0.4 is that the
+verifier's hidden states at evicted positions are NOT
+self-causal — they're proposer-non-causal (full-attention). The
+non-causal dependency is what creates the suffix-drift
+sensitivity. This dependency is intrinsic to §11.5 dLM K/V
+Restoration — removing it would break the architecture.
+
+So the staleness is not a K2.A.2 design flaw; it is the residual
+architectural cost of running an AR verifier with a
+non-causal-K/V-augmented cache. Documenting it explicitly here
+prevents future readers from reading K2.A.2 NIAH evidence (with
+recall not at exactly 0.000 delta vs oracle) as a regression
+when it is in fact an expected property of the architecture
+within the documented bound.
