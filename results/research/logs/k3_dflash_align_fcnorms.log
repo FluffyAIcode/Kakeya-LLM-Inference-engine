@@ -1,0 +1,38 @@
+[align] loading verifier google/gemma-4-26B-A4B-it
+Loading weights:   0%|          | 0/1013 [00:00<?, ?it/s]Loading weights:   0%|          | 2/1013 [00:00<00:59, 16.87it/s]Loading weights:   0%|          | 4/1013 [00:00<01:42,  9.81it/s]Loading weights:   2%|▏         | 23/1013 [00:00<00:16, 60.45it/s]Loading weights:   3%|▎         | 32/1013 [00:00<00:17, 55.40it/s]Loading weights:   4%|▍         | 41/1013 [00:00<00:23, 42.15it/s]Loading weights:   6%|▌         | 63/1013 [00:01<00:17, 53.48it/s]Loading weights:   9%|▉         | 91/1013 [00:01<00:10, 85.89it/s]Loading weights:  10%|█         | 103/1013 [00:01<00:11, 77.87it/s]Loading weights:  11%|█         | 113/1013 [00:01<00:11, 80.01it/s]Loading weights:  12%|█▏        | 123/1013 [00:01<00:12, 69.57it/s]Loading weights:  13%|█▎        | 132/1013 [00:02<00:16, 52.17it/s]Loading weights:  15%|█▌        | 156/1013 [00:02<00:10, 79.74it/s]Loading weights:  16%|█▋        | 167/1013 [00:02<00:11, 71.35it/s]Loading weights:  18%|█▊        | 178/1013 [00:02<00:10, 76.43it/s]Loading weights:  19%|█▊        | 188/1013 [00:02<00:12, 67.04it/s]Loading weights:  20%|█▉        | 199/1013 [00:03<00:15, 53.90it/s]Loading weights:  21%|██▏       | 217/1013 [00:03<00:12, 64.06it/s]Loading weights:  23%|██▎       | 233/1013 [00:03<00:09, 80.09it/s]Loading weights:  24%|██▍       | 244/1013 [00:03<00:09, 84.55it/s]Loading weights:  25%|██▌       | 254/1013 [00:03<00:10, 74.50it/s]Loading weights:  26%|██▌       | 263/1013 [00:03<00:09, 76.45it/s]Loading weights:  27%|██▋       | 272/1013 [00:04<00:11, 66.75it/s]Loading weights:  28%|██▊       | 287/1013 [00:04<00:08, 83.41it/s]Loading weights:  29%|██▉       | 297/1013 [00:04<00:09, 72.05it/s]Loading weights:  31%|███       | 309/1013 [00:04<00:08, 82.08it/s]Loading weights:  31%|███▏      | 319/1013 [00:04<00:09, 71.82it/s]Loading weights:  33%|███▎      | 331/1013 [00:04<00:08, 81.78it/s]Loading weights:  34%|███▎      | 341/1013 [00:04<00:09, 70.41it/s]Loading weights:  35%|███▍      | 351/1013 [00:05<00:08, 76.20it/s]Loading weights:  36%|███▌      | 360/1013 [00:05<00:09, 66.51it/s]Loading weights:  37%|███▋      | 375/1013 [00:05<00:10, 58.07it/s]Loading weights:  39%|███▉      | 396/1013 [00:05<00:07, 82.15it/s]Loading weights:  40%|████      | 406/1013 [00:05<00:08, 72.66it/s]Loading weights:  41%|████▏     | 418/1013 [00:06<00:07, 79.58it/s]Loading weights:  42%|████▏     | 428/1013 [00:06<00:08, 68.97it/s]Loading weights:  43%|████▎     | 440/1013 [00:06<00:07, 74.96it/s]Loading weights:  44%|████▍     | 449/1013 [00:06<00:08, 64.51it/s]Loading weights:  46%|████▌     | 462/1013 [00:06<00:07, 75.03it/s]Loading weights:  46%|████▋     | 471/1013 [00:06<00:08, 64.22it/s]Loading weights:  48%|████▊     | 484/1013 [00:06<00:06, 75.81it/s]Loading weights:  49%|████▊     | 493/1013 [00:07<00:08, 63.44it/s]Loading weights:  50%|████▉     | 506/1013 [00:07<00:06, 74.50it/s]Loading weights:  51%|█████     | 515/1013 [00:07<00:07, 63.74it/s]Loading weights:  52%|█████▏    | 527/1013 [00:07<00:06, 72.62it/s]Loading weights:  53%|█████▎    | 536/1013 [00:07<00:07, 62.37it/s]Loading weights:  54%|█████▍    | 549/1013 [00:07<00:06, 74.19it/s]Loading weights:  55%|█████▌    | 558/1013 [00:08<00:07, 63.19it/s]Loading weights:  56%|█████▋    | 571/1013 [00:08<00:05, 74.80it/s]Loading weights:  57%|█████▋    | 580/1013 [00:08<00:07, 61.50it/s]Loading weights:  59%|█████▊    | 593/1013 [00:08<00:05, 72.28it/s]Loading weights:  59%|█████▉    | 602/1013 [00:08<00:06, 62.47it/s]Loading weights:  61%|██████    | 615/1013 [00:08<00:05, 73.67it/s]Loading weights:  62%|██████▏   | 624/1013 [00:09<00:06, 63.12it/s]Loading weights:  63%|██████▎   | 637/1013 [00:09<00:05, 74.88it/s]Loading weights:  64%|██████▍   | 646/1013 [00:09<00:05, 63.82it/s]Loading weights:  76%|███████▋  | 774/1013 [00:09<00:00, 309.72it/s]Loading weights:  91%|█████████ | 922/1013 [00:09<00:00, 570.96it/s]Loading weights: 100%|██████████| 1013/1013 [00:09<00:00, 104.50it/s]
+[align] loading drafter z-lab/gemma-4-26B-A4B-it-DFlash (fp32 for training)
+[align] trainable params (fc_norms): 47,584,768
+[align] seq 0: len=186 (prompt 26)
+[align] seq 1: len=183 (prompt 23)
+[align] seq 2: len=81 (prompt 24)
+[align] seq 3: len=185 (prompt 25)
+[align] seq 4: len=187 (prompt 27)
+[align] seq 5: len=181 (prompt 21)
+[align] seq 6: len=183 (prompt 23)
+[align] seq 7: len=182 (prompt 22)
+[align] 1041 training windows
+[align] step=25 loss=8.7057 match=0.000
+[align] step=50 loss=6.2933 match=0.000
+[align] step=75 loss=5.5856 match=0.000
+[align] step=100 loss=5.4675 match=0.000
+[align] step=125 loss=5.1793 match=0.000
+[align] step=150 loss=4.8446 match=0.000
+[align] step=175 loss=4.7523 match=0.040
+[align] step=200 loss=5.1121 match=0.033
+[align] step=225 loss=4.6334 match=0.068
+[align] step=250 loss=4.2954 match=0.102
+[align] step=275 loss=4.0659 match=0.115
+[align] step=300 loss=4.0129 match=0.133
+[align] step=325 loss=3.9662 match=0.150
+[align] step=350 loss=3.7828 match=0.133
+[align] step=375 loss=3.4494 match=0.172
+[align] step=400 loss=3.9362 match=0.115
+[align] step=425 loss=3.6597 match=0.160
+[align] step=450 loss=3.7880 match=0.158
+[align] step=475 loss=3.8354 match=0.117
+[align] step=500 loss=3.7113 match=0.152
+[align] step=525 loss=3.3665 match=0.172
+[align] step=550 loss=3.3897 match=0.168
+[align] step=575 loss=3.5502 match=0.177
+[align] step=600 loss=3.4969 match=0.172
+[align] DONE in 12s; final loss=3.4969 train_match=0.172; saved -> results/research/dflash_aligned_fcnorms.pt

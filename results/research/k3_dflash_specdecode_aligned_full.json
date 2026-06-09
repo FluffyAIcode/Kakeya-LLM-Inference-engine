@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "kind": "k3_dflash_specdecode_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "block_size": 16,
+    "num_steps": 1,
+    "max_new_tokens": 48,
+    "n_prompts": 4,
+    "aux_layer_ids": [
+      2,
+      7,
+      12,
+      18,
+      23,
+      28
+    ]
+  },
+  "aggregate": {
+    "acceptance_rate": 0.5614035087719298,
+    "acceptance_length": 8.619047619047619,
+    "total_accepted": 160,
+    "total_drafted": 285,
+    "total_blocks": 21,
+    "lossless_vs_ar": true,
+    "reference_humaneval": {
+      "acceptance_length": 7.7,
+      "acceptance_rate": 0.447
+    }
+  },
+  "per_prompt": [
+    {
+      "prompt": "Write a Python function that returns the n-th Fibonacci number.",
+      "blocks": 5,
+      "block_accepts": [
+        16,
+        6,
+        1,
+        15,
+        6
+      ],
+      "mean_accepted_per_block": 8.8,
+      "tokens_generated": 48,
+      "verifier_forwards_spec": 5,
+      "lossless_vs_ar": true,
+      "decoded": "There are several ways to implement this depending on whether you prioritize readability, memory, or speed. Below are the three most common approaches.\n\n### 1. The Efficient Approach (Iterative)\nThis "
+    },
+    {
+      "prompt": "Explain in two sentences why the sky is blue.",
+      "blocks": 10,
+      "block_accepts": [
+        4,
+        1,
+        1,
+        0,
+        4,
+        16,
+        9,
+        1,
+        1,
+        2
+      ],
+      "mean_accepted_per_block": 3.9,
+      "tokens_generated": 48,
+      "verifier_forwards_spec": 10,
+      "lossless_vs_ar": true,
+      "decoded": "The sky appears blue because of a phenomenon called Rayleigh scattering, where sunlight interacts with the gases and particles in Earth's atmosphere. As sunlight reaches the atmosphere, shorter blue w"
+    },
+    {
+      "prompt": "List three prime numbers greater than 100.",
+      "blocks": 4,
+      "block_accepts": [
+        10,
+        12,
+        12,
+        11
+      ],
+      "mean_accepted_per_block": 11.25,
+      "tokens_generated": 48,
+      "verifier_forwards_spec": 4,
+      "lossless_vs_ar": true,
+      "decoded": "Here are three prime numbers greater than 100:\n\n1.  **101**\n2.  **103**\n3.  **107**(Note: 109 is"
+    },
+    {
+      "prompt": "Summarize the plot of Romeo and Juliet in one sentence.",
+      "blocks": 2,
+      "block_accepts": [
+        16,
+        16
+      ],
+      "mean_accepted_per_block": 16.0,
+      "tokens_generated": 34,
+      "verifier_forwards_spec": 2,
+      "lossless_vs_ar": true,
+      "decoded": "Two star-crossed lovers from feuding noble families take their own lives in a tragic misunderstanding, ultimately transforming their deaths into a catalyst for peace between their households."
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+[align] loading verifier google/gemma-4-26B-A4B-it
+Loading weights:   0%|          | 0/1013 [00:00<?, ?it/s]Loading weights:   0%|          | 2/1013 [00:00<01:42,  9.86it/s]Loading weights:   0%|          | 4/1013 [00:00<02:01,  8.32it/s]Loading weights:   2%|▏         | 20/1013 [00:00<00:30, 32.10it/s]Loading weights:   5%|▍         | 48/1013 [00:00<00:14, 65.04it/s]Loading weights:   7%|▋         | 70/1013 [00:01<00:12, 73.99it/s]Loading weights:   9%|▉         | 92/1013 [00:01<00:11, 78.11it/s]Loading weights:  11%|█         | 113/1013 [00:01<00:11, 76.76it/s]Loading weights:  13%|█▎        | 134/1013 [00:01<00:09, 95.86it/s]Loading weights:  14%|█▍        | 146/1013 [00:02<00:09, 89.23it/s]Loading weights:  15%|█▌        | 157/1013 [00:02<00:11, 72.42it/s]Loading weights:  17%|█▋        | 172/1013 [00:02<00:12, 68.75it/s]Loading weights:  20%|█▉        | 200/1013 [00:02<00:10, 80.81it/s]Loading weights:  22%|██▏       | 222/1013 [00:02<00:07, 100.21it/s]Loading weights:  23%|██▎       | 234/1013 [00:03<00:08, 88.24it/s] Loading weights:  24%|██▍       | 245/1013 [00:03<00:11, 67.56it/s]Loading weights:  26%|██▌       | 265/1013 [00:03<00:11, 64.55it/s]Loading weights:  28%|██▊       | 287/1013 [00:03<00:08, 83.00it/s]Loading weights:  29%|██▉       | 298/1013 [00:04<00:09, 76.02it/s]Loading weights:  31%|███       | 309/1013 [00:04<00:08, 80.21it/s]Loading weights:  31%|███▏      | 319/1013 [00:04<00:09, 71.32it/s]Loading weights:  33%|███▎      | 331/1013 [00:04<00:08, 78.66it/s]Loading weights:  34%|███▎      | 340/1013 [00:04<00:10, 66.51it/s]Loading weights:  35%|███▍      | 353/1013 [00:04<00:08, 76.41it/s]Loading weights:  36%|███▌      | 362/1013 [00:05<00:10, 64.23it/s]Loading weights:  37%|███▋      | 376/1013 [00:05<00:11, 57.68it/s]Loading weights:  39%|███▉      | 396/1013 [00:05<00:10, 60.44it/s]Loading weights:  41%|████▏     | 419/1013 [00:05<00:08, 69.98it/s]Loading weights:  43%|████▎     | 440/1013 [00:06<00:06, 87.68it/s]Loading weights:  45%|████▍     | 451/1013 [00:06<00:07, 79.63it/s]Loading weights:  46%|████▌     | 462/1013 [00:06<00:08, 66.43it/s]Loading weights:  48%|████▊     | 485/1013 [00:06<00:07, 74.11it/s]Loading weights:  50%|████▉     | 504/1013 [00:06<00:05, 91.55it/s]Loading weights:  51%|█████     | 515/1013 [00:06<00:05, 84.90it/s]Loading weights:  52%|█████▏    | 527/1013 [00:07<00:05, 91.44it/s]Loading weights:  53%|█████▎    | 538/1013 [00:07<00:05, 83.06it/s]Loading weights:  54%|█████▍    | 549/1013 [00:07<00:06, 66.62it/s]Loading weights:  56%|█████▋    | 571/1013 [00:07<00:04, 93.48it/s]Loading weights:  58%|█████▊    | 583/1013 [00:07<00:05, 85.24it/s]Loading weights:  59%|█████▊    | 594/1013 [00:08<00:06, 69.33it/s]Loading weights:  61%|██████    | 615/1013 [00:08<00:04, 94.54it/s]Loading weights:  62%|██████▏   | 628/1013 [00:08<00:04, 89.31it/s]Loading weights:  63%|██████▎   | 639/1013 [00:08<00:05, 71.42it/s]Loading weights:  78%|███████▊  | 792/1013 [00:08<00:00, 337.17it/s]Loading weights:  97%|█████████▋| 985/1013 [00:08<00:00, 664.81it/s]Loading weights: 100%|██████████| 1013/1013 [00:08<00:00, 115.23it/s]
+[align] loading drafter z-lab/gemma-4-26B-A4B-it-DFlash (fp32 for training)
+[align] trainable params (full): 429,689,088
+[align] seq 0: len=218 (prompt 26)
+[align] seq 1: len=215 (prompt 23)
+[align] seq 2: len=81 (prompt 24)
+[align] seq 3: len=217 (prompt 25)
+[align] seq 4: len=219 (prompt 27)
+[align] seq 5: len=213 (prompt 21)
+[align] seq 6: len=215 (prompt 23)
+[align] seq 7: len=214 (prompt 22)
+[align] seq 8: len=212 (prompt 20)
+[align] seq 9: len=218 (prompt 26)
+[align] 1615 training windows
+[align] step=25 loss=6.7965 match=0.000
+[align] step=50 loss=5.6033 match=0.000
+[align] step=75 loss=5.1310 match=0.035
+[align] step=100 loss=4.9019 match=0.048
+[align] step=125 loss=4.3527 match=0.102
+[align] step=150 loss=4.3504 match=0.117
+[align] step=175 loss=4.0203 match=0.107
+[align] step=200 loss=3.6460 match=0.152
+[align] step=225 loss=3.6864 match=0.228
+[align] step=250 loss=3.7338 match=0.175
+[align] step=275 loss=3.9166 match=0.165
+[align] step=300 loss=3.1757 match=0.207
+[align] step=325 loss=3.5605 match=0.215
+[align] step=350 loss=3.1699 match=0.228
+[align] step=375 loss=3.5534 match=0.190
+[align] step=400 loss=3.0851 match=0.217
+[align] step=425 loss=3.2613 match=0.250
+[align] step=450 loss=3.2417 match=0.212
+[align] step=475 loss=2.6233 match=0.338
+[align] step=500 loss=2.7621 match=0.305
+[align] step=525 loss=2.9251 match=0.270
+[align] step=550 loss=2.8225 match=0.265
+[align] step=575 loss=2.6035 match=0.335
+[align] step=600 loss=2.9804 match=0.260
+[align] step=625 loss=2.3389 match=0.370
+[align] step=650 loss=2.4564 match=0.347
+[align] step=675 loss=2.6107 match=0.352
+[align] step=700 loss=2.4710 match=0.312
+[align] step=725 loss=2.6116 match=0.328
+[align] step=750 loss=2.0192 match=0.465
+[align] step=775 loss=2.5386 match=0.305
+[align] step=800 loss=2.3352 match=0.350
+[align] step=825 loss=2.4057 match=0.393
+[align] step=850 loss=2.1691 match=0.367
+[align] step=875 loss=2.0166 match=0.427
+[align] step=900 loss=1.9508 match=0.435
+[align] step=925 loss=1.9538 match=0.415
+[align] step=950 loss=2.1135 match=0.410
+[align] step=975 loss=1.9304 match=0.453
+[align] step=1000 loss=1.8936 match=0.448
+[align] step=1025 loss=2.1598 match=0.410
+[align] step=1050 loss=1.5282 match=0.522
+[align] step=1075 loss=1.7805 match=0.443
+[align] step=1100 loss=1.5151 match=0.515
+[align] step=1125 loss=1.9065 match=0.463
+[align] step=1150 loss=1.9625 match=0.458
+[align] step=1175 loss=1.9599 match=0.465
+[align] step=1200 loss=1.6746 match=0.507
+[align] step=1225 loss=1.1729 match=0.652
+[align] step=1250 loss=1.3959 match=0.615
+[align] step=1275 loss=1.5357 match=0.593
+[align] step=1300 loss=1.9263 match=0.440
+[align] step=1325 loss=1.3602 match=0.593
+[align] step=1350 loss=1.9723 match=0.458
+[align] step=1375 loss=1.1353 match=0.657
+[align] step=1400 loss=1.4317 match=0.575
+[align] step=1425 loss=1.2526 match=0.595
+[align] step=1450 loss=1.1918 match=0.635
+[align] step=1475 loss=1.3202 match=0.593
+[align] step=1500 loss=1.0971 match=0.620
+[align] step=1525 loss=1.1674 match=0.640
+[align] step=1550 loss=1.2846 match=0.635
+[align] step=1575 loss=0.9245 match=0.708
+[align] step=1600 loss=1.2238 match=0.642
+[align] step=1625 loss=1.0561 match=0.667
+[align] step=1650 loss=1.0512 match=0.680
+[align] step=1675 loss=0.9872 match=0.728
+[align] step=1700 loss=0.5388 match=0.845
+[align] step=1725 loss=1.1722 match=0.672
+[align] step=1750 loss=0.9677 match=0.700
+[align] step=1775 loss=0.9435 match=0.725
+[align] step=1800 loss=0.5526 match=0.830
+[align] step=1825 loss=1.2760 match=0.680
+[align] step=1850 loss=0.7802 match=0.748
+[align] step=1875 loss=0.6277 match=0.838
+[align] step=1900 loss=1.0519 match=0.738
+[align] step=1925 loss=0.5968 match=0.823
+[align] step=1950 loss=0.5838 match=0.805
+[align] step=1975 loss=0.7288 match=0.823
+[align] step=2000 loss=0.5318 match=0.845
+[align] step=2025 loss=0.5233 match=0.850
+[align] step=2050 loss=0.8301 match=0.777
+[align] step=2075 loss=0.5411 match=0.818
+[align] step=2100 loss=0.4592 match=0.865
+[align] step=2125 loss=0.6937 match=0.755
+[align] step=2150 loss=0.4915 match=0.840
+[align] step=2175 loss=0.6498 match=0.805
+[align] step=2200 loss=0.7318 match=0.780
+[align] step=2225 loss=0.7683 match=0.767
+[align] step=2250 loss=0.4722 match=0.858
+[align] step=2275 loss=0.4448 match=0.860
+[align] step=2300 loss=0.4632 match=0.850
+[align] step=2325 loss=0.4059 match=0.895
+[align] step=2350 loss=0.2716 match=0.902
+[align] step=2375 loss=0.4793 match=0.870
+[align] step=2400 loss=0.6126 match=0.843
+[align] step=2425 loss=0.3962 match=0.873
+[align] step=2450 loss=0.3424 match=0.900
+[align] step=2475 loss=0.4258 match=0.885
+[align] step=2500 loss=0.2569 match=0.912
+[align] DONE in 80s; final loss=0.2569 train_match=0.912; saved -> results/research/dflash_aligned_full.pt

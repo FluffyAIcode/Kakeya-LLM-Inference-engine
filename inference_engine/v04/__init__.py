@@ -43,6 +43,12 @@ from inference_engine.v04.restored_attention import (
     slice_position_embeddings,
 )
 from inference_engine.v04.dlm_restored_verifier import DLMRestoredVerifier
+from inference_engine.v04.dflash_drafter import (
+    AuxHiddenProvider,
+    DFlashConfig,
+    DFlashDrafter,
+    DFlashProposer,
+)
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -110,4 +116,10 @@ __all__ = [
     "KakeyaLatticeUnavailable",
     "KVCompressor",
     "make_default_compressor",
+    # K3 — native DFlash drafter (Stage 1: module + proposer; see
+    # docs/design/k3-cross-model-dlmrestored-verifier-contract.md)
+    "AuxHiddenProvider",
+    "DFlashConfig",
+    "DFlashDrafter",
+    "DFlashProposer",
 ]
