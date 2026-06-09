@@ -33,9 +33,17 @@ from inference_engine.v04.kv_capture import (
     capture_proposer_kv,
     register_kv_capture_hooks,
 )
+from inference_engine.v04.kv_merge import (
+    compute_evicted_positions,
+    merge_kv_at_evicted_positions,
+)
 
 __all__ = [
+    # K1.A — capture
     "KVCapture",
     "capture_proposer_kv",
     "register_kv_capture_hooks",
+    # K1.B — merge
+    "compute_evicted_positions",
+    "merge_kv_at_evicted_positions",
 ]
