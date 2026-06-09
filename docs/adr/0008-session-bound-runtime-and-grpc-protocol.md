@@ -1167,9 +1167,21 @@ constraints:
    joint-training assumptions that violate the project's
    "no-deadline + cheap-validation" research discipline. Rules out
    ADR 0011 §3 family.
-5. **Fits Mac mini 24 GB targeting Gemma 4-9B-class verifier** — the
-   sustained memory must leave headroom for verifier weights (~5 GB),
-   proposer weights (~2 GB), and standard activation/working memory.
+5. **Fits Mac mini 24 GB targeting a production-scale verifier** —
+   the sustained memory must leave headroom for verifier weights,
+   proposer weights, and standard activation/working memory. Per
+   the §11.7 corrected model selection (2026-06-09), the production
+   K3 verifier candidate is `google/gemma-4-26B-A4B-it` (4B active /
+   26B total MoE) at vast multi-GPU; a smaller deployable verifier
+   for genuinely Mac-fit production is gated on Google or the
+   community publishing a DFlash drafter for Gemma 4 E4B/E2B (per
+   §11.14 currently TBD). On Mac M4 24 GB **as of 2026-06-09**, K1
+   Gemma 3-1B sustained fits comfortably (~2 GB weights + sink+
+   window cache); larger Mac-fit production targets remain a future
+   goal. Note that "fits sustained" is distinct from "fits
+   per-step peak" — see §11.13 for the precise distinction; per-
+   step peak at long context exceeds Mac M4 24 GB even at K1
+   today, and is gated on K3+ proposer chunking.
 
 §11.5 below is the narrowest design that satisfies all five.
 
@@ -1291,15 +1303,23 @@ per-head). Two cases:
    training needed; this case is for end-to-end pipeline validation
    (does the routing work, does memory stay bounded, does the
    correctness contract hold under round-trip).
-2. **Cross-model setup (production)**: proposer is a small dLM (e.g.,
-   Gemma 4-2B-class), verifier is a larger AR model (Gemma 4-9B-
-   class). Hidden dimensions, head counts, and layer counts differ.
-   `f_θ` is a learned per-layer projection that maps a proposer
-   `K[L', p, ...]` to a verifier `K[L, p, ...]` (similarly for V),
-   trained to minimise `||verifier(reconstructed K/V at evicted) -
-   verifier(ground-truth K/V at evicted)||` on logits or a
-   downstream-task surrogate. Layer alignment `L' → L` is itself a
-   design parameter (uniform, attention-pooled, or learned).
+2. **Cross-model setup (production)**: proposer is a small dLM
+   drafter, verifier is a larger AR target model. Per the §11.7
+   corrected model-selection table (2026-06-09): K2.B uses
+   `z-lab/Qwen3.5-4B-DFlash` (0.4B drafter) → `Qwen/Qwen3.5-4B`
+   (4B verifier); K3 uses `z-lab/gemma-4-26B-A4B-it-DFlash` (0.4B
+   drafter) → `google/gemma-4-26B-A4B-it` (26B-A4B MoE verifier).
+   Hidden dimensions, head counts, and layer counts differ across
+   the pair. `f_θ` is a learned per-layer projection that maps a
+   proposer `K[L', p, ...]` to a verifier `K[L, p, ...]`
+   (similarly for V), trained to minimise
+   `||verifier(reconstructed K/V at evicted) - verifier(ground-truth
+   K/V at evicted)||` on logits or a downstream-task surrogate.
+   Layer alignment `L' → L` is itself a design parameter (uniform,
+   attention-pooled, or learned). Note: DFlash drafters are
+   already trained to condition on target features, so `f_θ` may
+   initialise close to identity-on-shared-subspace rather than
+   random — see §11.11.6 for the K2.B implementation note.
 
 The cross-model projection is structurally easier than the R1c–R1e
 cross-attention bridge for three reasons that the R1e-γ (loc=0.82,
@@ -1328,20 +1348,50 @@ the same memory budget the deployed system will run under, which
 removes a class of late-stage fitting risk that K3 production
 training would otherwise inherit.
 
-| Phase | Scope | Linux CI gate | Empirical gate |
-|---|---|---|---|
-| **K1** | Same-model toy: proposer and verifier share Gemma 3-1B weights. Implement K/V routing infrastructure (reconstruction hook, cache concatenation, transient memory management). Validate on synthetic NIAH that recall ≈ oracle when projection is identity. | round-trip K/V bit-identical when `f_θ = id`; no leaks across forward steps; INV-3 byte-exact under reconstruction | Mac M4: NIAH small-vocab recall ≥ 95 % at sink+window=4+64 + reconstruction (vs 16 % v0.3) |
-| **K2.A** (was K4) | KakeyaLattice integration into the verifier's local sink+window cache. `KVCompressor` interface with `IdentityCompressor` (no-op) + `KakeyaLatticeCompressor` (the in-house codec). Local cache stores compressed K/V; decode-time decompresses lazily into the K/V tensor that feeds attention. **Same model** as K1 (`f_θ = id`); isolates the KL composition risk from the cross-model projection risk. | round-trip identity: `decompress(compress(K, V)) ≈ (K, V)` within published KL fidelity; throughput ≥ K1 oracle baseline | Mac M4: NIAH recall = K1 baseline ± 1pp at 100k context with KL on; throughput improvement ≥ 1.3× over K1 v04 at the same memory budget |
-| **K2.B** (was K2) | Cross-model toy: proposer = Gemma 3-1B, verifier = Gemma 3-4B. Train `f_θ` per-layer linear projection with L2 reconstruction loss on long-context corpus. **f_θ trained against KL-quantized cache** so the projection inherits KL's quantization bias and is robust to it. Measure `\|p_v_restored - p_v_full\|`. | reconstruction loss reaches plateau on calibration set; coverage metric for layer alignment; KL-on residual ≤ KL-off residual + 5% | vast H200: NIAH recall ≥ 90 % cross-model at sink+window=4+64 with KL on |
-| **K3** | Production scale: proposer = Gemma 4-2B-MDLM, verifier = Gemma 4-9B-class. Full alignment training of `f_θ` on long-context corpus (RULER, NarrativeQA). KL on by default. | training pipeline reproducible; checkpoint integrity manifest | Mac M4: 4 h `bench_session_long_run.py` at 100 k-token context, kv_live_bytes flat, latency p95 stable, INV-3 holds |
-| **K4** | _Reserved._ Originally KakeyaLattice composition; absorbed into K2.A on 2026-06-08. Slot kept open for future composition experiments (e.g. tile-wise mixed precision in the proposer's transient K/V — see Q11.4 below). |  |  |
-| **K5** | Default flip + docs | feature flag `kv_strategy=dlm_restore` (with `kv_compressor=kakeya_lattice`) becomes default for v0.4; sink+window-only retained as opt-in for memory-constrained edge cases | quickstart updated; v0.3 → v0.4 migration documented |
+**Model selection note (corrected 2026-06-09).** Earlier drafts of
+this table named hypothetical "Gemma 4-2B-MDLM" / "Gemma 4-9B-class"
+proposer/verifier checkpoints which **do not exist on HuggingFace**.
+The corrected table uses HF-verified checkpoints from the z-lab
+DFlash collection (https://github.com/z-lab/dflash, paper
+arXiv:2602.06036) — purpose-built block-diffusion drafters
+designed for speculative decoding with named target models. See
+§11.14 for the model-selection discipline that prevents this class
+of error.
+
+The corrected table also makes explicit that K1 / K2.A use **AR
+Gemma 3-1B for both proposer and verifier roles** — this is a
+"same-checkpoint AR-as-proposer" toy that validates the K/V
+routing plumbing but does NOT exercise the dLM-vs-AR architectural
+distinction. The first phase that exercises a real dLM proposer
+is K2.B.
+
+| Phase | Proposer / Verifier | Scope | Linux CI gate | Empirical gate |
+|---|---|---|---|---|
+| **K1** | proposer = verifier = `google/gemma-3-1b-it` (**AR**, same checkpoint) | Same-checkpoint AR toy. Implement K/V routing infrastructure (reconstruction hook, cache concatenation, transient memory management). Because proposer = verifier, captured K/V at any position **equals** what the verifier would compute (bit-for-bit by checkpoint identity). The "dLM proposer" architectural property of §11.5 is NOT exercised here; K1 validates plumbing only. | round-trip K/V bit-identical when `f_θ = id`; no leaks across forward steps; INV-3 byte-exact under reconstruction | Mac M4 + vast H200: NIAH recall ≈ oracle (Δ=0.000 demonstrated at 8 measurements per §11.11.10) |
+| **K2.A** (was K4) | proposer = verifier = `google/gemma-3-1b-it` (**AR**, same checkpoint) | KakeyaLattice integration into the verifier's local sink+window cache. `KVCompressor` interface with `IdentityCompressor` (no-op) + `KakeyaLatticeCompressor`. Same-checkpoint AR setup as K1; isolates the KL composition risk from cross-model and dLM-vs-AR risks. **Still does NOT exercise dLM proposer.** | round-trip identity: `decompress(compress(K, V)) ≈ (K, V)` within published KL fidelity; throughput ≥ K1 oracle baseline | Mac M4: NIAH recall = K1 baseline ± 1pp with KL on; CUDA: §11.11.5 (b) and (c) gates per §11.11.12 |
+| **K2.B** (was K2) | proposer = `z-lab/Qwen3.5-4B-DFlash` (0.4B **dLM** drafter; HF-verified)<br/>verifier = `Qwen/Qwen3.5-4B` (4B AR target) | **First phase that actually exercises a dLM proposer.** Train `f_θ` per-layer linear projection from drafter K/V → verifier K/V with L2 reconstruction loss on long-context corpus. Scale ratio 10:1 (research-friendly). f_θ trained against KL-on cache so the projection inherits KL's quantisation bias and is robust to it. Same-family pairing keeps K/V dimensionality and tokeniser aligned, simplifying the projection. Alternative pair if 4B is too small: `Qwen/Qwen3.5-9B` + `z-lab/Qwen3.5-9B-DFlash` (still 10:1). | reconstruction loss reaches plateau on calibration set; coverage metric for layer alignment; KL-on residual ≤ KL-off residual + 5%; staleness analysis of §11.13.6 first becomes empirically testable here | vast H200: NIAH recall(v0.4 cross-model) ≥ recall(oracle) − 5pp at every §11.12 rung, KL on; speculative-decoding speedup against oracle measured (DFlash baseline: 6× on Qwen3-8B per arXiv:2602.06036) |
+| **K3** | proposer = `z-lab/gemma-4-26B-A4B-it-DFlash` (0.4B **dLM** drafter; HF-verified)<br/>verifier = `google/gemma-4-26B-A4B-it` (Gemma 4 26B A4B MoE, 4B active / 26B total)<br/>Alternative: `google/gemma-4-31B-it` + `z-lab/gemma-4-31B-it-DFlash` (31B dense) | Production scale. Scale ratio 65:1 (drafter:verifier active params). Full alignment training of `f_θ` on long-context corpus (RULER, NarrativeQA). KL on by default. **First phase reaching the user-stated K3 production target.** | training pipeline reproducible; checkpoint integrity manifest; multi-GPU training script | vast multi-GPU: 4 h `bench_session_long_run.py` at 100 k-token context, kv_live_bytes flat, latency p95 stable, INV-3 holds; v0.4 + KL throughput vs raw DFlash speedup baseline measured |
+| **K4** | _Reserved._ Originally KakeyaLattice composition; absorbed into K2.A on 2026-06-08. Slot kept open for future composition experiments (e.g. tile-wise mixed precision in the proposer's transient K/V — see Q11.4). |  |  |  |
+| **K5** | (n/a — flip default + docs) | feature flag `kv_strategy=dlm_restore` (with `kv_compressor=kakeya_lattice`) becomes default for v0.4; sink+window-only retained as opt-in for memory-constrained edge cases | quickstart updated; v0.3 → v0.4 migration documented |  |
 
 K1 + K2.A are both doable on Mac M4 alone (no GPU training; KL is
 applied at inference time, not learned). K2.B requires vast or
-similar single-GPU training; budget ~$5–10. K3 is the production
-training and requires real long-context corpus — ~$200–1000 GPU
-budget depending on corpus size and number of training tokens.
+similar single-GPU training; with the corrected `Qwen/Qwen3.5-4B`
++ `z-lab/Qwen3.5-4B-DFlash` pair, budget ~$5–10. K3 is the
+production training and requires real long-context corpus —
+~$200–1000 GPU budget depending on corpus size and number of
+training tokens.
+
+**On the relationship between v0.4 and DFlash.** DFlash already
+solves "use a block-diffusion drafter for speculative decoding"
+(achieves ~6× speedup on Qwen3-8B per arXiv:2602.06036). v0.4 is
+**not** an alternative to DFlash; it is a layer added on top:
+DFlash provides the dLM drafter and the speculative-decoding
+speedup; v0.4 K/V Restoration uses that same drafter's transient
+K/V as the source for verifier sink+window cache trimming. The
+two are orthogonal — DFlash optimises decode latency, v0.4
+optimises sustained-memory footprint at long context. Together:
+both speedup AND memory savings.
 
 ### 11.8 v0.4 GA validation criteria
 
@@ -1365,11 +1415,14 @@ artifacts in `results/platform-tests/` or `results/research/`:
    ≥ 95 % at 100 k-token context, **conditional on a base model
    whose own oracle recall reaches that bar at 100 k**. Gemma 3-1B
    does not (oracle recall 0.200 at 100 k per `aab8686`); the
-   K3 production-scale target Gemma 4-9B-class does. v0.4's
-   absolute recall **tracks the oracle's recall ceiling** at every
-   rung — within base-model capacity, it is bit-for-bit equal;
-   beyond that capacity, neither v0.4 nor any other architecture
-   can recover signal the base model itself cannot extract.
+   K3 production-scale target verifier per the §11.7 corrected
+   model selection (`google/gemma-4-26B-A4B-it`, 26B A4B MoE,
+   256k native context per Google's published spec) is expected
+   to. v0.4's absolute recall **tracks the oracle's recall
+   ceiling** at every rung — within base-model capacity, it is
+   bit-for-bit equal; beyond that capacity, neither v0.4 nor any
+   other architecture can recover signal the base model itself
+   cannot extract.
 
    The original "≥ 95 % absolute at 100k" framing of this
    criterion (pre-amendment) implicitly assumed a capacity-rich
@@ -1685,12 +1738,49 @@ acceptance.
 #### 11.11.6 K2.B (was K2): cross-model `f_θ` trained against KL-on cache
 
 The K2.B phase trains the cross-model linear projection `f_θ`
-(Gemma 3-1B proposer → Gemma 3-4B verifier) against a verifier
-running with KL on, not against an idealised uncompressed
-verifier. This is the "fit the projection to the deployed
-runtime" discipline: if K3 production training is also done
-against KL-on, the K3-trained `f_θ` inherits robustness to
+(corrected per §11.7 model-selection update 2026-06-09:
+**`z-lab/Qwen3.5-4B-DFlash` 0.4B drafter → `Qwen/Qwen3.5-4B`
+4B verifier**, scale ratio 10:1, both HF-verified) against a
+verifier running with KL on, not against an idealised
+uncompressed verifier. This is the "fit the projection to the
+deployed runtime" discipline: if K3 production training is also
+done against KL-on, the K3-trained `f_θ` inherits robustness to
 KL's quantisation bias for free.
+
+K2.B is **the first phase that actually exercises the dLM
+proposer architectural property**. K1 and K2.A both use AR
+Gemma 3-1B for both roles (same checkpoint, identity `f_θ`),
+which validates K/V routing plumbing but does not exercise the
+full-attention dLM-vs-causal-AR distinction (see §11.11.10
+postscript scope clarification, §11.13.6 staleness scope).
+At K2.B, several first-time risks become empirically testable:
+
+* **dLM-vs-AR semantic mismatch**: DFlash drafter's K/V come from
+  block-diffusion attention (full-attention within a block) whereas
+  the verifier is causal AR. f_θ must bridge this. R1c–R1e
+  cross-attention bridge research (§11.10) has empirically settled
+  that the bridge mechanism can localise (find the right position)
+  but cannot write (decode); v0.4 sidesteps this by injecting at
+  the K/V level (pre-attention) rather than mid-stack residual.
+  K2.B validates that the K/V-level injection, with a learned
+  per-layer per-head `f_θ`, actually preserves recall.
+* **Cached K/V staleness** under K2.A.2 stateful caching: at
+  K1/K2.A the proposer is causal AR so cached K/V don't drift; at
+  K2.B with real DFlash drafter, the dLM-induced suffix-drift
+  staleness analysis of §11.13.6 first applies. K2.B evidence
+  confirms whether the bounded staleness stays under the 1pp gate
+  in practice or whether the §11.13.6.4 escalation paths
+  (refresh-on-eviction, periodic refresh) are needed.
+* **Scale ratio sensitivity**: 10:1 (drafter:verifier params) is
+  research-friendly but smaller than K3's 65:1. K2.B's f_θ quality
+  at 10:1 informs how K3's much harder projection will behave.
+
+Note: DFlash drafters are already trained to condition on target
+features, so the drafter's K/V have learned target-aware
+structure even before f_θ training. f_θ might therefore initialise
+better than random (e.g. small-norm linear close to identity-on-
+shared-subspace), reducing K2.B training compute. This is an
+empirical question for K2.B implementation.
 
 The empirical risk this addresses: if K2.B trained `f_θ` on a
 KL-off verifier and K3 deployed it against a KL-on verifier,
@@ -1721,6 +1811,17 @@ To prevent scope creep:
   the same-model setup first (`f_θ = id`); K2.B introduces the
   cross-model projection. This staging matches the K1 → K2 risk
   isolation discipline of §11.7.
+* **Not exercising a dLM proposer.** K2.A.1 / K2.A.2 use AR
+  Gemma 3-1B for both proposer and verifier roles (same
+  checkpoint as K1). The §11.5 architectural property of the
+  proposer being a dLM with full attention is **not validated**
+  by K2.A evidence. The first phase that actually exercises a
+  dLM proposer is K2.B (with the corrected `Qwen/Qwen3.5-4B` +
+  `z-lab/Qwen3.5-4B-DFlash` pair per §11.7). K2.A evidence at
+  K1.E NIAH harness on Gemma 3-1B AR-as-proposer therefore does
+  NOT extrapolate to dLM-proposer behaviour — a separate
+  empirical pass at K2.B is required for the dLM-vs-AR
+  architectural validation.
 
 #### 11.11.8 Why this is the right phase boundary
 
@@ -2011,13 +2112,31 @@ steps).
 
 #### 11.11.10 K1 multi-source empirical baseline (postscript, 2026-06-08)
 
+**Scope clarification (added 2026-06-09 after model-selection
+audit, see §11.7 corrected note + §11.14 selection discipline)**:
+the K1 evidence below validates the **K/V routing infrastructure**
+under a **same-checkpoint AR-as-proposer toy setup** (proposer =
+verifier = `google/gemma-3-1b-it`, both AR causal). It does NOT
+validate the dLM-vs-AR architectural distinction of §11.5 — that
+distinction is first exercised in K2.B with a real DFlash dLM
+drafter (per the §11.7 corrected phase table). The
+`Δ(v0.4 − oracle) = 0.000` finding is mathematically a
+consequence of identity: when proposer = verifier, captured K/V
+at any position equals what the verifier would compute, so K/V
+substitution at evicted positions is a no-op. K1 evidence therefore
+proves "the plumbing works" but does NOT prove "dLM proposer K/V
+correctly substitutes for verifier K/V" — the latter is K2.B's
+deliverable. Future readers should not over-extrapolate K1
+findings into dLM-proposer claims.
+
 This subsection records the K1 phase's complete empirical
 baseline as evidence for the §11.5 §"Five properties" claims and
 the §11.8 release gates. The data was generated by independent
 runs on two platforms with different numerical regimes, and the
 v0.4 vs oracle comparison reproduces across them — which removes
 the "platform-specific quantisation accident" alternative
-explanation for the v0.4 == oracle finding.
+explanation for the (mathematically-guaranteed) `Δ = 0.000`
+finding under the AR-as-proposer same-checkpoint setup.
 
 **Sources** (all on `origin/AgentMemory/v04-pr-k1*`-prefixed
 branches):
@@ -2458,6 +2577,22 @@ indirectly reduced, lowering intelligence?"
 
 The answer separates a real concern from a misconception.
 
+**Scope (added 2026-06-09 after model-selection audit, §11.7
+corrected table)**: the staleness analysis below applies only
+when the proposer is a real dLM with full attention. At K1 and
+K2.A, the "proposer" is AR Gemma 3-1B (same-checkpoint toy);
+its K/V at any position depend only on `[0..p]` (causal mask),
+so they do NOT drift as the suffix grows. K2.A.2 stateful
+caching at K1/K2.A setup is therefore **bit-for-bit equivalent
+to K1.D output** (modulo numerical noise from the IdentityCompressor
+or KakeyaLatticeCompressor codec). The staleness phenomenon
+becomes empirically observable only at K2.B (with
+`z-lab/Qwen3.5-4B-DFlash` real dLM drafter) and K3 (with
+`z-lab/gemma-4-26B-A4B-it-DFlash`). At K1 / K2.A, K2.A.2's gate
+(b) `recall delta ≤ 1pp` is automatically satisfied by
+mathematical identity, not by empirical robustness. At K2.B/K3,
+the gate becomes empirically binding for the first time.
+
 #### 11.13.6.1 The structural attention range is unchanged
 
 Direct answer: under K2.A.2 stateful caching, the new query
@@ -2581,3 +2716,94 @@ prevents future readers from reading K2.A.2 NIAH evidence (with
 recall not at exactly 0.000 delta vs oracle) as a regression
 when it is in fact an expected property of the architecture
 within the documented bound.
+
+### 11.14 Model selection discipline (meta-rule, added 2026-06-09)
+
+This subsection codifies the discipline that the
+2026-06-09 ADR audit revealed was missing.
+
+#### 11.14.1 The bug class
+
+Earlier drafts of §11.7 K3 phase named "Gemma 4-2B-MDLM" and
+"Gemma 4-9B-class" as production-scale proposer/verifier
+checkpoints. **Neither name corresponds to a published HuggingFace
+checkpoint as of 2026-06-09**. The names were placeholder
+guesses written into the ADR speculatively (presumably extrapolating
+from the `dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1` proposer the
+project had used in earlier benchmarks, projecting to a
+hypothetical Gemma 4 family equivalent that Google never
+released).
+
+The placeholder names then propagated through subsequent ADR
+amendments — every revision quoted them, normalising the
+fiction. The bug was caught only when a code reviewer asked
+"where does Gemma 4-2B-MDLM come from?".
+
+#### 11.14.2 The discipline
+
+To prevent recurrence:
+
+1. **Every model checkpoint named in this ADR (and any descendant
+   ADR) MUST be HF-verified before being committed.** "Verified"
+   means: a reviewer (human or agent) can navigate to
+   `https://huggingface.co/<org>/<model>` and confirm it 200s,
+   has weights, and is licence-compatible (Apache 2 or
+   gemma-terms or similar permissive). A `WebSearch` or
+   `WebFetch` pass that returns "no model with this exact name
+   found" is grounds for rejecting the ADR change.
+2. **If a model is desired but not yet known to exist, mark it
+   `TBD` with explicit selection criteria** (size range,
+   license, architecture family, target hardware), NOT a
+   speculative name. `TBD` is grounds-truth honest; a fake name
+   leaks into downstream phase planning and resource budgeting.
+3. **When a real model is selected to replace a TBD, cite the HF
+   URL alongside the name** so future readers can independently
+   verify. Format: `<org>/<repo>` with a parenthetical
+   "(HF-verified <date>)" for first introduction.
+
+#### 11.14.3 Currently HF-verified candidates per K-stage
+
+As of 2026-06-09 audit. Re-verify when this ADR is referenced
+later than 2026-12 (model availability changes).
+
+| K-stage | role | candidate | params | HF URL | verified |
+|---|---|---|---|---|---|
+| K1, K2.A | proposer = verifier | `google/gemma-3-1b-it` | 1B | https://huggingface.co/google/gemma-3-1b-it | ✓ 2026-06-09 |
+| K2.B (primary) | proposer (drafter) | `z-lab/Qwen3.5-4B-DFlash` | 0.4B | https://huggingface.co/z-lab/Qwen3.5-4B-DFlash | ✓ 2026-06-09 |
+| K2.B (primary) | verifier | `Qwen/Qwen3.5-4B` | 4B | https://huggingface.co/Qwen/Qwen3.5-4B | ✓ 2026-06-09 |
+| K2.B (alternative) | proposer | `z-lab/Qwen3.5-9B-DFlash` | ~0.4B | https://huggingface.co/z-lab/Qwen3.5-9B-DFlash | ✓ 2026-06-09 |
+| K2.B (alternative) | verifier | `Qwen/Qwen3.5-9B` | 9B | https://huggingface.co/Qwen/Qwen3.5-9B | ✓ 2026-06-09 |
+| K3 (primary) | proposer (drafter) | `z-lab/gemma-4-26B-A4B-it-DFlash` | 0.4B | https://huggingface.co/z-lab/gemma-4-26B-A4B-it-DFlash | ✓ 2026-06-09 |
+| K3 (primary) | verifier | `google/gemma-4-26B-A4B-it` | 26B (4B active) | https://huggingface.co/google/gemma-4-26B-A4B-it | ✓ 2026-06-09 |
+| K3 (alternative) | proposer | `z-lab/gemma-4-31B-it-DFlash` | ~0.4B | https://huggingface.co/z-lab/gemma-4-31B-it-DFlash | ✓ 2026-06-09 |
+| K3 (alternative) | verifier | `google/gemma-4-31B-it` | 31B dense | https://huggingface.co/google/gemma-4-31B-it | ✓ 2026-06-09 |
+
+The full DFlash drafter collection (https://github.com/z-lab/dflash
++ https://huggingface.co/collections/z-lab/dflash) currently lists
+21 items spanning Qwen3.5, Gemma 4, MiniMax, Kimi, gpt-oss, and
+others. As Gemma 4 E2B / E4B do not have published DFlash
+drafters as of 2026-06-09 audit, K2.B / K3 plans on this ADR
+target Qwen3.5 (research) and Gemma 4 26B+ (production)
+respectively. If Google or the community publishes Gemma 4 E2B /
+E4B DFlash drafters later, those become attractive K2.B
+candidates for Mac M4 24 GB single-device deployment.
+
+#### 11.14.4 Lessons
+
+* The agent that drafted "Gemma 4-2B-MDLM" was extrapolating from
+  knowledge of (a) Google's Gemma 4 release announcement
+  (multimodal, sizes E2B/E4B/12B/26B/31B — all AR), (b) the
+  project's earlier use of `dllm-hub/Qwen3-0.6B-diffusion-mdlm`,
+  and (c) general MDLM literature. The extrapolation produced a
+  plausible-sounding but non-existent name. Plausibility is
+  insufficient grounds for ADR commitments; verification is.
+* Whenever an ADR amendment references a model the agent has not
+  recently verified on HF, the amendment must either verify
+  before commit OR explicitly mark the model `TBD (criteria: ...)`
+  with the selection criteria the future verifier will need to
+  satisfy.
+* This discipline applies to **every named external dependency**,
+  not just models — datasets, codec libraries, training infra.
+  But model names are the most vulnerable class because LLM
+  agents have strong priors about "what would naturally exist"
+  and tend to confabulate.
