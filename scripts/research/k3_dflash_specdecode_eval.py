@@ -54,6 +54,17 @@ PROMPTS = [
     "Write a haiku about speculative decoding.",
 ]
 
+# Disjoint from the alignment trainer's prompt set — for honest held-out
+# acceptance after alignment training.
+HELD_OUT_PROMPTS = [
+    "Write a Python function to check whether a string is a palindrome.",
+    "In two sentences, explain what a transformer attention head does.",
+    "Name two differences between TCP and UDP.",
+    "Write a short rhyming couplet about a robot learning to paint.",
+    "What is the boiling point of water at sea level, in Celsius and Fahrenheit?",
+    "Give two reasons unit tests are useful.",
+]
+
 
 class VerifierAuxProvider(AuxHiddenProvider):
     """Wraps the Gemma-4 verifier: runs a forward over `committed` and serves
@@ -143,8 +154,12 @@ def main() -> int:
     ap.add_argument("--drafter-state", default=None,
                     help="optional .pt state_dict to load over the drafter "
                          "(e.g. an alignment-trained checkpoint).")
+    ap.add_argument("--held-out", action="store_true",
+                    help="evaluate on HELD_OUT_PROMPTS (disjoint from the "
+                         "alignment trainer's prompts) for honest generalization.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
+    prompts = HELD_OUT_PROMPTS if args.held_out else PROMPTS
 
     device = torch.device("cuda")
     dtype = torch.bfloat16
@@ -179,8 +194,8 @@ def main() -> int:
     tot_spec_forwards = tot_ar_forwards = 0
     lossless = True
 
-    for pi in range(min(args.n_prompts, len(PROMPTS))):
-        prompt = PROMPTS[pi]
+    for pi in range(min(args.n_prompts, len(prompts))):
+        prompt = prompts[pi]
         msgs = [{"role": "user", "content": prompt}]
         enc = tok.apply_chat_template(
             msgs, add_generation_prompt=True, tokenize=True, return_tensors="pt",
@@ -254,7 +269,7 @@ def main() -> int:
             "block_size": args.block_size,
             "num_steps": args.num_steps,
             "max_new_tokens": args.max_new_tokens,
-            "n_prompts": min(args.n_prompts, len(PROMPTS)),
+            "n_prompts": min(args.n_prompts, len(prompts)),
             "aux_layer_ids": list(cfg.aux_layer_ids),
         },
         "aggregate": {
