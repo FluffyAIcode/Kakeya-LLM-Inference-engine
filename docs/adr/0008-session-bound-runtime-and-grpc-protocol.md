@@ -2558,6 +2558,169 @@ at 21k; per-step peak must drop measurably from 30 GB at 21k.
 None of these targets are abstract — all three are anchored in
 K2.A.1 vast evidence rows.
 
+#### 11.11.14 K2.A.2 implementation notes (added 2026-06-09)
+
+The K2.A.2 implementation PR (this branch) lands in
+`inference_engine/v04/dlm_restored_verifier.py` as additive
+extensions to the K1.D / K2.A.1 wrapper, gated on a new
+``stateful: bool = False`` constructor parameter. With
+``stateful=False`` (default), all 31 existing K1.D / K2.A.1
+tests pass unchanged — backward-compatible regression guard.
+With ``stateful=True``, the wrapper enters K2.A.2 stateful
+caching mode.
+
+**Three new architectural primitives**:
+
+1. **`_SessionState` dataclass** — holds the persistent
+   per-session state across ``forward()`` calls:
+
+   ```python
+   @dataclasses.dataclass
+   class _SessionState:
+       cache_token_count: int = 0
+       compressors: Optional[List[KVCompressor]] = None
+   ```
+
+   Cleared by ``DLMRestoredVerifier.reset_cache()`` to start a
+   new prompt. The compressors list (one per attention layer)
+   is built once at the first stateful forward and then
+   persisted; subsequent forwards reuse the same instances so
+   compression state amortises across decode steps. This is
+   the architectural difference vs K2.A.1 where the
+   ``kv_compressor_factory`` is invoked every forward (fresh
+   instances → no caching savings).
+
+2. **`_V04SessionCache` class** — implements HF's
+   ``Cache.update()`` contract so the verifier's incremental
+   forward can be driven via standard HF
+   ``model.forward(input_ids=new_tokens, past_key_values=cache,
+   ...)`` calls. The ``update`` method:
+
+   * receives K, V for the new tokens (post-norm post-RoPE,
+     produced by HF's standard attention pipeline),
+   * stores new K, V at new resident-eligible positions in the
+     per-layer compressor,
+   * evicts positions that age out of the sliding window,
+   * assembles and returns the full-T K, V tensor by combining
+     {decompressed cached K/V at resident positions} ∪
+     {pre-computed proposer-restored K/V at evicted positions} ∪
+     {new K/V at new positions}.
+
+   Pre-computed evicted K/V are set per-layer via
+   ``cache.set_evicted_kv(layer_idx, K_evicted, V_evicted)``
+   before ``model.forward`` is invoked. The pre-computation
+   applies the layer's k_norm and the standard
+   ``apply_rotary_pos_emb`` helper to the proposer's captured
+   K/V slice (analogous to K1.D's ``prepare_restored_attention_kv``
+   but external to the model.forward call so HF's standard
+   attention pipeline can consume the result via
+   ``past_key_values.update``).
+
+3. **`_stateful_incremental_forward`** — the
+   ``DLMRestoredVerifier`` method that drives subsequent
+   forwards (after the first ``forward()`` of the session
+   has populated compressors). Steps:
+
+   a. Validate ``input_ids`` extends the cached prefix
+      (length > ``cache_token_count``); raise ``ValueError``
+      if shrinking or same-length.
+   b. Run proposer over the FULL prefix → ``KVCapture`` at
+      every position (proposer has no cache by §11.3).
+   c. Compute evicted + resident position lists at the
+      post-update prefix length T_full.
+   d. Build ``_V04SessionCache`` with the persistent
+      compressors + per-layer pre-computed evicted K/V.
+   e. Run ``model.forward(input_ids=new_tokens,
+      position_ids=range(T_start, T_full),
+      past_key_values=cache, use_cache=True)`` — verifier
+      processes only new tokens (length n_new), HF's standard
+      attention pipeline calls ``cache.update`` per layer to
+      get the full-T K, V for attention.
+   f. Update ``_session_state.cache_token_count = T_full``.
+   g. Return logits in shape ``[1, T_full, vocab]`` (the
+      ``[0..T_start)`` prefix is zero-filled — callers in the
+      K1.E NIAH harness use only ``logits[:, -1, :]`` for
+      argmax decoding so the zero-fill is benign and saves
+      memory).
+
+**The first stateful forward** (``cache_token_count == 0``
+bootstrap path) reuses the existing K1.D / K2.A.1 stateless
+code path with one change: ``_restoration_active`` checks
+``self._stateful`` and, if set, persists the constructed
+compressors into ``_session_state.compressors`` so subsequent
+incremental forwards can reuse them.
+
+**Test coverage** (``tests/inference_engine/v04/test_dlm_restored_verifier_stateful.py``,
+27 new tests):
+
+* ``stateful=False`` is K1.D / K2.A.1 — backward compat
+  regression (4 tests including ``cache_token_count`` stays
+  zero across forwards).
+* ``reset_cache()`` clears state (3 tests).
+* Bootstrap forward returns correct shape, persists
+  compressors, advances ``cache_token_count``, uses factory
+  (5 tests).
+* Incremental forward processes only new tokens, returns
+  full-T logits shape (2 tests).
+* Input validation: shrinking prefix raises, same-length
+  raises, ``reset_cache()`` unblocks (3 tests).
+* ``_SessionState`` dataclass behaviour (3 tests).
+* ``_V04SessionCache`` assembly logic (7 tests covering
+  ``get_seq_length``, ``set_partition``, ``set_evicted_kv``,
+  ``update`` with various position partitions, error paths).
+
+End-to-end "stateful incremental output ≈ stateless full
+forward output" requires real Gemma 3-1B on Mac M4 / vast —
+that's the K2.A.2 reviewer aid + empirical evidence (next
+step), not Linux unit tests. The Linux suite validates
+orchestration + state transitions + cache assembly.
+
+**K1.E runner integration** — `scripts/research/k1e_niah_validation.py`
+gains a ``--stateful`` flag (added 2026-06-09). When set, the
+v0.4 verifier is constructed with ``stateful=True`` and
+``verifier.reset_cache()`` is called between NIAH samples
+(each sample is a distinct session). JSON schema bumped 5 → 6
+to record the ``stateful`` boolean.
+
+**rotary_emb_fn injection** — `_stateful_incremental_forward`
+needs cos/sin at evicted positions (for the pre-RoPE proposer
+K/V → post-RoPE K/V conversion that ``cache.set_evicted_kv``
+requires). The wrapper auto-discovers ``model.model.rotary_emb``
+when present (HF Gemma3 / Llama / Qwen / Mistral pattern); for
+non-HF models or test stubs, callers can pass
+``rotary_emb_fn=...`` to ``forward()`` to inject a custom
+implementation. Mirrors the existing ``apply_rotary_pos_emb``,
+``eager_attention_forward``, ``all_attention_functions``
+injection pattern from K1.D.
+
+**Empirical evidence collection** — ships in a follow-up
+commit on this branch (or separate small PR):
+
+* vast.ai bf16 H200: same `scripts/review_pr_k2a1_integration_on_vast.sh`
+  ladder but with ``--stateful`` added; produces JSON evidence
+  at every §11.12 rung. Acceptance gates per §11.11.13.6:
+  recall within 1pp of K2.A.1 KL ON; throughput ≥ 1.21 tok/s
+  at 21k.
+* Mac M4 MPS bf16: same `scripts/review_pr_k2a1_integration_on_mac.sh`
+  with ``--stateful``; small rungs (1.4k + 5.6k) for the
+  cross-platform reproducibility check.
+
+**What this PR does NOT yet validate**:
+
+* Real-model end-to-end recall preservation under ``stateful=True``
+  (Linux CI uses synthetic _FakeModel; real-Gemma evidence
+  collection is the next step).
+* Throughput improvement (gate (c)) — the architectural design
+  is correct (verifier per-step is `[1, 1]` not `[1, T]`) but
+  the actual speedup depends on HF's `past_key_values` overhead
+  + the codec's per-step cost.
+
+If gate (c) doesn't deliver ≥ 1.3× as predicted, the
+escalation path is per §11.13.6.4 — refresh-on-eviction
+bypasses the staleness, though at K1 same-checkpoint setup
+staleness is structurally zero so this is unlikely to be the
+limiting factor.
+
 ### 11.12 Canonical empirical ladder (recall × rung × platform)
 
 Reference matrix for the K1 multi-source baseline.
