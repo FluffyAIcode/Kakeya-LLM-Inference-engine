@@ -2807,3 +2807,219 @@ candidates for Mac M4 24 GB single-device deployment.
   But model names are the most vulnerable class because LLM
   agents have strong priors about "what would naturally exist"
   and tend to confabulate.
+
+### 11.15 K3 implementation roadmap (added 2026-06-09)
+
+Per user directive 2026-06-09: *"直接把 k3 生产规模的 vast GPU 版本和
+Mac mini 版本全部准备好"* (prepare both vast GPU and Mac mini K3
+production versions immediately) **and** "k3 完成之后，再做 k2 qwen
+模型的适配" (K3 first; K2.B Qwen adaptation as a backport after K3).
+
+This subsection sequences the K3 work into discrete deliverable
+blocks with explicit prerequisites. The companion design documents
+in `docs/design/` flesh out per-block contracts.
+
+#### 11.15.1 Block sequence
+
+```
+A. Hardware feasibility       (this PR — DONE in scaffold form)
+   ├── A.1 vast.ai bf16 path
+   └── A.2 Mac M4 4-bit path (one-time MLX quantize)
+       ↓
+B. Cross-model wrapper        (K2.B/K3 implementation PR — NOT YET)
+       ↓
+C. f_θ training (Stage 1)     (K3 training PR — NOT YET)
+       ↓
+D. f_θ Stage 2 fine-tune      (K3 training PR cont. — NOT YET)
+       ↓
+E. K3 NIAH ladder evidence    (K3 evidence PR — NOT YET)
+       ↓
+F. K2.B Qwen backport         (K2.B research-scale validation — NOT YET)
+       ↓
+G. K3 production deployment   (release engineering — NOT YET)
+```
+
+#### 11.15.2 Block A — Hardware feasibility (this PR)
+
+**Prerequisites**: HF token (Gemma 4 is gated) on each host.
+
+**Deliverables** (shipped in this PR):
+
+* `scripts/research/k3_quantize_for_mac.py` — one-time
+  `mlx_lm.convert` 4-bit quantize of `google/gemma-4-26B-A4B-it`
+  to `~13 GB` local MLX directory on Mac M4.
+* `scripts/research/k3_feasibility_smoke.py` — cross-platform
+  smoke that loads (verifier, drafter), runs forward, reports
+  memory + latency JSON evidence.
+* `scripts/review_pr_k3_feasibility_on_vast.sh` — bf16 path
+  on vast.ai H100 / H200 80 GB (no quantization needed).
+* `scripts/review_pr_k3_feasibility_on_mac.sh` — 4-bit path on
+  Mac M4 24 GB (with quantize prerequisite check).
+* This roadmap (§11.15).
+* Cross-model `DLMRestoredVerifier` interface contract (no code,
+  just contract): `docs/design/k3-cross-model-dlmrestored-verifier-contract.md`
+* `f_θ` training pipeline skeleton (no code, just skeleton):
+  `docs/design/k3-f-theta-training-pipeline.md`
+
+**Acceptance gate**: smoke runs return exit 0 + JSON evidence
+shows verifier + drafter both load and run a forward on the
+target hardware. **What this gate does NOT verify**: cross-model
+correctness (that's Block B), trained-f_θ behaviour (Block C/D),
+NIAH recall (Block E).
+
+**Cost**: zero compute beyond a one-time Mac quantize
+(~30-90 min, free) and a single vast.ai GPU-hour smoke (~$1-3).
+
+#### 11.15.3 Block B — Cross-model `DLMRestoredVerifier` implementation
+
+**Prerequisites**: Block A's feasibility smoke confirms both
+models load on target hardware; the smoke's JSON report contains
+the actual drafter `(num_layers, head_dim, num_kv_heads)` shape
+needed to parameterise `LinearLayerProjection`.
+
+**Deliverables**:
+
+* `inference_engine/v04/dlm_restored_verifier.py` extended:
+  cross-model constructor signature per
+  `docs/design/k3-cross-model-dlmrestored-verifier-contract.md` §1.
+* New `inference_engine/v04/layer_projection.py`:
+  `LayerProjection` Protocol + `IdentityLayerProjection` +
+  `LinearLayerProjection`.
+* K1 / K2.A backward-compat regression test passes unchanged
+  (all 31 existing tests in
+  `test_dlm_restored_verifier.py` continue to pass).
+* New cross-model tests covering `IdentityLayerProjection ==
+  K1.D bit-for-bit`, `LinearLayerProjection` shape correctness,
+  layer_alignment strategies, error cases.
+
+**Acceptance gate**: tests pass; running cross-model
+`DLMRestoredVerifier` with `IdentityLayerProjection` on
+`(google/gemma-3-1b-it, google/gemma-3-1b-it)` produces
+bit-equal output to existing K1.D `DLMRestoredVerifier(model)`.
+
+**Cost**: pure engineering. ~500-1000 LOC. No GPU compute.
+
+#### 11.15.4 Block C — `f_θ` Stage 1 training (L_recon)
+
+**Prerequisites**: Block B implementation merged. Long-context
+corpus (RULER / NarrativeQA) accessible.
+
+**Deliverables**:
+
+* `scripts/training/train_f_theta_stage1.py` — training driver
+  per `docs/design/k3-f-theta-training-pipeline.md`.
+* Trained `f_θ` checkpoint at `checkpoints/k3_f_theta_stage1/`
+  (committed to LFS or shared blob storage, NOT into the main
+  repo — too large).
+* Training metadata JSON.
+
+**Acceptance gate**: validation L_recon converges to bounded
+plateau; validation NIAH recall at the 5.6k canary rung > some
+empirical threshold (TBD after first iteration).
+
+**Cost**: per ADR §11.7 K3 row, ~$200-500 of GPU compute on
+vast for Stage 1 alone (1B token training).
+
+#### 11.15.5 Block D — `f_θ` Stage 2 fine-tune (L_logit)
+
+**Prerequisites**: Block C checkpoint. `f_θ` already in the
+"correct ballpark"; Stage 2 tightens.
+
+**Deliverables**:
+
+* `scripts/training/train_f_theta_stage2.py` — driver.
+* Updated `f_θ` checkpoint at `checkpoints/k3_f_theta_stage2/`.
+
+**Acceptance gate**: validation NIAH recall meets ADR §11.8 1a
+(Δ ≤ 5pp of oracle at every §11.12 ladder rung).
+
+**Cost**: ~$50-200 (100M token fine-tune at 5-10× per-step cost
+of Stage 1).
+
+#### 11.15.6 Block E — K3 NIAH ladder evidence
+
+**Prerequisites**: Block D checkpoint passing Stage 2 validation.
+
+**Deliverables**:
+
+* Re-run K1.E NIAH harness with cross-model setup at every
+  §11.12 ladder rung (1.4k / 5.6k / 21k / 64k / 100k) on vast.
+* JSON evidence committed to `results/research/`.
+* ADR §11.11.10 postscript update with K3 baseline.
+
+**Acceptance gate**: ADR §11.8 1a gate met across full ladder;
+the v0.4 architectural validation is **finally** demonstrated
+on a real dLM proposer (not just K1's same-checkpoint AR
+toy).
+
+**Cost**: ~$10-30 of vast time for one full ladder run.
+
+#### 11.15.7 Block F — K2.B Qwen backport (research-scale validation)
+
+**Prerequisites**: Block E showed K3 works; K2.B is a backport.
+
+**Per the user directive**, K2.B is intentionally deferred to
+**after** K3 is established. Rationale: validating at production
+scale first ensures the architecture works at the deployment
+target; the smaller K2.B research scale then becomes a faster
+iteration vehicle for hyperparameter tuning + design exploration,
+not the primary validation gate.
+
+**Deliverables**:
+
+* Same training + evidence as Blocks C/D/E but with the
+  Qwen3.5-4B + DFlash 0.4B pair (scale ratio 10:1 vs K3's 65:1).
+* Evidence that K2.B reproduces K3's qualitative behaviour at
+  smaller scale (cheap for future research iterations).
+
+**Cost**: ~$20-50 (training is cheaper at smaller scale).
+
+#### 11.15.8 Block G — K3 production deployment
+
+**Prerequisites**: Block E + Block F passed.
+
+**Deliverables**: release engineering — Docker image, deployment
+docs, gRPC service config, multi-tenant scheduler tuning. Out of
+scope for v0.4 GA; lands in v0.5 release.
+
+#### 11.15.9 Critical dependencies
+
+The blocks must run in sequence:
+
+```
+A → B → C → D → E    (the K3 main path)
+            ↓
+            F        (K2.B backport, parallel after E)
+            ↓
+            G        (production deployment)
+```
+
+The user's directive ordering ("K3 first, then K2.B") is preserved
+explicitly — F comes after E, not in parallel.
+
+#### 11.15.10 Risk register
+
+| risk | block triggered | mitigation |
+|---|---|---|
+| Drafter K/V hooks don't fire (DFlash custom modeling) | B | adapt K1.A hook pattern; may require DFlash-specific code path |
+| `f_θ` capacity insufficient at 65:1 ratio | C/D | escalate per training pipeline §8: MLP, low-rank, learned alignment |
+| Mac M4 4-bit smoke OOMs at 100k context | A.2 | accept Mac M4 as research-only at smaller context; K3 production validation on vast only |
+| Gemma 4 26B-A4B verifier weights not accessible (gating delays) | A | use the alternative Gemma 4-31B-it pair (also HF-verified §11.14.3) |
+| f_θ training cost overruns budget | C/D | smaller Stage 1 token budget; accept partial convergence + larger Δ vs oracle |
+| Staleness (per §11.13.6) prevents Δ ≤ 5pp at production scale | E | escalate to §11.13.6.4 stateful-caching freshness designs (refresh-on-eviction or periodic refresh) |
+| Multi-tenant scheduling conflict with v0.4 architecture | G | deferred — out of scope for K3 per §11.15.8; addressed in v0.5 release engineering |
+
+#### 11.15.11 Why this roadmap matters
+
+Without this sequencing, K3 work would either:
+
+* (a) be over-claimed at Block A — "we have K3 prepared!" when in
+  reality only feasibility scripts exist; or
+* (b) be under-scoped at Block C/D — agents would underestimate
+  the training cost and skip Stage 2 fine-tuning.
+
+The roadmap makes both failure modes harder by giving each block
+a fixed scope, a deliverable list, and an acceptance gate. PR
+reviewers can map any K3-related PR to a block; PRs that try to
+collapse multiple blocks (e.g., "B+C+D+E in one PR") are scope
+violations.
