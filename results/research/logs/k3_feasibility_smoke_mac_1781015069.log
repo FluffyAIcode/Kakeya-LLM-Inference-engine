@@ -1,0 +1,15 @@
+[k3-smoke] platform: mac
+[k3-smoke] verifier:  models/gemma-4-26B-A4B-it-mlx-4bit
+[k3-smoke] drafter:   models/dflash-kakeya-baseline  (hf_repo_id)
+[k3-smoke] prompt n:  512
+[k3-smoke] gen n:     8
+[k3-smoke] --skip-verifier: drafter-only smoke
+[k3-smoke] --proposer-kv-capture: will exercise drafter.propose_kv
+[k3-smoke] loading drafter (mac, loader=dflash_drafter): models/dflash-kakeya-baseline
+[k3-smoke] WARN: drafter load failed: 404 Client Error. (Request ID: Root=1-6a282221-4b0315640e2157ee35f94fdb;8e6c42a6-76f5-4823-bf8d-8dd66b7ef627)
+
+Repository Not Found for url: https://huggingface.co/api/models/models/dflash-kakeya-baseline/revision/main.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+  Continuing without drafter.
+[k3-smoke] report -> results/research/k3_feasibility_smoke_mac_1781015069.json
