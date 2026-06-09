@@ -201,8 +201,17 @@ def _round_trip_resident_through_compressor(
     # resident positions get the round-tripped values.
     K_out = K.clone()
     V_out = V.clone()
-    K_out.index_copy_(-2, pos_tensor, K_round_tripped)
-    V_out.index_copy_(-2, pos_tensor, V_round_tripped)
+    # The compressor round-trip may upcast to fp32 (KakeyaLattice's
+    # quantize/dequantize math runs in fp32 for numerical fidelity),
+    # whereas the resident K/V cache is the model's compute dtype
+    # (bf16 on CUDA). index_copy_ requires matching dtype (and device),
+    # so cast the round-tripped tensors back before writing them in.
+    K_out.index_copy_(
+        -2, pos_tensor, K_round_tripped.to(device=K_out.device, dtype=K_out.dtype),
+    )
+    V_out.index_copy_(
+        -2, pos_tensor, V_round_tripped.to(device=V_out.device, dtype=V_out.dtype),
+    )
     return K_out, V_out
 
 
