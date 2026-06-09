@@ -1,0 +1,10 @@
+[k3-smoke] platform: mac
+[k3-smoke] verifier:  /Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-prod-smoke/models/gemma-4-26B-A4B-it-mlx-4bit
+[k3-smoke] drafter:   z-lab/gemma-4-26B-A4B-it-DFlash
+[k3-smoke] prompt n:  512
+[k3-smoke] gen n:     8
+[k3-smoke] loading verifier (MLX 4-bit): /Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-prod-smoke/models/gemma-4-26B-A4B-it-mlx-4bit
+[k3-smoke] mlx_lm.load FAILED: AttributeError: 'list' object has no attribute 'keys'
+[k3-smoke] matched known-bug fingerprints:
+    * bug1_quant_config_list_vs_dict: Patch config.json: if quantization_config is a list of dicts (per-layer), squash to a single dict at the top level. Re-run.
+[k3-smoke] report -> results/research/k3_feasibility_smoke_mac_1781021290.json
