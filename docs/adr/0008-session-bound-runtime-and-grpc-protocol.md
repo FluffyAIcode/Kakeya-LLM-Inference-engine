@@ -1302,17 +1302,29 @@ recall=0.12) datum makes precise:
 ### 11.7 Implementation phases (v0.4 GA)
 
 Each phase has Linux CI gates plus Mac M4 / vast.ai empirical gates
-per ADR 0008 §9.
+per ADR 0008 §9. Phase K2 was rescoped on 2026-06-08 to absorb the
+former K4 KakeyaLattice composition — see §11.11 for the integration
+architecture and motivation. The original K4-as-byte-codec framing
+underestimated the compositional value of KL: KL is not a "drop-in
+post-hoc compressor" but a load-bearing component that, by enlarging
+the verifier's resident local cache, materially reduces the work the
+dLM K/V Restoration path must do per decode step. Pulling KL forward
+into K2 means the cross-model projection `f_θ` is trained against
+the same memory budget the deployed system will run under, which
+removes a class of late-stage fitting risk that K3 production
+training would otherwise inherit.
 
 | Phase | Scope | Linux CI gate | Empirical gate |
 |---|---|---|---|
 | **K1** | Same-model toy: proposer and verifier share Gemma 3-1B weights. Implement K/V routing infrastructure (reconstruction hook, cache concatenation, transient memory management). Validate on synthetic NIAH that recall ≈ oracle when projection is identity. | round-trip K/V bit-identical when `f_θ = id`; no leaks across forward steps; INV-3 byte-exact under reconstruction | Mac M4: NIAH small-vocab recall ≥ 95 % at sink+window=4+64 + reconstruction (vs 16 % v0.3) |
-| **K2** | Cross-model toy: proposer = Gemma 3-1B, verifier = Gemma 3-4B. Train `f_θ` per-layer linear projection with L2 reconstruction loss on long-context corpus. Measure `\|p_v_restored - p_v_full\|`. | reconstruction loss reaches plateau on calibration set; coverage metric for layer alignment | vast H200: NIAH recall ≥ 90 % cross-model at sink+window=4+64 |
-| **K3** | Production scale: proposer = Gemma 4-2B-MDLM, verifier = Gemma 4-9B-class. Full alignment training of `f_θ` on long-context corpus (RULER, NarrativeQA). | training pipeline reproducible; checkpoint integrity manifest | Mac M4: 4 h `bench_session_long_run.py` at 100 k-token context, kv_live_bytes flat, latency p95 stable, INV-3 holds |
-| **K4** | KakeyaLattice composition: optionally compress sink+window K/V at byte level using KakeyaLattice (`pip install kakeyalattice`). Reduces sustained ~3 MB → ~1.2 MB; no architectural change. | drop-in codec; correctness preserved | Mac M4: A/B with and without KakeyaLattice, recall and latency curves |
-| **K5** | Default flip + docs | feature flag `kv_strategy=dlm_restore` becomes default for v0.4; sink+window-only retained as opt-in for memory-constrained edge cases | quickstart updated; v0.3 → v0.4 migration documented |
+| **K2.A** (was K4) | KakeyaLattice integration into the verifier's local sink+window cache. `KVCompressor` interface with `IdentityCompressor` (no-op) + `KakeyaLatticeCompressor` (the in-house codec). Local cache stores compressed K/V; decode-time decompresses lazily into the K/V tensor that feeds attention. **Same model** as K1 (`f_θ = id`); isolates the KL composition risk from the cross-model projection risk. | round-trip identity: `decompress(compress(K, V)) ≈ (K, V)` within published KL fidelity; throughput ≥ K1 oracle baseline | Mac M4: NIAH recall = K1 baseline ± 1pp at 100k context with KL on; throughput improvement ≥ 1.3× over K1 v04 at the same memory budget |
+| **K2.B** (was K2) | Cross-model toy: proposer = Gemma 3-1B, verifier = Gemma 3-4B. Train `f_θ` per-layer linear projection with L2 reconstruction loss on long-context corpus. **f_θ trained against KL-quantized cache** so the projection inherits KL's quantization bias and is robust to it. Measure `\|p_v_restored - p_v_full\|`. | reconstruction loss reaches plateau on calibration set; coverage metric for layer alignment; KL-on residual ≤ KL-off residual + 5% | vast H200: NIAH recall ≥ 90 % cross-model at sink+window=4+64 with KL on |
+| **K3** | Production scale: proposer = Gemma 4-2B-MDLM, verifier = Gemma 4-9B-class. Full alignment training of `f_θ` on long-context corpus (RULER, NarrativeQA). KL on by default. | training pipeline reproducible; checkpoint integrity manifest | Mac M4: 4 h `bench_session_long_run.py` at 100 k-token context, kv_live_bytes flat, latency p95 stable, INV-3 holds |
+| **K4** | _Reserved._ Originally KakeyaLattice composition; absorbed into K2.A on 2026-06-08. Slot kept open for future composition experiments (e.g. tile-wise mixed precision in the proposer's transient K/V — see Q11.4 below). |  |  |
+| **K5** | Default flip + docs | feature flag `kv_strategy=dlm_restore` (with `kv_compressor=kakeya_lattice`) becomes default for v0.4; sink+window-only retained as opt-in for memory-constrained edge cases | quickstart updated; v0.3 → v0.4 migration documented |
 
-K1 is doable on Mac M4 alone (no GPU training). K2 requires vast or
+K1 + K2.A are both doable on Mac M4 alone (no GPU training; KL is
+applied at inference time, not learned). K2.B requires vast or
 similar single-GPU training; budget ~$5–10. K3 is the production
 training and requires real long-context corpus — ~$200–1000 GPU
 budget depending on corpus size and number of training tokens.
@@ -1342,6 +1354,26 @@ artifacts in `results/platform-tests/` or `results/research/`:
    (subject to projection numerics; tolerance < 1 % token disagreement).
 6. **Long-session stability**: 4 h benchmark with no errors,
    p95 latency stable, memory flat.
+7. **Throughput floor (added 2026-06-08)**: per-config decode
+   throughput, in tokens / second, recorded by the K1.E NIAH
+   harness (`mean_throughput_tokens_per_sec`, K1.I schema v4),
+   must satisfy at the run's context length:
+
+   * v0.4 (with KakeyaLattice on per §11.11) ≥ 1.3× the v0.4
+     baseline measured at the same context length without KL.
+   * v0.4 (KL on) decode throughput ≥ 0.6× the full-attention
+     oracle's throughput at the same context length. The 0.6
+     bound reflects the inherent extra work per step (proposer
+     forward + reconstruction + verifier forward) and is a
+     consequence of the architecture, not a regression. K2.A
+     closes much of the gap by enlarging the resident local
+     cache (compressed) so reconstruction fires less often.
+
+   Throughput is measured per-sample, then aggregated as
+   mean / median / min / max. The metric is reported alongside
+   recall, peak memory, and effective attention window so all
+   four release-gating axes are visible in the same JSON
+   evidence.
 
 ### 11.9 Open questions for v0.4 GA
 
@@ -1360,10 +1392,18 @@ artifacts in `results/platform-tests/` or `results/research/`:
   forward). Is there a way to amortize? Probably no within one
   step, but across steps with KV-cache-style proposer (which
   contradicts the dLM no-cache property) — defer.
-- **Q11.4**: Composition with KakeyaLattice on the proposer's
-  transient K/V (compress proposer's K/V before reconstruction
-  projection). Only meaningful if `f_θ`'s output is already learned
-  to be lattice-quantization-tolerant. Phase K4 work.
+- **Q11.4** (partially resolved 2026-06-08; see §11.11): The main
+  KakeyaLattice composition target — compressing the verifier's
+  resident sink+window cache — has been pulled forward from K4
+  into K2.A and is now a load-bearing component, not an optional
+  post-hoc codec. The remaining unresolved fragment is whether to
+  ALSO compress the proposer's transient K/V before the
+  reconstruction projection `f_θ` consumes it. This is now a
+  separate question: the proposer K/V lives one forward, so
+  compression there only pays off if the (compress, decompress)
+  round-trip is cheaper than transmitting the uncompressed tensor
+  through `f_θ`. Empirically unproven; deferred to a future
+  composition experiment, with the K4 phase slot reserved for it.
 - **Q11.5**: Multi-tenant scheduling. With the proposer running a
   full forward per generation step, throughput is bottlenecked by
   proposer cost, not memory. Compute-throughput vs memory-density
@@ -1402,6 +1442,242 @@ To document the lesson for future contributors:
 Both lessons are deposited in this ADR (rather than as separate
 "rejected ADR" tombstones) so future readers see them in the
 context of the architecture that replaces them.
+
+### 11.11 KakeyaLattice integration into the verifier's K/V path (K2 amendment, 2026-06-08)
+
+This section was added 2026-06-08 in response to the user directive
+"在 k2 阶段，把 kakeyalattice 的 kv cache 压缩集成进 verifier 的 kv
+过程里". It pulls the in-house **KakeyaLattice** KV codec
+(`github.com/FluffyAIcode/LLM-KV--Cache-compress`, v1.4 D4 / v1.5
+E8 lattice, 2.4–2.8× compression at < 1 % perplexity loss on H200,
+beats Google TurboQuant 12/12) forward from the original K4 slot
+into K2.A. The motivation is not "smaller cache" — at sink=4,
+window=64 the local cache is ~17 KB at bf16 for Gemma 3-1B,
+already negligible — but a **composition effect** with the dLM
+K/V Restoration architecture of §11.5 that materially changes the
+quality / cost trade-off.
+
+#### 11.11.1 Why integrate KakeyaLattice and dLM K/V Restoration as one design point
+
+§11.5 chose a small `sink+window` deliberately so total KV memory
+is bounded constant in T. But "small" was set at the v0.3 budget
+without compression. With KL on, the same memory budget supports
+a 2.4–2.8× larger resident window — at fixed memory, sink+window
+can grow from 4+64 = 68 to ~190 effective positions; at fixed
+window, memory drops 2.4–2.8×. The two design points have
+different empirical signatures:
+
+* **Memory-fixed, window-expanded** (the K2.A primary path):
+  identical sustained memory as K1 v04, but the resident window
+  covers ~3× more positions. Eviction (and therefore dLM K/V
+  Restoration) only fires past position ~190 instead of ~68. For
+  short-to-medium context (T ≤ 2k tokens) the verifier runs
+  almost entirely from its compressed local cache and the
+  proposer reconstruction path is a no-op — collapsing to a
+  faster, oracle-equivalent decode. For long context (T = 100k)
+  the eviction rate is roughly (T - 190) / T ≈ 99.8 %, marginally
+  worse than (T - 68) / T ≈ 99.9 % — so the long-tail behaviour
+  is unchanged, but the short-context end is dramatically
+  faster.
+* **Window-fixed, memory-reduced** (the K2.A optional path):
+  identical resident window as K1 v04, but sustained memory is
+  ~2.5× lower. Useful for multi-tenant batching where verifier
+  memory is scaled out across N concurrent sessions and per-session
+  footprint matters more than per-session quality.
+
+The primary path is the first; throughput is the goal, not memory
+shrinkage. K1 v04 already achieved constant memory at the K1
+budget — that constraint is satisfied. The K2.A win is throughput.
+
+#### 11.11.2 Where KL plugs in (and where it does NOT)
+
+The v0.4 verifier holds K/V tensors in three structurally
+different forms during one decode step:
+
+| K/V kind | Lifetime | Compresses? | Why |
+|---|---|---|---|
+| **resident local cache** (sink + window K/V) | persists across decode steps; sustained working set | **YES — K2.A target** | persistent working set is the only K/V whose memory cost compounds; KL's compression amortises across steps |
+| **dLM-reconstructed K/V** at evicted positions | one decode step | NO | reconstructed K/V is computed fresh from the proposer's transient state every step and consumed by the verifier's attention in the same forward; compressing it does not save sustained memory and adds round-trip cost per step |
+| **proposer's transient K/V** during its forward | one decode step | possibly (Q11.4 fragment) | Same lifetime argument as above; only worth it if the (compress, transmit-to-`f_θ`, decompress) path is cheaper than passing the raw tensor. Empirically unproven; reserved for K4. |
+
+**KL applies to the resident local cache only.** This is the
+load-bearing claim of K2.A. Compressing the other two K/V kinds
+is either a no-op (no sustained memory saved) or a net cost
+(per-step round-trip), so the K2.A integration deliberately does
+not touch them.
+
+#### 11.11.3 Compositional model: how dLM K/V Restoration and KL stack
+
+The verifier's attention at decode position q ∈ [0, T) must see
+some approximation of K/V at every preceding position k ∈ [0, q].
+With both K2.A components on, the K/V at position k is sourced
+from one of two paths:
+
+```
+                     k ∈ resident local positions  ┐
+                                                    │ → KL.decompress() → K/V  ┐
+                       (sink ∪ window slots)        ┘                          │
+                                                                               ├→ verifier attention
+                     k ∈ evicted positions          ┐                          │
+                                                    │ → dLM forward → f_θ      ┘
+                       (T \ local_positions)        ┘
+```
+
+The two paths produce K/V tensors of identical shape; they
+differ only in source. The verifier's attention does not know
+which is which, which preserves the speculative-decoding contract
+of §11.5 (the verifier's output distribution is a function only
+of (current logits | K/V at all preceding positions), independent
+of how that K/V was produced).
+
+Critically, the **set membership of the local positions is the
+design lever**. K2.A enlarges that set under fixed memory, which
+shifts more of `[0, q]` into the KL path and less into the
+reconstruction path. Per decode step, that means:
+
+* **Throughput** ↑ (reconstruction path costs more than KL
+  decompression — the proposer's forward is the dominant cost,
+  and avoiding it on more positions means fewer proposer
+  forwards per step in batched implementations, eventually
+  converging to "one proposer forward per N decode steps" once
+  the local cache covers most of T).
+* **Quality** ↑ slightly (KL has bounded perplexity loss; `f_θ`
+  has unbounded learned-projection loss when the cross-model
+  projection is imperfect — see K2.B). At the K2.A same-model
+  identity-projection point, both paths are exact, so quality
+  parity is automatic.
+* **Memory** = (the budget is fixed; KL's compression is spent
+  on enlarging the local cache, not on reducing memory).
+
+#### 11.11.4 Implementation contract: `KVCompressor` interface
+
+K2.A introduces a narrow, codec-agnostic interface so the
+KakeyaLattice dependency lives behind one boundary:
+
+```python
+class KVCompressor(Protocol):
+    """One verifier-cache compressor instance per (layer, head_kv).
+
+    Stateful: holds the compressed representation; decode step
+    sequence is compress → ... → decompress on the same instance.
+    """
+    def compress(self, k: Tensor, v: Tensor, positions: Tensor) -> None:
+        """Add (k, v) at given positions to the compressed store.
+        Idempotent on repeated positions (overwrites)."""
+
+    def decompress(self, positions: Tensor) -> tuple[Tensor, Tensor]:
+        """Return (k, v) at the given resident positions. Shape
+        matches a slice of the original K/V tensor."""
+
+    def evict(self, positions: Tensor) -> None:
+        """Drop the given positions from the compressed store."""
+
+    def memory_bytes(self) -> int:
+        """Sustained byte size of the compressed store. Used by
+        K1.G memory accounting to verify constant memory."""
+```
+
+Two implementations ship in K2.A:
+
+* **`IdentityCompressor`** — stores `(k, v)` uncompressed, identity
+  on `compress`/`decompress`. Default for K1 and as the v0.4 GA
+  fallback when KL is unavailable.
+* **`KakeyaLatticeCompressor`** — wraps the in-house codec.
+  `compress` runs D4/E8 lattice quantisation; `decompress` runs
+  the inverse. The codec's published fidelity guarantees become
+  the K2.A round-trip-identity gate.
+
+`DLMRestoredVerifier` (K1.D) is parameterised on a `KVCompressor`
+instance (default `IdentityCompressor`); the K1 NIAH evidence
+already validates the architecture on the identity compressor, so
+K2.A is purely an interface-and-codec swap, not a re-architecting.
+
+#### 11.11.5 K2.A acceptance gates
+
+K2.A merge requires evidence of all three:
+
+1. **Round-trip identity**: per-tensor numerical: `‖decompress(compress(K, V)) - (K, V)‖ / ‖(K, V)‖` within KakeyaLattice's published fidelity envelope (per layer per head). Linux unit-test gate; deterministic on synthetic K/V.
+2. **No quality regression**: K1.E NIAH harness, same Gemma 3-1B
+   identity-projection setup, KL on vs KL off:
+   * recall(KL on) ≥ recall(KL off) − 1pp at every context rung
+     in §11.12 ladder (1.4k, 5.6k, 22k, 64k, 100k).
+   * `effective_attention_fraction` from K1.H schema: identical
+     between KL on and KL off (KL is structurally invisible to
+     the attention-mask path).
+3. **Throughput improvement**: K1.I throughput metric (schema v4):
+   * `mean_throughput_tokens_per_sec(KL on) / mean_throughput_tokens_per_sec(KL off) ≥ 1.3` at the 22k+ rungs of the §11.12 ladder.
+   * The 1.3× floor is conservative; theoretical upper bound is
+     the inverse of the KL-on eviction rate, which approaches the
+     full-attention oracle's throughput as the local cache grows
+     to cover most of T.
+
+#### 11.11.6 K2.B (was K2): cross-model `f_θ` trained against KL-on cache
+
+The K2.B phase trains the cross-model linear projection `f_θ`
+(Gemma 3-1B proposer → Gemma 3-4B verifier) against a verifier
+running with KL on, not against an idealised uncompressed
+verifier. This is the "fit the projection to the deployed
+runtime" discipline: if K3 production training is also done
+against KL-on, the K3-trained `f_θ` inherits robustness to
+KL's quantisation bias for free.
+
+The empirical risk this addresses: if K2.B trained `f_θ` on a
+KL-off verifier and K3 deployed it against a KL-on verifier,
+the small KL quantisation error compounds with the larger `f_θ`
+projection error in unpredictable ways. Training the projection
+in the same compression regime it will be served in is the
+standard discipline for compressed-deployment models; we make
+it explicit here because the project's earlier ADR 0010 / 0011
+sequence showed how easy it is to mis-frame the runtime
+constraints during training-phase design.
+
+#### 11.11.7 What K2.A is NOT
+
+To prevent scope creep:
+
+* **Not a new compression algorithm.** KakeyaLattice already exists
+  at `github.com/FluffyAIcode/LLM-KV--Cache-compress` as v1.4 D4 /
+  v1.5 E8. K2.A is integration plumbing, not algorithmic R&D.
+* **Not a memory-budget change.** Constant-memory is already
+  satisfied by K1; K2.A spends KL's compression headroom on
+  throughput, not on cutting memory further.
+* **Not a quality-recovery mechanism.** K1.E already showed v0.4
+  recall = oracle at the same-model identity-projection point;
+  K2.A's quality gate is "no regression vs K1", not "improve
+  recall". Quality improvement comes in K2.B from the cross-model
+  projection.
+* **Not coupled to the cross-model projection.** K2.A ships KL on
+  the same-model setup first (`f_θ = id`); K2.B introduces the
+  cross-model projection. This staging matches the K1 → K2 risk
+  isolation discipline of §11.7.
+
+#### 11.11.8 Why this is the right phase boundary
+
+Considered alternatives, rejected:
+
+* **Land KL in v0.4 GA but as an optional flag (was K4).** Rejected:
+  if KL is optional, the throughput criterion in §11.8 has to be
+  written twice (KL-on path and KL-off path), each with different
+  acceptance numbers, and v0.4 release evidence has to cover both
+  matrices. Throughput is the v0.4 user-visible win; making it
+  flag-gated dilutes the release.
+* **Land KL after K3 production training (was implicit).** Rejected:
+  K3-trained `f_θ` against KL-off, then deployed with KL on, is the
+  exact "training-deployment compression mismatch" failure mode
+  documented in §11.11.6. Better to take the integration risk
+  during K2 (small models, fast iteration) than during K3
+  (production models, expensive iteration).
+* **Land KL during K1 (i.e. before this amendment was even
+  written).** Rejected: K1's job was validating the dLM K/V
+  Restoration architecture itself; adding KL in K1 would have
+  conflated two independent risks (architecture validity ×
+  codec composition) into one phase.
+
+K2.A is therefore the narrowest phase in which KL composition is
+both necessary (throughput is unmeasurable without it under the
+fixed-memory budget) and sufficient (the architecture has just
+been proven in K1, so KL can be added without simultaneously
+defending the architecture).
 
 ---
 

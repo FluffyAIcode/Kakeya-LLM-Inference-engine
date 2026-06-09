@@ -236,6 +236,28 @@ class NIAHEvalResult:
         diagnostics ("what did the model say when it was wrong?").
     per_sample_correct
         Boolean correctness flag per sample.
+    per_sample_decode_tokens
+        How many tokens each sample actually generated. Equals
+        ``max_new_tokens`` when EOS was not hit; less if EOS
+        terminated the loop early. Required for throughput
+        accounting; without it, throughput can't distinguish
+        between "ran the full budget" and "early-exited on EOS".
+    per_sample_throughput_tokens_per_sec
+        ``decode_tokens / latency_s`` for each sample.
+    mean_throughput_tokens_per_sec, median_throughput_tokens_per_sec
+        Aggregate throughput stats. Per-config comparison gives the
+        v0.4-overhead-vs-oracle picture: if v0.4 has 5× lower
+        throughput than oracle, it's spending 5× the wall time per
+        decoded token (because each step runs proposer + verifier
+        + reconstruction, vs oracle's verifier-only). The K2
+        KakeyaLattice composition (ADR 0008 §11.11) is partly
+        motivated by closing this gap — a larger KL-compressed
+        local cache means fewer eviction events means less
+        reconstruction overhead per decode step.
+    min_throughput_tokens_per_sec, max_throughput_tokens_per_sec
+        Tail of the throughput distribution. With 20-30 samples,
+        p95 is too noisy to be meaningful, but min / max bracket
+        the worst-case / best-case observed.
     """
 
     name: str
@@ -246,6 +268,12 @@ class NIAHEvalResult:
     median_latency_s: float
     per_sample_decoded: List[str]
     per_sample_correct: List[bool]
+    per_sample_decode_tokens: List[int]
+    per_sample_throughput_tokens_per_sec: List[float]
+    mean_throughput_tokens_per_sec: float
+    median_throughput_tokens_per_sec: float
+    min_throughput_tokens_per_sec: float
+    max_throughput_tokens_per_sec: float
 
 
 def aggregate_recall(
@@ -253,12 +281,27 @@ def aggregate_recall(
     samples: Sequence[NIAHSample],
     decoded_texts: Sequence[str],
     latencies_s: Sequence[float],
+    decode_token_counts: Sequence[int],
 ) -> NIAHEvalResult:
-    """Combine per-sample decoded outputs + latencies into an
-    aggregate :class:`NIAHEvalResult`.
+    """Combine per-sample decoded outputs + latencies + decode token
+    counts into an aggregate :class:`NIAHEvalResult`.
 
-    ``len(decoded_texts)`` must equal ``len(samples)``; same for
-    ``latencies_s``. Mismatch raises ``ValueError``.
+    All four sequence arguments must have the same length as
+    ``samples``; mismatch raises ``ValueError``. Empty samples
+    raises ``ValueError``.
+
+    ``decode_token_counts`` is the number of tokens each sample
+    actually generated (≤ ``max_new_tokens``; lower when EOS
+    terminated the loop early). Required because throughput
+    expressed as ``max_new_tokens / latency`` would under-report
+    samples that hit EOS early — the natural denominator is the
+    actually-generated count. Throughput per sample is
+    ``decode_token_counts[i] / latencies_s[i]``; aggregate stats
+    (mean / median / min / max) are computed across samples.
+
+    A latency of 0 (synthetic/test inputs) yields a per-sample
+    throughput of 0 to avoid ZeroDivisionError; aggregate stats
+    are computed across all samples including these.
     """
     n = len(samples)
     if len(decoded_texts) != n:
@@ -269,27 +312,55 @@ def aggregate_recall(
         raise ValueError(
             f"latencies_s ({len(latencies_s)}) != samples ({n})"
         )
+    if len(decode_token_counts) != n:
+        raise ValueError(
+            f"decode_token_counts ({len(decode_token_counts)}) != samples ({n})"
+        )
     if n == 0:
         raise ValueError("samples must be non-empty")
+    if any(t < 0 for t in decode_token_counts):
+        raise ValueError(
+            "decode_token_counts must be non-negative; got negative entry"
+        )
+    if any(s < 0 for s in latencies_s):
+        raise ValueError(
+            "latencies_s must be non-negative; got negative entry"
+        )
 
     correct_flags = [
         recall_predicate(text, sample)
         for text, sample in zip(decoded_texts, samples)
     ]
     n_correct = sum(correct_flags)
-    sorted_lat = sorted(latencies_s)
-    median = sorted_lat[n // 2] if n % 2 == 1 else (
-        (sorted_lat[n // 2 - 1] + sorted_lat[n // 2]) / 2
-    )
+
+    def _median(xs: Sequence[float]) -> float:
+        srt = sorted(xs)
+        m = len(srt)
+        return float(srt[m // 2]) if m % 2 == 1 else (
+            (float(srt[m // 2 - 1]) + float(srt[m // 2])) / 2
+        )
+
+    median_lat = _median(latencies_s)
+
+    throughputs: List[float] = [
+        (float(t) / float(s)) if s > 0 else 0.0
+        for t, s in zip(decode_token_counts, latencies_s)
+    ]
     return NIAHEvalResult(
         name=name,
         samples_total=n,
         samples_correct=n_correct,
         recall=n_correct / n,
         mean_latency_s=sum(latencies_s) / n,
-        median_latency_s=median,
+        median_latency_s=median_lat,
         per_sample_decoded=list(decoded_texts),
         per_sample_correct=correct_flags,
+        per_sample_decode_tokens=[int(t) for t in decode_token_counts],
+        per_sample_throughput_tokens_per_sec=throughputs,
+        mean_throughput_tokens_per_sec=sum(throughputs) / n,
+        median_throughput_tokens_per_sec=_median(throughputs),
+        min_throughput_tokens_per_sec=min(throughputs),
+        max_throughput_tokens_per_sec=max(throughputs),
     )
 
 
@@ -360,22 +431,30 @@ def greedy_decode_oracle(
     prompt_ids: torch.Tensor,
     tokenizer,
     max_new_tokens: int = 24,
-) -> str:
+) -> Tuple[str, int]:
     """Greedy decode under the model's standard forward (full-attention
-    oracle). Returns the decoded continuation text only (excluding
-    the prompt)."""
+    oracle). Returns ``(decoded_text, decode_tokens)`` where
+    ``decode_tokens`` is the number of generation steps actually
+    taken (= ``max_new_tokens`` unless EOS terminated early).
+
+    The returned token count is the natural denominator for
+    throughput accounting in :func:`aggregate_recall`.
+    """
     cur = prompt_ids
+    decode_tokens = 0
     for _ in range(max_new_tokens):
         out = model(input_ids=cur, use_cache=False)
         next_token = int(torch.argmax(out.logits[:, -1, :]).item())
         cur = torch.cat(
             [cur, torch.tensor([[next_token]], device=cur.device)], dim=1,
         )
+        decode_tokens += 1
         if next_token == tokenizer.eos_token_id:
             break
-    return tokenizer.decode(
+    text = tokenizer.decode(
         cur[0, prompt_ids.size(1):], skip_special_tokens=True,
     )
+    return text, decode_tokens
 
 
 @torch.no_grad()
@@ -388,8 +467,11 @@ def greedy_decode_sink_window(
     window_size: int,
     is_gemma3: bool = True,
     max_new_tokens: int = 24,
-) -> str:
+) -> Tuple[str, int]:
     """Greedy decode under a v0.3-style sink+window 4D attention mask.
+
+    Returns ``(decoded_text, decode_tokens)`` — see
+    :func:`greedy_decode_oracle` for the rationale.
 
     For Gemma3-class models, the mask is wrapped in the ``{full_attention,
     sliding_attention}`` dict convention so both layer types are
@@ -402,6 +484,7 @@ def greedy_decode_sink_window(
     samples.
     """
     cur = prompt_ids
+    decode_tokens = 0
     base_dtype = next(model.parameters()).dtype
     for _ in range(max_new_tokens):
         seq_len = cur.size(1)
@@ -426,11 +509,13 @@ def greedy_decode_sink_window(
         cur = torch.cat(
             [cur, torch.tensor([[next_token]], device=cur.device)], dim=1,
         )
+        decode_tokens += 1
         if next_token == tokenizer.eos_token_id:
             break
-    return tokenizer.decode(
+    text = tokenizer.decode(
         cur[0, prompt_ids.size(1):], skip_special_tokens=True,
     )
+    return text, decode_tokens
 
 
 @torch.no_grad()
@@ -443,8 +528,11 @@ def greedy_decode_v04(
     eager_attention_forward: Callable,
     all_attention_functions=None,
     max_new_tokens: int = 24,
-) -> str:
+) -> Tuple[str, int]:
     """Greedy decode under the v0.4 :class:`DLMRestoredVerifier`.
+
+    Returns ``(decoded_text, decode_tokens)`` — see
+    :func:`greedy_decode_oracle` for the rationale.
 
     Each generation step calls ``verifier.forward(...)``, which
     internally runs the proposer-role capture, computes evicted
@@ -453,6 +541,7 @@ def greedy_decode_v04(
     returns logits.
     """
     cur = prompt_ids
+    decode_tokens = 0
     for _ in range(max_new_tokens):
         logits = verifier.forward(
             cur,
@@ -464,11 +553,13 @@ def greedy_decode_v04(
         cur = torch.cat(
             [cur, torch.tensor([[next_token]], device=cur.device)], dim=1,
         )
+        decode_tokens += 1
         if next_token == tokenizer.eos_token_id:
             break
-    return tokenizer.decode(
+    text = tokenizer.decode(
         cur[0, prompt_ids.size(1):], skip_special_tokens=True,
     )
+    return text, decode_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -479,24 +570,36 @@ def greedy_decode_v04(
 def evaluate(
     name: str,
     samples: Sequence[NIAHSample],
-    decode_fn: Callable[[NIAHSample], Tuple[str, float]],
+    decode_fn: Callable[[NIAHSample], Tuple[str, float, int]],
 ) -> NIAHEvalResult:
     """Run ``decode_fn`` on each sample, time it, and aggregate into
     a :class:`NIAHEvalResult`.
 
-    ``decode_fn(sample) -> (decoded_text, latency_s)``. The caller is
-    responsible for chat-template encoding the prompt, picking the
-    device, and managing tokenizer state — this function is purely
-    the eval-loop scaffold so the same harness covers all three
-    verifier configurations.
+    ``decode_fn(sample) -> (decoded_text, latency_s, decode_tokens)``.
+    The caller is responsible for chat-template encoding the prompt,
+    picking the device, and managing tokenizer state — this function
+    is purely the eval-loop scaffold so the same harness covers all
+    three verifier configurations.
+
+    K1.I (this signature, with the third return element):
+    ``decode_tokens`` is the count of generation steps actually
+    taken — required by :func:`aggregate_recall` to compute
+    throughput. Callers that wrap the canonical
+    ``greedy_decode_{oracle,sink_window,v04}`` helpers can simply
+    forward the helpers' (text, count) return tuple and timestamp
+    the call.
     """
     decoded_texts: List[str] = []
     latencies_s: List[float] = []
+    decode_tokens_list: List[int] = []
     for sample in samples:
-        text, latency = decode_fn(sample)
+        text, latency, decode_tokens = decode_fn(sample)
         decoded_texts.append(text)
         latencies_s.append(latency)
-    return aggregate_recall(name, samples, decoded_texts, latencies_s)
+        decode_tokens_list.append(decode_tokens)
+    return aggregate_recall(
+        name, samples, decoded_texts, latencies_s, decode_tokens_list,
+    )
 
 
 # ---------------------------------------------------------------------------
