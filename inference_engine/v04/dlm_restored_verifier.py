@@ -1116,9 +1116,26 @@ class DLMRestoredVerifier:
             sin_evicted = sin_full.index_select(-2, ev_idx_dev)
 
             for layer_idx, attn_module in enumerate(attn_modules):
-                K_pre = evicted_capture.keys[layer_idx]   # [B, kv, n_ev, head_dim]
-                V_pre = evicted_capture.values[layer_idx]
-                # Apply k_norm.
+                # KVCapture's natural layout is [B, T, num_kv_heads, head_dim]
+                # (see kv_capture.py line 478 / module docstring lines 102-103).
+                # apply_rotary_pos_emb and the HF attention pipeline expect
+                # [B, num_kv_heads, T, head_dim] — same layout K_local uses
+                # after `k_proj(...).view(...).transpose(1, 2)` in standard
+                # Gemma3Attention.forward. Transpose BEFORE k_norm + RoPE.
+                #
+                # Without this transpose, q.shape=[1, n_ev, kv, head_dim]
+                # multiplied by cos.unsqueeze(1).shape=[1, 1, n_ev, head_dim]
+                # broadcasts to [1, n_ev, n_ev, head_dim] — quadratic in
+                # n_ev. At ctx280 (n_ev≈6345) this is ~20 GB and crashes
+                # MPS with "Invalid buffer size: 19.20 GiB" (2026-06-09
+                # Mac M4 production-smoke v3 failure). prepare_restored_
+                # attention_kv (K2.A.1 stateless path) handles the same
+                # transpose at its line ~370 (see its docstring lines
+                # 257-259); the K2.A.2 stateful path was missing it.
+                K_pre = evicted_capture.keys[layer_idx].transpose(1, 2).contiguous()
+                V_pre = evicted_capture.values[layer_idx].transpose(1, 2).contiguous()
+                # K_pre / V_pre now: [B, num_kv_heads, n_ev, head_dim]
+                # Apply k_norm — last-dim normalisation, layout-invariant.
                 K_normed = attn_module.k_norm(K_pre)
                 # Apply RoPE on K (Q is irrelevant here).
                 _, K_roped = apply_rotary_pos_emb(

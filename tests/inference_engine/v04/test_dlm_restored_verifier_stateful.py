@@ -457,3 +457,182 @@ class TestV04SessionCache:
         V_new = torch.randn(1, 2, 3, 4)
         with pytest.raises(RuntimeError, match="3 positions"):
             cache.update(K_new, V_new, layer_idx=0)
+
+
+class TestStatefulIncrementalEvictedKVShape:
+    """Regression for the 2026-06-09 Mac M4 production-smoke v3 crash:
+
+        RuntimeError: Invalid buffer size: 19.20 GiB
+
+    in DLMRestoredVerifier._stateful_incremental_forward at the
+    apply_rotary_pos_emb call site (line ~1124).
+
+    Root cause: KVCapture's natural layout is
+    [B, T, num_kv_heads, head_dim] (kv_capture.py line 478, module
+    docstring lines 102-103). The stateful incremental forward was
+    feeding the capture's raw tensor straight into apply_rotary_pos_emb,
+    which expects [B, num_heads, T, head_dim]. With Gemma 3-1B's
+    num_kv_heads=1 (GQA fully collapsed), the broadcast in
+    ``q * cos.unsqueeze(1)`` silently expands to [B, T, T, head_dim]
+    — quadratic. At ctx280 (T≈6413) this is ~20 GB and crashes MPS.
+
+    Why synthetic CI didn't catch it: the existing _FakeAttention uses
+    num_kv_heads=2, which makes the same misshapen broadcast fail
+    with a clean shape mismatch error instead of the quadratic
+    materialisation. Only num_kv_heads=1 reproduces the silent
+    quadratic path.
+
+    These tests mirror the Gemma 3-1B GQA-collapsed layout
+    (num_kv_heads=1) and exercise the exact code path with a strict
+    apply_rotary_pos_emb stub that verifies q's layout matches the
+    HF docstring contract.
+    """
+
+    def _make_strict_rope(self):
+        """Stub apply_rotary_pos_emb that asserts q is in
+        [B, num_heads, T, head_dim] layout (dim 1 = heads, dim 2 = T).
+
+        Performs the real broadcast math on a small scale so that a
+        layout bug would either AssertionError (safety net) or
+        produce a quadratic-shape tensor (the actual bug signature).
+        """
+        def _strict(q, k, cos, sin):
+            B, dim1, dim2, head_dim = q.shape
+            cos_T = cos.shape[1]
+            assert cos_T == dim2, (
+                f"q layout bug: q has shape [{B}, {dim1}, {dim2}, "
+                f"{head_dim}] but cos has T={cos_T}; HF apply_rotary_"
+                f"pos_emb expects q dim 2 to equal cos T. This indicates "
+                f"q was passed in [B, T, heads, head_dim] instead of "
+                f"[B, heads, T, head_dim] — caller must transpose(1, 2)."
+            )
+            # Replicate the real broadcast to catch quadratic-allocation
+            # bugs even if the shape assertion is loosened in the future.
+            cos_b = cos.unsqueeze(1)
+            result = q * cos_b
+            assert result.shape == q.shape, (
+                f"broadcast result shape {tuple(result.shape)} != "
+                f"q.shape {tuple(q.shape)}; quadratic broadcast bug"
+            )
+            return q, k
+        return _strict
+
+    def _gemma3_1b_shape_model(self, num_layers: int = 2, T: int = 8):
+        """Build a _FakeModel whose attention has num_kv_heads=1 (mirrors
+        Gemma 3-1B's GQA-collapsed config — the only configuration
+        that reproduces the silent quadratic broadcast).
+
+        _FakeModel hardcodes its ``config`` to default _FakeConfig
+        (num_key_value_heads=2); we override that attribute after
+        construction so capture_proposer_kv reads the matching shape.
+        """
+        from tests.inference_engine.v04.test_dlm_restored_verifier import (
+            _FakeConfig,
+        )
+        m = _FakeModel(
+            num_layers=num_layers,
+            hidden_size=16,
+            num_q_heads=4,
+            num_kv_heads=1,
+            head_dim=4,
+        )
+        m.config = _FakeConfig(
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            head_dim=4,
+            hidden_size=16,
+        )
+        return m
+
+    def test_stateful_incremental_does_not_quadratic_broadcast(self):
+        """The bug repro: with num_kv_heads=1 and the buggy
+        pre-transpose code path, apply_rotary_pos_emb's strict stub
+        either AssertionErrors (current state) or silently allocates
+        a quadratic-shape buffer (pre-fix, would OOM on real M4)."""
+        m = self._gemma3_1b_shape_model(num_layers=2, T=8)
+        verifier = DLMRestoredVerifier(
+            model=m, sink_size=1, window_size=2,
+            kv_compressor_factory=lambda head_dim: IdentityCompressor(),
+            stateful=True,
+        )
+        # Bootstrap forward: stateful=False path equivalent — establishes
+        # cache_token_count and persists compressors.
+        input_ids_boot = torch.arange(4).unsqueeze(0)
+        verifier.forward(
+            input_ids_boot,
+            apply_rotary_pos_emb=self._make_strict_rope(),
+            eager_attention_forward=_fake_eager_attention_forward,
+            rotary_emb_fn=_fake_rotary_emb_fn,
+        )
+        # Incremental forward: this is where the bug fires.
+        # T_full = 8, sink=1, window=2, so n_evicted = 8 - 1 - 2 = 5
+        # (positions 1, 2, 3, 4, 5 evicted; 0, 6, 7 resident).
+        # The pre-fix code passed K_pre [1, 5, 1, 4] to apply_rotary_pos_emb
+        # which the strict stub asserts is wrong layout.
+        # Post-fix, K_pre is transposed to [1, 1, 5, 4] and the stub
+        # accepts it.
+        input_ids_full = torch.arange(8).unsqueeze(0)
+        verifier.forward(
+            input_ids_full,
+            apply_rotary_pos_emb=self._make_strict_rope(),
+            eager_attention_forward=_fake_eager_attention_forward,
+            rotary_emb_fn=_fake_rotary_emb_fn,
+        )
+        # If we reached here, the layout bug is not present.
+        # Verify the cache advanced to T_full.
+        assert verifier._session_state.cache_token_count == 8
+
+    def test_evicted_kv_handed_to_cache_in_attention_layout(self):
+        """The evicted K/V written to V04SessionCache.set_evicted_kv
+        must be in [B, num_kv_heads, n_evicted, head_dim] layout
+        (the same layout HF's attention pipeline produces and consumes).
+
+        Tested by capturing the K_evicted shape just before
+        set_evicted_kv via a wrapper around _V04SessionCache.
+        """
+        m = self._gemma3_1b_shape_model(num_layers=1, T=8)
+        captured_shapes: list = []
+
+        class _ShapeCapturingCache(_V04SessionCache):
+            def set_evicted_kv(self, layer_idx, K_evicted, V_evicted):
+                captured_shapes.append(("K", layer_idx, tuple(K_evicted.shape)))
+                captured_shapes.append(("V", layer_idx, tuple(V_evicted.shape)))
+                super().set_evicted_kv(layer_idx, K_evicted, V_evicted)
+
+        # Patch the cache class used inside _stateful_incremental_forward
+        # for this test only.
+        import inference_engine.v04.dlm_restored_verifier as drv
+        original = drv._V04SessionCache
+        drv._V04SessionCache = _ShapeCapturingCache
+        try:
+            verifier = DLMRestoredVerifier(
+                model=m, sink_size=1, window_size=2,
+                kv_compressor_factory=lambda head_dim: IdentityCompressor(),
+                stateful=True,
+            )
+            verifier.forward(
+                torch.arange(4).unsqueeze(0),
+                apply_rotary_pos_emb=self._make_strict_rope(),
+                eager_attention_forward=_fake_eager_attention_forward,
+                rotary_emb_fn=_fake_rotary_emb_fn,
+            )
+            verifier.forward(
+                torch.arange(8).unsqueeze(0),
+                apply_rotary_pos_emb=self._make_strict_rope(),
+                eager_attention_forward=_fake_eager_attention_forward,
+                rotary_emb_fn=_fake_rotary_emb_fn,
+            )
+        finally:
+            drv._V04SessionCache = original
+
+        # Each layer should have exactly one K + one V entry.
+        # B=1, num_kv_heads=1, n_evicted=5 (T=8, sink=1, window=2),
+        # head_dim=4 → expected shape (1, 1, 5, 4).
+        assert len(captured_shapes) == 2
+        for kind, layer_idx, shape in captured_shapes:
+            assert shape == (1, 1, 5, 4), (
+                f"{kind} at layer {layer_idx} has shape {shape}; "
+                f"expected (B=1, num_kv_heads=1, n_evicted=5, head_dim=4) — "
+                f"if this fails, _stateful_incremental_forward is producing "
+                f"the wrong layout for V04SessionCache.set_evicted_kv."
+            )
