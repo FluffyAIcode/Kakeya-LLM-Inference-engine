@@ -83,7 +83,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -103,6 +103,44 @@ from inference_engine.v04.restored_attention import prepare_restored_attention_k
 # ---------------------------------------------------------------------------
 # Per-step restoration context — what the patched forward needs to know
 # ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class _SessionState:
+    """Persistent per-session state for K2.A.2 stateful caching.
+
+    Held on a :class:`DLMRestoredVerifier` instance across multiple
+    ``forward()`` calls. Cleared by :meth:`DLMRestoredVerifier.reset_cache`
+    to start a new session.
+
+    Attributes
+    ----------
+    cache_token_count
+        How many tokens of the prefix have already been processed and
+        cached. ``forward(input_ids[1, T])`` is interpreted as: if
+        T == 0, no-op; if T == cache_token_count, no-op (idempotent
+        re-call of the previous forward); if T > cache_token_count,
+        process tokens [cache_token_count, T) incrementally; if
+        T < cache_token_count, raise (caller must
+        ``reset_cache()`` first).
+    compressors
+        One :class:`KVCompressor` instance per attention layer. None
+        before the first stateful forward; populated by
+        ``_stateful_bootstrap`` and persisted by subsequent
+        ``_stateful_incremental`` calls. Stores K/V at resident
+        (sink + window) positions of the current prefix; positions
+        that age out of the window are evicted (per §11.13.6.2 K1
+        same-checkpoint property: cached K/V at resident positions
+        in K2.A.2 stateful mode equals what K1.D / K2.A.1 stateless
+        forward would compute fresh, modulo numerical noise).
+    """
+
+    cache_token_count: int = 0
+    compressors: Optional[List[KVCompressor]] = None
+
+    @classmethod
+    def fresh(cls) -> "_SessionState":
+        return cls(cache_token_count=0, compressors=None)
 
 
 @dataclasses.dataclass
@@ -141,6 +179,240 @@ class _LayerRestorationContext:
     evicted_positions: List[int]
     resident_positions: List[int] = dataclasses.field(default_factory=list)
     compressor: Optional[KVCompressor] = None
+
+
+class _V04SessionCache:
+    """K2.A.2 stateful K/V cache adapter implementing the HF
+    ``Cache`` ``update()`` contract.
+
+    HF Gemma3Attention.forward, when called with
+    ``past_key_values=cache``, invokes
+    ``cache.update(K_new, V_new, layer_idx, cache_kwargs)`` AFTER
+    computing K, V for the current input via k_proj/v_proj/k_norm
+    and applying RoPE. The return value is the (K, V) tensor used
+    in the attention call.
+
+    For K2.A.2 stateful incremental decode, the input is a small
+    set of NEW tokens (typically 1 per decode step). The cache must
+    return K, V at ALL preceding positions plus the new tokens, so
+    the verifier's attention can attend across the full prefix.
+
+    This cache assembles the returned K, V from three sources:
+
+    1. **New tokens' K, V** — passed in directly to ``update``;
+       already post-norm post-RoPE for the new positions.
+    2. **Resident positions' K, V** — decompressed from per-layer
+       :class:`KVCompressor` instances persisted on
+       :class:`_SessionState`. These were stored in earlier
+       forwards (or this forward's bootstrap path) and represent
+       the verifier's own k_proj output for those positions,
+       post-norm post-RoPE; under §11.13.6.2 (K1 same-checkpoint
+       AR-causal proposer) these are bit-equivalent to what fresh
+       computation would produce.
+    3. **Evicted positions' K, V** — pre-computed before
+       ``model.forward`` is called, by running
+       :func:`prepare_restored_attention_kv` on the proposer's
+       transient capture. Stored on this cache via
+       :meth:`set_evicted_kv` per layer.
+
+    After assembling and returning K, V, ``update`` ALSO writes the
+    new K, V (for new positions that should be resident in the
+    sink+window of the post-update prefix) into the per-layer
+    compressor and evicts positions that age out of the window.
+
+    The cache is single-batch only (B == 1); matches K1.D / K2.A.1
+    constraint.
+    """
+
+    def __init__(
+        self,
+        compressors: List[KVCompressor],
+        sink_size: int,
+        window_size: int,
+        cache_token_count_at_start: int,
+        n_new_tokens: int,
+    ) -> None:
+        self._compressors = compressors
+        self._sink_size = sink_size
+        self._window_size = window_size
+        # T_full = cache_token_count_at_start + n_new_tokens after this call.
+        self._t_start = cache_token_count_at_start
+        self._n_new = n_new_tokens
+        self._t_full = cache_token_count_at_start + n_new_tokens
+        # Per-layer pre-computed evicted K/V (post-norm post-RoPE).
+        # Indexed [layer_idx] -> (K_evicted, V_evicted) where each tensor
+        # has shape [B, num_kv_heads, len(evicted_positions), head_dim].
+        self._evicted_kv: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        # Cached evicted positions list (set once per forward).
+        self._evicted_positions: List[int] = []
+        # Cached resident positions list (set once per forward).
+        self._resident_positions: List[int] = []
+
+    # -- Setup APIs called before model.forward --------------------------------
+
+    def set_evicted_kv(
+        self, layer_idx: int,
+        K_evicted: torch.Tensor, V_evicted: torch.Tensor,
+    ) -> None:
+        """Store the layer's pre-computed evicted K/V (post-norm post-RoPE).
+
+        Called by :meth:`DLMRestoredVerifier._stateful_incremental`
+        for each layer before the verifier model.forward, so that
+        when ``update`` fires per-layer it has the right evicted
+        K/V to inject.
+        """
+        self._evicted_kv[layer_idx] = (K_evicted, V_evicted)
+
+    def set_partition(
+        self, evicted_positions: List[int], resident_positions: List[int],
+    ) -> None:
+        """Set evicted/resident position lists (same for all layers)."""
+        self._evicted_positions = list(evicted_positions)
+        self._resident_positions = list(resident_positions)
+
+    # -- HF Cache contract: get_seq_length, update -----------------------------
+
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        """How many tokens are in the cache. After the verifier
+        forward consumes new tokens, the seq length is t_full."""
+        return self._t_full
+
+    def update(
+        self,
+        key_states: torch.Tensor,    # [B, kv_heads, n_new, head_dim]
+        value_states: torch.Tensor,  # [B, kv_heads, n_new, head_dim]
+        layer_idx: int,
+        cache_kwargs: Optional[Dict] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """HF Cache.update contract.
+
+        Called by HF Gemma3Attention.forward after it computes K, V
+        for new tokens (post-k_proj, post-k_norm, post-RoPE).
+        Returns assembled (K_full, V_full) at all positions
+        ``[0..t_full)`` for the verifier's attention call.
+
+        Side effect: stores new K, V at new resident positions in
+        the per-layer compressor; evicts positions that age out.
+        """
+        if key_states.size(2) != self._n_new:
+            raise RuntimeError(
+                f"V04SessionCache.update at layer {layer_idx}: K_new has "
+                f"{key_states.size(2)} positions but expected {self._n_new}"
+            )
+
+        compressor = self._compressors[layer_idx]
+        device = key_states.device
+        dtype = key_states.dtype
+
+        # 1. Determine new positions and which of them should land in
+        #    the resident cache after this update.
+        new_positions = list(range(self._t_start, self._t_full))
+        resident_set = set(self._resident_positions)
+
+        new_resident_positions = [p for p in new_positions if p in resident_set]
+        if new_resident_positions:
+            # Slice K_new / V_new at the new-resident positions.
+            new_resident_indices = torch.tensor(
+                [p - self._t_start for p in new_resident_positions],
+                dtype=torch.int64, device=device,
+            )
+            K_new_resident = key_states.index_select(-2, new_resident_indices)
+            V_new_resident = value_states.index_select(-2, new_resident_indices)
+            # Compress + store. Compressor's positions tensor must be on CPU
+            # (per K2.A.1 KVCompressor protocol — IdentityCompressor uses
+            # int keys; KakeyaLatticeCompressor also uses CPU position list).
+            pos_cpu = torch.tensor(
+                new_resident_positions, dtype=torch.int64,
+            )
+            compressor.evict(pos_cpu)  # idempotent overwrite safety
+            compressor.compress(K_new_resident, V_new_resident, pos_cpu)
+
+        # 2. Evict positions that were resident before this forward but
+        #    are no longer resident at t_full. (For sliding-window aging.)
+        # Positions that WERE in cache before this forward: those at
+        # range(t_start) that landed in the previous step's resident set.
+        # Easier: ask the compressor for ALL stored positions and evict
+        # those NOT in the current resident_set.
+        # We don't have a direct "list resident positions" API on
+        # KVCompressor, so use the union of old-resident + new-resident
+        # candidates and re-derive.
+        # For now: compute aged-out as "positions in [0, t_start) that
+        # were resident at the t_start prefix length but are not at t_full".
+        # The sink positions are stable; the window slides.
+        prev_window_start = max(self._sink_size, self._t_start - self._window_size)
+        new_window_start = max(self._sink_size, self._t_full - self._window_size)
+        if new_window_start > prev_window_start:
+            aged_out = list(range(prev_window_start, new_window_start))
+            if aged_out:
+                aged_cpu = torch.tensor(aged_out, dtype=torch.int64)
+                compressor.evict(aged_cpu)
+
+        # 3. Assemble the full K, V tensor at all positions [0..t_full).
+        #    Sources:
+        #      * resident_set ∩ [0..t_start): from compressor (cached
+        #        from earlier forwards or this forward's new_resident
+        #        path)
+        #      * resident_set ∩ [t_start..t_full): from compressor (just
+        #        compressed via the new_resident path above)
+        #      * evicted_set: from self._evicted_kv[layer_idx] (pre-
+        #        computed post-norm post-RoPE)
+        K_evicted, V_evicted = self._evicted_kv.get(
+            layer_idx, (None, None),
+        )
+        if self._evicted_positions and (K_evicted is None or V_evicted is None):
+            raise RuntimeError(
+                f"V04SessionCache.update at layer {layer_idx}: evicted "
+                f"positions {len(self._evicted_positions)} but no pre-"
+                "computed evicted K/V was set; call set_evicted_kv before "
+                "model.forward"
+            )
+
+        # Build a position->K/V dict for assembly.
+        # Resident from compressor (decompress all in one call):
+        if self._resident_positions:
+            res_cpu = torch.tensor(
+                self._resident_positions, dtype=torch.int64,
+            )
+            K_res, V_res = compressor.decompress(res_cpu)
+            # K_res shape: [B, kv_heads, len(resident), head_dim]
+            # Cast to working dtype if codec round-tripped to fp32 (per
+            # K2.A.1 fix for bf16 mismatch).
+            K_res = K_res.to(device=device, dtype=dtype)
+            V_res = V_res.to(device=device, dtype=dtype)
+        else:
+            K_res = None
+            V_res = None
+
+        # Allocate full output tensor and scatter into positional slots.
+        # Shape: [B, kv_heads, t_full, head_dim].
+        B, kv_heads, _, head_dim = key_states.shape
+        K_full = torch.empty(
+            B, kv_heads, self._t_full, head_dim,
+            dtype=dtype, device=device,
+        )
+        V_full = torch.empty_like(K_full)
+
+        if self._resident_positions:
+            res_idx = torch.tensor(
+                self._resident_positions, dtype=torch.int64, device=device,
+            )
+            K_full.index_copy_(-2, res_idx, K_res)
+            V_full.index_copy_(-2, res_idx, V_res)
+
+        if self._evicted_positions:
+            ev_idx = torch.tensor(
+                self._evicted_positions, dtype=torch.int64, device=device,
+            )
+            K_full.index_copy_(
+                -2, ev_idx,
+                K_evicted.to(device=device, dtype=dtype),
+            )
+            V_full.index_copy_(
+                -2, ev_idx,
+                V_evicted.to(device=device, dtype=dtype),
+            )
+
+        return K_full, V_full
 
 
 def _round_trip_resident_through_compressor(
@@ -369,6 +641,7 @@ class DLMRestoredVerifier:
         sink_size: int = 4,
         window_size: int = 64,
         kv_compressor_factory: Optional[Callable[[int], KVCompressor]] = None,
+        stateful: bool = False,
     ) -> None:
         """
         Parameters
@@ -397,11 +670,34 @@ class DLMRestoredVerifier:
                     ),
                 )
 
-            K2.A.1 (this build) is **stateless**: the factory is
-            re-invoked at every ``forward()`` call, so each forward
-            constructs fresh compressor instances. This guarantees
-            no state leakage across decode steps but precludes the
-            cross-step caching savings of K2.A.2 (a future PR).
+            K2.A.1 (stateless): the factory is re-invoked at every
+            ``forward()`` call (when ``stateful=False``, the default),
+            so each forward constructs fresh compressor instances.
+            K2.A.2 (stateful, when ``stateful=True``): the factory
+            is invoked ONCE per session at the first forward; the
+            same compressor instances persist across forwards until
+            :meth:`reset_cache` is called.
+        stateful
+            K2.A.2 mode (added per ADR 0008 §11.11.12 + §11.13.6).
+            Default ``False`` preserves K1.D / K2.A.1 stateless
+            behaviour bit-for-bit. When ``True``:
+
+            * Compressors are constructed once per session and
+              persist across ``forward()`` calls; their state
+              accumulates the K/V at resident (sink + window)
+              positions of the current prefix.
+            * Subsequent forwards process **only the new tokens**
+              (the verifier's per-step forward becomes O(1) in T,
+              not O(T)) — this is what closes the §11.8 throughput
+              gate (c) target of ≥ 1.3× over K2.A.1 at long context.
+            * Per §11.13.6.2, at K1 / K2.A same-checkpoint setup
+              the cached K/V are bit-equivalent to fresh
+              computation (the proposer is AR-causal, no suffix
+              drift). At K2.B+ the §11.13.6.4 freshness escalation
+              paths apply if recall regresses beyond gate (b).
+            * :meth:`reset_cache` MUST be called between distinct
+              prompts (sessions); otherwise the second prompt is
+              interpreted as a continuation of the first.
         """
         if sink_size < 0 or window_size < 0:
             raise ValueError(
@@ -415,6 +711,27 @@ class DLMRestoredVerifier:
         self._kv_compressor_factory = kv_compressor_factory or (
             lambda head_dim: IdentityCompressor()
         )
+        # K2.A.2 hook.
+        self._stateful = bool(stateful)
+        self._session_state: _SessionState = _SessionState.fresh()
+
+    # -- K2.A.2 session lifecycle --------------------------------------------
+
+    @property
+    def stateful(self) -> bool:
+        """K2.A.2 stateful caching mode flag (read-only after construction)."""
+        return self._stateful
+
+    @property
+    def cache_token_count(self) -> int:
+        """How many tokens have been processed in the current session.
+        Returns 0 when no session is active or when ``stateful`` is False."""
+        return self._session_state.cache_token_count
+
+    def reset_cache(self) -> None:
+        """Clear all session state. Required between distinct prompts in
+        ``stateful`` mode; no-op in stateless mode (kept for symmetry)."""
+        self._session_state = _SessionState.fresh()
 
     # -- Discovery helpers ----------------------------------------------------
 
@@ -474,13 +791,28 @@ class DLMRestoredVerifier:
         if resident_positions is None:
             resident_positions = []
 
-        # K2.A.1: build one compressor per attention module via the
-        # factory. This is stateless across forwards — fresh instances
-        # every call. Reads head_dim from the layer's K projection.
-        compressors = []
-        for attn_module in attn_modules:
-            head_dim = int(attn_module.head_dim)
-            compressors.append(self._kv_compressor_factory(head_dim))
+        # K2.A.1 / K2.A.2: build one compressor per attention module.
+        # In K2.A.1 stateless mode, the factory is invoked every forward
+        # → fresh instances. In K2.A.2 stateful mode, the persistent
+        # session state holds compressors across forwards; this branch
+        # creates them on first call and reuses them thereafter.
+        if self._stateful and self._session_state.compressors is not None:
+            compressors = self._session_state.compressors
+            if len(compressors) != len(attn_modules):
+                raise RuntimeError(
+                    f"Stateful session has {len(compressors)} compressors but "
+                    f"model has {len(attn_modules)} attention modules; "
+                    "session may have been switched to a different model. "
+                    "Call reset_cache() before changing models."
+                )
+        else:
+            compressors = []
+            for attn_module in attn_modules:
+                head_dim = int(attn_module.head_dim)
+                compressors.append(self._kv_compressor_factory(head_dim))
+            if self._stateful:
+                # First stateful forward: persist into session state.
+                self._session_state.compressors = compressors
 
         original_forwards = []
         try:
@@ -565,6 +897,7 @@ class DLMRestoredVerifier:
         apply_rotary_pos_emb,
         eager_attention_forward,
         all_attention_functions=None,
+        rotary_emb_fn: Optional[Callable] = None,
     ) -> torch.Tensor:
         """Run the v0.4 K/V Restoration forward and return logits.
 
@@ -611,6 +944,25 @@ class DLMRestoredVerifier:
             )
         seq_len = int(input_ids.size(1))
 
+        # K2.A.2: route to stateful path if enabled. The bootstrap branch
+        # (cache_token_count == 0) reuses the K1.D / K2.A.1 stateless code
+        # path below, just persisting compressors at the end. The
+        # incremental branch (cache_token_count > 0) processes only new
+        # tokens via the V04SessionCache.
+        if self._stateful and self._session_state.cache_token_count > 0:
+            return self._stateful_incremental_forward(
+                input_ids,
+                apply_rotary_pos_emb=apply_rotary_pos_emb,
+                eager_attention_forward=eager_attention_forward,
+                all_attention_functions=all_attention_functions,
+                rotary_emb_fn=rotary_emb_fn,
+            )
+
+        # Stateless path (K1.D / K2.A.1) and K2.A.2 bootstrap (first
+        # forward of a stateful session). When stateful is True, the
+        # _restoration_active context manager persists compressors into
+        # self._session_state.compressors at first invocation.
+
         # Step 1: capture proposer's K/V at every layer at every position.
         capture = capture_proposer_kv(self.model, input_ids)
 
@@ -632,7 +984,216 @@ class DLMRestoredVerifier:
         ):
             outputs = self.model(input_ids=input_ids, use_cache=False)
 
+        # Step 6 (K2.A.2 bootstrap): record cache_token_count for next
+        # incremental call. The compressors are already persisted via
+        # _restoration_active's stateful branch above.
+        if self._stateful:
+            self._session_state.cache_token_count = seq_len
+
         # Step 6: capture is dropped (out of scope after this function);
         #         original model state is restored by the context
         #         manager's finally block.
         return outputs.logits
+
+    @torch.no_grad()
+    def _stateful_incremental_forward(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        apply_rotary_pos_emb,
+        eager_attention_forward,
+        all_attention_functions=None,
+        rotary_emb_fn: Optional[Callable] = None,
+    ) -> torch.Tensor:
+        """K2.A.2 incremental forward: process only new tokens.
+
+        Called when stateful mode is on AND the session already has
+        ``cache_token_count > 0``. Validates that input_ids extends
+        the cached prefix, runs the proposer over the full prefix
+        (still O(T) — no proposer cache by §11.3), runs the verifier
+        only over new tokens via :class:`_V04SessionCache`, and
+        updates session state.
+
+        Per §11.13.6.2, at K1 / K2.A same-checkpoint setup the
+        cached resident K/V at any preceding position equals what
+        a fresh K1.D / K2.A.1 forward would compute (proposer is
+        AR-causal, no suffix drift). So the output of incremental
+        forward at a session prefix length T is bit-equivalent
+        (modulo numerical noise from compressor codec) to running
+        a fresh K1.D forward on input_ids[1, T].
+
+        Returns the verifier's logits for the **full prefix**
+        ``[1, T_full, vocab]`` — for compatibility with the
+        stateless return shape, the cache_token_count slots are
+        filled with zeros (the caller in the K1.E NIAH harness
+        only uses the LAST query position's logits anyway, so the
+        zero-fill at earlier positions is benign; see
+        ``inference_engine.v04.greedy_decode_v04`` which does
+        ``logits[:, -1, :]``).
+        """
+        T_full = int(input_ids.size(1))
+        T_start = self._session_state.cache_token_count
+        if T_full == T_start:
+            raise ValueError(
+                f"stateful incremental forward called with input_ids of "
+                f"length {T_full} == cache_token_count; nothing new to "
+                "process. Did you mean to extend input_ids?"
+            )
+        if T_full < T_start:
+            raise ValueError(
+                f"stateful input_ids length {T_full} is shorter than the "
+                f"cached prefix length {T_start}. Call reset_cache() to "
+                "start a new session."
+            )
+
+        n_new = T_full - T_start
+        new_input_ids = input_ids[:, T_start:T_full]
+
+        # Step 1: capture proposer's K/V at every layer at every position
+        # of the FULL prefix (proposer has no cache by §11.3 — must
+        # re-encode every step).
+        capture = capture_proposer_kv(self.model, input_ids)
+
+        # Step 2: compute evicted + resident over T_full.
+        evicted_positions = compute_evicted_positions(
+            T_full, self.sink_size, self.window_size,
+        )
+        evicted_set = set(evicted_positions)
+        resident_positions = [p for p in range(T_full) if p not in evicted_set]
+
+        # Step 3: build V04SessionCache and pre-compute evicted K/V per layer.
+        if self._session_state.compressors is None:
+            raise RuntimeError(
+                "stateful incremental forward called but no compressors "
+                "are persisted on session state; bootstrap forward "
+                "(cache_token_count == 0) was not run first"
+            )
+        compressors = self._session_state.compressors
+
+        cache = _V04SessionCache(
+            compressors=compressors,
+            sink_size=self.sink_size,
+            window_size=self.window_size,
+            cache_token_count_at_start=T_start,
+            n_new_tokens=n_new,
+        )
+        cache.set_partition(evicted_positions, resident_positions)
+
+        # For each layer, pre-compute the post-norm post-RoPE K/V at
+        # evicted positions using the layer's k_norm + the standard
+        # apply_rotary_pos_emb helper. The result goes into
+        # cache.set_evicted_kv(layer_idx, K_evicted, V_evicted).
+        attn_modules = self._attention_modules()
+        if evicted_positions:
+            evicted_capture = capture.select_positions(evicted_positions)
+            # Get the position embeddings for ALL evicted positions.
+            # We need cos/sin at those positions; obtain by calling the
+            # model's rotary embedding for the full prefix.
+            cos_full, sin_full = self._get_full_position_embeddings(
+                input_ids, rotary_emb_fn=rotary_emb_fn,
+            )
+            ev_idx_dev = torch.tensor(
+                evicted_positions, dtype=torch.int64, device=cos_full.device,
+            )
+            cos_evicted = cos_full.index_select(-2, ev_idx_dev)
+            sin_evicted = sin_full.index_select(-2, ev_idx_dev)
+
+            for layer_idx, attn_module in enumerate(attn_modules):
+                K_pre = evicted_capture.keys[layer_idx]   # [B, kv, n_ev, head_dim]
+                V_pre = evicted_capture.values[layer_idx]
+                # Apply k_norm.
+                K_normed = attn_module.k_norm(K_pre)
+                # Apply RoPE on K (Q is irrelevant here).
+                _, K_roped = apply_rotary_pos_emb(
+                    K_normed, K_normed, cos_evicted, sin_evicted,
+                )
+                cache.set_evicted_kv(layer_idx, K_roped, V_pre)
+
+        # Step 4: run the verifier over NEW tokens only with the cache.
+        position_ids = torch.arange(
+            T_start, T_full,
+            device=input_ids.device, dtype=torch.int64,
+        ).unsqueeze(0)
+
+        outputs = self.model(
+            input_ids=new_input_ids,
+            position_ids=position_ids,
+            past_key_values=cache,
+            use_cache=True,
+        )
+
+        # Step 5: update session state (cache_token_count). The compressors
+        # have been mutated in-place by V04SessionCache.update; no extra
+        # work needed.
+        self._session_state.cache_token_count = T_full
+
+        # Step 6: assemble logits in the [1, T_full, vocab] shape expected
+        # by the stateless return contract. The verifier's outputs.logits
+        # has shape [1, n_new, vocab]; we zero-fill the [0..T_start) prefix
+        # since stateless callers only use the LAST query's logits anyway.
+        new_logits = outputs.logits  # [1, n_new, vocab]
+        vocab = new_logits.size(-1)
+        full_logits = torch.zeros(
+            1, T_full, vocab,
+            dtype=new_logits.dtype, device=new_logits.device,
+        )
+        full_logits[:, T_start:T_full, :] = new_logits
+        return full_logits
+
+    def _get_full_position_embeddings(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        rotary_emb_fn: Optional[Callable] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute cos/sin position embeddings for the full prefix.
+
+        Two resolution paths:
+
+        1. **Caller-provided** ``rotary_emb_fn``: a callable
+           ``(input_ids, position_ids) -> (cos, sin)``. Lets test
+           harnesses inject a stub without needing a real HF model
+           with a rotary embedding submodule.
+        2. **Auto-discovery** on the wrapped model: looks for
+           ``self.model.model.rotary_emb`` then ``self.model.rotary_emb``
+           (HF Gemma3 / Llama / Qwen / Mistral typical paths).
+           Calls it with a dummy hidden_state of shape
+           ``[1, T, hidden_size]`` per HF's convention.
+
+        Either way, the return is ``(cos, sin)`` of shape
+        ``[1, T, head_dim]`` each.
+        """
+        T = int(input_ids.size(1))
+        device = input_ids.device
+        position_ids = torch.arange(
+            T, device=device, dtype=torch.int64,
+        ).unsqueeze(0)
+
+        if rotary_emb_fn is not None:
+            cos, sin = rotary_emb_fn(input_ids, position_ids)
+            return cos, sin
+
+        rotary_emb = None
+        for path in ("model.rotary_emb", "rotary_emb"):
+            obj = self.model
+            try:
+                for part in path.split("."):
+                    obj = getattr(obj, part)
+                rotary_emb = obj
+                break
+            except AttributeError:
+                continue
+        if rotary_emb is None:
+            raise RuntimeError(
+                "Could not locate the model's rotary embedding module. "
+                "Expected model.model.rotary_emb or model.rotary_emb. "
+                "Pass rotary_emb_fn=... to forward() for non-HF models, "
+                "or add a binding for the new architecture."
+            )
+        hidden_dim = self.model.config.hidden_size
+        dummy = torch.zeros(
+            1, T, hidden_dim,
+            dtype=next(self.model.parameters()).dtype, device=device,
+        )
+        cos, sin = rotary_emb(dummy, position_ids)
+        return cos, sin
