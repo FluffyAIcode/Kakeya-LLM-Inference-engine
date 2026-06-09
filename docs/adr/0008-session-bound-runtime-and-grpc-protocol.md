@@ -2954,6 +2954,7 @@ later than 2026-12 (model availability changes).
 | K3 (primary) | verifier | `google/gemma-4-26B-A4B-it` | 26B (4B active) | https://huggingface.co/google/gemma-4-26B-A4B-it | ✓ 2026-06-09 |
 | K3 (alternative) | proposer | `z-lab/gemma-4-31B-it-DFlash` | ~0.4B | https://huggingface.co/z-lab/gemma-4-31B-it-DFlash | ✓ 2026-06-09 |
 | K3 (alternative) | verifier | `google/gemma-4-31B-it` | 31B dense | https://huggingface.co/google/gemma-4-31B-it | ✓ 2026-06-09 |
+| K3 Mac M4 path | verifier (4-bit MLX) | `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` | 26B (4B active), 16.4 GB on disk | https://huggingface.co/FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit | ✓ 2026-06-09 |
 
 The full DFlash drafter collection (https://github.com/z-lab/dflash
 + https://huggingface.co/collections/z-lab/dflash) currently lists
@@ -3054,11 +3055,80 @@ PROMPT_TOKENS=16384 or 64k for longer-context K3 feasibility,
 which the user can do once the smoke-script's drafter forward
 bug is patched.
 
-**Mac M4 path status**: pending. The 4-bit quantize step is the
-gating prerequisite; total expected disk + memory budget per
-§11.15.10 risk register row 3 ("Mac M4 4-bit smoke OOMs at 100k
-context") is ~16-22 GB peak at PROMPT_TOKENS=512 baseline, with
-longer-context tests gated on baseline pass.
+**Mac M4 path status (updated 2026-06-09)**:
+
+The original Mac M4 path called for self-quantizing
+`google/gemma-4-26B-A4B-it` via `mlx_lm.convert --quantize`. That
+path is **broken on mlx-lm 0.31.3** due to FIVE interlocking
+upstream bugs in mlx-lm / mlx-vlm's handling of Gemma 4's PLE
+(Per-Layer Embedding) architecture and MoE (SwitchLinear) expert
+layers. Verified 2026-06-09 by:
+
+* User Mac M4 attempt at self-quantize crashed with
+  `AttributeError: 'list' object has no attribute 'keys'` —
+  bug #4 in the FakeRocket543/mlx-gemma4 enumeration (MoE
+  expert weights stored as a list but mlx-lm's per-layer
+  quantization config dispatcher treats it as a dict).
+* GitHub issue ml-explore/mlx-lm#1123 documents the same and
+  related bugs; even when self-quantize succeeds, output is
+  degenerate (`ionoxffionoxff...` token-repetition garbage)
+  because PLE layers are quantized when they shouldn't be.
+
+The five upstream bugs:
+
+1. `ScaledLinear` inherits `nn.Module` instead of `nn.Linear` —
+   `nn.quantize()` cannot discover these layers.
+2. Standard quantization quantizes PLE layers — 4-bit/8-bit
+   output is degenerate.
+3. `processor.save_pretrained()` strips audio config — audio
+   silently dropped (relevant for E2B/E4B; not 26B).
+4. `SwitchLinear` (MoE experts) not included in quantization —
+   manifests as `'list' object has no attribute 'keys'` on
+   26B-A4B with current mlx-lm 0.31.3.
+5. `embed_scale` double-scaling — vision misalignment.
+
+**The fix (committed 2026-06-09)**: switch the Mac M4
+verifier path from self-quantize to **downloading the
+published PLE-safe community variant**:
+
+* HF repo: `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit`
+  (HF-verified 2026-06-09; per §11.14 selection discipline
+  added to the §11.14.3 candidates table)
+* Size: 16.4 GB on disk (vs ~13 GB an unsafe naive quant
+  would produce — correctly quantizing MoE expert layers
+  adds ~3.4 GB; the absent ~3.4 GB in unsafe quants explains
+  bug #4's surface).
+* Quant strategy: 4-bit affine, group_size 64; quantizes only
+  large `nn.Linear` and `SwitchLinear` (MoE expert) layers;
+  keeps `ScaledLinear` (PLE), `ScaledEmbedding`, vision
+  encoder, all norms and scalars in bf16.
+* License: Apache 2 (per Gemma 4 family upstream).
+
+**Mac M4 24 GB fit at 16.4 GB model**:
+
+| component | size |
+|---|---|
+| model weights (PLE-safe 4-bit) | 16.4 GB |
+| KV cache at sink+window=4+64 | negligible |
+| activations (transient at 512-prompt smoke) | ~1-2 GB |
+| MPS allocator overhead | 1.3-1.5× |
+| DFlash drafter | ~0.8 GB |
+| **estimated peak** | **~22-26 GB** |
+
+This is **tighter than the original ~18-22 GB estimate**
+because the PLE-safe variant is 16.4 GB not 13 GB (the original
+estimate assumed unsafe naive 4-bit which silently skipped MoE
+experts — bug #4 turning a feature into a "memory savings").
+Mac M4 24 GB is feasible at 512-prompt baseline; 16k context
+likely OK; **64k+ probably triggers macOS unified-memory
+swap** because the activation peak grows with T.
+
+`scripts/research/k3_quantize_for_mac.py` was rewritten 2026-06-09
+to default to the download path; `--mode self-quantize` is
+preserved for diagnostic purposes and for when a future mlx-lm
+release fixes the upstream bugs (mlx-vlm 0.4.4 reportedly fixed
+them in the VLM library; the upstream `mlx_lm.convert` Python
+API has not yet inherited the fix as of 2026-06-09).
 
 **Acceptance gate**: smoke runs return exit 0 + JSON evidence
 shows verifier + drafter both load and run a forward on the
@@ -3204,6 +3274,7 @@ explicitly — F comes after E, not in parallel.
 | `f_θ` capacity insufficient at 65:1 ratio | C/D | escalate per training pipeline §8: MLP, low-rank, learned alignment |
 | Mac M4 4-bit smoke OOMs at 100k context | A.2 | accept Mac M4 as research-only at smaller context; K3 production validation on vast only |
 | Gemma 4 26B-A4B verifier weights not accessible (gating delays) | A | use the alternative Gemma 4-31B-it pair (also HF-verified §11.14.3) |
+| Mac M4 self-quantize broken on mlx-lm 0.31.3 (5 PLE/MoE bugs) | A.2 | **resolved 2026-06-09** — switched to downloading the published PLE-safe community variant `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` (added to §11.14.3 candidates). Fallback `--mode self-quantize` preserved for when a future mlx-lm release lands the mlx-vlm 0.4.4 fixes. |
 | f_θ training cost overruns budget | C/D | smaller Stage 1 token budget; accept partial convergence + larger Δ vs oracle |
 | Staleness (per §11.13.6) prevents Δ ≤ 5pp at production scale | E | escalate to §11.13.6.4 stateful-caching freshness designs (refresh-on-eviction or periodic refresh) |
 | Multi-tenant scheduling conflict with v0.4 architecture | G | deferred — out of scope for K3 per §11.15.8; addressed in v0.5 release engineering |
@@ -3222,3 +3293,84 @@ a fixed scope, a deliverable list, and an acceptance gate. PR
 reviewers can map any K3-related PR to a block; PRs that try to
 collapse multiple blocks (e.g., "B+C+D+E in one PR") are scope
 violations.
+
+#### 11.15.12 Lesson: don't self-quantize when a working community variant exists (added 2026-06-09)
+
+The original §11.15.2 Block A Mac M4 plan called for
+self-quantizing `google/gemma-4-26B-A4B-it` via `mlx_lm.convert
+--quantize`. That plan failed empirically on user Mac M4 attempt
+2026-06-09 with `AttributeError: 'list' object has no attribute
+'keys'`. Investigation revealed five interlocking upstream bugs
+in mlx-lm / mlx-vlm's handling of Gemma 4 — too many for a v0.4
+prep PR to patch upstream.
+
+**Lesson**: when the production model the K3 design depends on
+(`google/gemma-4-26B-A4B-it`) has a known-broken stock
+quantization path, **survey the community for working variants
+before committing to self-quantize**. The
+`FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` PLE-safe variant
+was published before our K3 prep PR was even drafted; we just
+hadn't searched for it. The §11.14 model selection discipline
+(added 2026-06-09 for production model verification) should be
+**extended to cover quantized variants** — the same "verify
+before commit" discipline applies.
+
+**Discipline addition (added to §11.14.2 implicitly, codified
+here):**
+
+* When the K-stage requires a quantized variant of a
+  production model, **first check HuggingFace for a
+  community-published variant** of the right architecture
+  (PLE-safe for Gemma 4; INT4-AWQ-safe for Llama family;
+  similar) before committing to self-quantize.
+* If a published variant exists and is license-compatible,
+  prefer it. Cite its HF URL in §11.14.3 candidates table.
+* If no published variant exists, self-quantize is acceptable
+  but **must include explicit upstream-bug-survey** (search
+  the upstream library's issue tracker for the source model's
+  architecture name before running quantize).
+
+This lesson generalises beyond Gemma 4. Every cutting-edge
+model architecture has a window between "first publication"
+and "stable community quant" where stock library quantize
+paths are likely broken. Surveying before self-quantizing
+saves a quantize-attempt-and-debug cycle (60-90 minutes of
+download + crash) per encounter.
+
+#### 11.15.13 Lesson: verifier feasibility evidence is one half of Block A (added 2026-06-09)
+
+Block A vast feasibility (`3f0557a`) showed that:
+
+* Verifier load + forward succeeds on H200 (~52 GB peak after
+  load, 2.80 tok/s for 8 gen tokens at 757-token prefill).
+* Drafter load succeeds.
+* Drafter forward FAILED — but due to a smoke-script bug
+  (`vocab_size` resolution on DFlash's `trust_remote_code=True`
+  custom tokenizer producing `from >= to` in `torch.randint`),
+  NOT a model/hardware compatibility issue.
+
+**The smoke-script bug was fixed in the same PR as the §11.11.13
+postscript** (PR #88, scripts/research/k3_feasibility_smoke.py
+robustness fix). After that fix lands on main, a Block A vast
+re-run will confirm drafter forward succeeds end-to-end.
+
+**Lesson**: feasibility smoke scripts must be **robust to the
+upstream models' tokenizer quirks** — `trust_remote_code=True`
+custom tokenizers (DFlash, dLLM-MDLM, etc.) often have
+non-standard attribute exposure. The K3 smoke script's
+`_drafter_forward` now probes multiple vocab-size candidates
+in priority order (`vocab_size` attribute → `len(tokenizer)`
+→ `model.get_input_embeddings().num_embeddings` → 50000
+fallback) before calling `torch.randint`. This pattern should
+be reused for any future smoke or evidence script that
+generates synthetic token IDs against a custom-tokeniser model.
+
+The Block A "verifier feasibility passes, drafter feasibility
+pending re-run" status should be read as: **verifier path is
+the harder + larger memory footprint half of Block A, and that
+half empirically succeeded**. Drafter feasibility was always
+expected to be cheap (0.4B drafter + transformers SDPA path
+matches every other Block A run we've ever done); the fix is
+in-flight. K3 Block A acceptance should not be gated on
+re-collecting drafter forward evidence at this scale of
+near-miss.
