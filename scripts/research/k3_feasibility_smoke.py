@@ -267,17 +267,78 @@ def _load_verifier_mac(verifier_path: str) -> Dict[str, Any]:
     }
 
 
+def _detect_drafter_loadability(drafter_id: str) -> Dict[str, Any]:
+    """Decide whether ``drafter_id`` is a faithful standalone transformers
+    model or a spec-decode-only drafter (e.g. DFlash).
+
+    DFlash drafters declare ``architectures=['DFlashDraftModel']`` (and/or
+    carry a ``dflash_config`` block) but ship **no modeling file and no
+    ``auto_map``**, and ``DFlashDraftModel`` is not a built-in transformers
+    class. So ``AutoModelForCausalLM`` silently falls back to the base
+    ``model_type`` (qwen3), dropping the DFlash-specific weights
+    (``fc``/``hidden_norm``) and newly-initialising ``lm_head``/
+    ``embed_tokens``. The result runs a forward but is NOT the DFlash
+    drafting protocol — DFlash is only runnable via vLLM (PR #41703) or
+    SGLang speculative decoding per its model card. This detector lets the
+    smoke report that honestly instead of emitting a misleading
+    ``drafter_forward_ok=true``.
+    """
+    import transformers
+    from huggingface_hub import hf_hub_download
+
+    try:
+        cfg_path = hf_hub_download(drafter_id, "config.json")
+        cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+    except Exception as e:  # network / gated / missing — fall back to "load it"
+        return {"specdecode_only": False, "architectures": [],
+                "reason": None, "detect_error": f"{type(e).__name__}: {e}"}
+
+    archs = cfg.get("architectures", []) or []
+    has_dflash_marker = ("dflash_config" in cfg) or any(
+        "dflash" in str(a).lower() for a in archs
+    )
+    arch_importable = any(hasattr(transformers, a) for a in archs)
+    specdecode_only = bool(has_dflash_marker and not arch_importable)
+    reason = None
+    if specdecode_only:
+        reason = (
+            f"architectures={archs} is not loadable as a standalone "
+            f"transformers model (no auto_map / not a built-in class). "
+            f"DFlash is a block-diffusion speculative-decoding drafter; run "
+            f"it via vLLM (PR #41703) or SGLang per the model card. The "
+            f"transformers path here only loads the qwen3 backbone as a "
+            f"memory probe and does NOT exercise the DFlash drafting protocol."
+        )
+    return {"specdecode_only": specdecode_only, "architectures": archs,
+            "reason": reason}
+
+
 def _load_drafter(drafter_id: str, platform: str) -> Dict[str, Any]:
-    """Load DFlash drafter. Always via transformers (drafter is small and
-    PyTorch on both CUDA and MPS handles it without the bf16/MLX
-    quantization decision."""
+    """Load the drafter for the feasibility smoke.
+
+    For a faithful standalone transformers drafter this loads it normally
+    and a real forward is run downstream. For a spec-decode-only drafter
+    (DFlash — see :func:`_detect_drafter_loadability`) the qwen3 backbone
+    is still loaded so we can report its resident-memory footprint, but it
+    is flagged ``specdecode_only`` / ``faithful=False`` so the caller skips
+    the (meaningless) standalone forward and the report does not claim the
+    DFlash protocol was exercised.
+    """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    detect = _detect_drafter_loadability(drafter_id)
     print(
         f"[k3-smoke] loading drafter ({platform}): {drafter_id}",
         file=sys.stderr, flush=True,
     )
+    if detect["specdecode_only"]:
+        print(f"[k3-smoke] NOTE: {detect['reason']}", file=sys.stderr)
+        print(
+            "[k3-smoke] -> loading qwen3 backbone as a MEMORY PROBE ONLY "
+            "(not a faithful DFlash load; standalone forward will be skipped).",
+            file=sys.stderr,
+        )
     t0 = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(drafter_id, trust_remote_code=True)
     if platform == "cuda":
@@ -301,14 +362,22 @@ def _load_drafter(drafter_id: str, platform: str) -> Dict[str, Any]:
     model.eval()
     elapsed = time.perf_counter() - t0
     print(
-        f"[k3-smoke] drafter loaded in {elapsed:.1f}s",
+        f"[k3-smoke] drafter loaded in {elapsed:.1f}s"
+        + (" (backbone memory probe)" if detect["specdecode_only"] else ""),
         file=sys.stderr,
     )
     return {
-        "kind": f"transformers_{platform}",
+        "kind": (
+            "dflash_backbone_memory_probe" if detect["specdecode_only"]
+            else f"transformers_{platform}"
+        ),
         "model": model,
         "tokenizer": tokenizer,
         "load_seconds": elapsed,
+        "faithful": not detect["specdecode_only"],
+        "specdecode_only": detect["specdecode_only"],
+        "architectures": detect["architectures"],
+        "note": detect["reason"],
     }
 
 
@@ -546,8 +615,23 @@ def main() -> int:
         _emit(report, args.output)
         return 30
 
-    # Drafter forward (if loaded).
-    if drafter is not None:
+    # Drafter forward (if loaded). For a spec-decode-only drafter (DFlash)
+    # a standalone transformers forward is meaningless (the backbone was
+    # loaded with newly-initialised embeddings), so skip it and record the
+    # honest reason + the real validation path instead of running garbage.
+    drafter_specdecode_only = bool(drafter and drafter.get("specdecode_only"))
+    if drafter is not None and drafter_specdecode_only:
+        report["stages"].append({
+            "stage": "drafter_forward_skipped",
+            "reason": drafter.get("note"),
+            "validation_path": "vllm_pr_41703_or_sglang",
+        })
+        print(
+            "[k3-smoke] drafter forward SKIPPED (spec-decode-only drafter; "
+            "validate via vLLM PR #41703 / SGLang — not transformers).",
+            file=sys.stderr,
+        )
+    elif drafter is not None:
         try:
             draft_metrics = _drafter_forward(
                 drafter, ver_metrics.get("prompt_token_count"),
@@ -574,11 +658,20 @@ def main() -> int:
         "verifier_loadable": True,
         "verifier_forward_ok": True,
         "drafter_loadable": drafter is not None,
+        "drafter_faithful_transformers_load": bool(drafter and drafter.get("faithful")),
+        # None == "not applicable" for a spec-decode-only drafter; bool
+        # otherwise. Avoids the previous misleading drafter_forward_ok=true
+        # for a backbone that never ran the DFlash protocol.
         "drafter_forward_ok": (
-            drafter is not None
-            and report["stages"][-1].get("stage") == "drafter_forward"
+            None if drafter_specdecode_only else (
+                drafter is not None
+                and report["stages"][-1].get("stage") == "drafter_forward"
+            )
         ),
     }
+    if drafter_specdecode_only:
+        report["summary"]["drafter_note"] = drafter.get("note")
+        report["summary"]["drafter_validation_path"] = "vllm_pr_41703_or_sglang"
     _emit(report, args.output)
     print("[k3-smoke] PASS", file=sys.stderr)
     return 0
