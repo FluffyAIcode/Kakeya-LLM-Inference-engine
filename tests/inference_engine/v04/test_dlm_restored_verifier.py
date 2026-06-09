@@ -602,3 +602,313 @@ class TestDLMRestoredVerifierForward:
             assert hasattr(attn.forward, "__func__")
             assert attn.forward.__func__ is _FakeAttention.forward
             assert not hasattr(attn, "_v04_layer_context")
+
+
+# ---------------------------------------------------------------------------
+# K2.A.1: kv_compressor_factory wiring
+# ---------------------------------------------------------------------------
+
+
+from inference_engine.v04.dlm_restored_verifier import (
+    _round_trip_resident_through_compressor,
+)
+from inference_engine.v04.kv_compressor import (
+    IdentityCompressor,
+    KVCompressor,
+)
+
+
+class _CountingIdentityCompressor:
+    """Identity-semantics compressor that counts calls — verifies
+    the patched attention forward actually invokes the codec on
+    resident positions and not on evicted positions.
+
+    Stores K/V uncompressed in a dict (same as IdentityCompressor)
+    so round-trip is bit-for-bit, but exposes counters for tests.
+    """
+
+    codec_name = "counting_identity"
+
+    def __init__(self):
+        self._k = {}
+        self._v = {}
+        self.compress_calls = 0
+        self.decompress_calls = 0
+        self.evict_calls = 0
+        self.last_compress_n_positions = 0
+
+    def compress(self, k, v, positions):
+        self.compress_calls += 1
+        self.last_compress_n_positions = positions.shape[0]
+        for i, pos in enumerate(positions.tolist()):
+            self._k[int(pos)] = k.select(-2, i).clone()
+            self._v[int(pos)] = v.select(-2, i).clone()
+
+    def decompress(self, positions):
+        self.decompress_calls += 1
+        ks = []
+        vs = []
+        for pos in positions.tolist():
+            ks.append(self._k[int(pos)])
+            vs.append(self._v[int(pos)])
+        return torch.stack(ks, dim=-2), torch.stack(vs, dim=-2)
+
+    def evict(self, positions):
+        self.evict_calls += 1
+        for pos in positions.tolist():
+            self._k.pop(int(pos), None)
+            self._v.pop(int(pos), None)
+
+    def memory_bytes(self):
+        return 0
+
+
+class _PerturbingCompressor:
+    """Compressor that adds a known perturbation on round-trip —
+    proves K/V values reach attention through the codec (not bypassed).
+
+    decompress(positions) = compress'd_K + sentinel_offset
+    """
+
+    codec_name = "perturbing"
+
+    def __init__(self, sentinel: float = 0.5):
+        self._k = {}
+        self._v = {}
+        self.sentinel = sentinel
+
+    def compress(self, k, v, positions):
+        for i, pos in enumerate(positions.tolist()):
+            self._k[int(pos)] = k.select(-2, i).clone()
+            self._v[int(pos)] = v.select(-2, i).clone()
+
+    def decompress(self, positions):
+        ks = []
+        vs = []
+        for pos in positions.tolist():
+            ks.append(self._k[int(pos)] + self.sentinel)
+            vs.append(self._v[int(pos)] + self.sentinel)
+        return torch.stack(ks, dim=-2), torch.stack(vs, dim=-2)
+
+    def evict(self, positions):
+        for pos in positions.tolist():
+            self._k.pop(int(pos), None)
+            self._v.pop(int(pos), None)
+
+    def memory_bytes(self):
+        return 0
+
+
+class TestRoundTripResidentHelper:
+    """Direct tests of the _round_trip_resident_through_compressor
+    helper — the K2.A.1 K/V routing primitive."""
+
+    def _kv(self, B=1, kv_heads=2, T=8, head_dim=4):
+        torch.manual_seed(0)
+        k = torch.randn(B, kv_heads, T, head_dim)
+        v = torch.randn(B, kv_heads, T, head_dim)
+        return k, v
+
+    def test_empty_resident_returns_inputs_unchanged(self):
+        k, v = self._kv()
+        compressor = IdentityCompressor()
+        k_out, v_out = _round_trip_resident_through_compressor(
+            k, v, [], compressor,
+        )
+        # No round-trip should happen; inputs returned as-is.
+        assert torch.equal(k, k_out)
+        assert torch.equal(v, v_out)
+
+    def test_identity_round_trip_is_exact(self):
+        k, v = self._kv(T=10)
+        compressor = IdentityCompressor()
+        # All positions resident.
+        k_out, v_out = _round_trip_resident_through_compressor(
+            k, v, list(range(10)), compressor,
+        )
+        # Identity round-trip = bit-for-bit.
+        assert torch.equal(k, k_out)
+        assert torch.equal(v, v_out)
+
+    def test_round_trip_only_touches_resident_positions(self):
+        # Sentinel: non-resident positions must remain untouched even
+        # if a perturbing codec WOULD modify them — proves we only
+        # apply the codec to the supplied position list.
+        k, v = self._kv(T=10)
+        # Save evicted slot values for later comparison.
+        evicted = [3, 4, 5]
+        resident = [0, 1, 2, 6, 7, 8, 9]
+        k_evicted_before = k.index_select(-2, torch.tensor(evicted))
+        v_evicted_before = v.index_select(-2, torch.tensor(evicted))
+
+        compressor = _PerturbingCompressor(sentinel=10.0)
+        k_out, v_out = _round_trip_resident_through_compressor(
+            k, v, resident, compressor,
+        )
+
+        # Evicted positions UNTOUCHED.
+        k_evicted_after = k_out.index_select(-2, torch.tensor(evicted))
+        v_evicted_after = v_out.index_select(-2, torch.tensor(evicted))
+        assert torch.equal(k_evicted_before, k_evicted_after)
+        assert torch.equal(v_evicted_before, v_evicted_after)
+
+        # Resident positions PERTURBED by sentinel.
+        for p in resident:
+            expected_k = k.select(-2, p) + 10.0
+            actual_k = k_out.select(-2, p)
+            assert torch.equal(expected_k, actual_k)
+
+    def test_evict_called_before_compress(self):
+        # Stateless K2.A.1: helper must clear compressor state at
+        # the start so cross-call leakage cannot occur.
+        k, v = self._kv(T=4)
+        compressor = _CountingIdentityCompressor()
+        # Pre-populate with stale state at one of the positions
+        # we're about to compress over.
+        compressor._k[1] = torch.zeros(2, 4)
+        compressor._v[1] = torch.zeros(2, 4)
+        _round_trip_resident_through_compressor(
+            k, v, [0, 1, 2, 3], compressor,
+        )
+        # evict was called (with [0..3]) before compress.
+        assert compressor.evict_calls == 1
+        assert compressor.compress_calls == 1
+        assert compressor.decompress_calls == 1
+
+    def test_resident_positions_arbitrary_order_preserved(self):
+        # Order of resident_positions list = order of K/V slices
+        # passed to compressor; helper must reassemble correctly.
+        k, v = self._kv(T=10)
+        compressor = IdentityCompressor()
+        # Non-monotone order with gaps.
+        resident = [7, 2, 5, 0]
+        k_out, v_out = _round_trip_resident_through_compressor(
+            k, v, resident, compressor,
+        )
+        # Identity round-trip — should be unchanged.
+        assert torch.equal(k, k_out)
+        assert torch.equal(v, v_out)
+
+
+class TestVerifierKVCompressorFactory:
+    """K2.A.1: DLMRestoredVerifier accepts kv_compressor_factory and
+    threads compressors into the patched attention forward."""
+
+    def test_default_factory_is_identity_compressor(self):
+        model = _FakeModel(num_layers=2)
+        v = DLMRestoredVerifier(model, sink_size=2, window_size=2)
+        # The default factory returns IdentityCompressor.
+        c = v._kv_compressor_factory(head_dim=4)
+        assert isinstance(c, IdentityCompressor)
+
+    def test_default_factory_matches_k1_baseline_bit_for_bit(self):
+        # With sink+window large enough that ALL positions are
+        # resident, the K1.D output (no compressor) must match
+        # exactly the K2.A.1 output with IdentityCompressor.
+        torch.manual_seed(123)
+        model_a = _FakeModel(num_layers=2)
+        v_a = DLMRestoredVerifier(model_a, sink_size=8, window_size=8)
+        torch.manual_seed(123)
+        model_b = _FakeModel(num_layers=2)
+        v_b = DLMRestoredVerifier(
+            model_b, sink_size=8, window_size=8,
+            kv_compressor_factory=lambda hd: IdentityCompressor(),
+        )
+
+        ids = torch.randint(0, 32, (1, 8))
+        logits_a = v_a.forward(
+            ids,
+            apply_rotary_pos_emb=_fake_apply_rotary_pos_emb,
+            eager_attention_forward=_fake_eager_attention_forward,
+        )
+        logits_b = v_b.forward(
+            ids,
+            apply_rotary_pos_emb=_fake_apply_rotary_pos_emb,
+            eager_attention_forward=_fake_eager_attention_forward,
+        )
+        # All positions resident, identity round-trip → bit-equal.
+        assert torch.equal(logits_a, logits_b)
+
+    def test_custom_factory_invoked_per_layer(self):
+        # Counting compressor — assert factory is called once per
+        # attention module, with the correct head_dim.
+        invocations = []
+
+        def factory(head_dim):
+            invocations.append(head_dim)
+            return _CountingIdentityCompressor()
+
+        model = _FakeModel(num_layers=3)
+        v = DLMRestoredVerifier(
+            model, sink_size=2, window_size=2,
+            kv_compressor_factory=factory,
+        )
+        v.forward(
+            torch.randint(0, 32, (1, 10)),
+            apply_rotary_pos_emb=_fake_apply_rotary_pos_emb,
+            eager_attention_forward=_fake_eager_attention_forward,
+        )
+        # 3 layers → 3 factory invocations.
+        assert len(invocations) == 3
+        # All asked for head_dim=4 (per _FakeAttention shape).
+        assert all(hd == 4 for hd in invocations)
+
+    def test_factory_invoked_fresh_each_forward(self):
+        # K2.A.1 stateless contract: compressor instances must be
+        # fresh per forward (no cross-forward state leakage).
+        instance_count = [0]
+
+        def factory(head_dim):
+            instance_count[0] += 1
+            return _CountingIdentityCompressor()
+
+        model = _FakeModel(num_layers=2)
+        v = DLMRestoredVerifier(
+            model, sink_size=2, window_size=2,
+            kv_compressor_factory=factory,
+        )
+        v.forward(
+            torch.randint(0, 32, (1, 10)),
+            apply_rotary_pos_emb=_fake_apply_rotary_pos_emb,
+            eager_attention_forward=_fake_eager_attention_forward,
+        )
+        v.forward(
+            torch.randint(0, 32, (1, 10)),
+            apply_rotary_pos_emb=_fake_apply_rotary_pos_emb,
+            eager_attention_forward=_fake_eager_attention_forward,
+        )
+        # 2 forwards × 2 layers = 4 fresh instances.
+        assert instance_count[0] == 4
+
+    def test_compressor_only_round_trips_resident_positions(self):
+        # Asymmetric: short sequence with eviction range, the
+        # PerturbingCompressor will only perturb resident slots.
+        # Verifies architectural §11.11.2: codec applies to resident
+        # cache only, not the dLM-reconstructed evicted positions.
+        # This is a behavioural test — proves that turning the
+        # codec on does NOT degrade the reconstructed evicted
+        # slots (which would couple two error sources).
+        # We test indirectly: with sink+window=4 and seq_len=10,
+        # positions 2,3,4,5,6,7 are evicted; perturbing compressor
+        # only sees [0,1,8,9]. The compressor's internal state
+        # after forward should ONLY contain those 4 positions.
+        captured = {"state": None}
+
+        class _SnoopingCompressor(_CountingIdentityCompressor):
+            def compress(self, k, v, positions):
+                super().compress(k, v, positions)
+                captured["state"] = sorted(self._k.keys())
+
+        model = _FakeModel(num_layers=1)
+        v = DLMRestoredVerifier(
+            model, sink_size=2, window_size=2,
+            kv_compressor_factory=lambda hd: _SnoopingCompressor(),
+        )
+        v.forward(
+            torch.randint(0, 32, (1, 10)),
+            apply_rotary_pos_emb=_fake_apply_rotary_pos_emb,
+            eager_attention_forward=_fake_eager_attention_forward,
+        )
+        # sink=2, window=2 over seq_len=10:
+        #   resident = [0, 1] ∪ [8, 9] = [0, 1, 8, 9]
+        assert captured["state"] == [0, 1, 8, 9]

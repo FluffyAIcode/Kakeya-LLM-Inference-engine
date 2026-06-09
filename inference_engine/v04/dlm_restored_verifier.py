@@ -83,7 +83,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -91,6 +91,10 @@ import torch.nn as nn
 from inference_engine.v04.kv_capture import (
     KVCapture,
     capture_proposer_kv,
+)
+from inference_engine.v04.kv_compressor import (
+    IdentityCompressor,
+    KVCompressor,
 )
 from inference_engine.v04.kv_merge import compute_evicted_positions
 from inference_engine.v04.restored_attention import prepare_restored_attention_kv
@@ -119,11 +123,87 @@ class _LayerRestorationContext:
         Sorted-ascending list of token positions that should come
         from the captured branch. Shared across all layers (one
         list per forward).
+    resident_positions
+        Sorted-ascending list of token positions that come from
+        the verifier's own forward (sink ∪ window slots). Disjoint
+        from ``evicted_positions``; together they tile
+        ``range(seq_len)``. Required by K2.A.1 to identify which
+        positions go through the per-layer ``compressor``.
+    compressor
+        Per-layer :class:`KVCompressor` for K2.A.1 round-tripping
+        the resident-window K/V through KakeyaLattice (or any
+        other codec, including the no-op ``IdentityCompressor``
+        which preserves K1 behaviour bit-for-bit).
     """
 
     captured_K: torch.Tensor
     captured_V: torch.Tensor
     evicted_positions: List[int]
+    resident_positions: List[int] = dataclasses.field(default_factory=list)
+    compressor: Optional[KVCompressor] = None
+
+
+def _round_trip_resident_through_compressor(
+    K: torch.Tensor,
+    V: torch.Tensor,
+    resident_positions: List[int],
+    compressor: KVCompressor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Round-trip the K/V slices at *resident* positions through the
+    compressor.
+
+    Per ADR 0008 §11.11.2, the codec applies ONLY to the resident
+    local cache (sink ∪ window slots). The K/V slices at evicted
+    positions are reconstructed from the proposer's transient K/V
+    (`prepare_restored_attention_kv` in the patched attention
+    forward) and are NOT compressed — they live one decode step
+    and the compress→decompress round-trip would be pure overhead
+    with no sustained-memory benefit.
+
+    K2.A.1 stateless contract: the compressor's state is reset
+    every call (via ``evict(positions)`` before compress). State
+    accumulation across forward calls is K2.A.2's responsibility.
+
+    Parameters
+    ----------
+    K, V
+        Post-RoPE post-norm K/V tensors of shape
+        ``[B, num_kv_heads, seq_len, head_dim]``. Evicted positions
+        in K, V are already overwritten with reconstructed values.
+    resident_positions
+        Sorted ascending list of resident position indices. Disjoint
+        from evicted positions; ``len(resident) + len(evicted) == seq_len``.
+    compressor
+        Per-layer :class:`KVCompressor` instance.
+
+    Returns
+    -------
+    ``(K_out, V_out)`` with the same shape as the inputs. K/V at
+    resident positions has passed through ``compressor.compress``
+    + ``compressor.decompress``; K/V at evicted positions is
+    untouched.
+    """
+    if not resident_positions:
+        return K, V
+    pos_tensor = torch.tensor(
+        resident_positions, dtype=torch.int64, device=K.device,
+    )
+    # Slice resident K/V along the sequence dim (-2 in
+    # [B, kv_heads, seq, head_dim] layout).
+    K_resident = K.index_select(dim=-2, index=pos_tensor).contiguous()
+    V_resident = V.index_select(dim=-2, index=pos_tensor).contiguous()
+    # Stateless K2.A.1: clear any state from prior calls so the
+    # round-trip reflects only this forward's K/V values.
+    compressor.evict(pos_tensor.cpu())
+    compressor.compress(K_resident, V_resident, pos_tensor.cpu())
+    K_round_tripped, V_round_tripped = compressor.decompress(pos_tensor.cpu())
+    # Reassemble: K/V at evicted positions are unchanged; K/V at
+    # resident positions get the round-tripped values.
+    K_out = K.clone()
+    V_out = V.clone()
+    K_out.index_copy_(-2, pos_tensor, K_round_tripped)
+    V_out.index_copy_(-2, pos_tensor, V_round_tripped)
+    return K_out, V_out
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +263,7 @@ def _restored_attention_forward(
         attn_module, "_v04_layer_context", None,
     )
     if ctx is not None and ctx.evicted_positions:
+        # K1.D: replace K/V at evicted positions with proposer-restored values.
         key_states, value_states = prepare_restored_attention_kv(
             K_local=key_states,
             V_local=value_states,
@@ -191,6 +272,16 @@ def _restored_attention_forward(
             evicted_positions=ctx.evicted_positions,
             k_norm=attn_module.k_norm,
             position_embeddings=(cos, sin),
+        )
+    # K2.A.1: round-trip resident-window K/V through the per-layer
+    # KV compressor. Applies regardless of whether evicted_positions
+    # is empty — at short context (T <= sink+window) the entire
+    # sequence is resident and the compressor still applies. The
+    # IdentityCompressor (K1 default) round-trips bit-for-bit so
+    # this is a no-op when KL is off.
+    if ctx is not None and ctx.compressor is not None and ctx.resident_positions:
+        key_states, value_states = _round_trip_resident_through_compressor(
+            key_states, value_states, ctx.resident_positions, ctx.compressor,
         )
     # ▲▲▲ end v0.4 injection ▲▲▲
 
@@ -277,7 +368,41 @@ class DLMRestoredVerifier:
         *,
         sink_size: int = 4,
         window_size: int = 64,
+        kv_compressor_factory: Optional[Callable[[int], KVCompressor]] = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        model
+            HF Gemma3-class causal LM (proposer + verifier in K1).
+        sink_size, window_size
+            Local cache shape; ADR 0008 §2.3 v0.3 default 4 + 64.
+        kv_compressor_factory
+            K2.A.1 hook (added per ADR 0008 §11.11.4). A callable
+            ``head_dim -> KVCompressor`` invoked once per attention
+            module at the start of each forward. ``None`` (the
+            default) preserves K1 behaviour bit-for-bit by using
+            :class:`IdentityCompressor` (round-trip is exact).
+
+            For K2.A KakeyaLattice integration::
+
+                from inference_engine.v04 import KakeyaLatticeCompressor
+                v04 = DLMRestoredVerifier(
+                    model,
+                    kv_compressor_factory=lambda hd: KakeyaLatticeCompressor(
+                        head_dim=hd,
+                        device=next(model.parameters()).device,
+                        lattice="D4",
+                        q_range=38,
+                    ),
+                )
+
+            K2.A.1 (this build) is **stateless**: the factory is
+            re-invoked at every ``forward()`` call, so each forward
+            constructs fresh compressor instances. This guarantees
+            no state leakage across decode steps but precludes the
+            cross-step caching savings of K2.A.2 (a future PR).
+        """
         if sink_size < 0 or window_size < 0:
             raise ValueError(
                 f"sink_size={sink_size}, window_size={window_size} must "
@@ -286,6 +411,10 @@ class DLMRestoredVerifier:
         self.model = model
         self.sink_size = sink_size
         self.window_size = window_size
+        # K2.A.1 hook. None → IdentityCompressor (K1 backward compat).
+        self._kv_compressor_factory = kv_compressor_factory or (
+            lambda head_dim: IdentityCompressor()
+        )
 
     # -- Discovery helpers ----------------------------------------------------
 
@@ -320,13 +449,16 @@ class DLMRestoredVerifier:
         self,
         capture: KVCapture,
         evicted_positions: List[int],
+        resident_positions: Optional[List[int]] = None,
+        *,
         apply_rotary_pos_emb,
         eager_attention_forward,
         all_attention_functions,
     ):
         """Context manager that installs the v0.4 patched forward on
         every attention module, attaches the per-layer restoration
-        context, and removes everything on exit. Exception-safe.
+        context (including the per-layer K2.A.1 compressor instance),
+        and removes everything on exit. Exception-safe.
         """
         attn_modules = self._attention_modules()
         if len(attn_modules) != capture.num_layers:
@@ -334,6 +466,21 @@ class DLMRestoredVerifier:
                 f"capture has {capture.num_layers} layers but model has "
                 f"{len(attn_modules)} attention modules"
             )
+
+        # Default resident_positions when called without (legacy
+        # test sites that pre-date K2.A.1): empty list — the
+        # patched forward then skips the round-trip step entirely
+        # and behaves bit-for-bit like K1.D.
+        if resident_positions is None:
+            resident_positions = []
+
+        # K2.A.1: build one compressor per attention module via the
+        # factory. This is stateless across forwards — fresh instances
+        # every call. Reads head_dim from the layer's K projection.
+        compressors = []
+        for attn_module in attn_modules:
+            head_dim = int(attn_module.head_dim)
+            compressors.append(self._kv_compressor_factory(head_dim))
 
         original_forwards = []
         try:
@@ -361,6 +508,8 @@ class DLMRestoredVerifier:
                     captured_K=layer_K,
                     captured_V=layer_V,
                     evicted_positions=evicted_positions,
+                    resident_positions=resident_positions,
+                    compressor=compressors[layer_idx],
                 )
                 original_forwards.append(attn_module.forward)
 
@@ -465,15 +614,18 @@ class DLMRestoredVerifier:
         # Step 1: capture proposer's K/V at every layer at every position.
         capture = capture_proposer_kv(self.model, input_ids)
 
-        # Step 2: compute evicted positions (the contiguous middle range).
+        # Step 2: compute evicted + resident positions (disjoint, tile [0, seq_len)).
         evicted = compute_evicted_positions(
             seq_len, self.sink_size, self.window_size,
         )
+        evicted_set = set(evicted)
+        resident = [p for p in range(seq_len) if p not in evicted_set]
 
         # Step 3-5: install patches, run verifier forward, remove patches.
         with self._restoration_active(
             capture,
             evicted,
+            resident,
             apply_rotary_pos_emb=apply_rotary_pos_emb,
             eager_attention_forward=eager_attention_forward,
             all_attention_functions=all_attention_functions,
