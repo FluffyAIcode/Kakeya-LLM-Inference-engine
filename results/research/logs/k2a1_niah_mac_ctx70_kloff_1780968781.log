@@ -1,0 +1,28 @@
+[k1e] device=mps
+[k1e] loading google/gemma-3-1b-it
+[k1e] attn_implementation=sdpa
+[k1e] dataset: 20 samples, prompt token len min=1234 max=1634 mean=1428
+[k1e] baseline memory after model+dataset load: mps current=2.00GB driver=2.85GB (no peak counter)
+[k1e] (a) full-attention oracle
+[k1e]    oracle recall=1.000 (20/20)  mean_latency=70.32s  throughput=0.394 tok/s
+[k1e]    oracle memory:  mps current=2.00GB driver=26.13GB (no peak counter)
+[k1e]    oracle_full_attention attn_window: mean_keys=1429 (100.00% of context)  constraint=causal
+[k1e] (b) v0.3 sink+window (sink=4, window=64)
+[k1e]    v0.3 recall=0.000 (0/20)  mean_latency=65.79s  throughput=0.423 tok/s
+[k1e]    v0.3 memory:   mps current=2.00GB driver=26.91GB (no peak counter)
+[k1e]    v03_sink_window attn_window: mean_keys=68 (4.80% of context)  constraint=sink=4+window=64
+[k1e] (c) v0.4 DLMRestoredVerifier (sink=4, window=64)  KL OFF (IdentityCompressor)
+[k1e]    v0.4 recall=1.000 (20/20)  mean_latency=99.95s  throughput=0.249 tok/s
+[k1e]    v0.4 memory:   mps current=2.00GB driver=27.25GB (no peak counter)
+[k1e]    v04_dlm_restored attn_window: mean_keys=1429 (100.00% of context)  constraint=causal_with_dlm_reconstruction (local_cache=sink=4+window=64)
+[k1e] report -> results/research/k2a1_niah_mac_ctx70_kloff_1780968781.json
+[k1e] ─── SUMMARY ──────────────────────────────────────
+[k1e]   oracle_full_attention     recall=1.000  mean_latency=70.32s  thr=0.394tok/s  current_mem=2.00GB  attn_window=1429 (100.00%)
+[k1e]   v03_sink_window           recall=0.000  mean_latency=65.79s  thr=0.423tok/s  current_mem=2.00GB  attn_window=68 (4.80%)
+[k1e]   v04_dlm_restored          recall=1.000  mean_latency=99.95s  thr=0.249tok/s  current_mem=2.00GB  attn_window=1429 (100.00%)
+[k1e] Gate predicates:
+[k1e]   v04_vs_oracle_delta: 0.0
+[k1e]   v04_recall_ge_0_95: True
+[k1e]   v04_within_5pct_of_oracle: True
+[k1e]   v04_vs_v03_improvement: 1.0
+[k1e]   v04_dominates_v03: True

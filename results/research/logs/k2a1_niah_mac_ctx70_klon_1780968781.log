@@ -1,0 +1,117 @@
+[k1e] device=mps
+[k1e] loading google/gemma-3-1b-it
+[k1e] attn_implementation=sdpa
+[k1e] dataset: 20 samples, prompt token len min=1234 max=1634 mean=1428
+[k1e] baseline memory after model+dataset load: mps current=2.00GB driver=2.85GB (no peak counter)
+[k1e] (a) full-attention oracle
+[k1e]    oracle recall=1.000 (20/20)  mean_latency=68.42s  throughput=0.411 tok/s
+[k1e]    oracle memory:  mps current=2.00GB driver=26.88GB (no peak counter)
+[k1e]    oracle_full_attention attn_window: mean_keys=1429 (100.00% of context)  constraint=causal
+[k1e] (b) v0.3 sink+window (sink=4, window=64)
+[k1e]    v0.3 recall=0.000 (0/20)  mean_latency=68.50s  throughput=0.406 tok/s
+[k1e]    v0.3 memory:   mps current=2.00GB driver=25.42GB (no peak counter)
+[k1e]    v03_sink_window attn_window: mean_keys=68 (4.80% of context)  constraint=sink=4+window=64
+[k1e] (c) v0.4 DLMRestoredVerifier (sink=4, window=64)  KL ON (lattice=D4, Q=38)
+Traceback (most recent call last):
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/scripts/research/k1e_niah_validation.py", line 525, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/scripts/research/k1e_niah_validation.py", line 376, in main
+    v04 = evaluate("v04_dlm_restored", samples, v04_decode)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/inference_engine/v04/niah_eval.py", line 596, in evaluate
+    text, latency, decode_tokens = decode_fn(sample)
+                                   ~~~~~~~~~^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/scripts/research/k1e_niah_validation.py", line 366, in v04_decode
+    text, decode_tokens = greedy_decode_v04(
+                          ~~~~~~~~~~~~~~~~~^
+        verifier=verifier, prompt_ids=prompt_ids, tokenizer=tokenizer,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        max_new_tokens=args.max_new_tokens,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/inference_engine/v04/niah_eval.py", line 546, in greedy_decode_v04
+    logits = verifier.forward(
+        cur,
+    ...<2 lines>...
+        all_attention_functions=all_attention_functions,
+    )
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/inference_engine/v04/dlm_restored_verifier.py", line 633, in forward
+    outputs = self.model(input_ids=input_ids, use_cache=False)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/utils/generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 658, in forward
+    outputs: BaseModelOutputWithPast = self.model(
+                                       ~~~~~~~~~~^
+        input_ids=input_ids,
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/utils/generic.py", line 1072, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 570, in forward
+    layer_outputs = decoder_layer(
+        hidden_states,
+    ...<8 lines>...
+        **kwargs,
+    )
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/modeling_layers.py", line 94, in __call__
+    return super().__call__(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/utils/deprecation.py", line 172, in wrapped_func
+    return func(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/gemma3/modeling_gemma3.py", line 382, in forward
+    hidden_states, self_attn_weights = self.self_attn(
+                                       ~~~~~~~~~~~~~~^
+        hidden_states=hidden_states,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/inference_engine/v04/dlm_restored_verifier.py", line 529, in patched
+    return _restored_attention_forward(
+        _module,
+    ...<8 lines>...
+        **kwargs,
+    )
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/inference_engine/v04/dlm_restored_verifier.py", line 283, in _restored_attention_forward
+    key_states, value_states = _round_trip_resident_through_compressor(
+                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        key_states, value_states, ctx.resident_positions, ctx.compressor,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-main-k2a1/inference_engine/v04/dlm_restored_verifier.py", line 204, in _round_trip_resident_through_compressor
+    K_out.index_copy_(-2, pos_tensor, K_round_tripped)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: index_copy_(): self and source expected to have the same dtype, but got (self) BFloat16 and (source) Float
