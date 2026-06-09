@@ -140,6 +140,9 @@ def main() -> int:
     ap.add_argument("--block-size", type=int, default=16)
     ap.add_argument("--num-steps", type=int, default=8)
     ap.add_argument("--n-prompts", type=int, default=4)
+    ap.add_argument("--drafter-state", default=None,
+                    help="optional .pt state_dict to load over the drafter "
+                         "(e.g. an alignment-trained checkpoint).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -154,6 +157,12 @@ def main() -> int:
     ).eval()
     print(f"[k3-sd] loading drafter {args.drafter_id}", file=sys.stderr, flush=True)
     drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=dtype).to(device).eval()
+    if args.drafter_state:
+        sd = torch.load(args.drafter_state, map_location=device)
+        drafter.load_state_dict({k: v.to(dtype) for k, v in sd.items()})
+        drafter.eval()
+        print(f"[k3-sd] loaded aligned drafter state from {args.drafter_state}",
+              file=sys.stderr)
     cfg = drafter.cfg
     hidden = cfg.hidden_size
     softcap = cfg.final_logit_softcapping

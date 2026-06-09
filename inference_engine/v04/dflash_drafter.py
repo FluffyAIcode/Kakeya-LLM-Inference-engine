@@ -226,7 +226,6 @@ class _DFlashAttention(nn.Module):
         self.k_norm = _RMSNorm(self.hd, cfg.rms_norm_eps)
         self.scale = self.hd ** -0.5
 
-    @torch.no_grad()
     def project_context_kv(
         self, ctx_normed: torch.Tensor, ctx_positions: torch.Tensor,
     ):
@@ -355,7 +354,6 @@ class DFlashDrafter(nn.Module):
         return self.fc(cat.to(self.fc.weight.dtype))
 
     # -- context K/V precompute (from target hidden) -----------------------
-    @torch.no_grad()
     def precompute_context_kv(
         self, context_states: torch.Tensor, ctx_positions: torch.Tensor,
     ):
@@ -463,6 +461,30 @@ class DFlashDrafter(nn.Module):
         the sampled (drafted) tokens are the MASK positions
         (``query_off > 0``), and the bonus query sits at ``last_pos+1 == C``.
         """
+        logits = self.draft_logits(
+            aux_hidden_context, bonus_token_id, embed_fn, lm_head_fn,
+            block_size=block_size,
+        ).clone()
+        logits[..., self.cfg.mask_token_id] = float("-inf")  # never draft the sentinel
+        return torch.argmax(logits[0], dim=-1).tolist()
+
+    def draft_logits(
+        self,
+        aux_hidden_context: Sequence[torch.Tensor],
+        bonus_token_id: int,
+        embed_fn: Callable[[torch.Tensor], torch.Tensor],
+        lm_head_fn: Callable[[torch.Tensor], torch.Tensor],
+        *,
+        block_size: int,
+    ) -> torch.Tensor:
+        """Grad-enabled forward → mask-position logits ``[1, block_size, vocab]``.
+
+        Same single non-causal pass as :meth:`draft_block` but differentiable
+        (no ``no_grad`` wrapper), so the projection / norms can be trained to
+        align the drafter to a verifier (K3 ``f_θ`` alignment; see
+        ``docs/design/k3-f-theta-training-pipeline.md``). Gradients flow into
+        whichever drafter params are left trainable.
+        """
         if block_size <= 0:
             raise ValueError("block_size must be positive")
         cfg = self.cfg
@@ -482,10 +504,8 @@ class DFlashDrafter(nn.Module):
         h = embed_fn(query_ids).to(self.fc.weight.dtype)  # [1, 1+block_size, hidden]
         h = self._run_layers(h, query_positions, ctx_kv)  # [1, 1+block_size, hidden]
         logits = lm_head_fn(h)  # [1, 1+block_size, vocab]
-        logits[..., cfg.mask_token_id] = float("-inf")  # never draft the sentinel
-        # Drafts are the MASK positions query_off=1..block_size (the bonus at
-        # query_off=0 is the known token and is not sampled).
-        return torch.argmax(logits[0, 1:1 + block_size], dim=-1).tolist()
+        # Mask positions query_off=1..block_size are the drafts.
+        return logits[:, 1:1 + block_size, :]
 
 
 # ===========================================================================
