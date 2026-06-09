@@ -116,8 +116,13 @@ def main() -> int:
     ).eval()
     for p in verifier.parameters():
         p.requires_grad_(False)
-    print(f"[align] loading drafter {args.drafter_id}", file=sys.stderr, flush=True)
-    drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=dtype).to(device)
+    print(f"[align] loading drafter {args.drafter_id} (fp32 for training)",
+          file=sys.stderr, flush=True)
+    # Train the (small, 0.43B) drafter entirely in fp32 so the forward is
+    # uniformly fp32 (the verifier stays frozen bf16; its embed/lm_head/aux
+    # outputs are upcast to fp32). Avoids mixed fp32-trainable / bf16-frozen
+    # matmul dtype errors. Saved back to bf16 for inference.
+    drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=torch.float32).to(device)
     cfg = drafter.cfg
     embed_fn, lm_head_fn = _embed_lm_head(verifier, cfg.hidden_size, cfg.final_logit_softcapping)
     eos_ids = {x for x in [tok.eos_token_id] if x is not None}
@@ -137,9 +142,7 @@ def main() -> int:
         )
         for p in trainable:
             p.requires_grad_(True)
-    # Train the projection/norms in fp32 for stable optimisation.
-    for p in trainable:
-        p.data = p.data.float()
+    # Drafter is already fp32 (loaded above) for stable optimisation.
     n_train = sum(p.numel() for p in trainable)
     print(f"[align] trainable params ({args.train_scope}): {n_train:,}", file=sys.stderr)
     opt = torch.optim.AdamW(trainable, lr=args.lr)
