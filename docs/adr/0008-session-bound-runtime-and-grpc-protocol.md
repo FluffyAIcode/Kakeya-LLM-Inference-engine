@@ -1624,22 +1624,49 @@ K2.A is purely an interface-and-codec swap, not a re-architecting.
 
 #### 11.11.5 K2.A acceptance gates
 
-K2.A merge requires evidence of all three:
+K2.A is staged across two PRs (see §11.11.12 below for the
+staging rationale). K2.A.1 ships the stateless KL plumbing —
+gates (a) and (b) testable. K2.A.2 ships the stateful caching —
+gate (c) testable. Both PRs together comprise full K2.A
+acceptance.
 
-1. **Round-trip identity**: per-tensor numerical: `‖decompress(compress(K, V)) - (K, V)‖ / ‖(K, V)‖` within KakeyaLattice's published fidelity envelope (per layer per head). Linux unit-test gate; deterministic on synthetic K/V.
-2. **No quality regression**: K1.E NIAH harness, same Gemma 3-1B
-   identity-projection setup, KL on vs KL off:
+1. **Round-trip identity (gate a) — testable in K2.A.1**.
+   Per-tensor numerical: `‖decompress(compress(K, V)) - (K, V)‖ /
+   ‖(K, V)‖` within KakeyaLattice's published fidelity envelope
+   (per layer per head). Linux unit-test gate; deterministic on
+   synthetic K/V. Mac M4 platform-specific calibrated bound is
+   1.5e-3 per §11.11.9; CUDA reference is 3e-5 (the published
+   KL CUDA envelope).
+2. **No quality regression (gate b) — testable in K2.A.1**.
+   K1.E NIAH harness, same Gemma 3-1B identity-projection setup,
+   KL on vs KL off:
    * recall(KL on) ≥ recall(KL off) − 1pp at every context rung
      in §11.12 ladder (1.4k, 5.6k, 22k, 64k, 100k).
    * `effective_attention_fraction` from K1.H schema: identical
      between KL on and KL off (KL is structurally invisible to
      the attention-mask path).
-3. **Throughput improvement**: K1.I throughput metric (schema v4):
+   * Mac M4 escape hatch: if recall regresses on Mac specifically,
+     tighten Q (e.g. Q=76 instead of Q=38, +1 bit/coord, halves
+     the lattice-quantisation error per §11.11.9). Do NOT fail
+     K2.A on Mac platform-specific fidelity issues — it's a Q
+     parameter sweep, not an architectural failure.
+3. **Throughput improvement (gate c) — testable in K2.A.2 only**.
+   K1.I throughput metric (schema v4):
    * `mean_throughput_tokens_per_sec(KL on) / mean_throughput_tokens_per_sec(KL off) ≥ 1.3` at the 22k+ rungs of the §11.12 ladder.
    * The 1.3× floor is conservative; theoretical upper bound is
      the inverse of the KL-on eviction rate, which approaches the
      full-attention oracle's throughput as the local cache grows
      to cover most of T.
+   * **K2.A.1 NOTE**: stateless KL plumbing (compress + decompress
+     per forward step, no cross-step caching) does not target gate
+     (c). Throughput on K2.A.1 with KL on is expected to be SAME
+     OR SLOWER than KL off — the round-trip overhead is paid each
+     step with no caching savings to amortise it. Gate (c) is
+     architecturally bound to the K2.A.2 stateful caching design
+     (DLMRestoredVerifier maintains compressed K/V across decode
+     steps so the verifier's per-step forward becomes O(window)
+     instead of O(T)). K2.A.1 evidence at gate (c) is the
+     **baseline** K2.A.2 will be measured against.
 
 #### 11.11.6 K2.B (was K2): cross-model `f_θ` trained against KL-on cache
 
@@ -2101,6 +2128,104 @@ release gate. If a future K3 production-scale run with N ≥ 100
 samples reproduces a 64k dip on the same model family, that
 becomes a base-model finding to escalate to the model provider,
 not a v0.4 finding.
+
+#### 11.11.12 K2.A staging: K2.A.1 stateless plumbing vs K2.A.2 stateful caching
+
+Added 2026-06-09 alongside the K2.A.1 implementation PR. K2.A
+acceptance gates (§11.11.5 above) are now staged across two PRs
+because they require structurally different engineering work:
+
+**K2.A.1 (stateless KL plumbing — code change scope: ~150 LOC
+in `inference_engine/v04/dlm_restored_verifier.py` + reviewer
+scripts + tests).** What it delivers:
+
+* `DLMRestoredVerifier.__init__` accepts a `kv_compressor_factory`
+  parameter. Default `None` preserves K1 behaviour bit-for-bit
+  via `IdentityCompressor`. When provided, the factory is invoked
+  once per attention module **per forward call** (= every decode
+  step) to construct a fresh per-layer compressor instance. State
+  is therefore reset between decode steps — there is no
+  cross-step amortisation.
+* `_restored_attention_forward` calls a new
+  `_round_trip_resident_through_compressor` helper after the K/V
+  merge step. The helper compresses K/V at resident-window
+  positions through the per-layer compressor, then immediately
+  decompresses. K/V at evicted positions (reconstructed from the
+  proposer per §11.11.2) are NOT routed through the codec.
+* The `_LayerRestorationContext` dataclass gains
+  `resident_positions: List[int]` and `compressor: KVCompressor`
+  fields, threaded through `_restoration_active`.
+* The K1.E NIAH runner (`scripts/research/k1e_niah_validation.py`)
+  gains `--kl-on / --kl-lattice / --kl-q-range` flags. JSON
+  schema bumps 4 → 5 to record the KL config block.
+* Reviewer scripts:
+  - `scripts/review_pr_k2a1_integration_on_vast.sh` — vast.ai
+    CUDA A/B at the §11.12 ladder.
+  - `scripts/review_pr_k2a1_integration_on_mac.sh` — Mac M4
+    (PyTorch MPS) A/B at the small-end §11.12 rungs (1.4k +
+    5.6k by default).
+
+K2.A.1 acceptance gates (per §11.11.5 above): **gate (a)
+round-trip identity** is closed by the K2.A.0 Mac smoke
+(`3536e57`) plus a CUDA-equivalent reference check that lands
+with K2.A.1's first vast run. **Gate (b) recall delta ≤ 1pp**
+is the K2.A.1 binding signal: A/B at every §11.12 rung must
+show recall(KL on) within 1 pp of recall(KL off). **Gate (c)
+throughput improvement** is OUT OF K2.A.1's scope; the
+stateless plumbing's per-step compress+decompress cost has no
+caching offset to amortise it, so gate (c) is expected to fail
+at K2.A.1.
+
+**K2.A.2 (stateful caching — future PR; code change scope:
+~500–1000 LOC, refactor of DLMRestoredVerifier across forwards).**
+What it must deliver:
+
+* `DLMRestoredVerifier` becomes session-stateful: compressors
+  (one per layer) are created at session start and persist
+  across `forward()` calls. Resident K/V at sink+window slots
+  are compressed once when produced and reused on subsequent
+  decode steps via `decompress`. New decode steps add 1 token
+  to the cache; positions leaving the window are evicted via
+  `compressor.evict`.
+* Verifier forward over `[1, T]` becomes verifier forward over
+  `[1, 1]` (the new query position only) plus a K/V assembly
+  step that decompresses the resident cache and merges with
+  proposer-restored evicted K/V. The proposer still runs O(T)
+  per step (no proposer cache by §11.3 design); the verifier
+  drops to O(1) per step. Net per-step cost goes from
+  O(T)_proposer + O(T)_verifier (K1.D + K2.A.1) to
+  O(T)_proposer + O(1)_verifier (K2.A.2).
+* This is what closes gate (c). At the 100k rung, K1.F evidence
+  (`aab8686`) shows v0.4 / oracle latency ratio = 0.53× (1.9×
+  slower than oracle); gate (c) requires ≥0.6× — i.e. K2.A.2
+  must yield ≥1.13× over K2.A.1's stateless baseline. The
+  theoretical upper bound is approximately the proposer/verifier
+  cost ratio at long context, typically 1.5–2× — within reach of
+  the K2.A.2 stateful design.
+* K2.A.2 also closes the §11.11.9 sustained-memory empirical gap
+  by introducing a **persistent** compressed cache whose size IS
+  the architecturally-meaningful "v0.4 sustained working set",
+  visible to CUDA `peak_allocated_bytes` measurement in K1.G's
+  schema.
+
+**Why split.** Stateless plumbing first lets us validate the
+correctness contract (gate b) before committing to the stateful
+caching design. K2.A.1 makes the integration risk concrete:
+"does KL on every forward break recall?" If the answer is no,
+K2.A.2 can pursue throughput aggressively without simultaneously
+defending correctness. If the answer is yes (recall regresses
+even with stateless KL), the failure mode is isolated to the
+codec composition — Q-sweep escape hatch (§11.11.9) applies and
+K2.A.2 is unblocked once K2.A.1 finds a working Q. Either way,
+the staging makes each phase's risk diagnosable in isolation.
+
+**What K2.A.2 specifically must NOT do.** K2.A.2 is a stateful
+caching refactor, not a new architectural variant. The §11.11.3
+two-path K/V sourcing model (resident → KL-decompress, evicted
+→ dLM → f_θ) remains. The only structural change is moving the
+resident cache from "computed per forward" (K1.D, K2.A.1) to
+"persisted across forwards" (K2.A.2). f_θ remains identity in
+K2.A.{1,2} same-model setup; cross-model f_θ is K2.B.
 
 ### 11.12 Canonical empirical ladder (recall × rung × platform)
 

@@ -35,6 +35,18 @@ prometheus-client>=0.20,<1.0
 grpcio>=1.65,<2.0
 grpcio-tools>=1.65,<2.0
 
+# K2.A KakeyaLattice K/V cache compression (ADR 0008 §11.11).
+# Pinned to >= 1.5 (the tested Mac M4 release; see PR-K2.A.0
+# Mac smoke evidence at results/research/k2a_kl_mac_smoke_*.json).
+# The K2.A.1 integration treats the dependency as REQUIRED for v0.4
+# runtime functionality with KL on; with --kl-off the runtime falls
+# back to IdentityCompressor (K1 baseline) and kakeyalattice is
+# unused at runtime but still imported by the
+# `inference_engine.v04.kv_compressor` module's eager-import attempt
+# during make_default_compressor — installation is therefore
+# mandatory for a complete v0.4 install.
+kakeyalattice>=1.5
+
 # Test stack (used by tests/ and run_platform_tests.sh)
 pytest>=8.0
 pytest-cov>=5.0
