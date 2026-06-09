@@ -382,8 +382,44 @@ def _drafter_forward(state: Dict[str, Any], prompt_token_count: Optional[int]) -
     model = state["model"]
     tokenizer = state["tokenizer"]
     n = prompt_token_count or 512
+    # Resolve drafter vocab size robustly. DFlash uses
+    # trust_remote_code=True with a custom tokenizer that may not
+    # expose vocab_size as a simple attribute (the tokenizer's
+    # vocab_size is sometimes a method, sometimes None, sometimes
+    # 0 on the wrapped tokenizer object). Fall back through several
+    # candidate attributes; if all yield <= 0, use a safe default
+    # of 50000 (any real LLM tokeniser is far larger). The synthetic
+    # input only needs valid token IDs in some valid range; the
+    # smoke is checking forward-pass plumbing, not generation
+    # quality, so bounding the random IDs at min(true vocab,
+    # 50000) is fine.
+    candidates = [
+        getattr(tokenizer, "vocab_size", None),
+        # Newer transformers tokenizers expose ``__len__`` returning
+        # the full vocab size including added tokens.
+        len(tokenizer) if hasattr(tokenizer, "__len__") else None,
+        # As a last resort, inspect the model's embedding matrix.
+        (
+            getattr(getattr(model, "get_input_embeddings", lambda: None)(),
+                    "num_embeddings", None)
+            if hasattr(model, "get_input_embeddings")
+            else None
+        ),
+    ]
+    vocab_size = None
+    for c in candidates:
+        try:
+            iv = int(c) if c is not None else 0
+            if iv > 1:
+                vocab_size = iv
+                break
+        except (TypeError, ValueError):
+            continue
+    if vocab_size is None or vocab_size <= 1:
+        vocab_size = 50000  # safe fallback for any real LM tokeniser
+    # Use [1, vocab_size) so torch.randint always sees from < to.
     fake_ids = torch.randint(
-        0, getattr(tokenizer, "vocab_size", 50000) - 1,
+        1, vocab_size,
         size=(1, n), device=model.device, dtype=torch.long,
     )
     t0 = time.perf_counter()
@@ -395,6 +431,7 @@ def _drafter_forward(state: Dict[str, Any], prompt_token_count: Optional[int]) -
         "forward_seconds": elapsed,
         "input_tokens": n,
         "output_logits_shape": logits_shape,
+        "drafter_vocab_size_used": vocab_size,
     }
 
 
