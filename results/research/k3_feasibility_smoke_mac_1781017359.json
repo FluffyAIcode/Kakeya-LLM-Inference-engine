@@ -1,0 +1,87 @@
+{
+  "schema_version": 3,
+  "kind": "k3_feasibility_smoke",
+  "config": {
+    "platform": "mac",
+    "verifier_path": "models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "/Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline",
+    "drafter_kind": "local_path",
+    "prompt_tokens": 512,
+    "gen_tokens": 8,
+    "seed": 42,
+    "skip_drafter": false,
+    "skip_verifier": true,
+    "use_dflash_loader": true,
+    "inspect_only": false,
+    "proposer_kv_capture": true
+  },
+  "stages": [
+    {
+      "stage": "baseline",
+      "memory": {
+        "label": "baseline",
+        "platform": "mac",
+        "current_allocated_bytes": 0,
+        "driver_allocated_bytes": 475136,
+        "device_total_bytes": 25769803776
+      }
+    },
+    {
+      "stage": "verifier_skipped",
+      "reason": "--skip-verifier flag set; running drafter-only smoke"
+    },
+    {
+      "stage": "drafter_load_FAIL",
+      "error": "TypeError: expected str, bytes or os.PathLike object, not NoneType",
+      "traceback": [
+        "Traceback (most recent call last):",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-k3-dlm-proposer/scripts/research/k3_feasibility_smoke.py\", line 956, in main",
+        "    drafter = _load_drafter(",
+        "        args.drafter_id, platform,",
+        "        use_dflash_loader=(args.use_dflash_loader == \"on\"),",
+        "    )",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-k3-dlm-proposer/scripts/research/k3_feasibility_smoke.py\", line 564, in _load_drafter",
+        "    drafter_obj = DFlashDrafter.from_pretrained(",
+        "        drafter_source,",
+        "    ...<2 lines>...",
+        "        trust_remote_code=True,",
+        "    )",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-k3-dlm-proposer/inference_engine/v04/dflash_drafter.py\", line 281, in from_pretrained",
+        "    tokenizer = AutoTokenizer.from_pretrained(",
+        "        path_or_repo, trust_remote_code=trust_remote_code,",
+        "    )",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/auto/tokenization_auto.py\", line 1175, in from_pretrained",
+        "    return tokenizer_class_fast.from_pretrained(pretrained_model_name_or_path, *inputs, **kwargs)",
+        "           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 2113, in from_pretrained",
+        "    return cls._from_pretrained(",
+        "           ~~~~~~~~~~~~~~~~~~~~^",
+        "        resolved_vocab_files,",
+        "        ^^^^^^^^^^^^^^^^^^^^^",
+        "    ...<9 lines>...",
+        "        **kwargs,",
+        "        ^^^^^^^^^",
+        "    )",
+        "    ^",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 2151, in _from_pretrained",
+        "    slow_tokenizer = (cls.slow_tokenizer_class)._from_pretrained(",
+        "        copy.deepcopy(resolved_vocab_files),",
+        "    ...<7 lines>...",
+        "        **(copy.deepcopy(kwargs)),",
+        "    )",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 2359, in _from_pretrained",
+        "    tokenizer = cls(*init_inputs, **init_kwargs)",
+        "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/qwen2/tokenization_qwen2.py\", line 172, in __init__",
+        "    with open(vocab_file, encoding=\"utf-8\") as vocab_handle:",
+        "         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+        "TypeError: expected str, bytes or os.PathLike object, not NoneType"
+      ],
+      "drafter_source": "/Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline"
+    }
+  ],
+  "summary": {
+    "status": "fail_at_drafter_load_skip_verifier",
+    "drafter_loadable": false,
+    "drafter_source": "/Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline"
+  }
+}

@@ -1,0 +1,13 @@
+[k3-smoke] platform: mac
+[k3-smoke] verifier:  models/gemma-4-26B-A4B-it-mlx-4bit
+[k3-smoke] drafter:   /Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline  (local_path)
+[k3-smoke] prompt n:  512
+[k3-smoke] gen n:     8
+[k3-smoke] --skip-verifier: drafter-only smoke
+[k3-smoke] --proposer-kv-capture: will exercise drafter.propose_kv
+[k3-smoke] loading drafter (mac, loader=dflash_drafter): /Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline
+`torch_dtype` is deprecated! Use `dtype` instead!
+ARCHITECTURAL WARNING: this DFlash checkpoint expects shared embed_tokens with the verifier (per dflash_config in config.json), but PR #96's DFlashDrafter loads it as a standalone Qwen3 with random-init embeddings. The proposer K/V produced by this loader's propose_kv() validates plumbing only, not product semantics. The proper implementation lives on PR #93's branch (AgentMemory/v04-pr-k3-dflash-native-integration-2815) and should be used for any meaningful K/V evidence. embed_tokens.weight.var() = 4.008083e-04 (typical random-init signature; DFlash design, NOT a bug).
+[k3-smoke] WARN: drafter load failed: expected str, bytes or os.PathLike object, not NoneType
+  Continuing without drafter.
+[k3-smoke] report -> results/research/k3_feasibility_smoke_mac_1781017359.json
