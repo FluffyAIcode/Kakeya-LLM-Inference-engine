@@ -1,0 +1,12 @@
+[k1e] device=mps
+[k1e] loading google/gemma-3-1b-it
+[k1e] attn_implementation=sdpa
+[k1e] dataset: 1 samples, prompt token len min=1633 max=1633 mean=1633
+[k1e] baseline memory after model+dataset load: mps current=2.00GB driver=2.85GB (no peak counter)
+[k1e] (c) v0.4 DLMRestoredVerifier (sink=4, window=64)  KL ON (lattice=D4, Q=38)
+[k1e]    v0.4 recall=1.000 (1/1)  mean_latency=47.45s  throughput=0.506 tok/s
+[k1e]    v0.4 memory:   mps current=2.18GB driver=25.22GB (no peak counter)
+[k1e]    v04_dlm_restored attn_window: mean_keys=1633 (100.00% of context)  constraint=causal_with_dlm_reconstruction (local_cache=sink=4+window=64)
+[k1e] report -> results/research/k2a_production_smoke_mac_ctx70_1781009878.json
+[k1e] ─── SUMMARY ──────────────────────────────────────
+[k1e]   v04_dlm_restored          recall=1.000  mean_latency=47.45s  thr=0.506tok/s  current_mem=2.18GB  attn_window=1633 (100.00%)

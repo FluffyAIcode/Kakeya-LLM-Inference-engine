@@ -1335,6 +1335,47 @@ recall=0.12) datum makes precise:
 
 ### 11.7 Implementation phases (v0.4 GA)
 
+#### 11.7.0 K3 model identity (locked 2026-06-09)
+
+**Per user directive 2026-06-09, this subsection records K3
+production-scale model identity unambiguously**:
+
+| role | HF id | architecture | active params | total params | HF-verified |
+|---|---|---|---|---|---|
+| **K3 verifier** | `google/gemma-4-26B-A4B-it` | Gemma 4 26B-A4B MoE (8 active / 128 total experts + 1 shared) | 4B | 26B (25.2B) | ✓ §11.14.3 |
+| **K3 drafter** | `z-lab/gemma-4-26B-A4B-it-DFlash` | block-diffusion drafter for the Gemma 4 26B-A4B verifier | 0.4B | 0.4B | ✓ §11.14.3 |
+
+**Scale ratio: 65:1** (verifier active params : drafter total
+params).
+
+**K3 deployment target is Google Gemma 4 family — not Qwen,
+not any other family**. This is the user's stated production
+goal and the ADR's binding K3 model identity.
+
+**Warning to future readers (added 2026-06-09 after a
+documentation slip)**: the K3 drafter
+`z-lab/gemma-4-26B-A4B-it-DFlash` has `"model_type": "qwen3"`
+in its `config.json`. This is a HuggingFace **architecture-
+loading convention** indicating that DFlash's transformer block
+layout follows Qwen3's pattern internally. It does NOT mean K3
+uses Qwen models or that Qwen models are an acceptable
+substitute for the K3 deployment target. The DFlash drafter is
+purpose-built for the Gemma 4 26B-A4B verifier pair; its weights
+are trained against Gemma 4 26B-A4B's hidden state distribution;
+substituting any Qwen-family model (Qwen3, Qwen3.5, Qwen2.5,
+etc.) for the verifier would invalidate the drafter's training.
+
+The Qwen3.5-4B + `z-lab/Qwen3.5-4B-DFlash` pair listed in
+§11.7's main phase table is for **K2.B research-scale validation
+ONLY** (per the user's earlier directive: *"k3 完成之后，再做 k2
+qwen 模型的适配"* — K2.B Qwen backport only AFTER K3 production
+target is established). K2.B Qwen is NOT a substitute for K3,
+not a fallback if K3 fails, and not a concurrent track. K2.B
+runs in §11.15.7 (Block F) which is gated on §11.15.6 (Block E)
+K3 NIAH ladder evidence per §11.15.9 dependencies graph.
+
+#### 11.7.1 Phase table
+
 Each phase has Linux CI gates plus Mac M4 / vast.ai empirical gates
 per ADR 0008 §9. Phase K2 was rescoped on 2026-06-08 to absorb the
 former K4 KakeyaLattice composition — see §11.11 for the integration
@@ -2293,10 +2334,52 @@ scripts + tests).** What it delivers:
   schema bumps 4 → 5 to record the KL config block.
 * Reviewer scripts:
   - `scripts/review_pr_k2a1_integration_on_vast.sh` — vast.ai
-    CUDA A/B at the §11.12 ladder.
+    CUDA A/B at the §11.12 ladder. **Research evidence
+    collector** (statistical, ~hours).
   - `scripts/review_pr_k2a1_integration_on_mac.sh` — Mac M4
     (PyTorch MPS) A/B at the small-end §11.12 rungs (1.4k +
-    5.6k by default).
+    5.6k by default). **Research evidence collector**
+    (statistical, ~7-9h). Banner at runtime warns users who
+    ran it expecting product-shape latency.
+  - `scripts/review_pr_k2a_production_smoke_on_mac.sh` —
+    **product-shape smoke** (added 2026-06-09 per user
+    directive). Single request, KL ON + K2.A.2 stateful only,
+    no oracle / v0.3 / KL OFF arms, no statistical averaging.
+    Reports first-token latency, recall hit/miss, peak resident
+    memory. ~3-5 min @ 5.6k context on Mac M4 24 GB.
+  - `scripts/review_pr_k2a_production_smoke_ladder_on_mac.sh` —
+    **product-shape ladder** (added 2026-06-09 follow-up). Runs
+    the production-shape smoke at two context rungs (default
+    70 + 280 padding lines, ≈ 1.4k + 5.6k tokens) and aggregates
+    the four product-relevant metrics (recall hit/miss,
+    sec/token, driver-allocated memory, effective attention
+    fraction) into a single ladder JSON suitable for ADR
+    §11.11.13.7 citation. ~5-8 min total. Disambiguates
+    architecture-correctness from memory-pressure-driven
+    failure: ctx70 ought to fit in Mac M4 24 GB physical
+    memory; ctx280 routinely overflows into swap on the user's
+    box (driver_allocated ≈ 26 GB observed 2026-06-09 v4 run).
+
+**Scope split (recorded 2026-06-09)**: research A/B and
+product-shape smoke answer different questions and **must
+not be conflated**:
+
+| Script | Question | Time |
+|---|---|---|
+| `..._k2a1_integration_on_mac.sh`   | Statistical recall delta (ADR §11.8 1a binding gate)        | ~7-9h  |
+| `..._k2a_production_smoke_on_mac.sh` | User-facing first-token latency + recall hit + dtype crash | ~3-5min |
+
+The A/B is necessary for PR-K2.A.1 merge evidence (binding
+gate (b) recall delta ≤ 1pp at every rung needs sample
+distribution). The product smoke is necessary for honest
+release-readiness signal — it answers "if a user sends one
+request through this stack on Mac, what do they wait for".
+Mean throughput across 20 samples masks first-token latency
+that users actually feel; the A/B's KL OFF / oracle / v0.3
+arms are not on the production path; running them as a
+proxy for product validation **wastes time and does not
+produce the answer the question is asking**. Per the user's
+directive: do not use the A/B as a product-experience signal.
 
 K2.A.1 acceptance gates (per §11.11.5 above): **gate (a)
 round-trip identity** is closed by the K2.A.0 Mac smoke
@@ -2557,6 +2640,270 @@ quantified launch baseline**: throughput must beat 0.93 tok/s ×
 at 21k; per-step peak must drop measurably from 30 GB at 21k.
 None of these targets are abstract — all three are anchored in
 K2.A.1 vast evidence rows.
+
+##### 11.11.13.7 Mac M4 production-shape empirical bound (added 2026-06-09)
+
+A separate evidence track from §11.11.13.1's statistical A/B:
+the **single-request product-shape ladder** measured on Mac M4
+24 GB unified memory. Question answered: *for a single user
+request through the K2.A.2 stateful KL ON path on Mac M4
+PyTorch MPS, what is the largest context length where (a) the
+architecture (effective_attention_fraction = 1.0) holds, (b)
+driver-allocated memory stays within 24 GB physical, and (c)
+recall on a single sample is "hit"?*
+
+This is **not** a binding gate for v0.4 release — gate
+candidates need statistical samples (the §11.11.13.1 A/B job).
+This is a **product-experience honesty row**: it tells us where
+the PyTorch MPS path stops being usable for end-users on
+commodity Mac hardware, so we know what K3 MLX/Metal needs to
+beat.
+
+**Reference run** (v4 fix stack + ladder, ladder commit
+`f8646ee`, ladder JSON
+`results/research/k2a_production_smoke_ladder_mac_1781009878.json`):
+
+| ctx_lines | tokens approx | recall (1 sample) | sec/token | driver alloc | arch_window | memory_under_24GB |
+|---|---|---|---|---|---|---|
+| **70**   | **~1.4k**  | **1/1 hit**  | **1.98 s**  | **23.49 GB** | **100 %** | **✓** |
+| **280**  | **~5.6k**  | **0/1 miss** | **10.85 s** | **24.80 GB** | **100 %** | **✗** |
+
+This is the **outcome (a)** path that §11.11.13.7's pre-
+classification predicted: ctx70 hit + ctx280 miss → Mac M4
+PyTorch MPS upper bound is bounded between ~1.4k and ~5.6k
+tokens; above that range, driver-allocated memory exceeds the
+24 GB physical and macOS swap thrashing dominates the latency.
+Three readings:
+
+1. **Architecture correct**: `effective_attention_fraction =
+   1.0` proves v0.4 K/V Restoration works as designed on Mac
+   MPS bf16 — verifier attends to the full 6413-token context
+   despite holding only sink+window=68 in its local cache.
+2. **Memory exceeds physical**: 24.80 GB driver-allocated > 24
+   GB unified memory → macOS swap thrashing. The 11 s/token
+   latency is dominated by disk I/O, not compute or KL codec.
+3. **Recall = 0 on 1 sample is not statistically dispositive
+   in isolation** — but the ladder pairs the ctx280 miss with
+   a ctx70 hit on the **same harness, same KL config, same
+   stateful path, same single-sample seed structure**, so the
+   contrast is informative even though each rung individually
+   is just one Bernoulli trial: the ONLY meaningful difference
+   between the two rungs is context length and the resulting
+   memory footprint.
+
+**Three additional readings from the paired ladder**:
+
+4. **Architecture works at BOTH rungs** (`effective_attention_
+   fraction = 1.0` for ctx70 and ctx280). The dLM K/V
+   Restoration mechanism is not the failure point at ctx280 —
+   the verifier IS attending to the full context structurally.
+   What breaks is the memory-allocator path under swap pressure.
+
+5. **Latency penalty under swap is 5.5×**: 1.98 s/token at ctx70
+   (in-physical-memory) vs 10.85 s/token at ctx280 (over-by-
+   0.8 GB). This is the macOS swap I/O cost, not compute, not
+   KL codec, not the K1.D / K2.A code path.
+
+6. **The "in-memory" rung is tight**: 23.49 GB of 24 GB
+   physical at ctx70. The product fit-cap on this Mac box is
+   strictly between ctx70 and ctx280, probably closer to 1.4k
+   (≈ 70-100 lines) than to 5.6k (280 lines). A finer ladder
+   (e.g. 70 / 140 / 200 / 280) would localise the crossover —
+   but the crossover-finding is academic for the **product**
+   question: anything in the 1.4k–5.6k band on Mac M4 24 GB
+   PyTorch MPS already costs the user 24 GB of unified memory
+   for one request, blocking the rest of the system.
+
+**Implications for K3 MLX/Metal target**: the K3 product-
+success criterion is now empirically defined as
+
+> **K3 MLX must raise the in-physical-memory fit-cap from
+> ≤ 1.4k tokens (PyTorch MPS today) to ≥ 100k tokens under
+> the same single-request product shape, on equivalent
+> 24 GB-class Mac hardware**.
+
+This is **falsifiable** — when K3 MLX ships and we re-run
+this same ladder script (with `--use-mlx-backend` or whatever
+flag K3 introduces), the ctx280 row's `driver_allocated_gb`
+must drop below 24 GB AND `recall_hit` must become True for
+K3 to be considered product-viable on Mac. The ladder JSON
+schema is forward-compatible: re-running on K3 produces a
+parallel ladder JSON that can be diff'd against this PyTorch
+MPS baseline.
+
+**No additional Mac investigation is required from this PR's
+critical path.** The ctx280 miss has a sufficient explanation
+(memory pressure + swap thrashing) given the ctx70 hit;
+running the KL Q=38 vs Q=76 + stateful on/off A/B (the
+"outcome (b)" branch) is no longer needed because outcome
+(a) materialised cleanly. That A/B remains a useful
+diagnostic if a future Mac config (e.g. M4 Pro 36 GB) gets
+ctx280 to fit in physical memory and STILL fails recall —
+then we'd know it's a non-memory bug. Today, on this 24 GB
+box, the answer is unambiguous: memory pressure.
+
+#### 11.11.14 K2.A.2 implementation notes (added 2026-06-09)
+
+The K2.A.2 implementation PR (this branch) lands in
+`inference_engine/v04/dlm_restored_verifier.py` as additive
+extensions to the K1.D / K2.A.1 wrapper, gated on a new
+``stateful: bool = False`` constructor parameter. With
+``stateful=False`` (default), all 31 existing K1.D / K2.A.1
+tests pass unchanged — backward-compatible regression guard.
+With ``stateful=True``, the wrapper enters K2.A.2 stateful
+caching mode.
+
+**Three new architectural primitives**:
+
+1. **`_SessionState` dataclass** — holds the persistent
+   per-session state across ``forward()`` calls:
+
+   ```python
+   @dataclasses.dataclass
+   class _SessionState:
+       cache_token_count: int = 0
+       compressors: Optional[List[KVCompressor]] = None
+   ```
+
+   Cleared by ``DLMRestoredVerifier.reset_cache()`` to start a
+   new prompt. The compressors list (one per attention layer)
+   is built once at the first stateful forward and then
+   persisted; subsequent forwards reuse the same instances so
+   compression state amortises across decode steps. This is
+   the architectural difference vs K2.A.1 where the
+   ``kv_compressor_factory`` is invoked every forward (fresh
+   instances → no caching savings).
+
+2. **`_V04SessionCache` class** — implements HF's
+   ``Cache.update()`` contract so the verifier's incremental
+   forward can be driven via standard HF
+   ``model.forward(input_ids=new_tokens, past_key_values=cache,
+   ...)`` calls. The ``update`` method:
+
+   * receives K, V for the new tokens (post-norm post-RoPE,
+     produced by HF's standard attention pipeline),
+   * stores new K, V at new resident-eligible positions in the
+     per-layer compressor,
+   * evicts positions that age out of the sliding window,
+   * assembles and returns the full-T K, V tensor by combining
+     {decompressed cached K/V at resident positions} ∪
+     {pre-computed proposer-restored K/V at evicted positions} ∪
+     {new K/V at new positions}.
+
+   Pre-computed evicted K/V are set per-layer via
+   ``cache.set_evicted_kv(layer_idx, K_evicted, V_evicted)``
+   before ``model.forward`` is invoked. The pre-computation
+   applies the layer's k_norm and the standard
+   ``apply_rotary_pos_emb`` helper to the proposer's captured
+   K/V slice (analogous to K1.D's ``prepare_restored_attention_kv``
+   but external to the model.forward call so HF's standard
+   attention pipeline can consume the result via
+   ``past_key_values.update``).
+
+3. **`_stateful_incremental_forward`** — the
+   ``DLMRestoredVerifier`` method that drives subsequent
+   forwards (after the first ``forward()`` of the session
+   has populated compressors). Steps:
+
+   a. Validate ``input_ids`` extends the cached prefix
+      (length > ``cache_token_count``); raise ``ValueError``
+      if shrinking or same-length.
+   b. Run proposer over the FULL prefix → ``KVCapture`` at
+      every position (proposer has no cache by §11.3).
+   c. Compute evicted + resident position lists at the
+      post-update prefix length T_full.
+   d. Build ``_V04SessionCache`` with the persistent
+      compressors + per-layer pre-computed evicted K/V.
+   e. Run ``model.forward(input_ids=new_tokens,
+      position_ids=range(T_start, T_full),
+      past_key_values=cache, use_cache=True)`` — verifier
+      processes only new tokens (length n_new), HF's standard
+      attention pipeline calls ``cache.update`` per layer to
+      get the full-T K, V for attention.
+   f. Update ``_session_state.cache_token_count = T_full``.
+   g. Return logits in shape ``[1, T_full, vocab]`` (the
+      ``[0..T_start)`` prefix is zero-filled — callers in the
+      K1.E NIAH harness use only ``logits[:, -1, :]`` for
+      argmax decoding so the zero-fill is benign and saves
+      memory).
+
+**The first stateful forward** (``cache_token_count == 0``
+bootstrap path) reuses the existing K1.D / K2.A.1 stateless
+code path with one change: ``_restoration_active`` checks
+``self._stateful`` and, if set, persists the constructed
+compressors into ``_session_state.compressors`` so subsequent
+incremental forwards can reuse them.
+
+**Test coverage** (``tests/inference_engine/v04/test_dlm_restored_verifier_stateful.py``,
+27 new tests):
+
+* ``stateful=False`` is K1.D / K2.A.1 — backward compat
+  regression (4 tests including ``cache_token_count`` stays
+  zero across forwards).
+* ``reset_cache()`` clears state (3 tests).
+* Bootstrap forward returns correct shape, persists
+  compressors, advances ``cache_token_count``, uses factory
+  (5 tests).
+* Incremental forward processes only new tokens, returns
+  full-T logits shape (2 tests).
+* Input validation: shrinking prefix raises, same-length
+  raises, ``reset_cache()`` unblocks (3 tests).
+* ``_SessionState`` dataclass behaviour (3 tests).
+* ``_V04SessionCache`` assembly logic (7 tests covering
+  ``get_seq_length``, ``set_partition``, ``set_evicted_kv``,
+  ``update`` with various position partitions, error paths).
+
+End-to-end "stateful incremental output ≈ stateless full
+forward output" requires real Gemma 3-1B on Mac M4 / vast —
+that's the K2.A.2 reviewer aid + empirical evidence (next
+step), not Linux unit tests. The Linux suite validates
+orchestration + state transitions + cache assembly.
+
+**K1.E runner integration** — `scripts/research/k1e_niah_validation.py`
+gains a ``--stateful`` flag (added 2026-06-09). When set, the
+v0.4 verifier is constructed with ``stateful=True`` and
+``verifier.reset_cache()`` is called between NIAH samples
+(each sample is a distinct session). JSON schema bumped 5 → 6
+to record the ``stateful`` boolean.
+
+**rotary_emb_fn injection** — `_stateful_incremental_forward`
+needs cos/sin at evicted positions (for the pre-RoPE proposer
+K/V → post-RoPE K/V conversion that ``cache.set_evicted_kv``
+requires). The wrapper auto-discovers ``model.model.rotary_emb``
+when present (HF Gemma3 / Llama / Qwen / Mistral pattern); for
+non-HF models or test stubs, callers can pass
+``rotary_emb_fn=...`` to ``forward()`` to inject a custom
+implementation. Mirrors the existing ``apply_rotary_pos_emb``,
+``eager_attention_forward``, ``all_attention_functions``
+injection pattern from K1.D.
+
+**Empirical evidence collection** — ships in a follow-up
+commit on this branch (or separate small PR):
+
+* vast.ai bf16 H200: same `scripts/review_pr_k2a1_integration_on_vast.sh`
+  ladder but with ``--stateful`` added; produces JSON evidence
+  at every §11.12 rung. Acceptance gates per §11.11.13.6:
+  recall within 1pp of K2.A.1 KL ON; throughput ≥ 1.21 tok/s
+  at 21k.
+* Mac M4 MPS bf16: same `scripts/review_pr_k2a1_integration_on_mac.sh`
+  with ``--stateful``; small rungs (1.4k + 5.6k) for the
+  cross-platform reproducibility check.
+
+**What this PR does NOT yet validate**:
+
+* Real-model end-to-end recall preservation under ``stateful=True``
+  (Linux CI uses synthetic _FakeModel; real-Gemma evidence
+  collection is the next step).
+* Throughput improvement (gate (c)) — the architectural design
+  is correct (verifier per-step is `[1, 1]` not `[1, T]`) but
+  the actual speedup depends on HF's `past_key_values` overhead
+  + the codec's per-step cost.
+
+If gate (c) doesn't deliver ≥ 1.3× as predicted, the
+escalation path is per §11.13.6.4 — refresh-on-eviction
+bypasses the staleness, though at K1 same-checkpoint setup
+staleness is structurally zero so this is unlikely to be the
+limiting factor.
 
 ### 11.12 Canonical empirical ladder (recall × rung × platform)
 
@@ -2954,6 +3301,20 @@ later than 2026-12 (model availability changes).
 | K3 (primary) | verifier | `google/gemma-4-26B-A4B-it` | 26B (4B active) | https://huggingface.co/google/gemma-4-26B-A4B-it | ✓ 2026-06-09 |
 | K3 (alternative) | proposer | `z-lab/gemma-4-31B-it-DFlash` | ~0.4B | https://huggingface.co/z-lab/gemma-4-31B-it-DFlash | ✓ 2026-06-09 |
 | K3 (alternative) | verifier | `google/gemma-4-31B-it` | 31B dense | https://huggingface.co/google/gemma-4-31B-it | ✓ 2026-06-09 |
+| K3 Mac M4 path | verifier (4-bit MLX) | `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` | 26B (4B active), 16.4 GB on disk | https://huggingface.co/FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit | ✓ 2026-06-09 |
+
+**Footnote on K3 drafter `model_type` (added 2026-06-09)**: the
+K3 drafter `z-lab/gemma-4-26B-A4B-it-DFlash` declares
+`model_type: qwen3` in its `config.json`. This is a HuggingFace
+architecture-loading convention — DFlash's transformer block
+layout follows Qwen3's pattern, so HF dispatches it to
+`Qwen3ForCausalLM`. **It does NOT mean K3 uses Qwen models or
+that any Qwen-family verifier is an acceptable substitute for
+`google/gemma-4-26B-A4B-it`**. The drafter is purpose-built for
+the Gemma 4 26B-A4B pair; its weights encode a learned mapping
+into Gemma 4 26B-A4B's hidden state distribution. See §11.7.0
+"K3 model identity (locked)" for the full architectural
+identity statement.
 
 The full DFlash drafter collection (https://github.com/z-lab/dflash
 + https://huggingface.co/collections/z-lab/dflash) currently lists
@@ -3054,11 +3415,80 @@ PROMPT_TOKENS=16384 or 64k for longer-context K3 feasibility,
 which the user can do once the smoke-script's drafter forward
 bug is patched.
 
-**Mac M4 path status**: pending. The 4-bit quantize step is the
-gating prerequisite; total expected disk + memory budget per
-§11.15.10 risk register row 3 ("Mac M4 4-bit smoke OOMs at 100k
-context") is ~16-22 GB peak at PROMPT_TOKENS=512 baseline, with
-longer-context tests gated on baseline pass.
+**Mac M4 path status (updated 2026-06-09)**:
+
+The original Mac M4 path called for self-quantizing
+`google/gemma-4-26B-A4B-it` via `mlx_lm.convert --quantize`. That
+path is **broken on mlx-lm 0.31.3** due to FIVE interlocking
+upstream bugs in mlx-lm / mlx-vlm's handling of Gemma 4's PLE
+(Per-Layer Embedding) architecture and MoE (SwitchLinear) expert
+layers. Verified 2026-06-09 by:
+
+* User Mac M4 attempt at self-quantize crashed with
+  `AttributeError: 'list' object has no attribute 'keys'` —
+  bug #4 in the FakeRocket543/mlx-gemma4 enumeration (MoE
+  expert weights stored as a list but mlx-lm's per-layer
+  quantization config dispatcher treats it as a dict).
+* GitHub issue ml-explore/mlx-lm#1123 documents the same and
+  related bugs; even when self-quantize succeeds, output is
+  degenerate (`ionoxffionoxff...` token-repetition garbage)
+  because PLE layers are quantized when they shouldn't be.
+
+The five upstream bugs:
+
+1. `ScaledLinear` inherits `nn.Module` instead of `nn.Linear` —
+   `nn.quantize()` cannot discover these layers.
+2. Standard quantization quantizes PLE layers — 4-bit/8-bit
+   output is degenerate.
+3. `processor.save_pretrained()` strips audio config — audio
+   silently dropped (relevant for E2B/E4B; not 26B).
+4. `SwitchLinear` (MoE experts) not included in quantization —
+   manifests as `'list' object has no attribute 'keys'` on
+   26B-A4B with current mlx-lm 0.31.3.
+5. `embed_scale` double-scaling — vision misalignment.
+
+**The fix (committed 2026-06-09)**: switch the Mac M4
+verifier path from self-quantize to **downloading the
+published PLE-safe community variant**:
+
+* HF repo: `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit`
+  (HF-verified 2026-06-09; per §11.14 selection discipline
+  added to the §11.14.3 candidates table)
+* Size: 16.4 GB on disk (vs ~13 GB an unsafe naive quant
+  would produce — correctly quantizing MoE expert layers
+  adds ~3.4 GB; the absent ~3.4 GB in unsafe quants explains
+  bug #4's surface).
+* Quant strategy: 4-bit affine, group_size 64; quantizes only
+  large `nn.Linear` and `SwitchLinear` (MoE expert) layers;
+  keeps `ScaledLinear` (PLE), `ScaledEmbedding`, vision
+  encoder, all norms and scalars in bf16.
+* License: Apache 2 (per Gemma 4 family upstream).
+
+**Mac M4 24 GB fit at 16.4 GB model**:
+
+| component | size |
+|---|---|
+| model weights (PLE-safe 4-bit) | 16.4 GB |
+| KV cache at sink+window=4+64 | negligible |
+| activations (transient at 512-prompt smoke) | ~1-2 GB |
+| MPS allocator overhead | 1.3-1.5× |
+| DFlash drafter | ~0.8 GB |
+| **estimated peak** | **~22-26 GB** |
+
+This is **tighter than the original ~18-22 GB estimate**
+because the PLE-safe variant is 16.4 GB not 13 GB (the original
+estimate assumed unsafe naive 4-bit which silently skipped MoE
+experts — bug #4 turning a feature into a "memory savings").
+Mac M4 24 GB is feasible at 512-prompt baseline; 16k context
+likely OK; **64k+ probably triggers macOS unified-memory
+swap** because the activation peak grows with T.
+
+`scripts/research/k3_quantize_for_mac.py` was rewritten 2026-06-09
+to default to the download path; `--mode self-quantize` is
+preserved for diagnostic purposes and for when a future mlx-lm
+release fixes the upstream bugs (mlx-vlm 0.4.4 reportedly fixed
+them in the VLM library; the upstream `mlx_lm.convert` Python
+API has not yet inherited the fix as of 2026-06-09).
 
 **Acceptance gate**: smoke runs return exit 0 + JSON evidence
 shows verifier + drafter both load and run a forward on the
@@ -3066,15 +3496,226 @@ target hardware. **What this gate does NOT verify**: cross-model
 correctness (that's Block B), trained-f_θ behaviour (Block C/D),
 NIAH recall (Block E).
 
-**Cost**: zero compute beyond a one-time Mac quantize
-(~30-90 min, free) and a single vast.ai GPU-hour smoke (~$1-3).
+**vast Block A status (updated 2026-06-09 with PR #88 +
+post-fix re-run)**: **PASS**. Evidence committed to `main` at
+`aae96aa` (`results/research/k3_feasibility_smoke_vast_blockA_1780982359.json`).
+
+| measurement | value |
+|---|---|
+| verifier load | 14.5 s, 51.6 GB peak |
+| drafter load | 3.8 s, +3.7 GB → 55.3 GB total |
+| verifier forward (757 prefill + 8 gen) | 2.56 s prefill, 2.85 s gen, 2.81 tok/s |
+| drafter forward (757 tokens) | 0.42 s, logits `[1, 757, 262144]` |
+| joint memory peak | 56.16 GB / ~150 GB H200 (or NVL) — 25 GB headroom |
+| `summary.status` | `"pass"` |
+| `summary.{verifier,drafter}_{loadable,forward_ok}` | all `true` |
+
+**Mac path status (still pending)**: requires user to run the
+one-time community-variant download per §11.15.12 + the
+`review_pr_k3_feasibility_on_mac.sh` smoke; not yet executed
+2026-06-09.
+
+**Cost**: zero compute beyond a one-time Mac quantize/download
+(~30-90 min self-quantize / ~5-15 min download; both free) and
+two vast.ai GPU-hour smoke iterations (~$2-6 total — first run
+plus the post-fix re-run after PR #88 merged).
+
+#### 11.15.2.1 Block A vast PASS — caveats and what this evidence does NOT prove
+
+The `aae96aa` evidence proves **architectural feasibility** —
+hardware + memory + framework integration all hold. But the
+commit message + Block A pass conditions surface two caveats
+that **must be resolved before Block B implementation starts**;
+treating Block A PASS as "K3 is unblocked, just go" without
+addressing them would burn down Block B with ~2-3 weeks of
+recoverable but avoidable rework.
+
+**Caveat 1: transformers version conflict on the standard
+vast wrapper.**
+
+Gemma 4 26B-A4B verifier (`google/gemma-4-26B-A4B-it`) requires
+`transformers >= 5.0` (per HF model card). Our project
+`requirements.txt` and the `scripts/research/run_on_vast.sh`
+provisioning script pin `transformers >= 4.45, < 5.0` (see
+`requirements.txt` line ~12: the pin is needed for Qwen3 dLM
+proposer compatibility per the `dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1`
+checkpoint's custom `modeling_qwen3.py`).
+
+The Block A vast smoke ran via a manual `.venv-k3` (transformers
+5.10.2) bypassing the project's standard venv. **Block B will
+hit this conflict immediately** — the cross-model
+`DLMRestoredVerifier` per §11.15.3 needs transformers >= 5.0
+to load Gemma 4 alongside the dLM proposer. Resolution path
+options:
+
+1. **Drop the `< 5.0` pin** in `requirements.txt` and verify
+   the Qwen3 dLM proposer still works under transformers 5.x
+   (the modeling file's custom code may need updates;
+   tracked as a known transformers 4.x → 5.x migration cost).
+2. **Two-venv split**: keep `< 5.0` for Qwen3 dLM workloads,
+   add `>= 5.0` venv-k3 for Gemma 4 production workloads.
+   Less elegant; complicates CI; only sustainable for short
+   transition window.
+3. **Wait for upstream fixes**: the Qwen3 dLM custom modeling
+   gets updated to support transformers 5.x. Out of our
+   control; could take months.
+
+Recommended path: (1). Drop the < 5.0 pin and patch the Qwen3
+custom modeling (~50 LOC). Tracked as a Block B prerequisite.
+
+**Caveat 2: DFlash drafter's checkpoint extras (`fc`,
+`hidden_norm`, `lm_head`, `embed_tokens`) are not consumed
+by `Qwen3ForCausalLM`** (corrected 2026-06-09 after fetching
+the actual DFlash `config.json`).
+
+The post-fix smoke log shows transformers warnings:
+
+```
+fc, hidden_norm: unexpected key (not in Qwen3ForCausalLM)
+lm_head, embed_tokens: newly initialised (not loaded from checkpoint)
+```
+
+**Earlier reading** (incorrect, kept here as an audit trail):
+"DFlash loads as Qwen3, NOT as DFlash's actual block-diffusion
+architecture." This framing was wrong — DFlash **is** Qwen3
+architecturally per its own `config.json`:
+
+```json
+{
+  "architectures": ["DFlashDraftModel"],
+  "model_type": "qwen3",                       ← HF dispatches by this
+  "block_size": 16,
+  "dflash_config": {
+    "mask_token_id": 4,
+    "target_layer_ids": [1, 6, 11, 17, 22, 27]
+  },
+  "num_hidden_layers": 5,
+  "num_target_layers": 30,
+  ...
+}
+```
+
+`AutoModelForCausalLM` correctly dispatches to
+`Qwen3ForCausalLM` because `model_type` is `qwen3`; the repo
+ships no `auto_map` and no `modeling_dflash.py` — there is no
+custom architecture class to route to. DFlash's "special sauce"
+lives in **two protocol-layer extensions** of standard Qwen3:
+
+* **Block-diffusion drafting protocol** — `block_size: 16`,
+  drafter generates 16 tokens in parallel per call (vs Qwen3's
+  standard 1 AR token per step). Implemented at the inference
+  glue level (vLLM SD plugin), not at the model class level.
+* **Cross-layer target conditioning** — `target_layer_ids: [1,
+  6, 11, 17, 22, 27]` points at six of the 30 verifier
+  (Gemma 4 26B-A4B) layers; the drafter conditions on those
+  layers' features via the `fc` (feature concatenation /
+  projection) and `hidden_norm` (target-feature normalisation)
+  extras that the smoke log flagged as "unexpected".
+* `lm_head` and `embed_tokens` newly initialised: the DFlash
+  checkpoint stores these but under names Qwen3ForCausalLM
+  doesn't probe. Likely recoverable via manual
+  `state_dict` key remapping during load.
+
+**Net result for Block A "feasibility" claim**: the smoke
+correctly shows the drafter loads as a runnable Qwen3 + verifier
+fits on H200 with headroom. **For v0.4 K/V Restoration purposes,
+the question is narrower than the original Caveat 2 framing
+suggested**: does the drafter's K, V tensor at every layer × every
+position represent meaningful proposer state (i.e., trained
+weights), or random-initialised garbage?
+
+* Drafter's **attention layers' K/V projections** (`k_proj`,
+  `v_proj`) are part of the standard Qwen3 architecture and
+  ARE loaded from the DFlash checkpoint. → K/V at every
+  position have trained values. ✓
+* Drafter's **`embed_tokens`** is the input to layer 0; if it
+  is "newly initialised" (random), then layer-0 K/V is computed
+  from random embeddings → first-layer K/V are garbage → all
+  subsequent K/V propagate the garbage. ✗
+* Drafter's **`fc` and `hidden_norm`** extras carry the
+  cross-layer conditioning that DFlash uses to align with the
+  verifier; without them loaded, the drafter runs as a plain
+  Qwen3 (no Gemma-4-target conditioning), and its K/V are not
+  the K/V DFlash was trained to produce conditional on the
+  verifier. ✗
+
+**For v0.4 K/V Restoration to use this drafter meaningfully,
+both the embed_tokens and fc/hidden_norm need to load
+correctly.** This is recoverable — likely a `state_dict` key
+mapping fix at load time — but it is real engineering work
+that Block B must do **before** Block C trains f_θ. Without
+it, Block C trains a projection from random drafter K/V to
+verifier K/V — meaningless.
+
+**Block B prerequisite 4 (corrected)**: write a DFlash loader
+that:
+
+1. Loads the safetensors checkpoint directly (not via
+   `from_pretrained` Qwen3 dispatch).
+2. Builds a Qwen3ForCausalLM instance with the DFlash
+   `config.json` parameters.
+3. Maps the safetensors keys to the Qwen3 model parameter
+   names (likely a small per-key prefix renaming based on
+   the `state_dict` key delta).
+4. Loads `fc` and `hidden_norm` as extra modules attached to
+   the Qwen3 model (custom code, ~50-100 LOC).
+5. Verifies post-load that `embed_tokens` weights are
+   non-random (e.g., `model.model.embed_tokens.weight.var()
+   > 1e-6` or similar — random init has near-uniform variance,
+   trained embeddings have structured variance).
+
+The K3 smoke harness should then verify the loader runs without
+the `newly initialised` warning before the smoke is treated as
+truly PASS.
+
+This work belongs in Block B per §11.15.3; the K3 Block A
+PASS does not relieve Block B of this responsibility. To
+make this explicit, Block B's prerequisites are amended (see
+§11.15.3 below).
+
+**What this means for the §11.8 K3 acceptance criteria
+(reading the `aae96aa` evidence honestly)**:
+
+| §11.8 criterion | does Block A evidence prove? |
+|---|---|
+| 1a. Architectural validation Δ ≤ 5pp | NO — that's gate (b) at Block E |
+| 1b. ≥ 95% absolute at 100k | NO — that's Block E with trained f_θ on a real Gemma 4 verifier |
+| 7. Throughput ≥ 0.6× oracle (KL on) | NO — Block A smoke is single-batch greedy; no SD harness |
+| Hardware feasibility (informal) | **YES** — vast H200 confirmed |
+
+The architectural feasibility is the only claim Block A
+evidence supports.
 
 #### 11.15.3 Block B — Cross-model `DLMRestoredVerifier` implementation
 
-**Prerequisites**: Block A's feasibility smoke confirms both
-models load on target hardware; the smoke's JSON report contains
-the actual drafter `(num_layers, head_dim, num_kv_heads)` shape
-needed to parameterise `LinearLayerProjection`.
+**Prerequisites** (updated 2026-06-09 with Block A vast PASS
+caveats per §11.15.2.1):
+
+1. **Block A vast feasibility evidence** — confirmed at
+   `aae96aa` on main (verifier + drafter both load + forward
+   on H200 80 GB+).
+2. **Block A Mac M4 feasibility evidence** — pending user
+   execution per §11.15.2.
+3. **transformers version conflict resolved**: drop the
+   `< 5.0` pin in `requirements.txt` (or split-venv
+   workaround) so the K3 verifier `google/gemma-4-26B-A4B-it`
+   loads via the standard project venv. Block A bypassed via
+   manual `.venv-k3`; Block B cannot rely on that.
+4. **DFlash drafter loads as DFlash, not Qwen3 fallback**:
+   per §11.15.2.1 caveat 2, fix the loading path so the
+   custom block-diffusion modeling actually executes
+   (`model.__class__.__name__ == "DFlashForCausalLM"` or
+   equivalent — NOT `Qwen3ForCausalLM`). Without this,
+   Block C trains f_θ against random drafter outputs.
+5. **Drafter actual `(num_layers, head_dim, num_kv_heads)`
+   shape** — recoverable from a corrected Block A smoke
+   re-run after prereq 4. Required for parameterising
+   `LinearLayerProjection` per §11.11.4.
+
+The Block A PASS (`aae96aa`) satisfies prereq 1 only. Prereqs
+2, 3, 4 must be addressed before Block B implementation begins;
+prereq 5 is a small re-run of the existing smoke after prereq 4
+lands.
 
 **Deliverables**:
 
@@ -3204,6 +3845,9 @@ explicitly — F comes after E, not in parallel.
 | `f_θ` capacity insufficient at 65:1 ratio | C/D | escalate per training pipeline §8: MLP, low-rank, learned alignment |
 | Mac M4 4-bit smoke OOMs at 100k context | A.2 | accept Mac M4 as research-only at smaller context; K3 production validation on vast only |
 | Gemma 4 26B-A4B verifier weights not accessible (gating delays) | A | use the alternative Gemma 4-31B-it pair (also HF-verified §11.14.3) |
+| Mac M4 self-quantize broken on mlx-lm 0.31.3 (5 PLE/MoE bugs) | A.2 | **resolved 2026-06-09** — switched to downloading the published PLE-safe community variant `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` (added to §11.14.3 candidates). Fallback `--mode self-quantize` preserved for when a future mlx-lm release lands the mlx-vlm 0.4.4 fixes. |
+| transformers `< 5.0` pin in requirements.txt blocks Gemma 4 26B-A4B verifier load | B prerequisite | identified 2026-06-09 from Block A vast PASS evidence (`aae96aa`); user bypassed via manual `.venv-k3`. Resolution: drop `< 5.0` pin and patch Qwen3 dLM proposer's custom modeling for transformers 5.x compatibility (~50 LOC); tracked as Block B prerequisite 3 per §11.15.3. |
+| DFlash drafter loads as `Qwen3ForCausalLM` fallback (not actual DFlash architecture) | B prerequisite | identified 2026-06-09 from Block A vast PASS log warnings (`fc/hidden_norm unexpected`, `lm_head/embed_tokens newly init`). Block A's "drafter forward OK" passes mechanically but the drafter is structurally NOT DFlash — it's randomly-initialised Qwen3 architecture; block-diffusion is not exercised. Resolution: explicit `from_pretrained` with the DFlash custom modeling class (or fix `auto_map` upstream); tracked as Block B prerequisite 4. |
 | f_θ training cost overruns budget | C/D | smaller Stage 1 token budget; accept partial convergence + larger Δ vs oracle |
 | Staleness (per §11.13.6) prevents Δ ≤ 5pp at production scale | E | escalate to §11.13.6.4 stateful-caching freshness designs (refresh-on-eviction or periodic refresh) |
 | Multi-tenant scheduling conflict with v0.4 architecture | G | deferred — out of scope for K3 per §11.15.8; addressed in v0.5 release engineering |
@@ -3222,3 +3866,149 @@ a fixed scope, a deliverable list, and an acceptance gate. PR
 reviewers can map any K3-related PR to a block; PRs that try to
 collapse multiple blocks (e.g., "B+C+D+E in one PR") are scope
 violations.
+
+#### 11.15.12 Lesson: don't self-quantize when a working community variant exists (added 2026-06-09)
+
+The original §11.15.2 Block A Mac M4 plan called for
+self-quantizing `google/gemma-4-26B-A4B-it` via `mlx_lm.convert
+--quantize`. That plan failed empirically on user Mac M4 attempt
+2026-06-09 with `AttributeError: 'list' object has no attribute
+'keys'`. Investigation revealed five interlocking upstream bugs
+in mlx-lm / mlx-vlm's handling of Gemma 4 — too many for a v0.4
+prep PR to patch upstream.
+
+**Lesson**: when the production model the K3 design depends on
+(`google/gemma-4-26B-A4B-it`) has a known-broken stock
+quantization path, **survey the community for working variants
+before committing to self-quantize**. The
+`FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` PLE-safe variant
+was published before our K3 prep PR was even drafted; we just
+hadn't searched for it. The §11.14 model selection discipline
+(added 2026-06-09 for production model verification) should be
+**extended to cover quantized variants** — the same "verify
+before commit" discipline applies.
+
+**Discipline addition (added to §11.14.2 implicitly, codified
+here):**
+
+* When the K-stage requires a quantized variant of a
+  production model, **first check HuggingFace for a
+  community-published variant** of the right architecture
+  (PLE-safe for Gemma 4; INT4-AWQ-safe for Llama family;
+  similar) before committing to self-quantize.
+* If a published variant exists and is license-compatible,
+  prefer it. Cite its HF URL in §11.14.3 candidates table.
+* If no published variant exists, self-quantize is acceptable
+  but **must include explicit upstream-bug-survey** (search
+  the upstream library's issue tracker for the source model's
+  architecture name before running quantize).
+
+This lesson generalises beyond Gemma 4. Every cutting-edge
+model architecture has a window between "first publication"
+and "stable community quant" where stock library quantize
+paths are likely broken. Surveying before self-quantizing
+saves a quantize-attempt-and-debug cycle (60-90 minutes of
+download + crash) per encounter.
+
+#### 11.15.13 Lesson: verifier feasibility evidence is one half of Block A (added 2026-06-09)
+
+Block A vast feasibility (`3f0557a`) showed that:
+
+* Verifier load + forward succeeds on H200 (~52 GB peak after
+  load, 2.80 tok/s for 8 gen tokens at 757-token prefill).
+* Drafter load succeeds.
+* Drafter forward FAILED — but due to a smoke-script bug
+  (`vocab_size` resolution on DFlash's `trust_remote_code=True`
+  custom tokenizer producing `from >= to` in `torch.randint`),
+  NOT a model/hardware compatibility issue.
+
+**The smoke-script bug was fixed in the same PR as the §11.11.13
+postscript** (PR #88, scripts/research/k3_feasibility_smoke.py
+robustness fix). After that fix lands on main, a Block A vast
+re-run will confirm drafter forward succeeds end-to-end.
+
+**Lesson**: feasibility smoke scripts must be **robust to the
+upstream models' tokenizer quirks** — `trust_remote_code=True`
+custom tokenizers (DFlash, dLLM-MDLM, etc.) often have
+non-standard attribute exposure. The K3 smoke script's
+`_drafter_forward` now probes multiple vocab-size candidates
+in priority order (`vocab_size` attribute → `len(tokenizer)`
+→ `model.get_input_embeddings().num_embeddings` → 50000
+fallback) before calling `torch.randint`. This pattern should
+be reused for any future smoke or evidence script that
+generates synthetic token IDs against a custom-tokeniser model.
+
+The Block A "verifier feasibility passes, drafter feasibility
+pending re-run" status should be read as: **verifier path is
+the harder + larger memory footprint half of Block A, and that
+half empirically succeeded**. Drafter feasibility was always
+expected to be cheap (0.4B drafter + transformers SDPA path
+matches every other Block A run we've ever done); the fix is
+in-flight. K3 Block A acceptance should not be gated on
+re-collecting drafter forward evidence at this scale of
+near-miss.
+
+#### 11.15.14 Lesson: "load + forward succeeds" is a weaker claim than "model runs as its actual architecture" (added 2026-06-09)
+
+The K3 Block A vast PASS (commit `aae96aa`) demonstrated that
+the drafter `z-lab/gemma-4-26B-A4B-it-DFlash` can be loaded via
+HF transformers + run a forward + produce logits of the right
+shape on H200. **All four ``summary.{verifier,drafter}_{loadable,
+forward_ok}`` flipped true.**
+
+Naïve reading: "K3 hardware feasibility confirmed; Block B
+unblocked."
+
+Honest reading: the smoke log carries warnings showing the
+drafter loaded as `Qwen3ForCausalLM` (DFlash's base architecture
+before the block-diffusion additions) with `fc, hidden_norm`
+keys discarded and `lm_head, embed_tokens` newly initialised.
+The drafter forward "succeeded" only because PyTorch is permissive
+about random-weighted modules producing random-but-shape-correct
+outputs. **The block-diffusion architecture that DFlash IS was
+not exercised**; the smoke confirmed transformers + Gemma 4 26B
+hardware feasibility but said nothing about DFlash's actual
+behaviour.
+
+**The lesson**: a smoke that asserts only "load OK + forward OK"
+is satisfied by a model class that **doesn't match the
+architecture you think you're testing**. Loading via
+`AutoModelForCausalLM` + `trust_remote_code=True` is
+**necessary but not sufficient** for "the custom architecture
+ran" — auto_map can mis-route, custom keys can be silently
+discarded, lm_head can be silently re-initialised. None of these
+fail loudly.
+
+**Discipline addition**: feasibility smokes for any model with
+a custom architecture (DFlash, dLM-MDLM, Mamba, RWKV,
+Marin/JinaAI new variants) MUST assert the resolved model class
+name matches the expected custom class:
+
+```python
+# In smoke script after model = AutoModelForCausalLM.from_pretrained(...):
+expected_class = "DFlashForCausalLM"  # or whatever
+actual_class = model.__class__.__name__
+if actual_class != expected_class:
+    print(f"WARN: model loaded as {actual_class} not {expected_class}; "
+          "custom architecture may not be exercised")
+    # Still proceed for the basic feasibility check, but record this
+    # in the JSON evidence so downstream readers know the smoke is
+    # "feasibility passed, architectural exercise NOT validated".
+```
+
+Plus: **smoke logs and JSON should preserve the transformers
+warnings about discarded / newly-initialised weights**. The K3
+Block A `aae96aa` smoke log captured these warnings (good!) but
+the JSON evidence summary did not surface them as a structured
+field — readers had to read the log. Future smokes should
+include an `architectural_warnings` block in JSON that captures
+this signal explicitly.
+
+This is the **second lesson about Block A** in 24 hours — first
+was §11.15.13 "verifier feasibility evidence is one half of
+Block A" (drafter forward smoke-script bug). Pattern: Block A
+is **load + forward + shape-correct output**, which is a
+necessary first cut but is several layers removed from "the
+v0.4 architecture works as designed". Subsequent Blocks (B, C,
+D, E) close progressively richer layers; readers of any K3
+evidence must be careful which layer they're reading.

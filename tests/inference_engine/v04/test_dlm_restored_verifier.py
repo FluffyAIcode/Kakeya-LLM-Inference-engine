@@ -789,6 +789,55 @@ class TestRoundTripResidentHelper:
         assert torch.equal(k, k_out)
         assert torch.equal(v, v_out)
 
+    def test_bf16_inputs_accept_fp32_round_tripped_decompress(self):
+        """Regression for the 2026-06-09 Mac M4 production-smoke crash:
+
+            RuntimeError: index_copy_(): self and source expected to
+            have the same dtype, but got (self) BFloat16 and (source)
+            Float
+
+        Cause: KakeyaLattice's decompress returns fp32 tensors on the
+        codec's compute device, but the verifier's working K/V are
+        bf16/fp16 on MPS/CUDA. ``index_copy_`` is dtype-strict, so
+        without an explicit cast the assignment crashes.
+
+        Repro shape: bf16 K/V inputs + a compressor that returns fp32
+        on the same device. Pre-fix this assertion would raise
+        RuntimeError; post-fix the helper returns a bf16 tensor.
+        """
+        k, v = self._kv(T=8)
+        k = k.to(dtype=torch.bfloat16)
+        v = v.to(dtype=torch.bfloat16)
+
+        class _Fp32IdentityCompressor:
+            """IdentityCompressor variant that decompresses to fp32
+            regardless of the input dtype — emulates KakeyaLattice's
+            actual behaviour on Mac MPS / CUDA bf16 paths."""
+
+            def __init__(self):
+                self._k = None
+                self._v = None
+
+            def compress(self, K, V, positions):
+                self._k = K.detach().clone().to(dtype=torch.float32)
+                self._v = V.detach().clone().to(dtype=torch.float32)
+
+            def decompress(self, positions):
+                return self._k, self._v
+
+            def evict(self, positions):
+                self._k = None
+                self._v = None
+
+        compressor = _Fp32IdentityCompressor()
+        k_out, v_out = _round_trip_resident_through_compressor(
+            k, v, [0, 1, 2, 3, 4, 5, 6, 7], compressor,
+        )
+        assert k_out.dtype == torch.bfloat16
+        assert v_out.dtype == torch.bfloat16
+        assert torch.allclose(k.to(torch.float32), k_out.to(torch.float32))
+        assert torch.allclose(v.to(torch.float32), v_out.to(torch.float32))
+
 
 class TestVerifierKVCompressorFactory:
     """K2.A.1: DLMRestoredVerifier accepts kv_compressor_factory and

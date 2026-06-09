@@ -8,11 +8,21 @@
 # Mac M4 24 GB cannot fit the verifier at bf16 (~52 GB). Two-step
 # Mac path:
 #
-#   Step 1 (one-time, ~30-90 min): quantize verifier to 4-bit MLX
+#   Step 1 (one-time, ~5-15 min on broadband): download the published
+#   PLE-safe community 4-bit MLX variant.
+#
 #     PYTHONPATH=.:sdks/python python3 \
 #         scripts/research/k3_quantize_for_mac.py \
 #         --output models/gemma-4-26B-A4B-it-mlx-4bit
-#     Result: ~13 GB local directory.
+#     Result: ~16.4 GB local directory.
+#
+#   NOTE 2026-06-09: Step 1 used to do mlx_lm.convert self-quantize.
+#   That path is broken on mlx-lm 0.31.3 for Gemma 4 26B-A4B MoE due
+#   to 5 upstream bugs (ml-explore/mlx-lm#1123). Default switched to
+#   downloading FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit, a working
+#   PLE-safe variant. To force self-quantize anyway (e.g. when a future
+#   mlx-lm release fixes the upstream bugs), pass --mode self-quantize
+#   to k3_quantize_for_mac.py.
 #
 #   Step 2 (each smoke run, ~5-15 min): load + smoke forward
 #     bash scripts/review_pr_k3_feasibility_on_mac.sh

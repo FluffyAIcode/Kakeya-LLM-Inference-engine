@@ -117,6 +117,24 @@ def parse_args() -> argparse.Namespace:
              "compression but better fidelity. Canonical D4 operating "
              "point: Q=38 → 832 bits for D=128. Only used when --kl-on.",
     )
+    # ----------------------------------------------------------------
+    # K2.A.2 stateful caching flag (per ADR 0008 §11.11.12 + §11.11.14).
+    # When enabled, DLMRestoredVerifier persists per-layer compressors
+    # across decode steps, so the verifier's per-step forward becomes
+    # incremental (O(1) over new tokens vs O(T) over full prefix in
+    # K2.A.1 stateless). Closes §11.8 throughput gate (c).
+    # ----------------------------------------------------------------
+    ap.add_argument(
+        "--stateful", action="store_true",
+        help="Enable K2.A.2 stateful caching: compressors persist across "
+             "decode steps within one NIAH sample. Verifier per-step "
+             "forward becomes O(1) instead of O(T). Per ADR 0008 §11.13.6.2, "
+             "at K1 same-checkpoint AR-causal setup the cached K/V are "
+             "bit-equivalent to fresh K1.D / K2.A.1 forward (no suffix "
+             "drift); recall must match. Throughput gain comes from the "
+             "verifier-side T-scaled component being eliminated. "
+             "Off by default (K2.A.1 stateless behaviour preserved).",
+    )
     ap.add_argument(
         "--output", default=None,
         help="JSON report path. Default: results/research/k1e_niah_<stamp>.json",
@@ -357,11 +375,18 @@ def main() -> int:
         verifier = DLMRestoredVerifier(
             model, sink_size=args.sink_size, window_size=args.window_size,
             kv_compressor_factory=_factory,
+            stateful=args.stateful,
         )
 
+        # K2.A.2: reset between samples — each NIAH sample is a distinct
+        # session. greedy_decode_v04 calls verifier.forward repeatedly with
+        # an extending prefix; in stateful mode it incrementally updates
+        # the cache. Between samples, the cache must be cleared.
         def v04_decode(sample) -> Tuple[str, float, int]:
             idx = samples.index(sample)
             prompt_ids = sample_ids[idx]
+            if args.stateful:
+                verifier.reset_cache()
             t0 = time.perf_counter()
             text, decode_tokens = greedy_decode_v04(
                 verifier=verifier, prompt_ids=prompt_ids, tokenizer=tokenizer,
@@ -409,14 +434,12 @@ def main() -> int:
             gate["v04_dominates_v03"] = v04_recall > v03_recall
 
     report = {
-        # schema v5: K2.A.1 adds 'kl' block recording KakeyaLattice
-        # integration config. Schema-v4 consumers see one extra
-        # top-level key ("kl") and should ignore unknown keys
-        # (forward-compatible). v4 (K1.I) added throughput fields
+        # schema v6: K2.A.2 adds top-level 'stateful' bool. v5 consumers
+        # see one extra key and should ignore unknowns (forward-compat).
+        # v5 (K2.A.1) added 'kl' block; v4 (K1.I) added throughput fields
         # inside results.<config>; v3 (K1.H) added attention_window;
-        # v2 (K1.G) added memory. v1 consumers must default all
-        # four blocks to {}.
-        "schema_version": 5,
+        # v2 (K1.G) added memory. v1 consumers must default all blocks to {}.
+        "schema_version": 6,
         "kind": "k1e_niah_validation",
         "config": {
             "model": args.model,
@@ -451,6 +474,12 @@ def main() -> int:
                 if args.kl_on else "identity"
             ),
         },
+        # K2.A.2 metadata. When stateful=True, the v0.4 verifier
+        # uses persistent compressors across decode steps; throughput
+        # is expected to improve relative to stateful=False per
+        # ADR 0008 §11.8 criterion 7. When stateful=False (default,
+        # K2.A.1 behaviour), every decode step rebuilds compressors.
+        "stateful": bool(args.stateful),
         "results": results,
         "memory": {
             "baseline": baseline_memory,
