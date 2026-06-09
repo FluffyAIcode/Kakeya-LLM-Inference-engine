@@ -56,35 +56,24 @@ PROMPTS = [
 
 
 class VerifierAuxProvider(AuxHiddenProvider):
-    """Wraps the Gemma-4 verifier: runs a forward over `committed`, caches
-    the aux-layer hidden states + next-token logits, and serves the aux
-    hidden at the last position to the drafter."""
+    """Wraps the Gemma-4 verifier: runs a forward over `committed` and serves
+    the aux-layer hidden states at **all** positions to the drafter (DFlash
+    turns them into the draft layers' prewritten context K/V)."""
 
     def __init__(self, model, aux_layer_ids, device):
         self.model = model
         self.aux_layer_ids = aux_layer_ids
         self.device = device
-        self._cache_key = None
-        self._aux_last = None
-        self.next_logits = None
         self.forward_calls = 0
 
     @torch.no_grad()
-    def _run(self, ids: List[int]):
-        key = tuple(ids)
-        if key == self._cache_key:
-            return
-        inp = torch.tensor([ids], dtype=torch.long, device=self.device)
+    def aux_hidden_context(self, committed_token_ids: List[int]) -> List[torch.Tensor]:
+        inp = torch.tensor([committed_token_ids], dtype=torch.long, device=self.device)
         out = self.model(input_ids=inp, use_cache=False, output_hidden_states=True)
         self.forward_calls += 1
         hs = out.hidden_states  # tuple len = num_layers+1 (0 = embeddings)
-        self._aux_last = [hs[a][:, -1:, :].float() for a in self.aux_layer_ids]
-        self.next_logits = out.logits[0, -1, :].float()
-        self._cache_key = key
-
-    def aux_hidden_last(self, committed_token_ids: List[int]) -> List[torch.Tensor]:
-        self._run(committed_token_ids)
-        return self._aux_last
+        # Aux hidden at ALL committed positions, per aux layer: [1, C, hidden].
+        return [hs[a].float() for a in self.aux_layer_ids]
 
 
 def _build_embed_lm_head(model, hidden_size, softcap):

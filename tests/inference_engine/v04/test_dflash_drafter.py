@@ -81,10 +81,11 @@ class _SyntheticAuxProvider(AuxHiddenProvider):
     def __init__(self, cfg: DFlashConfig):
         self.cfg = cfg
 
-    def aux_hidden_last(self, committed_token_ids):
+    def aux_hidden_context(self, committed_token_ids):
         torch.manual_seed(len(committed_token_ids) + 1)
+        C = len(committed_token_ids)
         return [
-            torch.randn(1, 1, self.cfg.hidden_size)
+            torch.randn(1, C, self.cfg.hidden_size)
             for _ in range(self.cfg.num_aux_layers)
         ]
 
@@ -141,30 +142,31 @@ class TestDFlashConfig:
 
 
 class TestDFlashDrafterProjection:
-    def test_project_aux_shape(self):
+    def test_combine_aux_shape(self):
         cfg = _tiny_cfg()
         m = DFlashDrafter(cfg)
         aux = [torch.randn(1, 5, cfg.hidden_size) for _ in range(cfg.num_aux_layers)]
-        out = m.project_aux(aux)
+        out = m.combine_aux(aux)  # fc only (no hidden_norm)
         assert out.shape == (1, 5, cfg.hidden_size)
         assert torch.isfinite(out).all()
 
-    def test_project_aux_wrong_count_raises(self):
+    def test_combine_aux_wrong_count_raises(self):
         cfg = _tiny_cfg()
         m = DFlashDrafter(cfg)
         with pytest.raises(ValueError, match="aux hidden states"):
-            m.project_aux([torch.randn(1, 5, cfg.hidden_size)])  # only 1, need 2
+            m.combine_aux([torch.randn(1, 5, cfg.hidden_size)])  # only 1, need 2
 
-    def test_backbone_forward_shape(self):
+    def test_precompute_context_kv_shapes(self):
         cfg = _tiny_cfg()
         m = DFlashDrafter(cfg)
-        T = 6
-        h = torch.randn(1, T, cfg.hidden_size)
-        pos = torch.arange(T)
-        bias = torch.zeros(1, 1, T, T)
-        out = m.backbone(h, pos, bias)
-        assert out.shape == (1, T, cfg.hidden_size)
-        assert torch.isfinite(out).all()
+        C = 7
+        ctx = torch.randn(1, C, cfg.hidden_size)
+        kv = m.precompute_context_kv(ctx, torch.arange(C))
+        assert len(kv) == cfg.num_hidden_layers
+        for ck, cv in kv:
+            assert ck.shape == (1, cfg.num_key_value_heads, C, cfg.head_dim)
+            assert cv.shape == (1, cfg.num_key_value_heads, C, cfg.head_dim)
+            assert torch.isfinite(ck).all() and torch.isfinite(cv).all()
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +225,14 @@ class TestWeightLoading:
 
 
 class TestDraftBlock:
+    def _ctx(self, cfg, C=6):
+        return [torch.randn(1, C, cfg.hidden_size) for _ in range(cfg.num_aux_layers)]
+
     def test_returns_block_size_non_mask_tokens(self):
         cfg = _tiny_cfg()
         m = DFlashDrafter(cfg)
         embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
-        aux = [torch.randn(1, 1, cfg.hidden_size) for _ in range(cfg.num_aux_layers)]
-        toks = m.draft_block(aux, embed_fn, lm_head_fn, block_size=4, num_steps=4)
+        toks = m.draft_block(self._ctx(cfg), 7, embed_fn, lm_head_fn, block_size=4)
         assert len(toks) == 4
         assert all(isinstance(t, int) for t in toks)
         assert all(t != cfg.mask_token_id for t in toks), (
@@ -236,24 +240,20 @@ class TestDraftBlock:
         )
         assert all(0 <= t < cfg.vocab_size for t in toks)
 
-    def test_num_steps_clamped_to_block_size(self):
+    def test_single_forward_various_block_sizes(self):
         cfg = _tiny_cfg()
         m = DFlashDrafter(cfg)
         embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
-        aux = [torch.randn(1, 1, cfg.hidden_size) for _ in range(cfg.num_aux_layers)]
-        # num_steps > block_size must not error (it's clamped).
-        toks = m.draft_block(aux, embed_fn, lm_head_fn, block_size=3, num_steps=99)
-        assert len(toks) == 3
+        for L in (1, 2, 3, 4):
+            toks = m.draft_block(self._ctx(cfg), 5, embed_fn, lm_head_fn, block_size=L)
+            assert len(toks) == L
 
     def test_invalid_args_raise(self):
         cfg = _tiny_cfg()
         m = DFlashDrafter(cfg)
         embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
-        aux = [torch.randn(1, 1, cfg.hidden_size) for _ in range(cfg.num_aux_layers)]
         with pytest.raises(ValueError, match="block_size"):
-            m.draft_block(aux, embed_fn, lm_head_fn, block_size=0, num_steps=1)
-        with pytest.raises(ValueError, match="num_steps"):
-            m.draft_block(aux, embed_fn, lm_head_fn, block_size=4, num_steps=0)
+            m.draft_block(self._ctx(cfg), 5, embed_fn, lm_head_fn, block_size=0)
 
     def test_deterministic(self):
         """Greedy + fixed weights ⇒ identical drafts across calls."""
@@ -261,9 +261,9 @@ class TestDraftBlock:
         torch.manual_seed(7)
         m = DFlashDrafter(cfg)
         embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
-        aux = [torch.randn(1, 1, cfg.hidden_size) for _ in range(cfg.num_aux_layers)]
-        a = m.draft_block(aux, embed_fn, lm_head_fn, block_size=4, num_steps=4)
-        b = m.draft_block(aux, embed_fn, lm_head_fn, block_size=4, num_steps=4)
+        ctx = self._ctx(cfg)
+        a = m.draft_block(ctx, 7, embed_fn, lm_head_fn, block_size=4)
+        b = m.draft_block(ctx, 7, embed_fn, lm_head_fn, block_size=4)
         assert a == b
 
 
@@ -287,8 +287,9 @@ class TestDFlashProposer:
         out = prop.propose_block([10, 11, 12], block_size=4, num_steps=4)
         assert isinstance(out, BlockProposal)
         assert len(out.tokens) == 4
-        assert out.diffusion_steps == 4
-        assert out.forward_passes == 4
+        # DFlash drafts the whole block in a single non-causal forward.
+        assert out.diffusion_steps == 1
+        assert out.forward_passes == 1
         assert all(t != cfg.mask_token_id for t in out.tokens)
 
     def test_propose_block_length_matches_request(self):

@@ -203,12 +203,20 @@ def _apply_rope(
 
 
 class _DFlashAttention(nn.Module):
+    """DFlash draft attention (faithful to vLLM ``DFlashQwen3Attention``).
+
+    Context K/V are precomputed from the target's combined hidden states
+    (see :meth:`project_context_kv`) and prepended to the query tokens'
+    own K/V; the query attends **non-causally** over ``[context ++ query]``.
+    """
+
     def __init__(self, cfg: DFlashConfig) -> None:
         super().__init__()
         self.cfg = cfg
         self.nh = cfg.num_attention_heads
         self.nkv = cfg.num_key_value_heads
         self.hd = cfg.head_dim
+        self.theta = cfg.rope_theta
         self.q_proj = nn.Linear(cfg.hidden_size, self.nh * self.hd, bias=False)
         self.k_proj = nn.Linear(cfg.hidden_size, self.nkv * self.hd, bias=False)
         self.v_proj = nn.Linear(cfg.hidden_size, self.nkv * self.hd, bias=False)
@@ -218,9 +226,31 @@ class _DFlashAttention(nn.Module):
         self.k_norm = _RMSNorm(self.hd, cfg.rms_norm_eps)
         self.scale = self.hd ** -0.5
 
+    @torch.no_grad()
+    def project_context_kv(
+        self, ctx_normed: torch.Tensor, ctx_positions: torch.Tensor,
+    ):
+        """Project the (already ``hidden_norm``-ed) target context hidden to
+        this layer's K/V, apply ``k_norm`` + RoPE at ``ctx_positions``.
+
+        Mirrors ``precompute_and_store_context_kv``: context K/V come from
+        the target hidden via each draft layer's k/v_proj (not from the
+        draft tokens). Returns ``(ctx_k, ctx_v)`` each ``[B, nkv, C, hd]``.
+        """
+        B, C, _ = ctx_normed.shape
+        k = self.k_proj(ctx_normed).view(B, C, self.nkv, self.hd)
+        v = self.v_proj(ctx_normed).view(B, C, self.nkv, self.hd)
+        k = self.k_norm(k).transpose(1, 2)  # [B, nkv, C, hd]
+        v = v.transpose(1, 2)
+        cos, sin = _rope_cos_sin(
+            ctx_positions, self.hd, self.theta, ctx_normed.device, k.dtype,
+        )
+        k = _apply_rope(k, cos, sin)
+        return k, v
+
     def forward(
-        self, h: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
-        attn_bias: torch.Tensor,
+        self, h: torch.Tensor, query_positions: torch.Tensor,
+        ctx_k: torch.Tensor, ctx_v: torch.Tensor,
     ) -> torch.Tensor:
         B, T, _ = h.shape
         q = self.q_proj(h).view(B, T, self.nh, self.hd)
@@ -229,14 +259,21 @@ class _DFlashAttention(nn.Module):
         q = self.q_norm(q).transpose(1, 2)  # [B, nh, T, hd]
         k = self.k_norm(k).transpose(1, 2)  # [B, nkv, T, hd]
         v = v.transpose(1, 2)
+        cos, sin = _rope_cos_sin(
+            query_positions, self.hd, self.theta, h.device, q.dtype,
+        )
         q = _apply_rope(q, cos, sin)
         k = _apply_rope(k, cos, sin)
+        # Prepend the precomputed context K/V (from target hidden).
+        if ctx_k is not None:
+            k = torch.cat([ctx_k.to(k.dtype), k], dim=2)  # [B, nkv, C+T, hd]
+            v = torch.cat([ctx_v.to(v.dtype), v], dim=2)
         # GQA: expand kv heads to query heads.
         rep = self.nh // self.nkv
         k = k.repeat_interleave(rep, dim=1)
         v = v.repeat_interleave(rep, dim=1)
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,nh,T,T]
-        scores = scores + attn_bias  # additive mask [1,1,T,T] or [B,1,T,T]
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,nh,T,C+T]
+        # Non-causal: queries see all context + all query positions.
         attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
         out = torch.matmul(attn, v)  # [B, nh, T, hd]
         out = out.transpose(1, 2).contiguous().view(B, T, self.nh * self.hd)
@@ -262,8 +299,10 @@ class _DFlashLayer(nn.Module):
         self.post_attention_layernorm = _RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         self.mlp = _DFlashMLP(cfg)
 
-    def forward(self, h, cos, sin, attn_bias):
-        h = h + self.self_attn(self.input_layernorm(h), cos, sin, attn_bias)
+    def forward(self, h, query_positions, ctx_k, ctx_v):
+        h = h + self.self_attn(
+            self.input_layernorm(h), query_positions, ctx_k, ctx_v,
+        )
         h = h + self.mlp(self.post_attention_layernorm(h))
         return h
 
@@ -291,38 +330,54 @@ class DFlashDrafter(nn.Module):
         self.hidden_norm = _RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
         self.norm = _RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
 
-    # -- aux projection ----------------------------------------------------
-    def project_aux(self, aux_hidden_states: Sequence[torch.Tensor]) -> torch.Tensor:
-        """Concat the ``num_aux`` verifier hidden states ``[B, T, hidden]``
-        along the feature dim → ``fc`` → ``hidden_norm`` → ``[B, T, hidden]``."""
+    # -- aux fusion (EAGLE-3 combine_hidden_states) ------------------------
+    def combine_aux(self, aux_hidden_states: Sequence[torch.Tensor]) -> torch.Tensor:
+        """Concat the ``num_aux`` verifier hidden states ``[B, C, hidden]``
+        along the feature dim → ``fc`` → ``[B, C, hidden]``.
+
+        Faithful to ``DFlashQwen3ForCausalLM.combine_hidden_states``: this is
+        ``fc`` only — ``hidden_norm`` is applied later in
+        :meth:`precompute_context_kv` (mirroring
+        ``precompute_and_store_context_kv``), NOT here.
+        """
         if len(aux_hidden_states) != self.cfg.num_aux_layers:
             raise ValueError(
                 f"expected {self.cfg.num_aux_layers} aux hidden states "
                 f"(one per aux layer {self.cfg.aux_layer_ids}), got "
                 f"{len(aux_hidden_states)}"
             )
-        cat = torch.cat(list(aux_hidden_states), dim=-1)  # [B, T, num_aux*hidden]
+        cat = torch.cat(list(aux_hidden_states), dim=-1)  # [B, C, num_aux*hidden]
         if cat.shape[-1] != self.cfg.fc_in_features:
             raise ValueError(
                 f"aux concat feature dim {cat.shape[-1]} != fc_in_features "
                 f"{self.cfg.fc_in_features}"
             )
-        # The verifier hands aux hidden in its own dtype (often upcast to
-        # fp32 for the capture); cast to the drafter's compute dtype.
-        cat = cat.to(self.fc.weight.dtype)
-        return self.hidden_norm(self.fc(cat))
+        return self.fc(cat.to(self.fc.weight.dtype))
 
-    # -- transformer forward ----------------------------------------------
-    def backbone(
-        self, hidden: torch.Tensor, position_ids: torch.Tensor,
-        attn_bias: torch.Tensor,
+    # -- context K/V precompute (from target hidden) -----------------------
+    @torch.no_grad()
+    def precompute_context_kv(
+        self, context_states: torch.Tensor, ctx_positions: torch.Tensor,
+    ):
+        """Per-layer context K/V from the combined target hidden.
+
+        ``hidden_norm`` is applied ONCE to ``context_states`` (matching the
+        fused-buffer path in the reference), then each draft layer projects
+        its own K/V (+ ``k_norm`` + RoPE at ``ctx_positions``). Returns a
+        list of ``(ctx_k, ctx_v)`` per layer, each ``[B, nkv, C, hd]``.
+        """
+        ctx_normed = self.hidden_norm(context_states.to(self.hidden_norm.weight.dtype))
+        return [
+            layer.self_attn.project_context_kv(ctx_normed, ctx_positions)
+            for layer in self.layers
+        ]
+
+    # -- transformer forward over query tokens -----------------------------
+    def _run_layers(
+        self, hidden: torch.Tensor, query_positions: torch.Tensor, ctx_kv,
     ) -> torch.Tensor:
-        cos, sin = _rope_cos_sin(
-            position_ids, self.cfg.head_dim, self.cfg.rope_theta,
-            hidden.device, hidden.dtype,
-        )
-        for layer in self.layers:
-            hidden = layer(hidden, cos, sin, attn_bias)
+        for layer, (ck, cv) in zip(self.layers, ctx_kv):
+            hidden = layer(hidden, query_positions, ck, cv)
         return self.norm(hidden)
 
     # -- weight loading ----------------------------------------------------
@@ -368,109 +423,61 @@ class DFlashDrafter(nn.Module):
         model.eval()
         return model
 
-    # -- block-diffusion drafting -----------------------------------------
+    # -- parallel block drafting (single non-causal forward) ---------------
     @torch.no_grad()
     def draft_block(
         self,
-        aux_hidden_last: Sequence[torch.Tensor],
+        aux_hidden_context: Sequence[torch.Tensor],
+        last_token_id: int,
         embed_fn: Callable[[torch.Tensor], torch.Tensor],
         lm_head_fn: Callable[[torch.Tensor], torch.Tensor],
         *,
         block_size: int,
-        num_steps: int,
     ) -> List[int]:
-        """Draft ``block_size`` tokens by block-diffusion denoising.
+        """Draft ``block_size`` tokens in a **single non-causal forward**.
+
+        Faithful to ``DFlashQwen3Model`` (vLLM PR #41703): the verifier's
+        combined context hidden become per-layer context K/V (prewritten);
+        the query tokens ``[last_token, mask×block_size]`` attend non-causally
+        to that context + each other and predict the block in one pass — no
+        in-model mask-denoise loop.
 
         Parameters
         ----------
-        aux_hidden_last
-            ``num_aux`` tensors ``[1, 1, hidden]`` — the verifier's aux-layer
-            hidden states at the **last committed position** (the conditioning
-            context for the next block).
+        aux_hidden_context
+            ``num_aux`` tensors ``[1, C, hidden]`` — verifier aux-layer hidden
+            at **all** committed positions ``0..C-1``.
+        last_token_id
+            The last committed token id (the bonus query at position ``C-1``).
         embed_fn
-            Verifier token-embedding lookup ``[*, T] -> [*, T, hidden]``
-            (must already include Gemma's ``×sqrt(hidden)`` scaling).
+            Verifier token embedding ``[*, T] -> [*, T, hidden]`` (incl.
+            Gemma ``×sqrt(hidden)`` scaling).
         lm_head_fn
-            Verifier logits head ``[*, hidden] -> [*, vocab]`` (must apply
-            ``final_logit_softcapping`` if configured).
-        block_size, num_steps
-            Draft length and number of denoising iterations.
-
-        Returns the ``block_size`` drafted token ids.
-
-        NOTE (Stage-2 fidelity): the EAGLE-3↔block fusion (conditioning the
-        block on the projected aux hidden via a leading register token) and
-        the low-confidence remasking schedule are a principled, documented
-        implementation; matching the reference DFlash acceptance profile is
-        validated/tuned on the H200.
+            Verifier logits head ``[*, hidden] -> [*, vocab]`` (incl.
+            ``final_logit_softcapping``).
         """
         if block_size <= 0:
             raise ValueError("block_size must be positive")
-        if num_steps <= 0:
-            raise ValueError("num_steps must be positive")
-        num_steps = min(num_steps, block_size)
         cfg = self.cfg
-        aux_proj = self.project_aux(aux_hidden_last)  # [1, 1, hidden]
-        device = aux_proj.device
-        dtype = aux_proj.dtype
+        context_states = self.combine_aux(aux_hidden_context)  # [1, C, hidden]
+        B, C, _ = context_states.shape
+        device = context_states.device
+        ctx_positions = torch.arange(C, device=device)
+        ctx_kv = self.precompute_context_kv(context_states, ctx_positions)
 
-        # Sequence layout: position 0 is the aux-conditioned context
-        # register; positions 1..block_size are the draft block.
-        T = 1 + block_size
-        position_ids = torch.arange(T, device=device)
-        # Non-causal block mask: the register attends only to itself; block
-        # positions attend to the register + all block positions (PR #41703:
-        # DFlash draft attention is non-causal within the block).
-        neg = torch.finfo(dtype).min
-        bias = torch.full((T, T), neg, device=device, dtype=dtype)
-        bias[0, 0] = 0.0
-        bias[1:, 0] = 0.0
-        bias[1:, 1:] = 0.0
-        attn_bias = bias[None, None]  # [1,1,T,T]
-
-        block = torch.full((1, block_size), cfg.mask_token_id, dtype=torch.long,
-                           device=device)
-        # Low-confidence remasking schedule (front-loaded), like the MDLM
-        # proposer, but non-causal and aux-conditioned.
-        base, rem = divmod(block_size, num_steps)
-        per_step = [base + (1 if i < rem else 0) for i in range(num_steps)]
-
-        for step in range(num_steps):
-            masked = block[0] == cfg.mask_token_id
-            if not bool(masked.any()):
-                break
-            block_embeds = embed_fn(block).to(aux_proj.dtype)  # [1, block_size, hidden]
-            h = torch.cat([aux_proj, block_embeds], dim=1)
-            h = self.backbone(h, position_ids, attn_bias)  # [1, T, hidden]
-            block_h = h[:, 1:, :]  # drop the register
-            logits = lm_head_fn(block_h)  # [1, block_size, vocab]
-            # The drafter must never propose the mask sentinel as a real
-            # token; forbid it before argmax.
-            logits[..., cfg.mask_token_id] = float("-inf")
-            x0 = torch.argmax(logits, dim=-1)  # [1, block_size]
-            probs = torch.softmax(logits.float(), dim=-1)
-            conf = probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)[0]  # [block_size]
-            conf = torch.where(masked, conf, torch.full_like(conf, float("-inf")))
-            k = per_step[step]
-            if k <= 0:
-                continue
-            _, top = torch.topk(conf, k=min(k, int(masked.sum().item())))
-            commit = torch.zeros_like(masked)
-            commit[top] = True
-            commit &= masked
-            block[0] = torch.where(commit, x0[0], block[0])
-
-        if bool((block[0] == cfg.mask_token_id).any()):
-            # Collapse any leftover masks to argmax rather than emit <mask>.
-            block_embeds = embed_fn(block).to(aux_proj.dtype)
-            h = torch.cat([aux_proj, block_embeds], dim=1)
-            h = self.backbone(h, position_ids, attn_bias)
-            logits = lm_head_fn(h[:, 1:, :])
-            logits[..., cfg.mask_token_id] = float("-inf")
-            x0 = torch.argmax(logits, dim=-1)[0]
-            leftover = block[0] == cfg.mask_token_id
-            block[0] = torch.where(leftover, x0, block[0])
-        return block[0].tolist()
+        # Query = [last committed token, mask × block_size]; the bonus token
+        # sits at the last context position C-1 and the masks continue.
+        query_ids = torch.tensor(
+            [[int(last_token_id)] + [cfg.mask_token_id] * block_size],
+            dtype=torch.long, device=device,
+        )
+        query_positions = torch.arange(C - 1, C - 1 + 1 + block_size, device=device)
+        h = embed_fn(query_ids).to(self.fc.weight.dtype)  # [1, 1+block_size, hidden]
+        h = self._run_layers(h, query_positions, ctx_kv)  # [1, 1+block_size, hidden]
+        logits = lm_head_fn(h)  # [1, 1+block_size, vocab]
+        logits[..., cfg.mask_token_id] = float("-inf")  # never draft the sentinel
+        # Position i predicts the token after it; take the first block_size.
+        return torch.argmax(logits[0, :block_size], dim=-1).tolist()
 
 
 # ===========================================================================
@@ -480,14 +487,17 @@ class DFlashDrafter(nn.Module):
 
 class AuxHiddenProvider:
     """Contract for the object that supplies verifier aux-layer hidden
-    states for the last committed position.
+    states at **all** committed positions.
 
-    Stage 2 wires this to the gemma-4 verifier (capturing decoder-layer
-    outputs at :attr:`DFlashConfig.aux_layer_ids`). Stage 1 tests inject a
-    synthetic provider.
+    DFlash turns the target's context hidden into the draft layers'
+    prewritten context K/V, so the drafter needs the aux hidden over the
+    whole committed prefix (not just the last position). Wired to the
+    gemma-4 verifier in Stage 2 (capturing decoder-layer outputs at
+    :attr:`DFlashConfig.aux_layer_ids`); tests inject a synthetic provider.
     """
 
-    def aux_hidden_last(self, committed_token_ids: List[int]) -> List[torch.Tensor]:
+    def aux_hidden_context(self, committed_token_ids: List[int]) -> List[torch.Tensor]:
+        """Return ``num_aux`` tensors ``[1, C, hidden]`` for ``committed``."""
         raise NotImplementedError
 
 
@@ -520,13 +530,19 @@ class DFlashProposer:
             raise ValueError("block_size must be positive")
         if num_steps <= 0:
             raise ValueError("num_steps must be positive")
-        aux_last = self.aux_provider.aux_hidden_last(committed_token_ids)
+        if not committed_token_ids:
+            raise ValueError("committed_token_ids must be non-empty (need a bonus token)")
+        aux_ctx = self.aux_provider.aux_hidden_context(committed_token_ids)
+        last_token_id = committed_token_ids[-1]
         peak = 0
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
+        # DFlash drafts the whole block in ONE non-causal forward (parallel
+        # drafting); num_steps is accepted for interface compatibility but
+        # the reference uses a single pass.
         tokens = self.drafter.draft_block(
-            aux_last, self.embed_fn, self.lm_head_fn,
-            block_size=block_size, num_steps=num_steps,
+            aux_ctx, last_token_id, self.embed_fn, self.lm_head_fn,
+            block_size=block_size,
         )
         if torch.cuda.is_available():
             peak = int(torch.cuda.max_memory_allocated())
@@ -534,10 +550,9 @@ class DFlashProposer:
             raise RuntimeError(
                 f"DFlash drafted {len(tokens)} tokens; expected {block_size}."
             )
-        steps = min(num_steps, block_size)
         return BlockProposal(
             tokens=tokens,
-            diffusion_steps=steps,
-            forward_passes=steps,
+            diffusion_steps=1,
+            forward_passes=1,
             peak_activation_bytes=peak,
         )
