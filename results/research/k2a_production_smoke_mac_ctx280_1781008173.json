@@ -1,0 +1,102 @@
+{
+  "schema_version": 6,
+  "kind": "k1e_niah_validation",
+  "config": {
+    "model": "google/gemma-3-1b-it",
+    "device": "mps",
+    "dtype": "torch.bfloat16",
+    "attn_impl": "sdpa",
+    "n_samples": 1,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "prompt_token_len_min": 6413,
+    "prompt_token_len_max": 6413,
+    "prompt_token_len_mean": 6413
+  },
+  "kl": {
+    "kl_on": true,
+    "lattice": "D4",
+    "q_range": 38,
+    "codec_name": "kakeyalattice-D4-Q38"
+  },
+  "stateful": true,
+  "results": {
+    "v04_dlm_restored": {
+      "name": "v04_dlm_restored",
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 1,
+      "mean_latency_s": 264.2220482919365,
+      "median_latency_s": 264.2220482919365,
+      "per_sample_decoded": [
+        "Note 1: This paragraph is unrelated padding is unrelated."
+      ],
+      "per_sample_correct": [
+        false
+      ],
+      "per_sample_decode_tokens": [
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        0.09083269225694073
+      ],
+      "mean_throughput_tokens_per_sec": 0.09083269225694073,
+      "median_throughput_tokens_per_sec": 0.09083269225694073,
+      "min_throughput_tokens_per_sec": 0.09083269225694073,
+      "max_throughput_tokens_per_sec": 0.09083269225694073
+    }
+  },
+  "memory": {
+    "baseline": {
+      "device_kind": "mps",
+      "device_name": "Apple MPS",
+      "device_total_bytes": null,
+      "current_allocated_bytes": 1999824640,
+      "driver_allocated_bytes": 2852601856,
+      "peak_allocated_bytes": null,
+      "peak_reserved_bytes": null
+    },
+    "per_config": {
+      "v04_dlm_restored": {
+        "device_kind": "mps",
+        "device_name": "Apple MPS",
+        "device_total_bytes": null,
+        "current_allocated_bytes": 2034031616,
+        "driver_allocated_bytes": 26633682944,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      }
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "v04_dlm_restored": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 1,
+        "effective_keys_at_last_query_mean": 6413.0,
+        "effective_keys_at_last_query_min": 6413,
+        "effective_keys_at_last_query_max": 6413,
+        "effective_keys_at_last_query_median": 6413.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6413,
+            "effective_keys_at_last_query": 6413,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "gate": {}
+}
