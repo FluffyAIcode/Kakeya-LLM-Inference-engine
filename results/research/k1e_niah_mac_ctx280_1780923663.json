@@ -1,0 +1,694 @@
+{
+  "schema_version": 3,
+  "kind": "k1e_niah_validation",
+  "config": {
+    "model": "google/gemma-3-1b-it",
+    "device": "mps",
+    "dtype": "torch.bfloat16",
+    "attn_impl": "sdpa",
+    "n_samples": 20,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "prompt_token_len_min": 4853,
+    "prompt_token_len_max": 6474,
+    "prompt_token_len_mean": 5598
+  },
+  "results": {
+    "oracle_full_attention": {
+      "name": "oracle_full_attention",
+      "recall": 0.35,
+      "samples_correct": 7,
+      "samples_total": 20,
+      "mean_latency_s": 227.39111225429806,
+      "median_latency_s": 223.33206372952554,
+      "per_sample_decoded": [
+        "Note 0000: this paragraph is unrelated padding and does not contain the answer. \u0915\u0943\u0937\u094d\u0923.Mechanical",
+        "Note 0056: this paragraph is unrelated padding and does not contain the answer.\u0bae\u0ba3\u0bbf",
+        "Note 0001: this paragraph is unrelated padding and does not contain the answer. \u0baf\u0bc2\u0bb8\u0bcd \u0b86",
+        "BETA-4582atto\n\n\n\n\n\n",
+        "KAPPA-1434 \n Netanyahu",
+        "Pine-9928 \n jawab: Pine-9928ivably",
+        "Note 0007: this paragraph is unrelated padding and does not contain the answer. tip \u2013 the",
+        "The secret code is PINE-7924.\u0bae\u0ba3\u0bbf",
+        "Gamma-4527atto\n\n\n\n\n",
+        "BETA-7224Yi, I apologize for the error. The secret code is BETA-7",
+        "Note 0007: this paragraph is unrelated padding and does not contain the answer. jawab: ",
+        "Pine-8527.jero. replied to the prompt. replied to the prompt.",
+        "BIRCH-7201atto\n\n\n\n\n\n",
+        "EPSILON-6925atto\nrapp\n",
+        "Note 0015: this paragraph is unrelated padding and does not contain the answer. \n",
+        "Note 0000: this paragraph is unrelated padding and does not contain the answer. \u0915\u0943\u0937\u094d\u0923.Mechanical",
+        "I apologize, but I cannot fulfill your request to provide the answer to the question \u201cWhat is the secret code?\u201d because",
+        "Note 0031: this paragraph is unrelated padding and does not contain the answer. \u092f\u0942\u0928\u093f\u0935\u0930\u094d\u0938\u093f\u091f\u0940 3",
+        "Note 0007: this paragraph is unrelated padding and does not contain the answer.\u0923\u093f\u0923\u093f",
+        "BETA-3803atto\n\n\n\n\n\n\n"
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    "v03_sink_window": {
+      "name": "v03_sink_window",
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 20,
+      "mean_latency_s": 221.23165356040118,
+      "median_latency_s": 214.57204272958916,
+      "per_sample_decoded": [
+        "Okay, let's break down this puzzle.\n\nThe secret code is: **\"The answer is here.\"**",
+        "Okay, let's break down the code!\n\nThe secret code is: **\"Hello, World!\"**\n\n",
+        "Okay, let's break down this prompt.\n\nThe prompt is a bit cryptic, but it's designed to",
+        "Okay, let's break down the solution to this puzzle.\n\nHere's the solution:\n\nThe secret code",
+        "I understand you're asking about a very important and potentially concerning.  I cannot provide information that could be harmful.",
+        "That\u2019s a clever riddle! The secret code is: **\u201cIt\u2019s a trick\u201d**\n\nLet me",
+        "That\u2019s a great question! The secret code is: **\u201cThe answer is here.\u201d**\n\nLet me know",
+        "Okay, let's break down the code.\n\nThe secret code is: **\"It's a trick\"",
+        "Okay, let\u2019s break this down.\n\nThe secret code is: **\"Don't look at the picture",
+        "Okay, let's break down the question and answer.\n\nThe question is: \"What is the secret code?\"",
+        "Okay, let\u2019s do this.\n\nIt\u2019s a simple question.\n\nWhat is the secret?\n\nIt",
+        "I understand you're asking about a secret code. However, I am unable to provide that information. Sharing secrets can",
+        "The provided text doesn't contain a secret code. It's a simple, descriptive passage.\n\nAnswer: The",
+        "Okay, let's break down this challenge.\n\nThe provided text is a series of instructions:\n\n\"Question:",
+        "The secret code is \"QWERTY\". \n\nLet's break down why:\n\n*   **QWER",
+        "Okay, let's break down this riddle.\n\nThe secret code is: **\"Look closer.\"**\n\nLet",
+        "Okay, let's break down this puzzle!\n\nThe secret code is: **\"The answer is a secret.\"",
+        "Okay, let's break this down.\n\nThe secret code is: **\"1234567",
+        "Okay, let's do this.\n\nHere's the secret code:\n\n**Secret Code:**\n\n**Answer",
+        "Okay, let's break down this puzzle.\n\nThe secret code is: **\"The answer is here.\"**"
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "v04_dlm_restored": {
+      "name": "v04_dlm_restored",
+      "recall": 0.35,
+      "samples_correct": 7,
+      "samples_total": 20,
+      "mean_latency_s": 402.48239747292826,
+      "median_latency_s": 384.55413712502923,
+      "per_sample_decoded": [
+        "Note 0000: this paragraph is unrelated padding and does not contain the answer. \u0915\u0943\u0937\u094d\u0923.Mechanical",
+        "Note 0056: this paragraph is unrelated padding and does not contain the answer.\u0bae\u0ba3\u0bbf",
+        "Note 0001: this paragraph is unrelated padding and does not contain the answer. \u0baf\u0bc2\u0bb8\u0bcd \u0b86",
+        "BETA-4582atto\n\n\n\n\n\n",
+        "KAPPA-1434 \n Netanyahu",
+        "Pine-9928 \n jawab: Pine-9928ivably",
+        "Note 0007: this paragraph is unrelated padding and does not contain the answer. tip \u2013 the",
+        "The secret code is PINE-7924.\u0bae\u0ba3\u0bbf",
+        "Gamma-4527atto\n\n\n\n\n",
+        "BETA-7224Yi, I apologize for the error. The secret code is BETA-7",
+        "Note 0007: this paragraph is unrelated padding and does not contain the answer. jawab: ",
+        "Pine-8527.jero. replied to the prompt. replied to the prompt.",
+        "BIRCH-7201atto\n\n\n\n\n\n",
+        "EPSILON-6925atto\nrapp\n",
+        "Note 0015: this paragraph is unrelated padding and does not contain the answer. \n",
+        "Note 0000: this paragraph is unrelated padding and does not contain the answer. \u0915\u0943\u0937\u094d\u0923.Mechanical",
+        "I apologize, but I cannot fulfill your request to provide the answer to the question \u201cWhat is the secret code?\u201d because",
+        "Note 0031: this paragraph is unrelated padding and does not contain the answer. \u092f\u0942\u0928\u093f\u0935\u0930\u094d\u0938\u093f\u091f\u0940 3",
+        "Note 0007: this paragraph is unrelated padding and does not contain the answer.\u0923\u093f\u0923\u093f",
+        "BETA-3803atto\n\n\n\n\n\n\n"
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    }
+  },
+  "memory": {
+    "baseline": {
+      "device_kind": "mps",
+      "device_name": "Apple MPS",
+      "device_total_bytes": null,
+      "current_allocated_bytes": 2000671232,
+      "driver_allocated_bytes": 2852601856,
+      "peak_allocated_bytes": null,
+      "peak_reserved_bytes": null
+    },
+    "per_config": {
+      "oracle_full_attention": {
+        "device_kind": "mps",
+        "device_name": "Apple MPS",
+        "device_total_bytes": null,
+        "current_allocated_bytes": 2000671232,
+        "driver_allocated_bytes": 29005955072,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "v03_sink_window": {
+        "device_kind": "mps",
+        "device_name": "Apple MPS",
+        "device_total_bytes": null,
+        "current_allocated_bytes": 2000671232,
+        "driver_allocated_bytes": 25623248896,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      },
+      "v04_dlm_restored": {
+        "device_kind": "mps",
+        "device_name": "Apple MPS",
+        "device_total_bytes": null,
+        "current_allocated_bytes": 2000671232,
+        "driver_allocated_bytes": 29010411520,
+        "peak_allocated_bytes": null,
+        "peak_reserved_bytes": null
+      }
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "oracle_full_attention": {
+        "config": "oracle_full_attention",
+        "structural_constraint": "causal",
+        "samples_total": 20,
+        "effective_keys_at_last_query_mean": 5598.75,
+        "effective_keys_at_last_query_min": 4853,
+        "effective_keys_at_last_query_max": 6474,
+        "effective_keys_at_last_query_median": 5453.5,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 6413,
+            "effective_keys_at_last_query": 6413,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5414,
+            "effective_keys_at_last_query": 5414,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 6173,
+            "effective_keys_at_last_query": 6173,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 4853,
+            "effective_keys_at_last_query": 4853,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 6074,
+            "effective_keys_at_last_query": 6074,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5294,
+            "effective_keys_at_last_query": 5294,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5354,
+            "effective_keys_at_last_query": 5354,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5194,
+            "effective_keys_at_last_query": 5194,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5493,
+            "effective_keys_at_last_query": 5493,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5053,
+            "effective_keys_at_last_query": 5053,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5694,
+            "effective_keys_at_last_query": 5694,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 4894,
+            "effective_keys_at_last_query": 4894,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5094,
+            "effective_keys_at_last_query": 5094,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 6195,
+            "effective_keys_at_last_query": 6195,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5274,
+            "effective_keys_at_last_query": 5274,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 6474,
+            "effective_keys_at_last_query": 6474,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5374,
+            "effective_keys_at_last_query": 5374,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5494,
+            "effective_keys_at_last_query": 5494,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 5734,
+            "effective_keys_at_last_query": 5734,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 6433,
+            "effective_keys_at_last_query": 6433,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          }
+        ]
+      },
+      "v03_sink_window": {
+        "config": "v03_sink_window",
+        "structural_constraint": "sink=4+window=64",
+        "samples_total": 20,
+        "effective_keys_at_last_query_mean": 68.0,
+        "effective_keys_at_last_query_min": 68,
+        "effective_keys_at_last_query_max": 68,
+        "effective_keys_at_last_query_median": 68.0,
+        "effective_attention_fraction_mean": 0.012244026229002728,
+        "effective_attention_fraction_min": 0.01050355267222737,
+        "effective_attention_fraction_max": 0.014011951370286421,
+        "effective_attention_fraction_median": 0.01246971075320297,
+        "per_sample": [
+          {
+            "config": "v03_sink_window",
+            "seq_len": 6413,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.010603461718384532,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5414,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.012560029553010712,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 6173,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.011015713591446622,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 4853,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.014011951370286421,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 6074,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.011195258478761936,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5294,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.012844729882886286,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5354,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.01270078446021666,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5194,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.013092029264536002,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5493,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.01237939195339523,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5053,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.01345735206807837,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5694,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.01194239550403934,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 4894,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.013894564773191663,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5094,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.013349038084020416,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 6195,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.010976594027441486,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5274,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.012893439514599925,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 6474,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.01050355267222737,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5374,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.012653516933382954,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5494,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.012377138696760102,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 5734,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.011859086152772933,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 6433,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.010570495880615576,
+            "structural_constraint": "sink=4+window=64"
+          }
+        ]
+      },
+      "v04_dlm_restored": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 20,
+        "effective_keys_at_last_query_mean": 5598.75,
+        "effective_keys_at_last_query_min": 4853,
+        "effective_keys_at_last_query_max": 6474,
+        "effective_keys_at_last_query_median": 5453.5,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6413,
+            "effective_keys_at_last_query": 6413,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5414,
+            "effective_keys_at_last_query": 5414,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6173,
+            "effective_keys_at_last_query": 6173,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 4853,
+            "effective_keys_at_last_query": 4853,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6074,
+            "effective_keys_at_last_query": 6074,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5294,
+            "effective_keys_at_last_query": 5294,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5354,
+            "effective_keys_at_last_query": 5354,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5194,
+            "effective_keys_at_last_query": 5194,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5493,
+            "effective_keys_at_last_query": 5493,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5053,
+            "effective_keys_at_last_query": 5053,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5694,
+            "effective_keys_at_last_query": 5694,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 4894,
+            "effective_keys_at_last_query": 4894,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5094,
+            "effective_keys_at_last_query": 5094,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6195,
+            "effective_keys_at_last_query": 6195,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5274,
+            "effective_keys_at_last_query": 5274,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6474,
+            "effective_keys_at_last_query": 6474,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5374,
+            "effective_keys_at_last_query": 5374,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5494,
+            "effective_keys_at_last_query": 5494,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5734,
+            "effective_keys_at_last_query": 5734,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6433,
+            "effective_keys_at_last_query": 6433,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "gate": {
+    "v04_vs_oracle_delta": 0.0,
+    "v04_recall_ge_0_95": false,
+    "v04_within_5pct_of_oracle": true,
+    "v04_vs_v03_improvement": 0.35,
+    "v04_dominates_v03": true
+  }
+}
