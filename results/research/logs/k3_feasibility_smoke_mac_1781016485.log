@@ -1,0 +1,12 @@
+[k3-smoke] platform: mac
+[k3-smoke] verifier:  models/gemma-4-26B-A4B-it-mlx-4bit
+[k3-smoke] drafter:   /Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline  (local_path)
+[k3-smoke] prompt n:  512
+[k3-smoke] gen n:     8
+[k3-smoke] --skip-verifier: drafter-only smoke
+[k3-smoke] --proposer-kv-capture: will exercise drafter.propose_kv
+[k3-smoke] loading drafter (mac, loader=dflash_drafter): /Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline
+`torch_dtype` is deprecated! Use `dtype` instead!
+[k3-smoke] WARN: drafter load failed: DFlashDrafter.from_pretrained('/Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline'): the loaded checkpoint's embed_tokens.weight.var() = 4.007926e-04 indicates the embeddings are NOT trained (random initialisation). Loading would produce meaningless K/V at every layer. If this is a deliberately-random diagnostic load, pass require_trained_embed=False. Otherwise re-fetch the checkpoint or check the safetensors key remap (run 'python -m inference_engine.v04.dflash_loader inspect /Users/fluffy314/.cache/kakeya/dflash-kakeya-baseline' for the diagnose dump).
+  Continuing without drafter.
+[k3-smoke] report -> results/research/k3_feasibility_smoke_mac_1781016485.json
