@@ -1,0 +1,13 @@
+==> PR-K1.D smoke test corrected runner
+    Report:       results/research/k1d_smoke_1780909208.json
+[k1d] device=mps
+[k1d] loading google/gemma-3-1b-it
+[k1d] input shape: (1, 256) dtype=torch.int64
+[k1d] (a) running standard model.forward (oracle)
+[k1d]     elapsed 0.35s, last argmax=52564
+[k1d] (b) running DLMRestoredVerifier sink=4 window=64
+[k1d]     elapsed 0.53s, last argmax=52564 (oracle argmax=52564), KL vs oracle=0.0000 nats
+[k1d] (c) running DLMRestoredVerifier sink=10000 window=10000 (no eviction)
+[k1d]     elapsed 0.47s, last argmax=52564, KL vs oracle=0.0000e+00 nats (should be ~0)
+[k1d] report -> results/research/k1d_smoke_1780909208.json
+[k1d] SMOKE GATE: PASS
