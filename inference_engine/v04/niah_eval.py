@@ -632,6 +632,197 @@ def record_memory(device: torch.device) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Effective attention-window metric
+# ---------------------------------------------------------------------------
+#
+# ADR 0008 §11.5 §"Five properties" item 2 — "approximates full
+# attention intelligence" — turns on a structural property: how
+# many of the prompt's preceding key positions can the verifier's
+# last query *actually* attend to? In v0.3 sink+window, that
+# number is bounded at ``sink + window`` (≈ 68 for sink=4 +
+# window=64) regardless of context length T, so the verifier sees
+# ~5 % of context at T=1.4k and ~0.07 % at T=100k — a direct
+# intelligence cap. v0.4's dLM K/V Restoration design fills the
+# evicted positions with reconstructed K/V, so the structural
+# attention range is the full preceding context T regardless of
+# the verifier's local cache size.
+#
+# This metric is *structural*, not behavioural. Behavioural
+# attention-mass measurement (count keys whose post-softmax weight
+# exceeds ε) requires materialising the [B, H, T, T] attention
+# matrix and is incompatible with the SDPA path K1.F enabled for
+# long-context runs (SDPA fuses softmax inside the kernel and
+# does not return weights). The structural metric is sufficient
+# to answer the user-facing question "did the inference engine
+# reduce the verifier's intelligence by capping its attention
+# range?" — and it composes cleanly with the recall metric: if
+# v0.4 restores recall to oracle parity *and* preserves full
+# structural attention range, then the architecture really does
+# satisfy the "no intelligence loss" claim of ADR 0008 §11.5.
+#
+# Knowing the metric is derived from the configuration alone (no
+# instrumentation required, no SDPA incompatibility) lets it be
+# computed at any context length, including the canonical 100k
+# rung that K1.F unlocked.
+
+
+def compute_effective_attention_window(
+    config_name: str,
+    *,
+    seq_len: int,
+    sink_size: int,
+    window_size: int,
+) -> Dict[str, Any]:
+    """Compute the structural effective attention window for one
+    sample under one verifier configuration.
+
+    Parameters
+    ----------
+    config_name
+        One of ``"oracle_full_attention"``, ``"v03_sink_window"``, or
+        ``"v04_dlm_restored"``. Other values raise ``ValueError``.
+    seq_len
+        Prompt token length T (i.e. the number of preceding keys
+        available to the last query at the first decode step).
+        The metric for later decode steps differs by at most
+        ``max_new_tokens``, which is negligible for the long-context
+        runs this metric targets.
+    sink_size, window_size
+        v0.3 cache shape. Required for ``v03_sink_window``; ignored
+        for ``oracle_full_attention`` and ``v04_dlm_restored`` (kept
+        in the dict for self-describing JSON evidence).
+
+    Returns
+    -------
+    dict with keys
+
+    * ``config``: echoed ``config_name``.
+    * ``seq_len``: echoed ``seq_len``.
+    * ``effective_keys_at_last_query``: number of preceding key
+      positions the last query can structurally attend to. Equals
+      ``seq_len`` for oracle and v0.4; equals
+      ``min(sink + window, seq_len)`` for v0.3.
+    * ``effective_attention_fraction``: that count divided by
+      ``seq_len`` — a unit-free intelligence-coverage metric. ≈ 1.0
+      for oracle and v0.4; bounded < 1 for v0.3 once
+      ``seq_len > sink + window``.
+    * ``structural_constraint``: human-readable description of the
+      constraint (used by the run summary).
+
+    The ``v04_dlm_restored`` entry assumes the architecture's claim
+    holds — that ``prepare_restored_attention_kv`` fills evicted
+    positions with proposer K/V so the verifier's attention can
+    reach all preceding tokens. If that contract ever regresses,
+    the recall metric (in the same JSON) will diverge from oracle,
+    making the failure visible. The two metrics together form a
+    cross-check.
+    """
+    if seq_len < 0:
+        raise ValueError(f"seq_len must be non-negative; got {seq_len}")
+    if sink_size < 0 or window_size < 0:
+        raise ValueError(
+            f"sink_size={sink_size}, window_size={window_size} must be "
+            "non-negative"
+        )
+    if config_name == "oracle_full_attention":
+        accessible = seq_len
+        constraint = "causal"
+    elif config_name == "v03_sink_window":
+        accessible = min(sink_size + window_size, seq_len)
+        constraint = f"sink={sink_size}+window={window_size}"
+    elif config_name == "v04_dlm_restored":
+        accessible = seq_len
+        constraint = (
+            f"causal_with_dlm_reconstruction (local_cache="
+            f"sink={sink_size}+window={window_size})"
+        )
+    else:
+        raise ValueError(
+            f"unknown config_name {config_name!r}; expected one of "
+            "'oracle_full_attention', 'v03_sink_window', 'v04_dlm_restored'"
+        )
+    fraction = (accessible / seq_len) if seq_len > 0 else 0.0
+    return {
+        "config": config_name,
+        "seq_len": seq_len,
+        "effective_keys_at_last_query": int(accessible),
+        "effective_attention_fraction": float(fraction),
+        "structural_constraint": constraint,
+    }
+
+
+def aggregate_attention_window_metrics(
+    config_name: str,
+    *,
+    prompt_token_lens: Sequence[int],
+    sink_size: int,
+    window_size: int,
+) -> Dict[str, Any]:
+    """Aggregate per-sample :func:`compute_effective_attention_window`
+    output across an evaluation set.
+
+    Returns the mean / min / max / median of
+    ``effective_keys_at_last_query`` and
+    ``effective_attention_fraction`` plus the constraint label and
+    the per-sample list (kept for full transparency of the JSON
+    evidence). Empty ``prompt_token_lens`` raises ``ValueError``.
+    """
+    if not prompt_token_lens:
+        raise ValueError("prompt_token_lens must be non-empty")
+    per_sample = [
+        compute_effective_attention_window(
+            config_name,
+            seq_len=int(t),
+            sink_size=sink_size,
+            window_size=window_size,
+        )
+        for t in prompt_token_lens
+    ]
+    keys = [s["effective_keys_at_last_query"] for s in per_sample]
+    fracs = [s["effective_attention_fraction"] for s in per_sample]
+
+    def _median(xs: List[float]) -> float:
+        srt = sorted(xs)
+        n = len(srt)
+        return srt[n // 2] if n % 2 == 1 else (srt[n // 2 - 1] + srt[n // 2]) / 2
+
+    constraint = per_sample[0]["structural_constraint"]
+    return {
+        "config": config_name,
+        "structural_constraint": constraint,
+        "samples_total": len(per_sample),
+        "effective_keys_at_last_query_mean": sum(keys) / len(keys),
+        "effective_keys_at_last_query_min": min(keys),
+        "effective_keys_at_last_query_max": max(keys),
+        "effective_keys_at_last_query_median": _median([float(k) for k in keys]),
+        "effective_attention_fraction_mean": sum(fracs) / len(fracs),
+        "effective_attention_fraction_min": min(fracs),
+        "effective_attention_fraction_max": max(fracs),
+        "effective_attention_fraction_median": _median(fracs),
+        "per_sample": per_sample,
+    }
+
+
+def format_attention_window_summary(metrics: Dict[str, Any]) -> str:
+    """Return a one-line human-readable summary of the aggregated
+    attention-window metrics.
+
+    Mirrors :func:`format_memory_summary` so runners can print
+    per-config attention coverage at the same density as latency
+    and recall.
+    """
+    keys_mean = metrics.get("effective_keys_at_last_query_mean")
+    frac_mean = metrics.get("effective_attention_fraction_mean")
+    constraint = metrics.get("structural_constraint", "?")
+    if keys_mean is None or frac_mean is None:
+        return f"attn_window: n/a (constraint={constraint})"
+    return (
+        f"attn_window: mean_keys={keys_mean:.0f} "
+        f"({frac_mean * 100:.2f}% of context)  constraint={constraint}"
+    )
+
+
 def format_memory_summary(snapshot: Dict[str, Any]) -> str:
     """Return a one-line human-readable summary of a memory snapshot.
 

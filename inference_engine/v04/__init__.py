@@ -47,8 +47,11 @@ from inference_engine.v04.niah_eval import (
     DEFAULT_NEEDLE_PREFIXES,
     NIAHEvalResult,
     NIAHSample,
+    aggregate_attention_window_metrics,
     aggregate_recall,
+    compute_effective_attention_window,
     evaluate,
+    format_attention_window_summary,
     format_memory_summary,
     greedy_decode_oracle,
     greedy_decode_sink_window,
@@ -90,4 +93,8 @@ __all__ = [
     "format_memory_summary",
     "record_memory",
     "reset_memory_peak",
+    # K1.H — effective attention-window metric
+    "aggregate_attention_window_metrics",
+    "compute_effective_attention_window",
+    "format_attention_window_summary",
 ]

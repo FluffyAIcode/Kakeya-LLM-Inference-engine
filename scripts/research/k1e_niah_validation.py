@@ -136,7 +136,9 @@ def main() -> int:
     from inference_engine.v04 import (
         DLMRestoredVerifier,
         NIAHEvalResult,
+        aggregate_attention_window_metrics,
         evaluate,
+        format_attention_window_summary,
         format_memory_summary,
         greedy_decode_oracle,
         greedy_decode_sink_window,
@@ -192,6 +194,31 @@ def main() -> int:
 
     results = {}
     memory_per_config = {}
+    attention_window_per_config = {}
+
+    def _record_attention_window(config_name: str) -> None:
+        """K1.H: structural effective-attention-window metric.
+
+        Captured *per evaluated config* alongside recall + memory.
+        Answers the question 'did the inference engine cap the
+        verifier's structural attention range?' — orthogonal to
+        recall (which measures behavioural intelligence) and
+        memory (which measures sustained working set). Together
+        the three metrics validate ADR 0008 §11.5 §"Five
+        properties": (1) constant memory, (2) full-attention
+        intelligence, (3) recall parity with oracle.
+        """
+        metrics = aggregate_attention_window_metrics(
+            config_name,
+            prompt_token_lens=seq_lens,
+            sink_size=args.sink_size,
+            window_size=args.window_size,
+        )
+        attention_window_per_config[config_name] = metrics
+        print(
+            f"[k1e]    {config_name} {format_attention_window_summary(metrics)}",
+            file=sys.stderr,
+        )
 
     # ----------------------------------------------------------------
     # (a) full-attention oracle
@@ -224,6 +251,7 @@ def main() -> int:
             f"[k1e]    oracle memory:  {format_memory_summary(oracle_memory)}",
             file=sys.stderr,
         )
+        _record_attention_window("oracle_full_attention")
 
     # ----------------------------------------------------------------
     # (b) v0.3 sink+window baseline
@@ -261,6 +289,7 @@ def main() -> int:
             f"[k1e]    v0.3 memory:   {format_memory_summary(v03_memory)}",
             file=sys.stderr,
         )
+        _record_attention_window("v03_sink_window")
 
     # ----------------------------------------------------------------
     # (c) v0.4 DLMRestoredVerifier
@@ -302,6 +331,7 @@ def main() -> int:
             f"[k1e]    v0.4 memory:   {format_memory_summary(v04_memory)}",
             file=sys.stderr,
         )
+        _record_attention_window("v04_dlm_restored")
 
     # ----------------------------------------------------------------
     # Gate evaluation (only meaningful if both oracle and v04 ran)
@@ -322,9 +352,11 @@ def main() -> int:
             gate["v04_dominates_v03"] = v04_recall > v03_recall
 
     report = {
-        # schema v2: K1.G adds 'baseline_memory' and 'memory_per_config'.
-        # v1 consumers must default the memory blocks to {} on read.
-        "schema_version": 2,
+        # schema v3: K1.H adds 'attention_window' block. v1/v2
+        # consumers must default the attention_window block to {}
+        # on read; v1 consumers must also default the memory blocks
+        # to {} (carryover from K1.G).
+        "schema_version": 3,
         "kind": "k1e_niah_validation",
         "config": {
             "model": args.model,
@@ -347,6 +379,9 @@ def main() -> int:
             "baseline": baseline_memory,
             "per_config": memory_per_config,
         },
+        "attention_window": {
+            "per_config": attention_window_per_config,
+        },
         "gate": gate,
     }
 
@@ -367,9 +402,15 @@ def main() -> int:
             mem_str = f"  peak_mem={mem['peak_allocated_bytes'] / 1e9:.2f}GB"
         elif mem.get("device_kind") == "mps" and mem.get("current_allocated_bytes") is not None:
             mem_str = f"  current_mem={mem['current_allocated_bytes'] / 1e9:.2f}GB"
+        attn = attention_window_per_config.get(name, {})
+        attn_str = ""
+        frac = attn.get("effective_attention_fraction_mean")
+        keys = attn.get("effective_keys_at_last_query_mean")
+        if frac is not None and keys is not None:
+            attn_str = f"  attn_window={keys:.0f} ({frac * 100:.2f}%)"
         print(
             f"[k1e]   {name:<24s}  recall={r['recall']:.3f}  "
-            f"mean_latency={r['mean_latency_s']:.2f}s{mem_str}",
+            f"mean_latency={r['mean_latency_s']:.2f}s{mem_str}{attn_str}",
             file=sys.stderr,
         )
     if gate:

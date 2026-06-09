@@ -42,6 +42,19 @@
 #   * v0.4 ≫ v0.3 (target ≥ +50 pp; ADR 0008 §11.5 §"Five
 #     properties" item 2 — intelligence approximates full attention)
 #
+# Each context rung in a multi-context scan emits three
+# orthogonal per-config metrics (in JSON + stderr summary):
+#
+#   * recall      — behavioural intelligence (decoded text contains
+#                   the needle)
+#   * peak_mem    — sustained working set on CUDA (K1.G)
+#   * attn_window — structural attention coverage as a fraction of
+#                   preceding context (K1.H). v0.3 stays at
+#                   ``sink+window`` regardless of T (so the
+#                   fraction collapses to ~0.07 % at 100 k); v0.4
+#                   stays at 100 % across the ladder via dLM K/V
+#                   Restoration.
+#
 # Usage:
 #
 #     # Setup: vast instance must be running, repo synced, HF_TOKEN exported
