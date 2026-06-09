@@ -49,6 +49,11 @@ from inference_engine.v04.dflash_drafter import (
     DFlashDrafter,
     DFlashProposer,
 )
+from inference_engine.v04.f_theta import FThetaConfig, FThetaProjection
+from inference_engine.v04.cross_model_dlm_verifier import (
+    CrossModelDLMRestoredVerifier,
+    CrossModelLayerMapping,
+)
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -122,4 +127,11 @@ __all__ = [
     "DFlashConfig",
     "DFlashDrafter",
     "DFlashProposer",
+    # K3 Block C — f_θ K/V projection
+    "FThetaConfig",
+    "FThetaProjection",
+    # K3 Block B — cross-model DLMRestoredVerifier with f_θ-mediated
+    # K/V Restoration (the integrated Kakeya inference architecture)
+    "CrossModelDLMRestoredVerifier",
+    "CrossModelLayerMapping",
 ]
