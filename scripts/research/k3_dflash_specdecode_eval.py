@@ -67,13 +67,15 @@ class VerifierAuxProvider(AuxHiddenProvider):
         self.forward_calls = 0
 
     @torch.no_grad()
-    def aux_hidden_context(self, committed_token_ids: List[int]) -> List[torch.Tensor]:
+    def aux_hidden_context(self, committed_token_ids):
         inp = torch.tensor([committed_token_ids], dtype=torch.long, device=self.device)
         out = self.model(input_ids=inp, use_cache=False, output_hidden_states=True)
         self.forward_calls += 1
         hs = out.hidden_states  # tuple len = num_layers+1 (0 = embeddings)
-        # Aux hidden at ALL committed positions, per aux layer: [1, C, hidden].
-        return [hs[a].float() for a in self.aux_layer_ids]
+        aux = [hs[a].float() for a in self.aux_layer_ids]  # [1, C, hidden] each
+        # Bonus = verifier greedy next token t_C (guaranteed-correct first token).
+        bonus = int(torch.argmax(out.logits[0, -1]).item())
+        return aux, bonus
 
 
 def _build_embed_lm_head(model, hidden_size, softcap):
@@ -182,23 +184,27 @@ def main() -> int:
         generated: List[int] = []
         blk_accepts = []
         provider.forward_calls = 0
-        spec_forwards_before = 0
         t0 = time.perf_counter()
         while len(generated) < args.max_new_tokens:
             L = min(args.block_size, args.max_new_tokens - len(generated))
-            proposal = proposer.propose_block(committed, L, args.num_steps)
-            d = proposal.tokens
-            accepted, correction = verify_block(verifier, committed, d, device)
+            # aux hidden over committed + the verifier's greedy next token (bonus).
+            aux_ctx, bonus = provider.aux_hidden_context(committed)
+            drafts = drafter.draft_block(
+                aux_ctx, bonus, embed_fn, lm_head_fn, block_size=L,
+            )
+            # Candidate = [bonus (always correct), drafts...]; verify greedily.
+            candidate = [bonus] + drafts
+            accepted, _ = verify_block(verifier, committed, candidate, device)
             tot_spec_forwards += 2  # 1 aux/prefill forward + 1 verify forward
-            committed += d[:accepted]
-            generated += d[:accepted]
-            generated.append(correction)
-            committed.append(correction)
-            blk_accepts.append(accepted)
-            tot_accepted += accepted
+            accepted = max(accepted, 1)  # bonus is guaranteed-correct
+            committed += candidate[:accepted]
+            generated += candidate[:accepted]
+            draft_accepted = accepted - 1  # exclude the always-correct bonus
+            blk_accepts.append(draft_accepted)
+            tot_accepted += draft_accepted
             tot_drafted += L
             tot_blocks += 1
-            if correction in eos_ids:
+            if any(t in eos_ids for t in candidate[:accepted]):
                 break
         spec_time = time.perf_counter() - t0
         spec_out = generated[: args.max_new_tokens]

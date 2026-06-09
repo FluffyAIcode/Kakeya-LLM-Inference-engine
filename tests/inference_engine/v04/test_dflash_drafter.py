@@ -84,10 +84,12 @@ class _SyntheticAuxProvider(AuxHiddenProvider):
     def aux_hidden_context(self, committed_token_ids):
         torch.manual_seed(len(committed_token_ids) + 1)
         C = len(committed_token_ids)
-        return [
+        aux = [
             torch.randn(1, C, self.cfg.hidden_size)
             for _ in range(self.cfg.num_aux_layers)
         ]
+        bonus_token_id = (committed_token_ids[-1] + 1) % self.cfg.vocab_size
+        return aux, bonus_token_id
 
 
 # ---------------------------------------------------------------------------

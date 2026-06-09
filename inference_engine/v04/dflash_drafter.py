@@ -428,7 +428,7 @@ class DFlashDrafter(nn.Module):
     def draft_block(
         self,
         aux_hidden_context: Sequence[torch.Tensor],
-        last_token_id: int,
+        bonus_token_id: int,
         embed_fn: Callable[[torch.Tensor], torch.Tensor],
         lm_head_fn: Callable[[torch.Tensor], torch.Tensor],
         *,
@@ -447,14 +447,21 @@ class DFlashDrafter(nn.Module):
         aux_hidden_context
             ``num_aux`` tensors ``[1, C, hidden]`` — verifier aux-layer hidden
             at **all** committed positions ``0..C-1``.
-        last_token_id
-            The last committed token id (the bonus query at position ``C-1``).
+        bonus_token_id
+            The verifier's greedy next token (``t_C``, guaranteed-correct
+            first token). It is the bonus query at position ``C``; the
+            block-diffusion masks then occupy positions ``C+1..C+block_size``.
         embed_fn
             Verifier token embedding ``[*, T] -> [*, T, hidden]`` (incl.
             Gemma ``×sqrt(hidden)`` scaling).
         lm_head_fn
             Verifier logits head ``[*, hidden] -> [*, vocab]`` (incl.
             ``final_logit_softcapping``).
+
+        Returns ``block_size`` drafted tokens for positions
+        ``C+1..C+block_size``. Per ``copy_and_expand_dflash_inputs_kernel``,
+        the sampled (drafted) tokens are the MASK positions
+        (``query_off > 0``), and the bonus query sits at ``last_pos+1 == C``.
         """
         if block_size <= 0:
             raise ValueError("block_size must be positive")
@@ -465,19 +472,20 @@ class DFlashDrafter(nn.Module):
         ctx_positions = torch.arange(C, device=device)
         ctx_kv = self.precompute_context_kv(context_states, ctx_positions)
 
-        # Query = [last committed token, mask × block_size]; the bonus token
-        # sits at the last context position C-1 and the masks continue.
+        # Query = [bonus token (t_C), mask × block_size]; bonus at position C,
+        # masks at C+1..C+block_size (kernel: query_pos = last_pos + 1 + off).
         query_ids = torch.tensor(
-            [[int(last_token_id)] + [cfg.mask_token_id] * block_size],
+            [[int(bonus_token_id)] + [cfg.mask_token_id] * block_size],
             dtype=torch.long, device=device,
         )
-        query_positions = torch.arange(C - 1, C - 1 + 1 + block_size, device=device)
+        query_positions = torch.arange(C, C + 1 + block_size, device=device)
         h = embed_fn(query_ids).to(self.fc.weight.dtype)  # [1, 1+block_size, hidden]
         h = self._run_layers(h, query_positions, ctx_kv)  # [1, 1+block_size, hidden]
         logits = lm_head_fn(h)  # [1, 1+block_size, vocab]
         logits[..., cfg.mask_token_id] = float("-inf")  # never draft the sentinel
-        # Position i predicts the token after it; take the first block_size.
-        return torch.argmax(logits[0, :block_size], dim=-1).tolist()
+        # Drafts are the MASK positions query_off=1..block_size (the bonus at
+        # query_off=0 is the known token and is not sampled).
+        return torch.argmax(logits[0, 1:1 + block_size], dim=-1).tolist()
 
 
 # ===========================================================================
@@ -496,8 +504,15 @@ class AuxHiddenProvider:
     :attr:`DFlashConfig.aux_layer_ids`); tests inject a synthetic provider.
     """
 
-    def aux_hidden_context(self, committed_token_ids: List[int]) -> List[torch.Tensor]:
-        """Return ``num_aux`` tensors ``[1, C, hidden]`` for ``committed``."""
+    def aux_hidden_context(
+        self, committed_token_ids: List[int],
+    ) -> Tuple[List[torch.Tensor], int]:
+        """Return ``(aux_list, bonus_token_id)`` for ``committed``.
+
+        ``aux_list``: ``num_aux`` tensors ``[1, C, hidden]``.
+        ``bonus_token_id``: the verifier's greedy next token ``t_C`` (the
+        guaranteed-correct first token of the upcoming block).
+        """
         raise NotImplementedError
 
 
@@ -532,16 +547,17 @@ class DFlashProposer:
             raise ValueError("num_steps must be positive")
         if not committed_token_ids:
             raise ValueError("committed_token_ids must be non-empty (need a bonus token)")
-        aux_ctx = self.aux_provider.aux_hidden_context(committed_token_ids)
-        last_token_id = committed_token_ids[-1]
+        aux_ctx, bonus_token_id = self.aux_provider.aux_hidden_context(committed_token_ids)
         peak = 0
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         # DFlash drafts the whole block in ONE non-causal forward (parallel
         # drafting); num_steps is accepted for interface compatibility but
-        # the reference uses a single pass.
+        # the reference uses a single pass. The returned tokens are the drafts
+        # for positions C+1..C+block_size; the bonus (t_C) is the always-correct
+        # first token handled by the spec-decode loop.
         tokens = self.drafter.draft_block(
-            aux_ctx, last_token_id, self.embed_fn, self.lm_head_fn,
+            aux_ctx, bonus_token_id, self.embed_fn, self.lm_head_fn,
             block_size=block_size,
         )
         if torch.cuda.is_available():
