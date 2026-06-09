@@ -1335,6 +1335,47 @@ recall=0.12) datum makes precise:
 
 ### 11.7 Implementation phases (v0.4 GA)
 
+#### 11.7.0 K3 model identity (locked 2026-06-09)
+
+**Per user directive 2026-06-09, this subsection records K3
+production-scale model identity unambiguously**:
+
+| role | HF id | architecture | active params | total params | HF-verified |
+|---|---|---|---|---|---|
+| **K3 verifier** | `google/gemma-4-26B-A4B-it` | Gemma 4 26B-A4B MoE (8 active / 128 total experts + 1 shared) | 4B | 26B (25.2B) | ✓ §11.14.3 |
+| **K3 drafter** | `z-lab/gemma-4-26B-A4B-it-DFlash` | block-diffusion drafter for the Gemma 4 26B-A4B verifier | 0.4B | 0.4B | ✓ §11.14.3 |
+
+**Scale ratio: 65:1** (verifier active params : drafter total
+params).
+
+**K3 deployment target is Google Gemma 4 family — not Qwen,
+not any other family**. This is the user's stated production
+goal and the ADR's binding K3 model identity.
+
+**Warning to future readers (added 2026-06-09 after a
+documentation slip)**: the K3 drafter
+`z-lab/gemma-4-26B-A4B-it-DFlash` has `"model_type": "qwen3"`
+in its `config.json`. This is a HuggingFace **architecture-
+loading convention** indicating that DFlash's transformer block
+layout follows Qwen3's pattern internally. It does NOT mean K3
+uses Qwen models or that Qwen models are an acceptable
+substitute for the K3 deployment target. The DFlash drafter is
+purpose-built for the Gemma 4 26B-A4B verifier pair; its weights
+are trained against Gemma 4 26B-A4B's hidden state distribution;
+substituting any Qwen-family model (Qwen3, Qwen3.5, Qwen2.5,
+etc.) for the verifier would invalidate the drafter's training.
+
+The Qwen3.5-4B + `z-lab/Qwen3.5-4B-DFlash` pair listed in
+§11.7's main phase table is for **K2.B research-scale validation
+ONLY** (per the user's earlier directive: *"k3 完成之后，再做 k2
+qwen 模型的适配"* — K2.B Qwen backport only AFTER K3 production
+target is established). K2.B Qwen is NOT a substitute for K3,
+not a fallback if K3 fails, and not a concurrent track. K2.B
+runs in §11.15.7 (Block F) which is gated on §11.15.6 (Block E)
+K3 NIAH ladder evidence per §11.15.9 dependencies graph.
+
+#### 11.7.1 Phase table
+
 Each phase has Linux CI gates plus Mac M4 / vast.ai empirical gates
 per ADR 0008 §9. Phase K2 was rescoped on 2026-06-08 to absorb the
 former K4 KakeyaLattice composition — see §11.11 for the integration
@@ -3119,6 +3160,19 @@ later than 2026-12 (model availability changes).
 | K3 (alternative) | verifier | `google/gemma-4-31B-it` | 31B dense | https://huggingface.co/google/gemma-4-31B-it | ✓ 2026-06-09 |
 | K3 Mac M4 path | verifier (4-bit MLX) | `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` | 26B (4B active), 16.4 GB on disk | https://huggingface.co/FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit | ✓ 2026-06-09 |
 
+**Footnote on K3 drafter `model_type` (added 2026-06-09)**: the
+K3 drafter `z-lab/gemma-4-26B-A4B-it-DFlash` declares
+`model_type: qwen3` in its `config.json`. This is a HuggingFace
+architecture-loading convention — DFlash's transformer block
+layout follows Qwen3's pattern, so HF dispatches it to
+`Qwen3ForCausalLM`. **It does NOT mean K3 uses Qwen models or
+that any Qwen-family verifier is an acceptable substitute for
+`google/gemma-4-26B-A4B-it`**. The drafter is purpose-built for
+the Gemma 4 26B-A4B pair; its weights encode a learned mapping
+into Gemma 4 26B-A4B's hidden state distribution. See §11.7.0
+"K3 model identity (locked)" for the full architectural
+identity statement.
+
 The full DFlash drafter collection (https://github.com/z-lab/dflash
 + https://huggingface.co/collections/z-lab/dflash) currently lists
 21 items spanning Qwen3.5, Gemma 4, MiniMax, Kimi, gpt-oss, and
@@ -3366,8 +3420,10 @@ options:
 Recommended path: (1). Drop the < 5.0 pin and patch the Qwen3
 custom modeling (~50 LOC). Tracked as a Block B prerequisite.
 
-**Caveat 2: DFlash drafter loads as `Qwen3ForCausalLM`, NOT as
-DFlash's actual block-diffusion architecture.**
+**Caveat 2: DFlash drafter's checkpoint extras (`fc`,
+`hidden_norm`, `lm_head`, `embed_tokens`) are not consumed
+by `Qwen3ForCausalLM`** (corrected 2026-06-09 after fetching
+the actual DFlash `config.json`).
 
 The post-fix smoke log shows transformers warnings:
 
@@ -3376,51 +3432,98 @@ fc, hidden_norm: unexpected key (not in Qwen3ForCausalLM)
 lm_head, embed_tokens: newly initialised (not loaded from checkpoint)
 ```
 
-Translation:
+**Earlier reading** (incorrect, kept here as an audit trail):
+"DFlash loads as Qwen3, NOT as DFlash's actual block-diffusion
+architecture." This framing was wrong — DFlash **is** Qwen3
+architecturally per its own `config.json`:
 
-* AutoModelForCausalLM with `trust_remote_code=True` loaded
-  the DFlash repo as `Qwen3ForCausalLM` — its base
-  architecture before the DFlash custom additions. The
-  DFlash-specific layers (`fc`, `hidden_norm` per the warning)
-  are in the safetensors checkpoint but **not in the loaded
-  model class**, so they're discarded.
-* `lm_head` and `embed_tokens` are newly initialised with
-  random weights — the DFlash checkpoint's actual lm_head /
-  embed_tokens are not loaded because the model class doesn't
-  expose them at the right names.
+```json
+{
+  "architectures": ["DFlashDraftModel"],
+  "model_type": "qwen3",                       ← HF dispatches by this
+  "block_size": 16,
+  "dflash_config": {
+    "mask_token_id": 4,
+    "target_layer_ids": [1, 6, 11, 17, 22, 27]
+  },
+  "num_hidden_layers": 5,
+  "num_target_layers": 30,
+  ...
+}
+```
 
-**Net result**: the drafter forward in the smoke "works" — it
-produces logits of the right shape (`[1, 757, 262144]`) — but
-the model is **structurally not DFlash**. It's a randomly-
-initialised Qwen3 architecture. The block-diffusion drafting
-protocol is NOT exercised; the f_θ projection that Block C
-trains would have nothing real to project from.
+`AutoModelForCausalLM` correctly dispatches to
+`Qwen3ForCausalLM` because `model_type` is `qwen3`; the repo
+ships no `auto_map` and no `modeling_dflash.py` — there is no
+custom architecture class to route to. DFlash's "special sauce"
+lives in **two protocol-layer extensions** of standard Qwen3:
 
-For Block A's narrow "feasibility" claim (does the verifier +
-drafter pair fit on the hardware, do the python imports
-succeed), this is fine. For Block B / C / D / E / F, this is
-**a hard blocker**. Block B's `DLMRestoredVerifier` cross-model
-extension expects the drafter to actually run as a dLM with
-correctly-loaded weights — without that, f_θ training in
-Block C is training against random drafter outputs.
+* **Block-diffusion drafting protocol** — `block_size: 16`,
+  drafter generates 16 tokens in parallel per call (vs Qwen3's
+  standard 1 AR token per step). Implemented at the inference
+  glue level (vLLM SD plugin), not at the model class level.
+* **Cross-layer target conditioning** — `target_layer_ids: [1,
+  6, 11, 17, 22, 27]` points at six of the 30 verifier
+  (Gemma 4 26B-A4B) layers; the drafter conditions on those
+  layers' features via the `fc` (feature concatenation /
+  projection) and `hidden_norm` (target-feature normalisation)
+  extras that the smoke log flagged as "unexpected".
+* `lm_head` and `embed_tokens` newly initialised: the DFlash
+  checkpoint stores these but under names Qwen3ForCausalLM
+  doesn't probe. Likely recoverable via manual
+  `state_dict` key remapping during load.
 
-Resolution path: Block B implementation must **load DFlash
-with its custom modeling code path**, not via the default
-Qwen3 fallback. Concrete steps:
+**Net result for Block A "feasibility" claim**: the smoke
+correctly shows the drafter loads as a runnable Qwen3 + verifier
+fits on H200 with headroom. **For v0.4 K/V Restoration purposes,
+the question is narrower than the original Caveat 2 framing
+suggested**: does the drafter's K, V tensor at every layer × every
+position represent meaningful proposer state (i.e., trained
+weights), or random-initialised garbage?
 
-1. Inspect `z-lab/gemma-4-26B-A4B-it-DFlash` repo for
-   `modeling_dflash.py` (or whatever the custom file is
-   named) and `auto_map` entries in `config.json`.
-2. Confirm transformers' `AutoModelForCausalLM` with
-   `trust_remote_code=True` actually picks up the custom
-   class. If it falls through to Qwen3 (as the smoke log
-   shows), there's a config or auto_map issue.
-3. If upstream `auto_map` is broken, add a manual
-   `from_pretrained` path in K2.B that explicitly loads
-   the DFlash custom class.
-4. Verify post-load that `model.__class__.__name__ ==
-   "DFlashForCausalLM"` (or whatever the class is) — not
-   `"Qwen3ForCausalLM"`.
+* Drafter's **attention layers' K/V projections** (`k_proj`,
+  `v_proj`) are part of the standard Qwen3 architecture and
+  ARE loaded from the DFlash checkpoint. → K/V at every
+  position have trained values. ✓
+* Drafter's **`embed_tokens`** is the input to layer 0; if it
+  is "newly initialised" (random), then layer-0 K/V is computed
+  from random embeddings → first-layer K/V are garbage → all
+  subsequent K/V propagate the garbage. ✗
+* Drafter's **`fc` and `hidden_norm`** extras carry the
+  cross-layer conditioning that DFlash uses to align with the
+  verifier; without them loaded, the drafter runs as a plain
+  Qwen3 (no Gemma-4-target conditioning), and its K/V are not
+  the K/V DFlash was trained to produce conditional on the
+  verifier. ✗
+
+**For v0.4 K/V Restoration to use this drafter meaningfully,
+both the embed_tokens and fc/hidden_norm need to load
+correctly.** This is recoverable — likely a `state_dict` key
+mapping fix at load time — but it is real engineering work
+that Block B must do **before** Block C trains f_θ. Without
+it, Block C trains a projection from random drafter K/V to
+verifier K/V — meaningless.
+
+**Block B prerequisite 4 (corrected)**: write a DFlash loader
+that:
+
+1. Loads the safetensors checkpoint directly (not via
+   `from_pretrained` Qwen3 dispatch).
+2. Builds a Qwen3ForCausalLM instance with the DFlash
+   `config.json` parameters.
+3. Maps the safetensors keys to the Qwen3 model parameter
+   names (likely a small per-key prefix renaming based on
+   the `state_dict` key delta).
+4. Loads `fc` and `hidden_norm` as extra modules attached to
+   the Qwen3 model (custom code, ~50-100 LOC).
+5. Verifies post-load that `embed_tokens` weights are
+   non-random (e.g., `model.model.embed_tokens.weight.var()
+   > 1e-6` or similar — random init has near-uniform variance,
+   trained embeddings have structured variance).
+
+The K3 smoke harness should then verify the loader runs without
+the `newly initialised` warning before the smoke is treated as
+truly PASS.
 
 This work belongs in Block B per §11.15.3; the K3 Block A
 PASS does not relieve Block B of this responsibility. To
