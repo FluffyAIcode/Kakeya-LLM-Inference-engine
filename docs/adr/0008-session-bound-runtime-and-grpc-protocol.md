@@ -2347,6 +2347,18 @@ scripts + tests).** What it delivers:
     no oracle / v0.3 / KL OFF arms, no statistical averaging.
     Reports first-token latency, recall hit/miss, peak resident
     memory. ~3-5 min @ 5.6k context on Mac M4 24 GB.
+  - `scripts/review_pr_k2a_production_smoke_ladder_on_mac.sh` —
+    **product-shape ladder** (added 2026-06-09 follow-up). Runs
+    the production-shape smoke at two context rungs (default
+    70 + 280 padding lines, ≈ 1.4k + 5.6k tokens) and aggregates
+    the four product-relevant metrics (recall hit/miss,
+    sec/token, driver-allocated memory, effective attention
+    fraction) into a single ladder JSON suitable for ADR
+    §11.11.13.7 citation. ~5-8 min total. Disambiguates
+    architecture-correctness from memory-pressure-driven
+    failure: ctx70 ought to fit in Mac M4 24 GB physical
+    memory; ctx280 routinely overflows into swap on the user's
+    box (driver_allocated ≈ 26 GB observed 2026-06-09 v4 run).
 
 **Scope split (recorded 2026-06-09)**: research A/B and
 product-shape smoke answer different questions and **must
@@ -2628,6 +2640,79 @@ quantified launch baseline**: throughput must beat 0.93 tok/s ×
 at 21k; per-step peak must drop measurably from 30 GB at 21k.
 None of these targets are abstract — all three are anchored in
 K2.A.1 vast evidence rows.
+
+##### 11.11.13.7 Mac M4 production-shape empirical bound (added 2026-06-09)
+
+A separate evidence track from §11.11.13.1's statistical A/B:
+the **single-request product-shape ladder** measured on Mac M4
+24 GB unified memory. Question answered: *for a single user
+request through the K2.A.2 stateful KL ON path on Mac M4
+PyTorch MPS, what is the largest context length where (a) the
+architecture (effective_attention_fraction = 1.0) holds, (b)
+driver-allocated memory stays within 24 GB physical, and (c)
+recall on a single sample is "hit"?*
+
+This is **not** a binding gate for v0.4 release — gate
+candidates need statistical samples (the §11.11.13.1 A/B job).
+This is a **product-experience honesty row**: it tells us where
+the PyTorch MPS path stops being usable for end-users on
+commodity Mac hardware, so we know what K3 MLX/Metal needs to
+beat.
+
+**Reference run** (v4 fix stack, commit 5f4af24 + 389943e + the
+user's 6a651c9 evidence):
+
+| ctx_lines | tokens approx | recall (1 sample) | sec/token | driver alloc | arch_window | memory_under_24GB |
+|---|---|---|---|---|---|---|
+| 70   | ~1.4k  | TBD (run ladder) | TBD | TBD | TBD | TBD |
+| **280**  | **~5.6k** | **0/1 miss** | **~11.0 s** | **24.80 GB** | **100 %** | **✗** |
+
+The ctx280 row is the user's 2026-06-09 v4 evidence
+(`results/research/k2a_production_smoke_mac_ctx280_1781008173.json`).
+Three readings:
+
+1. **Architecture correct**: `effective_attention_fraction =
+   1.0` proves v0.4 K/V Restoration works as designed on Mac
+   MPS bf16 — verifier attends to the full 6413-token context
+   despite holding only sink+window=68 in its local cache.
+2. **Memory exceeds physical**: 24.80 GB driver-allocated > 24
+   GB unified memory → macOS swap thrashing. The 11 s/token
+   latency is dominated by disk I/O, not compute or KL codec.
+3. **Recall = 0 on 1 sample is not statistically dispositive**
+   — Bernoulli(p) trials need n > 1 to estimate p. Could be
+   real KL precision loss, could be swap-induced corruption,
+   could be base-model variance at this context. The ladder
+   is the disambiguation tool.
+
+**To complete this row**: run
+
+```bash
+bash scripts/review_pr_k2a_production_smoke_ladder_on_mac.sh
+```
+
+The script invokes the per-rung smoke at ctx70 + ctx280
+sequentially, aggregates the four metrics into a single ladder
+JSON at `results/research/k2a_production_smoke_ladder_mac_<stamp>.json`,
+and prints a narrative ready to paste into this table. Expected
+outcomes:
+
+- **ctx70 (recall=hit, mem<24GB, latency low)** — confirms the
+  architecture is correct and the ctx280 failure is the
+  memory-thrashing upper bound. Establishes "Mac M4 production-
+  shape upper bound = somewhere between 1.4k and 5.6k, swap
+  thrashing dominates above". K3 MLX/Metal is the path to
+  reach 100k+.
+- **ctx70 also fails** — the ctx280 failure is NOT memory-
+  bound; there is a lurking bug (KL Q=38 too lossy on MPS
+  bf16, or stateful staleness, or numerical drift). Triggers
+  a follow-up A/B (KL Q=38 vs Q=76, stateful=on vs off) to
+  isolate.
+
+The Mac M4 product-shape upper bound is **the metric K3 MLX
+must improve**. K3's success is empirically defined as "raises
+this row's max-fitting context from ~1.4k (TBD) to ≥ 100k
+under the same single-request product shape, on equivalent
+hardware".
 
 #### 11.11.14 K2.A.2 implementation notes (added 2026-06-09)
 
