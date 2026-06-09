@@ -2447,3 +2447,137 @@ Beyond honesty, four concrete consequences:
    secondary "fits Mac M4 at 100k single-session" claim, which was
    always a per-step-peak claim and is gated on K3+ proposer
    chunking, not delivered by K1/K2.
+
+#### 11.13.6 K2.A.2 cached-resident K/V staleness (architectural cost, 2026-06-09)
+
+This subsection was added 2026-06-09 in response to a sharp
+follow-up question after §11.13 was drafted: "if the verifier's
+query position is no longer the full prefix [1, T] but only the
+new position [1, 1], is the verifier's effective attention window
+indirectly reduced, lowering intelligence?"
+
+The answer separates a real concern from a misconception.
+
+#### 11.13.6.1 The structural attention range is unchanged
+
+Direct answer: under K2.A.2 stateful caching, the new query
+position attends to K, V at all preceding positions —
+`{sink + window from cache} ∪ {evicted, proposer-restored}` —
+which is the full causal range, identical to K1.D in the K1.H
+attention-window metric sense. The query reduction from `[1, T]`
+(K1.D) to `[1, 1]` (K2.A.2) eliminates the verifier's
+**recomputation of past queries' logits** — but those past
+logits are discarded in autoregressive decoding anyway (only the
+last query's logits produce the next token). So the structural
+attention coverage is preserved.
+
+The K1.H `effective_attention_fraction` metric reads 100% under
+K2.A.2 just as it does under K1.D / K2.A.1.
+
+#### 11.13.6.2 The cached resident K/V have bounded staleness
+
+A real architectural cost emerges at a different layer:
+**the K, V values stored in the K2.A.2 compressor cache reflect
+the proposer's view of the world AT THE TIME the position was
+new, not at the current decode step**.
+
+Mechanism. In a v0.4 verifier, the K, V at any position `p` at
+layer `L > 1` depends on `hidden_states_(L−1)[p]`, which depends
+on layer `(L−1)` attention's K, V at positions `0..p`. When `p`
+became new at decode step `s_p`, the prefix length was `p+1` and
+the patched attention layer pulled K, V at evicted positions
+from the proposer's forward run on `input_ids[0..p]`. The
+proposer is dLM (full attention), so the proposer's K, V at any
+position `q ≤ p` depend on the **full prefix at step `s_p`**,
+including the suffix `[q..p]`.
+
+At a later decode step `s_now > s_p`, the prefix has grown to
+length `T_now > p+1`. Re-running the proposer would yield a
+**different** K, V at the same position `q` because the suffix
+seen by the dLM is now `[q..T_now-1]`, not `[q..p]`. K1.D
+benefits from this freshness because it re-runs the verifier
+over the full prefix every step. K2.A.2 does not; its cached
+K, V at resident position `p` are frozen at step `s_p`'s view.
+
+The staleness magnitude depends on the position class:
+
+| position class | layer 1 K/V staleness | layer ≥ 2 K/V staleness | reason |
+|---|---|---|---|
+| **sink** (positions 0..3) | none | **none** | sink positions become resident at step `s_p ≤ sink_size`, when prefix length is ≤ `sink+window` and **no eviction occurs**. Their K/V are computed under standard causal attention with no proposer-restored substitution at any layer. Bit-for-bit stable. |
+| **window** (most recent `window_size` positions) | none | bounded by **`window_size` decode steps** of suffix drift | layer-1 K, V is `k_proj(embed(input_ids[p]))` — token-only, no staleness. Layer-2+ K/V was computed at step `s_p` ≤ `window_size` ago; the proposer's drift over those `window_size` new tokens is the staleness amount. |
+| **evicted** (proposer-restored, transient) | n/a — recomputed every step | n/a — recomputed every step | every forward re-runs the proposer on the current full prefix, so evicted K/V are always fresh. |
+
+Sink positions and evicted positions therefore contribute **zero
+staleness**. Only the window positions are stale, and their
+staleness is bounded above by `window_size` × per-step suffix-drift
+magnitude. With `window_size = 64` and a typical 100k-context
+session, the cached window K/V are at most 64-token-suffix-stale
+relative to a ~100k prefix — i.e. the staleness is at the
+0.064 % suffix-drift scale.
+
+#### 11.13.6.3 Empirical bound: K2.A.2 must satisfy the same NIAH gate as K2.A.1
+
+The K1 multi-source baseline (§11.11.10) achieved
+`Δ(v0.4_K1.D − oracle) = 0.000` at all 8 measurements. K2.A.1
+inherits this empirically because it is bit-for-bit equivalent
+to K1.D modulo the codec round-trip noise. K2.A.2's stateful
+caching introduces the staleness above; **the K1 finding does
+NOT directly transfer to K2.A.2** — it must be re-validated.
+
+The K2.A.2 binding gate (already in §11.11.5):
+
+* `recall(K2.A.2 v0.4) ≥ recall(oracle) − 1pp` at every §11.12
+  rung.
+
+This gate now serves two purposes simultaneously:
+
+* (originally) validates KakeyaLattice composition does not
+  break correctness;
+* (newly explicit, 2026-06-09) validates that the cached-resident
+  staleness does not drop recall below the 1pp threshold.
+
+If the K2.A.2 NIAH evidence shows recall regression > 1pp
+attributable to staleness (i.e. KL on / off shows similar
+regression in the same direction, suggesting the staleness is
+the cause not the codec), the response is to escalate to one of
+the freshness designs in §11.13.6.4 below — NOT to fail K2.A.2
+on a known architectural cost that's actually rescuable.
+
+#### 11.13.6.4 Freshness design options (escalation paths)
+
+If the §11.13.6.3 empirical gate fails on staleness specifically,
+three architectural options exist, each with different
+quality-throughput trade-offs:
+
+| design | freshness | per-step compute | when to escalate |
+|---|---|---|---|
+| **(default) naive K2.A.2** | bounded staleness `≤ window_size` steps | `~1× O(T × hidden_dim)` (proposer only) | always start here; ship if the gate passes |
+| **refresh-on-eviction** | zero staleness in window (sink already zero) | `~3× O(T × hidden_dim)` (proposer + verifier `[1, 1]` + refresh chain at evicting position, all are `O(T)` attention) | escalate if naive K2.A.2 fails the 1pp gate |
+| **periodic full-window refresh** | refresh schedule with period `N`; staleness `≤ N` steps | amortised `(1 + 1/N) × O(T × hidden_dim)` | middle ground if refresh-on-eviction is too costly |
+
+The default-naive design is the recommended starting point because
+the analysis above predicts staleness impact below the 1pp gate.
+If empirical evidence falsifies that prediction, the escalation
+paths are well-specified and reversible — none of them require
+re-architecting the K1 / K2.A.0 / K2.A.1 / K2.A.2 progression,
+only changing K2.A.2's cache update policy.
+
+#### 11.13.6.5 Why this is documented as an architectural cost, not a bug
+
+K2.A.2's stateful caching is the **natural way** stateful AR
+inference works: past K/V are computed when the past tokens
+were new and cached forever. Standard production AR inference
+does the same and works fine. The novelty of v0.4 is that the
+verifier's hidden states at evicted positions are NOT
+self-causal — they're proposer-non-causal (full-attention). The
+non-causal dependency is what creates the suffix-drift
+sensitivity. This dependency is intrinsic to §11.5 dLM K/V
+Restoration — removing it would break the architecture.
+
+So the staleness is not a K2.A.2 design flaw; it is the residual
+architectural cost of running an AR verifier with a
+non-causal-K/V-augmented cache. Documenting it explicitly here
+prevents future readers from reading K2.A.2 NIAH evidence (with
+recall not at exactly 0.000 delta vs oracle) as a regression
+when it is in fact an expected property of the architecture
+within the documented bound.
