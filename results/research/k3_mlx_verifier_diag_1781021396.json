@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "kind": "k3_feasibility_smoke",
+  "config": {
+    "platform": "mac",
+    "verifier_path": "models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "prompt_tokens": 512,
+    "gen_tokens": 8,
+    "seed": 42,
+    "skip_drafter": true
+  },
+  "stages": [
+    {
+      "stage": "baseline",
+      "memory": {
+        "label": "baseline",
+        "platform": "mac",
+        "current_allocated_bytes": 0,
+        "driver_allocated_bytes": 475136,
+        "device_total_bytes": 25769803776
+      }
+    },
+    {
+      "stage": "verifier_load_FAIL",
+      "error": "AttributeError: 'list' object has no attribute 'keys'",
+      "diagnostic": {
+        "error_type": "AttributeError",
+        "error_message": "'list' object has no attribute 'keys'",
+        "traceback": [
+          "Traceback (most recent call last):",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_feasibility_smoke.py\", line 420, in _load_verifier_mac",
+          "    model, tokenizer = mlx_lm.load(verifier_path)",
+          "                       ~~~~~~~~~~~^^^^^^^^^^^^^^^",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/utils.py\", line 495, in load",
+          "    tokenizer = load_tokenizer(",
+          "        model_path, tokenizer_config, eos_token_ids=config.get(\"eos_token_id\", None)",
+          "    )",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/utils.py\", line 446, in load_tokenizer",
+          "    return _load_tokenizer(",
+          "        model_path,",
+          "        tokenizer_config_extra,",
+          "        eos_token_ids=eos_token_ids,",
+          "    )",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx_lm/tokenizer_utils.py\", line 614, in load",
+          "    tokenizer = AutoTokenizer.from_pretrained(",
+          "        model_path, **(tokenizer_config_extra or {})",
+          "    )",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/auto/tokenization_auto.py\", line 1156, in from_pretrained",
+          "    return tokenizer_class.from_pretrained(pretrained_model_name_or_path, *inputs, **kwargs)",
+          "           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 2113, in from_pretrained",
+          "    return cls._from_pretrained(",
+          "           ~~~~~~~~~~~~~~~~~~~~^",
+          "        resolved_vocab_files,",
+          "        ^^^^^^^^^^^^^^^^^^^^^",
+          "    ...<9 lines>...",
+          "        **kwargs,",
+          "        ^^^^^^^^^",
+          "    )",
+          "    ^",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 2359, in _from_pretrained",
+          "    tokenizer = cls(*init_inputs, **init_kwargs)",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/models/gemma/tokenization_gemma_fast.py\", line 100, in __init__",
+          "    super().__init__(",
+          "    ~~~~~~~~~~~~~~~~^",
+          "        vocab_file=vocab_file,",
+          "        ^^^^^^^^^^^^^^^^^^^^^^",
+          "    ...<8 lines>...",
+          "        **kwargs,",
+          "        ^^^^^^^^^",
+          "    )",
+          "    ^",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_fast.py\", line 178, in __init__",
+          "    super().__init__(**kwargs)",
+          "    ~~~~~~~~~~~~~~~~^^^^^^^^^^",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 1472, in __init__",
+          "    self._set_model_specific_special_tokens(special_tokens=self.extra_special_tokens)",
+          "    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+          "  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/transformers/tokenization_utils_base.py\", line 1210, in _set_model_specific_special_tokens",
+          "    self.SPECIAL_TOKENS_ATTRIBUTES = self.SPECIAL_TOKENS_ATTRIBUTES + list(special_tokens.keys())",
+          "                                                                           ^^^^^^^^^^^^^^^^^^^",
+          "AttributeError: 'list' object has no attribute 'keys'"
+        ],
+        "verifier_path": "models/gemma-4-26B-A4B-it-mlx-4bit",
+        "config_json": {
+          "architectures": [
+            "Gemma4ForConditionalGeneration"
+          ],
+          "audio_config": null,
+          "audio_token_id": 258881,
+          "boa_token_id": 256000,
+          "boi_token_id": 255999,
+          "dtype": "bfloat16",
+          "eoa_token_id": 258883,
+          "eoa_token_index": 258883,
+          "eoi_token_id": 258882,
+          "eos_token_id": [
+            1,
+            106,
+            50
+          ],
+          "image_token_id": 258880,
+          "initializer_range": 0.02,
+          "model_type": "gemma4",
+          "quantization": {
+            "group_size": 64,
+            "bits": 4,
+            "mode": "affine"
+          },
+          "quantization_config": {
+            "group_size": 64,
+            "bits": 4,
+            "mode": "affine"
+          },
+          "text_config": {
+            "attention_bias": false,
+            "attention_dropout": 0.0,
+            "attention_k_eq_v": true,
+            "bos_token_id": 2,
+            "dtype": "bfloat16",
+            "enable_moe_block": true,
+            "eos_token_id": 1,
+            "final_logit_softcapping": 30.0,
+            "global_head_dim": 512,
+            "head_dim": 256,
+            "hidden_activation": "gelu_pytorch_tanh",
+            "hidden_size": 2816,
+            "hidden_size_per_layer_input": 0,
+            "initializer_range": 0.02,
+            "intermediate_size": 2112,
+            "layer_types": [
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "full_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "full_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "full_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "full_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "sliding_attention",
+              "full_attention"
+            ],
+            "max_position_embeddings": 262144,
+            "model_type": "gemma4_text",
+            "moe_intermediate_size": 704,
+            "num_attention_heads": 16,
+            "num_experts": 128,
+            "num_global_key_value_heads": 2,
+            "num_hidden_layers": 30,
+            "num_key_value_heads": 8,
+            "num_kv_shared_layers": 0,
+            "pad_token_id": 0,
+            "rms_norm_eps": 1e-06,
+            "rope_parameters": {
+              "full_attention": {
+                "partial_rotary_factor": 0.25,
+                "rope_theta": 1000000.0,
+                "rope_type": "proportional"
+              },
+              "sliding_attention": {
+                "rope_theta": 10000.0,
+                "rope_type": "default"
+              }
+            },
+            "sliding_window": 1024,
+            "tie_word_embeddings": true,
+            "top_k_experts": 8,
+            "use_bidirectional_attention": "vision",
+            "use_cache": true,
+            "use_double_wide_mlp": false,
+            "vocab_size": 262144,
+            "vocab_size_per_layer_input": 262144
+          },
+          "tie_word_embeddings": true,
+          "transformers_version": "5.5.0.dev0",
+          "video_token_id": 258884,
+          "vision_config": {
+            "_name_or_path": "",
+            "architectures": null,
+            "attention_bias": false,
+            "attention_dropout": 0.0,
+            "chunk_size_feed_forward": 0,
+            "default_output_length": 280,
+            "dtype": "bfloat16",
+            "global_head_dim": 72,
+            "head_dim": 72,
+            "hidden_activation": "gelu_pytorch_tanh",
+            "hidden_size": 1152,
+            "id2label": {
+              "0": "LABEL_0",
+              "1": "LABEL_1"
+            },
+            "initializer_range": 0.02,
+            "intermediate_size": 4304,
+            "is_encoder_decoder": false,
+            "label2id": {
+              "LABEL_0": 0,
+              "LABEL_1": 1
+            },
+            "max_position_embeddings": 131072,
+            "model_type": "gemma4_vision",
+            "num_attention_heads": 16,
+            "num_hidden_layers": 27,
+            "num_key_value_heads": 16,
+            "output_attentions": false,
+            "output_hidden_states": false,
+            "patch_size": 16,
+            "pooling_kernel_size": 3,
+            "position_embedding_size": 10240,
+            "problem_type": null,
+            "return_dict": true,
+            "rms_norm_eps": 1e-06,
+            "rope_parameters": {
+              "rope_theta": 100.0,
+              "rope_type": "default"
+            },
+            "standardize": true,
+            "use_clipped_linears": false
+          },
+          "vision_soft_tokens_per_image": 280
+        },
+        "manifest": {
+          "kind": "k3_setup_manifest",
+          "schema_version": 2,
+          "mode": "download",
+          "source": "FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit",
+          "output": "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-prod-smoke/models/gemma-4-26B-A4B-it-mlx-4bit",
+          "size_bytes": 16433997136,
+          "size_gb": 16.433997136,
+          "elapsed_seconds": 823.4711130000651,
+          "host": {
+            "platform": "darwin",
+            "python": "3.13.12"
+          },
+          "ple_safe_quantization": true,
+          "rationale": "Self-quantize via mlx_lm.convert is broken on mlx-lm 0.31.3 for Gemma 4 26B-A4B MoE due to 5 interlocking upstream bugs (see ml-explore/mlx-lm#1123). The community variant FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit is PLE-safe and produces correct output.",
+          "instructions_for_smoke": "Pass --verifier-path /Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-prod-smoke/models/gemma-4-26B-A4B-it-mlx-4bit to scripts/research/k3_feasibility_smoke.py"
+        },
+        "files": [
+          {
+            "name": ".cache",
+            "size_bytes": null,
+            "is_dir": true
+          },
+          {
+            "name": ".gitattributes",
+            "size_bytes": 1570,
+            "is_dir": false
+          },
+          {
+            "name": "README.md",
+            "size_bytes": 6011,
+            "is_dir": false
+          },
+          {
+            "name": "chat_template.jinja",
+            "size_bytes": 12045,
+            "is_dir": false
+          },
+          {
+            "name": "config.json",
+            "size_bytes": 4661,
+            "is_dir": false
+          },
+          {
+            "name": "generation_config.json",
+            "size_bytes": 208,
+            "is_dir": false
+          },
+          {
+            "name": "k3_setup_manifest.json",
+            "size_bytes": 919,
+            "is_dir": false
+          },
+          {
+            "name": "model-00001-of-00004.safetensors",
+            "size_bytes": 5320721364,
+            "is_dir": false
+          },
+          {
+            "name": "model-00002-of-00004.safetensors",
+            "size_bytes": 5368677442,
+            "is_dir": false
+          },
+          {
+            "name": "model-00003-of-00004.safetensors",
+            "size_bytes": 5362867532,
+            "is_dir": false
+          },
+          {
+            "name": "model-00004-of-00004.safetensors",
+            "size_bytes": 349354295,
+            "is_dir": false
+          },
+          {
+            "name": "model.safetensors.index.json",
+            "size_bytes": 176588,
+            "is_dir": false
+          },
+          {
+            "name": "processor_config.json",
+            "size_bytes": 1689,
+            "is_dir": false
+          },
+          {
+            "name": "tokenizer.json",
+            "size_bytes": 32169626,
+            "is_dir": false
+          },
+          {
+            "name": "tokenizer_config.json",
+            "size_bytes": 2685,
+            "is_dir": false
+          }
+        ],
+        "mlx_lm_version": "0.31.3",
+        "known_bug_fingerprints": [
+          {
+            "id": "bug1_quant_config_list_vs_dict",
+            "evidence": "AttributeError on .keys() suggests upstream code treats config['quantization'] (or quantization_config) as a dict but the variant ships it as a list.",
+            "suggested_workaround": "Patch config.json: if quantization_config is a list of dicts (per-layer), squash to a single dict at the top level. Re-run."
+          }
+        ],
+        "actionable_next_steps": [
+          "1. Push this JSON to origin so the loader bug can be diagnosed from the actual traceback + config.json.",
+          "2. If known_bug_fingerprints flagged a config-shape issue, try the suggested_workaround inline (edit the local config.json + re-run).",
+          "3. If no fingerprint matched, the bug is novel \u2014 open a tracker issue with this JSON attached."
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "status": "fail_at_verifier_load",
+    "diagnostic_present": true,
+    "known_bug_fingerprints_matched": [
+      "bug1_quant_config_list_vs_dict"
+    ]
+  }
+}
