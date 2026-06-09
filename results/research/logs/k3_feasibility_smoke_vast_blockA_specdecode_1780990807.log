@@ -1,0 +1,29 @@
+[k3-smoke] platform: cuda
+[k3-smoke] verifier:  google/gemma-4-26B-A4B-it
+[k3-smoke] drafter:   z-lab/gemma-4-26B-A4B-it-DFlash
+[k3-smoke] prompt n:  512
+[k3-smoke] gen n:     8
+[k3-smoke] loading verifier (CUDA bf16): google/gemma-4-26B-A4B-it
+Loading weights:   0%|          | 0/1013 [00:00<?, ?it/s]Loading weights:   0%|          | 2/1013 [00:00<01:44,  9.67it/s]Loading weights:   0%|          | 3/1013 [00:00<01:52,  8.97it/s]Loading weights:   0%|          | 4/1013 [00:00<02:22,  7.07it/s]Loading weights:   2%|▏         | 25/1013 [00:00<00:17, 57.20it/s]Loading weights:   3%|▎         | 32/1013 [00:00<00:20, 47.45it/s]Loading weights:   5%|▍         | 48/1013 [00:01<00:17, 53.93it/s]Loading weights:   7%|▋         | 70/1013 [00:01<00:14, 65.53it/s]Loading weights:   9%|▉         | 92/1013 [00:01<00:12, 72.61it/s]Loading weights:  11%|█▏        | 114/1013 [00:01<00:11, 77.44it/s]Loading weights:  13%|█▎        | 134/1013 [00:01<00:09, 96.54it/s]Loading weights:  14%|█▍        | 146/1013 [00:02<00:09, 89.27it/s]Loading weights:  15%|█▌        | 157/1013 [00:02<00:11, 72.19it/s]Loading weights:  18%|█▊        | 179/1013 [00:02<00:10, 77.06it/s]Loading weights:  20%|█▉        | 201/1013 [00:02<00:10, 79.21it/s]Loading weights:  22%|██▏       | 222/1013 [00:03<00:08, 93.65it/s]Loading weights:  23%|██▎       | 233/1013 [00:03<00:09, 82.30it/s]Loading weights:  24%|██▍       | 244/1013 [00:03<00:11, 65.06it/s]Loading weights:  26%|██▌       | 264/1013 [00:03<00:11, 64.95it/s]Loading weights:  28%|██▊       | 287/1013 [00:03<00:08, 86.36it/s]Loading weights:  29%|██▉       | 298/1013 [00:04<00:09, 76.08it/s]Loading weights:  31%|███       | 309/1013 [00:04<00:08, 80.36it/s]Loading weights:  31%|███▏      | 319/1013 [00:04<00:10, 68.78it/s]Loading weights:  33%|███▎      | 331/1013 [00:04<00:08, 76.59it/s]Loading weights:  34%|███▎      | 340/1013 [00:04<00:10, 65.71it/s]Loading weights:  35%|███▍      | 353/1013 [00:05<00:11, 55.84it/s]Loading weights:  37%|███▋      | 375/1013 [00:05<00:07, 81.78it/s]Loading weights:  38%|███▊      | 386/1013 [00:05<00:08, 73.24it/s]Loading weights:  39%|███▉      | 396/1013 [00:05<00:08, 76.07it/s]Loading weights:  40%|███▉      | 405/1013 [00:05<00:09, 66.65it/s]Loading weights:  41%|████▏     | 419/1013 [00:06<00:09, 62.47it/s]Loading weights:  43%|████▎     | 440/1013 [00:06<00:06, 85.20it/s]Loading weights:  45%|████▍     | 451/1013 [00:06<00:07, 79.47it/s]Loading weights:  46%|████▌     | 463/1013 [00:06<00:08, 67.41it/s]Loading weights:  48%|████▊     | 485/1013 [00:06<00:07, 73.16it/s]Loading weights:  50%|████▉     | 506/1013 [00:06<00:05, 95.76it/s]Loading weights:  51%|█████     | 518/1013 [00:07<00:05, 88.93it/s]Loading weights:  52%|█████▏    | 529/1013 [00:07<00:06, 71.28it/s]Loading weights:  54%|█████▍    | 550/1013 [00:07<00:06, 75.23it/s]Loading weights:  56%|█████▋    | 572/1013 [00:07<00:05, 78.72it/s]Loading weights:  59%|█████▊    | 594/1013 [00:08<00:05, 80.53it/s]Loading weights:  61%|██████    | 616/1013 [00:08<00:04, 82.00it/s]Loading weights:  63%|██████▎   | 637/1013 [00:08<00:04, 81.57it/s]Loading weights:  79%|███████▊  | 796/1013 [00:08<00:00, 302.53it/s]Loading weights:  97%|█████████▋| 987/1013 [00:08<00:00, 579.91it/s]Loading weights: 100%|██████████| 1013/1013 [00:08<00:00, 114.33it/s]
+[k3-smoke] verifier loaded in 14.0s
+[k3-smoke] loading drafter (cuda): z-lab/gemma-4-26B-A4B-it-DFlash
+[k3-smoke] NOTE: architectures=['DFlashDraftModel'] is not loadable as a standalone transformers model (no auto_map / not a built-in class). DFlash is a block-diffusion speculative-decoding drafter; run it via vLLM (PR #41703) or SGLang per the model card. The transformers path here only loads the qwen3 backbone as a memory probe and does NOT exercise the DFlash drafting protocol.
+[k3-smoke] -> loading qwen3 backbone as a MEMORY PROBE ONLY (not a faithful DFlash load; standalone forward will be skipped).
+Loading weights:   0%|          | 0/56 [00:00<?, ?it/s]Loading weights:  64%|██████▍   | 36/56 [00:00<00:00, 349.83it/s]Loading weights: 100%|██████████| 56/56 [00:00<00:00, 364.99it/s]
+[transformers] [1mQwen3ForCausalLM LOAD REPORT[0m from: z-lab/gemma-4-26B-A4B-it-DFlash
+Key                       | Status     | 
+--------------------------+------------+-
+hidden_norm.weight        | UNEXPECTED | 
+fc.weight                 | UNEXPECTED | 
+lm_head.weight            | MISSING    | 
+model.embed_tokens.weight | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+[k3-smoke] drafter loaded in 4.1s (backbone memory probe)
+[transformers] The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+[k3-smoke] verifier forward OK; gen=8 tokens in 2.89s (2.77 tok/s)
+[k3-smoke] drafter forward SKIPPED (spec-decode-only drafter; validate via vLLM PR #41703 / SGLang — not transformers).
+[k3-smoke] report -> results/research/k3_feasibility_smoke_vast_blockA_specdecode_1780990807.json
+[k3-smoke] PASS
