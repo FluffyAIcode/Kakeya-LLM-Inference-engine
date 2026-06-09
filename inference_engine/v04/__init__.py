@@ -43,6 +43,13 @@ from inference_engine.v04.restored_attention import (
     slice_position_embeddings,
 )
 from inference_engine.v04.dlm_restored_verifier import DLMRestoredVerifier
+from inference_engine.v04.kv_compressor import (
+    IdentityCompressor,
+    KakeyaLatticeCompressor,
+    KakeyaLatticeUnavailable,
+    KVCompressor,
+    make_default_compressor,
+)
 from inference_engine.v04.niah_eval import (
     DEFAULT_NEEDLE_PREFIXES,
     NIAHEvalResult,
@@ -97,4 +104,10 @@ __all__ = [
     "aggregate_attention_window_metrics",
     "compute_effective_attention_window",
     "format_attention_window_summary",
+    # K2.A — KV compressor protocol + reference impls (see ADR 0008 §11.11)
+    "IdentityCompressor",
+    "KakeyaLatticeCompressor",
+    "KakeyaLatticeUnavailable",
+    "KVCompressor",
+    "make_default_compressor",
 ]
