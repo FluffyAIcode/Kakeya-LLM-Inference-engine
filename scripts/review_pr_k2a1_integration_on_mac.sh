@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
-# Mac M4 reviewer aid for PR-K2.A.1 — KakeyaLattice integration
-# A/B at the §11.12 ladder rungs Mac M4 24 GB can handle.
+# Mac M4 RESEARCH A/B for PR-K2.A.1 KakeyaLattice integration —
+# §11.12 ladder rungs Mac M4 24 GB can handle.
+#
+# ============================================================
+# READ THIS BEFORE RUNNING (added 2026-06-09 per user directive)
+# ============================================================
+#
+# This is a research evidence collector with a 7-9h time budget.
+# It runs 20 samples × 2 context rungs × {KL OFF, KL ON} × {oracle,
+# v0.3, v0.4} arms because the BINDING gate for PR-K2.A.1 merge
+# (recall delta ≤ 1pp at every rung — see ADR §11.8 criterion 1a)
+# needs statistical signal across a sample distribution.
+#
+# It deliberately does NOT reflect user-facing latency:
+#   * 20 samples ≠ 1 user request
+#   * KL OFF / oracle / v0.3 baselines are research-only — the
+#     production path is KL ON + K2.A.2 stateful (incremental
+#     decode), not stateless A/B
+#   * mean throughput across 20 samples masks first-token latency
+#
+# If you want to measure user-facing latency for the K2.A
+# production path, run instead:
+#
+#   bash scripts/review_pr_k2a_production_smoke_on_mac.sh
+#
+# (single request, KL ON + stateful, ~3-5 min on Mac M4 24 GB at
+# 5.6k context. Report includes first-token latency and dtype-crash
+# regression check.)
+#
+# Continue reading only if you actually need the A/B research
+# evidence for PR-K2.A.1 merge (gate (b) recall delta).
+# ============================================================
 #
 # Mirror of scripts/review_pr_k2a1_integration_on_vast.sh, but
 # scoped to Mac M4 budget: default ladder '70 280' (~1.4k +
@@ -166,7 +196,20 @@ run_one_rung() {
     fi
 }
 
-echo "==> PR-K2.A.1 KakeyaLattice integration A/B — Mac M4"
+cat <<'BANNER'
+==> PR-K2.A.1 KakeyaLattice integration A/B — Mac M4
+    +------------------------------------------------------+
+    | This is a RESEARCH A/B (~7-9h on Mac M4 24 GB).      |
+    | It does NOT reflect user-facing latency.             |
+    |                                                      |
+    | For product-shape latency on Mac, run instead:       |
+    |   bash scripts/review_pr_k2a_production_smoke_on_mac.sh |
+    |                                                      |
+    | Press Ctrl-C in the next 10 s to abort if you meant  |
+    | the production smoke.                                |
+    +------------------------------------------------------+
+BANNER
+sleep 10
 echo "    Model:           google/gemma-3-1b-it"
 echo "    Samples / arm:   $N_SAMPLES"
 echo "    Sink x window:   ${SINK} x ${WINDOW}"

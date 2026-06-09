@@ -2334,10 +2334,40 @@ scripts + tests).** What it delivers:
   schema bumps 4 → 5 to record the KL config block.
 * Reviewer scripts:
   - `scripts/review_pr_k2a1_integration_on_vast.sh` — vast.ai
-    CUDA A/B at the §11.12 ladder.
+    CUDA A/B at the §11.12 ladder. **Research evidence
+    collector** (statistical, ~hours).
   - `scripts/review_pr_k2a1_integration_on_mac.sh` — Mac M4
     (PyTorch MPS) A/B at the small-end §11.12 rungs (1.4k +
-    5.6k by default).
+    5.6k by default). **Research evidence collector**
+    (statistical, ~7-9h). Banner at runtime warns users who
+    ran it expecting product-shape latency.
+  - `scripts/review_pr_k2a_production_smoke_on_mac.sh` —
+    **product-shape smoke** (added 2026-06-09 per user
+    directive). Single request, KL ON + K2.A.2 stateful only,
+    no oracle / v0.3 / KL OFF arms, no statistical averaging.
+    Reports first-token latency, recall hit/miss, peak resident
+    memory. ~3-5 min @ 5.6k context on Mac M4 24 GB.
+
+**Scope split (recorded 2026-06-09)**: research A/B and
+product-shape smoke answer different questions and **must
+not be conflated**:
+
+| Script | Question | Time |
+|---|---|---|
+| `..._k2a1_integration_on_mac.sh`   | Statistical recall delta (ADR §11.8 1a binding gate)        | ~7-9h  |
+| `..._k2a_production_smoke_on_mac.sh` | User-facing first-token latency + recall hit + dtype crash | ~3-5min |
+
+The A/B is necessary for PR-K2.A.1 merge evidence (binding
+gate (b) recall delta ≤ 1pp at every rung needs sample
+distribution). The product smoke is necessary for honest
+release-readiness signal — it answers "if a user sends one
+request through this stack on Mac, what do they wait for".
+Mean throughput across 20 samples masks first-token latency
+that users actually feel; the A/B's KL OFF / oracle / v0.3
+arms are not on the production path; running them as a
+proxy for product validation **wastes time and does not
+produce the answer the question is asking**. Per the user's
+directive: do not use the A/B as a product-experience signal.
 
 K2.A.1 acceptance gates (per §11.11.5 above): **gate (a)
 round-trip identity** is closed by the K2.A.0 Mac smoke
