@@ -3299,15 +3299,177 @@ target hardware. **What this gate does NOT verify**: cross-model
 correctness (that's Block B), trained-f_θ behaviour (Block C/D),
 NIAH recall (Block E).
 
-**Cost**: zero compute beyond a one-time Mac quantize
-(~30-90 min, free) and a single vast.ai GPU-hour smoke (~$1-3).
+**vast Block A status (updated 2026-06-09 with PR #88 +
+post-fix re-run)**: **PASS**. Evidence committed to `main` at
+`aae96aa` (`results/research/k3_feasibility_smoke_vast_blockA_1780982359.json`).
+
+| measurement | value |
+|---|---|
+| verifier load | 14.5 s, 51.6 GB peak |
+| drafter load | 3.8 s, +3.7 GB → 55.3 GB total |
+| verifier forward (757 prefill + 8 gen) | 2.56 s prefill, 2.85 s gen, 2.81 tok/s |
+| drafter forward (757 tokens) | 0.42 s, logits `[1, 757, 262144]` |
+| joint memory peak | 56.16 GB / ~150 GB H200 (or NVL) — 25 GB headroom |
+| `summary.status` | `"pass"` |
+| `summary.{verifier,drafter}_{loadable,forward_ok}` | all `true` |
+
+**Mac path status (still pending)**: requires user to run the
+one-time community-variant download per §11.15.12 + the
+`review_pr_k3_feasibility_on_mac.sh` smoke; not yet executed
+2026-06-09.
+
+**Cost**: zero compute beyond a one-time Mac quantize/download
+(~30-90 min self-quantize / ~5-15 min download; both free) and
+two vast.ai GPU-hour smoke iterations (~$2-6 total — first run
+plus the post-fix re-run after PR #88 merged).
+
+#### 11.15.2.1 Block A vast PASS — caveats and what this evidence does NOT prove
+
+The `aae96aa` evidence proves **architectural feasibility** —
+hardware + memory + framework integration all hold. But the
+commit message + Block A pass conditions surface two caveats
+that **must be resolved before Block B implementation starts**;
+treating Block A PASS as "K3 is unblocked, just go" without
+addressing them would burn down Block B with ~2-3 weeks of
+recoverable but avoidable rework.
+
+**Caveat 1: transformers version conflict on the standard
+vast wrapper.**
+
+Gemma 4 26B-A4B verifier (`google/gemma-4-26B-A4B-it`) requires
+`transformers >= 5.0` (per HF model card). Our project
+`requirements.txt` and the `scripts/research/run_on_vast.sh`
+provisioning script pin `transformers >= 4.45, < 5.0` (see
+`requirements.txt` line ~12: the pin is needed for Qwen3 dLM
+proposer compatibility per the `dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1`
+checkpoint's custom `modeling_qwen3.py`).
+
+The Block A vast smoke ran via a manual `.venv-k3` (transformers
+5.10.2) bypassing the project's standard venv. **Block B will
+hit this conflict immediately** — the cross-model
+`DLMRestoredVerifier` per §11.15.3 needs transformers >= 5.0
+to load Gemma 4 alongside the dLM proposer. Resolution path
+options:
+
+1. **Drop the `< 5.0` pin** in `requirements.txt` and verify
+   the Qwen3 dLM proposer still works under transformers 5.x
+   (the modeling file's custom code may need updates;
+   tracked as a known transformers 4.x → 5.x migration cost).
+2. **Two-venv split**: keep `< 5.0` for Qwen3 dLM workloads,
+   add `>= 5.0` venv-k3 for Gemma 4 production workloads.
+   Less elegant; complicates CI; only sustainable for short
+   transition window.
+3. **Wait for upstream fixes**: the Qwen3 dLM custom modeling
+   gets updated to support transformers 5.x. Out of our
+   control; could take months.
+
+Recommended path: (1). Drop the < 5.0 pin and patch the Qwen3
+custom modeling (~50 LOC). Tracked as a Block B prerequisite.
+
+**Caveat 2: DFlash drafter loads as `Qwen3ForCausalLM`, NOT as
+DFlash's actual block-diffusion architecture.**
+
+The post-fix smoke log shows transformers warnings:
+
+```
+fc, hidden_norm: unexpected key (not in Qwen3ForCausalLM)
+lm_head, embed_tokens: newly initialised (not loaded from checkpoint)
+```
+
+Translation:
+
+* AutoModelForCausalLM with `trust_remote_code=True` loaded
+  the DFlash repo as `Qwen3ForCausalLM` — its base
+  architecture before the DFlash custom additions. The
+  DFlash-specific layers (`fc`, `hidden_norm` per the warning)
+  are in the safetensors checkpoint but **not in the loaded
+  model class**, so they're discarded.
+* `lm_head` and `embed_tokens` are newly initialised with
+  random weights — the DFlash checkpoint's actual lm_head /
+  embed_tokens are not loaded because the model class doesn't
+  expose them at the right names.
+
+**Net result**: the drafter forward in the smoke "works" — it
+produces logits of the right shape (`[1, 757, 262144]`) — but
+the model is **structurally not DFlash**. It's a randomly-
+initialised Qwen3 architecture. The block-diffusion drafting
+protocol is NOT exercised; the f_θ projection that Block C
+trains would have nothing real to project from.
+
+For Block A's narrow "feasibility" claim (does the verifier +
+drafter pair fit on the hardware, do the python imports
+succeed), this is fine. For Block B / C / D / E / F, this is
+**a hard blocker**. Block B's `DLMRestoredVerifier` cross-model
+extension expects the drafter to actually run as a dLM with
+correctly-loaded weights — without that, f_θ training in
+Block C is training against random drafter outputs.
+
+Resolution path: Block B implementation must **load DFlash
+with its custom modeling code path**, not via the default
+Qwen3 fallback. Concrete steps:
+
+1. Inspect `z-lab/gemma-4-26B-A4B-it-DFlash` repo for
+   `modeling_dflash.py` (or whatever the custom file is
+   named) and `auto_map` entries in `config.json`.
+2. Confirm transformers' `AutoModelForCausalLM` with
+   `trust_remote_code=True` actually picks up the custom
+   class. If it falls through to Qwen3 (as the smoke log
+   shows), there's a config or auto_map issue.
+3. If upstream `auto_map` is broken, add a manual
+   `from_pretrained` path in K2.B that explicitly loads
+   the DFlash custom class.
+4. Verify post-load that `model.__class__.__name__ ==
+   "DFlashForCausalLM"` (or whatever the class is) — not
+   `"Qwen3ForCausalLM"`.
+
+This work belongs in Block B per §11.15.3; the K3 Block A
+PASS does not relieve Block B of this responsibility. To
+make this explicit, Block B's prerequisites are amended (see
+§11.15.3 below).
+
+**What this means for the §11.8 K3 acceptance criteria
+(reading the `aae96aa` evidence honestly)**:
+
+| §11.8 criterion | does Block A evidence prove? |
+|---|---|
+| 1a. Architectural validation Δ ≤ 5pp | NO — that's gate (b) at Block E |
+| 1b. ≥ 95% absolute at 100k | NO — that's Block E with trained f_θ on a real Gemma 4 verifier |
+| 7. Throughput ≥ 0.6× oracle (KL on) | NO — Block A smoke is single-batch greedy; no SD harness |
+| Hardware feasibility (informal) | **YES** — vast H200 confirmed |
+
+The architectural feasibility is the only claim Block A
+evidence supports.
 
 #### 11.15.3 Block B — Cross-model `DLMRestoredVerifier` implementation
 
-**Prerequisites**: Block A's feasibility smoke confirms both
-models load on target hardware; the smoke's JSON report contains
-the actual drafter `(num_layers, head_dim, num_kv_heads)` shape
-needed to parameterise `LinearLayerProjection`.
+**Prerequisites** (updated 2026-06-09 with Block A vast PASS
+caveats per §11.15.2.1):
+
+1. **Block A vast feasibility evidence** — confirmed at
+   `aae96aa` on main (verifier + drafter both load + forward
+   on H200 80 GB+).
+2. **Block A Mac M4 feasibility evidence** — pending user
+   execution per §11.15.2.
+3. **transformers version conflict resolved**: drop the
+   `< 5.0` pin in `requirements.txt` (or split-venv
+   workaround) so the K3 verifier `google/gemma-4-26B-A4B-it`
+   loads via the standard project venv. Block A bypassed via
+   manual `.venv-k3`; Block B cannot rely on that.
+4. **DFlash drafter loads as DFlash, not Qwen3 fallback**:
+   per §11.15.2.1 caveat 2, fix the loading path so the
+   custom block-diffusion modeling actually executes
+   (`model.__class__.__name__ == "DFlashForCausalLM"` or
+   equivalent — NOT `Qwen3ForCausalLM`). Without this,
+   Block C trains f_θ against random drafter outputs.
+5. **Drafter actual `(num_layers, head_dim, num_kv_heads)`
+   shape** — recoverable from a corrected Block A smoke
+   re-run after prereq 4. Required for parameterising
+   `LinearLayerProjection` per §11.11.4.
+
+The Block A PASS (`aae96aa`) satisfies prereq 1 only. Prereqs
+2, 3, 4 must be addressed before Block B implementation begins;
+prereq 5 is a small re-run of the existing smoke after prereq 4
+lands.
 
 **Deliverables**:
 
@@ -3438,6 +3600,8 @@ explicitly — F comes after E, not in parallel.
 | Mac M4 4-bit smoke OOMs at 100k context | A.2 | accept Mac M4 as research-only at smaller context; K3 production validation on vast only |
 | Gemma 4 26B-A4B verifier weights not accessible (gating delays) | A | use the alternative Gemma 4-31B-it pair (also HF-verified §11.14.3) |
 | Mac M4 self-quantize broken on mlx-lm 0.31.3 (5 PLE/MoE bugs) | A.2 | **resolved 2026-06-09** — switched to downloading the published PLE-safe community variant `FakeRockert543/gemma-4-26b-a4b-it-MLX-4bit` (added to §11.14.3 candidates). Fallback `--mode self-quantize` preserved for when a future mlx-lm release lands the mlx-vlm 0.4.4 fixes. |
+| transformers `< 5.0` pin in requirements.txt blocks Gemma 4 26B-A4B verifier load | B prerequisite | identified 2026-06-09 from Block A vast PASS evidence (`aae96aa`); user bypassed via manual `.venv-k3`. Resolution: drop `< 5.0` pin and patch Qwen3 dLM proposer's custom modeling for transformers 5.x compatibility (~50 LOC); tracked as Block B prerequisite 3 per §11.15.3. |
+| DFlash drafter loads as `Qwen3ForCausalLM` fallback (not actual DFlash architecture) | B prerequisite | identified 2026-06-09 from Block A vast PASS log warnings (`fc/hidden_norm unexpected`, `lm_head/embed_tokens newly init`). Block A's "drafter forward OK" passes mechanically but the drafter is structurally NOT DFlash — it's randomly-initialised Qwen3 architecture; block-diffusion is not exercised. Resolution: explicit `from_pretrained` with the DFlash custom modeling class (or fix `auto_map` upstream); tracked as Block B prerequisite 4. |
 | f_θ training cost overruns budget | C/D | smaller Stage 1 token budget; accept partial convergence + larger Δ vs oracle |
 | Staleness (per §11.13.6) prevents Δ ≤ 5pp at production scale | E | escalate to §11.13.6.4 stateful-caching freshness designs (refresh-on-eviction or periodic refresh) |
 | Multi-tenant scheduling conflict with v0.4 architecture | G | deferred — out of scope for K3 per §11.15.8; addressed in v0.5 release engineering |
@@ -3537,3 +3701,68 @@ matches every other Block A run we've ever done); the fix is
 in-flight. K3 Block A acceptance should not be gated on
 re-collecting drafter forward evidence at this scale of
 near-miss.
+
+#### 11.15.14 Lesson: "load + forward succeeds" is a weaker claim than "model runs as its actual architecture" (added 2026-06-09)
+
+The K3 Block A vast PASS (commit `aae96aa`) demonstrated that
+the drafter `z-lab/gemma-4-26B-A4B-it-DFlash` can be loaded via
+HF transformers + run a forward + produce logits of the right
+shape on H200. **All four ``summary.{verifier,drafter}_{loadable,
+forward_ok}`` flipped true.**
+
+Naïve reading: "K3 hardware feasibility confirmed; Block B
+unblocked."
+
+Honest reading: the smoke log carries warnings showing the
+drafter loaded as `Qwen3ForCausalLM` (DFlash's base architecture
+before the block-diffusion additions) with `fc, hidden_norm`
+keys discarded and `lm_head, embed_tokens` newly initialised.
+The drafter forward "succeeded" only because PyTorch is permissive
+about random-weighted modules producing random-but-shape-correct
+outputs. **The block-diffusion architecture that DFlash IS was
+not exercised**; the smoke confirmed transformers + Gemma 4 26B
+hardware feasibility but said nothing about DFlash's actual
+behaviour.
+
+**The lesson**: a smoke that asserts only "load OK + forward OK"
+is satisfied by a model class that **doesn't match the
+architecture you think you're testing**. Loading via
+`AutoModelForCausalLM` + `trust_remote_code=True` is
+**necessary but not sufficient** for "the custom architecture
+ran" — auto_map can mis-route, custom keys can be silently
+discarded, lm_head can be silently re-initialised. None of these
+fail loudly.
+
+**Discipline addition**: feasibility smokes for any model with
+a custom architecture (DFlash, dLM-MDLM, Mamba, RWKV,
+Marin/JinaAI new variants) MUST assert the resolved model class
+name matches the expected custom class:
+
+```python
+# In smoke script after model = AutoModelForCausalLM.from_pretrained(...):
+expected_class = "DFlashForCausalLM"  # or whatever
+actual_class = model.__class__.__name__
+if actual_class != expected_class:
+    print(f"WARN: model loaded as {actual_class} not {expected_class}; "
+          "custom architecture may not be exercised")
+    # Still proceed for the basic feasibility check, but record this
+    # in the JSON evidence so downstream readers know the smoke is
+    # "feasibility passed, architectural exercise NOT validated".
+```
+
+Plus: **smoke logs and JSON should preserve the transformers
+warnings about discarded / newly-initialised weights**. The K3
+Block A `aae96aa` smoke log captured these warnings (good!) but
+the JSON evidence summary did not surface them as a structured
+field — readers had to read the log. Future smokes should
+include an `architectural_warnings` block in JSON that captures
+this signal explicitly.
+
+This is the **second lesson about Block A** in 24 hours — first
+was §11.15.13 "verifier feasibility evidence is one half of
+Block A" (drafter forward smoke-script bug). Pattern: Block A
+is **load + forward + shape-correct output**, which is a
+necessary first cut but is several layers removed from "the
+v0.4 architecture works as designed". Subsequent Blocks (B, C,
+D, E) close progressively richer layers; readers of any K3
+evidence must be careful which layer they're reading.
