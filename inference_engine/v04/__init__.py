@@ -43,6 +43,19 @@ from inference_engine.v04.restored_attention import (
     slice_position_embeddings,
 )
 from inference_engine.v04.dlm_restored_verifier import DLMRestoredVerifier
+from inference_engine.v04.niah_eval import (
+    DEFAULT_NEEDLE_PREFIXES,
+    NIAHEvalResult,
+    NIAHSample,
+    aggregate_recall,
+    evaluate,
+    greedy_decode_oracle,
+    greedy_decode_sink_window,
+    greedy_decode_v04,
+    make_niah_dataset,
+    make_sink_window_4d_mask,
+    recall_predicate,
+)
 
 __all__ = [
     # K1.A — capture
@@ -58,4 +71,16 @@ __all__ = [
     "slice_position_embeddings",
     # K1.D — end-to-end wrapper
     "DLMRestoredVerifier",
+    # K1.E — NIAH validation harness
+    "DEFAULT_NEEDLE_PREFIXES",
+    "NIAHEvalResult",
+    "NIAHSample",
+    "aggregate_recall",
+    "evaluate",
+    "greedy_decode_oracle",
+    "greedy_decode_sink_window",
+    "greedy_decode_v04",
+    "make_niah_dataset",
+    "make_sink_window_4d_mask",
+    "recall_predicate",
 ]
