@@ -60,9 +60,22 @@
 #                     local 4-bit MLX model directory
 #   DRAFTER_ID       (models/dflash-kakeya-baseline)
 #                     Alignment-trained Kakeya inference baseline
-#                     (default; LFS, 859 MB bf16). Override with
+#                     (default; LFS, 859 MB bf16, on PR #93 branch).
+#                     If missing locally AND AUTO_FETCH_BASELINE=1
+#                     (default), automatically fetched into local
+#                     cache via scripts/research/k3_fetch_alignment_
+#                     baseline.sh. Override with
 #                     'z-lab/gemma-4-26B-A4B-it-DFlash' for
-#                     research-baseline comparison only.
+#                     research-baseline comparison only (NOT
+#                     alignment-trained).
+#   AUTO_FETCH_BASELINE  (1)  if DRAFTER_ID defaults to the
+#                             alignment baseline AND it's missing
+#                             locally, sparse-checkout PR #93's
+#                             branch into $HOME/.cache/kakeya/ on
+#                             demand (one-time, ~5-10 min for the
+#                             859 MB LFS download). Set to 0 to
+#                             disable and require a pre-existing
+#                             local checkout.
 #   PROMPT_TOKENS    (512)
 #   GEN_TOKENS       (8)
 #   SEED             (42)
@@ -105,6 +118,7 @@ SKIP_DRAFTER="${SKIP_DRAFTER:-0}"
 SKIP_VERIFIER="${SKIP_VERIFIER:-0}"
 PROPOSER_KV_CAPTURE="${PROPOSER_KV_CAPTURE:-0}"
 ALLOW_MISSING_QUANTIZE="${ALLOW_MISSING_QUANTIZE:-0}"
+AUTO_FETCH_BASELINE="${AUTO_FETCH_BASELINE:-1}"
 
 stamp="$(date +%s)"
 out_dir="results/research"
@@ -124,7 +138,46 @@ echo "    Proposer KV capture:  $PROPOSER_KV_CAPTURE"
 echo "    Report:               $report"
 echo
 
-# Pre-flight 0: drafter source check (skipped when SKIP_DRAFTER=1).
+# Pre-flight 0a: auto-fetch the alignment-trained baseline from PR #93's
+# branch into a local cache when the default DRAFTER_ID is missing locally.
+#
+# The alignment-trained baseline (models/dflash-kakeya-baseline, 859 MB
+# bf16, Git LFS, commit 19a2d5c) lives on PR #93's branch
+# AgentMemory/v04-pr-k3-dflash-native-integration-2815. The K3 Mac
+# smoke / DFlashDrafter API (PRs #95-#98) is on a SEPARATE stack rooted
+# at PR #92, and the baseline is NOT in that lineage. So a user on the
+# K3 stack worktree doesn't have the LFS-pulled baseline available
+# under 'models/dflash-kakeya-baseline'.
+#
+# This pre-flight detects the missing-default case and auto-invokes
+# scripts/research/k3_fetch_alignment_baseline.sh which sparse-checkouts
+# PR #93's branch into $HOME/.cache/kakeya/ — without polluting the
+# user's git state. DRAFTER_ID is then re-pointed at the cache path.
+#
+# Disable: AUTO_FETCH_BASELINE=0 bash $0
+if [[ "$SKIP_DRAFTER" != "1" ]] \
+   && [[ "$DRAFTER_ID" == "models/dflash-kakeya-baseline" ]] \
+   && [[ ! -d "$DRAFTER_ID" ]] \
+   && [[ "$AUTO_FETCH_BASELINE" == "1" ]]; then
+    echo "==> Pre-flight: alignment-trained baseline not found at '$DRAFTER_ID' locally."
+    echo "    Auto-fetching from PR #93 branch into local cache..."
+    echo "    (set AUTO_FETCH_BASELINE=0 to disable; one-time ~5-10 min for 859 MB LFS download.)"
+    echo
+    if cached_path="$(bash scripts/research/k3_fetch_alignment_baseline.sh)"; then
+        DRAFTER_ID="$cached_path"
+        echo "==> Auto-fetch complete. DRAFTER_ID re-pointed to cache: $DRAFTER_ID"
+        echo
+    else
+        rc=$?
+        echo "ERROR: auto-fetch of baseline failed (exit=$rc)."
+        echo "       See above for the fetch script's diagnostic output."
+        echo "       To bypass auto-fetch: AUTO_FETCH_BASELINE=0 bash $0"
+        echo "       To manually fetch:   bash scripts/research/k3_fetch_alignment_baseline.sh"
+        exit "$rc"
+    fi
+fi
+
+# Pre-flight 0b: drafter source check (skipped when SKIP_DRAFTER=1).
 #
 # When DRAFTER_ID is a local path (starts with 'models/', './', '../', '/'),
 # verify the directory exists with config.json + safetensors before
