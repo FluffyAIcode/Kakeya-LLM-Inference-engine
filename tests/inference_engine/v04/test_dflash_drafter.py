@@ -306,3 +306,111 @@ class TestDFlashProposer:
             prop.propose_block([1, 2], block_size=0, num_steps=1)
         with pytest.raises(ValueError):
             prop.propose_block([1, 2], block_size=4, num_steps=0)
+
+
+# ---------------------------------------------------------------------------
+# Platform-aware peak memory helpers
+# ---------------------------------------------------------------------------
+
+
+class TestPlatformAwarePeakMemory:
+    """Cover the platform-aware peak memory helpers used by
+    DFlashProposer.propose_block. Validates correct device
+    detection + dispatch across cuda/mps/cpu without requiring
+    actual GPU/MPS hardware (uses synthetic small models on
+    CPU + monkeypatch for the other backends).
+    """
+
+    def _make_drafter_on_cpu(self) -> DFlashDrafter:
+        return DFlashDrafter(_tiny_cfg()).to(torch.float32)
+
+    def test_detect_device_cpu(self):
+        from inference_engine.v04.dflash_drafter import _detect_device
+        m = self._make_drafter_on_cpu()
+        assert _detect_device(m) == "cpu"
+
+    def test_detect_device_raises_on_empty_model(self):
+        from inference_engine.v04.dflash_drafter import _detect_device
+        m = nn.Module()  # no params
+        with pytest.raises(RuntimeError, match="no parameters"):
+            _detect_device(m)
+
+    def test_peak_memory_bytes_cpu_returns_zero(self):
+        from inference_engine.v04.dflash_drafter import _peak_memory_bytes
+        # CPU has no peak counter — return 0 (signal: unmeasured)
+        assert _peak_memory_bytes("cpu") == 0
+
+    def test_peak_memory_bytes_unknown_device_returns_zero(self):
+        from inference_engine.v04.dflash_drafter import _peak_memory_bytes
+        assert _peak_memory_bytes("xpu_or_other") == 0
+
+    def test_reset_peak_memory_cpu_is_noop(self):
+        from inference_engine.v04.dflash_drafter import _reset_peak_memory
+        # Should not raise on CPU
+        _reset_peak_memory("cpu")
+        _reset_peak_memory("xpu_or_other")  # unknown device — also noop
+
+    def test_propose_block_records_zero_peak_on_cpu(self):
+        """Regression: previously DFlashProposer.propose_block called
+        torch.cuda.* unconditionally. On CPU it should record 0
+        (unmeasured) without crashing."""
+        cfg = _tiny_cfg()
+        drafter = self._make_drafter_on_cpu()
+        embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
+        provider = _SyntheticAuxProvider(cfg)
+        proposer = DFlashProposer(drafter, provider, embed_fn, lm_head_fn)
+
+        prop = proposer.propose_block(
+            committed_token_ids=[1, 2, 3, 4, 5],
+            block_size=cfg.block_size,
+            num_steps=1,
+        )
+        assert isinstance(prop, BlockProposal)
+        assert len(prop.tokens) == cfg.block_size
+        # CPU = unmeasured, returns 0 (NOT an error, NOT a fake peak)
+        assert prop.peak_activation_bytes == 0
+
+    def test_peak_memory_bytes_mps_calls_driver_allocated_memory(self, monkeypatch):
+        """Directly exercise the helper for the 'mps' branch without
+        going through propose_block (whose draft_block forward
+        accidentally pokes torch.mps internals like
+        torch.mps._is_in_bad_fork). Validates the dispatch logic:
+        when device='mps' AND torch.mps exists AND has
+        driver_allocated_memory() → call it and return the int.
+        """
+        from inference_engine.v04 import dflash_drafter
+
+        class _FakeMPS:
+            @staticmethod
+            def driver_allocated_memory():
+                return 12345678
+
+        # Stash the original to restore after — directly poking the
+        # module attribute (bypasses monkeypatch scope creep on torch
+        # globals during the test).
+        original_mps = getattr(dflash_drafter.torch, "mps", None)
+        dflash_drafter.torch.mps = _FakeMPS
+        try:
+            assert dflash_drafter._peak_memory_bytes("mps") == 12345678
+        finally:
+            if original_mps is not None:
+                dflash_drafter.torch.mps = original_mps
+
+    def test_peak_memory_bytes_mps_handles_runtime_failure(self):
+        """If torch.mps.driver_allocated_memory raises (e.g. MPS not
+        actually available despite the attribute existing), the helper
+        must return 0 not propagate the exception."""
+        from inference_engine.v04 import dflash_drafter
+
+        class _BrokenMPS:
+            @staticmethod
+            def driver_allocated_memory():
+                raise RuntimeError("MPS not available in this process")
+
+        original_mps = getattr(dflash_drafter.torch, "mps", None)
+        dflash_drafter.torch.mps = _BrokenMPS
+        try:
+            assert dflash_drafter._peak_memory_bytes("mps") == 0
+        finally:
+            if original_mps is not None:
+                dflash_drafter.torch.mps = original_mps
