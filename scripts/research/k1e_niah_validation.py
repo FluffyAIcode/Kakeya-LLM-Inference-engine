@@ -137,10 +137,13 @@ def main() -> int:
         DLMRestoredVerifier,
         NIAHEvalResult,
         evaluate,
+        format_memory_summary,
         greedy_decode_oracle,
         greedy_decode_sink_window,
         greedy_decode_v04,
         make_niah_dataset,
+        record_memory,
+        reset_memory_peak,
     )
 
     samples = make_niah_dataset(
@@ -173,7 +176,22 @@ def main() -> int:
         file=sys.stderr,
     )
 
+    # K1.G: baseline memory snapshot. Captured BEFORE any config
+    # runs, after model + tokenizer + dataset are loaded — represents
+    # the minimum sustained working set for this run. Per-config
+    # peak is reported relative to this baseline so the
+    # constant-memory claim of ADR 0008 §11.5 §"Five properties"
+    # item 1 is empirically verifiable from the JSON evidence.
+    reset_memory_peak(device)
+    baseline_memory = record_memory(device)
+    print(
+        f"[k1e] baseline memory after model+dataset load: "
+        f"{format_memory_summary(baseline_memory)}",
+        file=sys.stderr,
+    )
+
     results = {}
+    memory_per_config = {}
 
     # ----------------------------------------------------------------
     # (a) full-attention oracle
@@ -191,12 +209,19 @@ def main() -> int:
             )
             return text, time.perf_counter() - t0
 
+        reset_memory_peak(device)
         oracle = evaluate("oracle_full_attention", samples, oracle_decode)
+        oracle_memory = record_memory(device)
         results["oracle_full_attention"] = _result_to_dict(oracle)
+        memory_per_config["oracle_full_attention"] = oracle_memory
         print(
             f"[k1e]    oracle recall={oracle.recall:.3f} "
             f"({oracle.samples_correct}/{oracle.samples_total})  "
             f"mean_latency={oracle.mean_latency_s:.2f}s",
+            file=sys.stderr,
+        )
+        print(
+            f"[k1e]    oracle memory:  {format_memory_summary(oracle_memory)}",
             file=sys.stderr,
         )
 
@@ -221,12 +246,19 @@ def main() -> int:
             )
             return text, time.perf_counter() - t0
 
+        reset_memory_peak(device)
         v03 = evaluate("v03_sink_window", samples, v03_decode)
+        v03_memory = record_memory(device)
         results["v03_sink_window"] = _result_to_dict(v03)
+        memory_per_config["v03_sink_window"] = v03_memory
         print(
             f"[k1e]    v0.3 recall={v03.recall:.3f} "
             f"({v03.samples_correct}/{v03.samples_total})  "
             f"mean_latency={v03.mean_latency_s:.2f}s",
+            file=sys.stderr,
+        )
+        print(
+            f"[k1e]    v0.3 memory:   {format_memory_summary(v03_memory)}",
             file=sys.stderr,
         )
 
@@ -255,12 +287,19 @@ def main() -> int:
             )
             return text, time.perf_counter() - t0
 
+        reset_memory_peak(device)
         v04 = evaluate("v04_dlm_restored", samples, v04_decode)
+        v04_memory = record_memory(device)
         results["v04_dlm_restored"] = _result_to_dict(v04)
+        memory_per_config["v04_dlm_restored"] = v04_memory
         print(
             f"[k1e]    v0.4 recall={v04.recall:.3f} "
             f"({v04.samples_correct}/{v04.samples_total})  "
             f"mean_latency={v04.mean_latency_s:.2f}s",
+            file=sys.stderr,
+        )
+        print(
+            f"[k1e]    v0.4 memory:   {format_memory_summary(v04_memory)}",
             file=sys.stderr,
         )
 
@@ -283,7 +322,9 @@ def main() -> int:
             gate["v04_dominates_v03"] = v04_recall > v03_recall
 
     report = {
-        "schema_version": 1,
+        # schema v2: K1.G adds 'baseline_memory' and 'memory_per_config'.
+        # v1 consumers must default the memory blocks to {} on read.
+        "schema_version": 2,
         "kind": "k1e_niah_validation",
         "config": {
             "model": args.model,
@@ -302,6 +343,10 @@ def main() -> int:
             "prompt_token_len_mean": sum(seq_lens) // len(seq_lens),
         },
         "results": results,
+        "memory": {
+            "baseline": baseline_memory,
+            "per_config": memory_per_config,
+        },
         "gate": gate,
     }
 
@@ -316,9 +361,15 @@ def main() -> int:
     # Top-line summary
     print("[k1e] ─── SUMMARY ──────────────────────────────────────", file=sys.stderr)
     for name, r in results.items():
+        mem = memory_per_config.get(name, {})
+        mem_str = ""
+        if mem.get("device_kind") == "cuda" and mem.get("peak_allocated_bytes") is not None:
+            mem_str = f"  peak_mem={mem['peak_allocated_bytes'] / 1e9:.2f}GB"
+        elif mem.get("device_kind") == "mps" and mem.get("current_allocated_bytes") is not None:
+            mem_str = f"  current_mem={mem['current_allocated_bytes'] / 1e9:.2f}GB"
         print(
             f"[k1e]   {name:<24s}  recall={r['recall']:.3f}  "
-            f"mean_latency={r['mean_latency_s']:.2f}s",
+            f"mean_latency={r['mean_latency_s']:.2f}s{mem_str}",
             file=sys.stderr,
         )
     if gate:

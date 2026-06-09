@@ -49,12 +49,15 @@ from inference_engine.v04.niah_eval import (
     NIAHSample,
     aggregate_recall,
     evaluate,
+    format_memory_summary,
     greedy_decode_oracle,
     greedy_decode_sink_window,
     greedy_decode_v04,
     make_niah_dataset,
     make_sink_window_4d_mask,
     recall_predicate,
+    record_memory,
+    reset_memory_peak,
 )
 
 __all__ = [
@@ -83,4 +86,8 @@ __all__ = [
     "make_niah_dataset",
     "make_sink_window_4d_mask",
     "recall_predicate",
+    # K1.G — memory tracking
+    "format_memory_summary",
+    "record_memory",
+    "reset_memory_peak",
 ]

@@ -399,3 +399,134 @@ class TestEvaluateOrchestration:
         result = evaluate("fake", samples, fake_decode)
         assert result.mean_latency_s == sum(latencies) / 3
         assert result.median_latency_s == 0.5
+
+
+# ---------------------------------------------------------------------------
+# K1.G — memory tracking helpers
+# ---------------------------------------------------------------------------
+
+
+from inference_engine.v04.niah_eval import (
+    format_memory_summary,
+    record_memory,
+    reset_memory_peak,
+)
+
+
+class TestRecordMemoryCPU:
+    """CPU path is what Linux CI exercises (no CUDA on the agent VM,
+    no MPS). The CPU branch optionally reads psutil RSS; if psutil
+    is missing the call returns None for that field but doesn't
+    raise."""
+
+    def test_returns_dict_with_device_kind(self):
+        snapshot = record_memory(torch.device("cpu"))
+        assert snapshot["device_kind"] == "cpu"
+
+    def test_peak_fields_are_none_on_cpu(self):
+        snapshot = record_memory(torch.device("cpu"))
+        assert snapshot["peak_allocated_bytes"] is None
+        assert snapshot["peak_reserved_bytes"] is None
+
+    def test_current_allocated_is_int_or_none(self):
+        snapshot = record_memory(torch.device("cpu"))
+        # Either psutil is present and we get an int RSS, or absent
+        # and we get None — both shapes are valid.
+        cur = snapshot["current_allocated_bytes"]
+        assert cur is None or isinstance(cur, int)
+
+    def test_snapshot_is_json_serializable(self):
+        import json
+        snapshot = record_memory(torch.device("cpu"))
+        # Should round-trip through JSON without raising
+        s = json.dumps(snapshot)
+        loaded = json.loads(s)
+        assert loaded["device_kind"] == "cpu"
+
+
+class TestResetMemoryPeak:
+    def test_cpu_reset_is_noop(self):
+        # Should not raise on CPU device
+        reset_memory_peak(torch.device("cpu"))
+
+
+class TestFormatMemorySummary:
+    def test_cuda_format_with_peak(self):
+        snapshot = {
+            "device_kind": "cuda",
+            "peak_allocated_bytes": 4_000_000_000,
+            "current_allocated_bytes": 2_000_000_000,
+            "device_total_bytes": 80_000_000_000,
+        }
+        s = format_memory_summary(snapshot)
+        assert "cuda" in s
+        assert "peak=4.00GB" in s
+        assert "current=2.00GB" in s
+        # Percentage: 4/80 = 5%
+        assert "5%" in s
+
+    def test_cuda_format_without_total(self):
+        snapshot = {
+            "device_kind": "cuda",
+            "peak_allocated_bytes": 4_000_000_000,
+            "current_allocated_bytes": 2_000_000_000,
+        }
+        s = format_memory_summary(snapshot)
+        assert "cuda" in s
+
+    def test_mps_format(self):
+        snapshot = {
+            "device_kind": "mps",
+            "current_allocated_bytes": 3_000_000_000,
+            "driver_allocated_bytes": 5_000_000_000,
+        }
+        s = format_memory_summary(snapshot)
+        assert "mps" in s
+        assert "current=3.00GB" in s
+        assert "driver=5.00GB" in s
+        assert "no peak counter" in s
+
+    def test_mps_format_with_none_values(self):
+        snapshot = {
+            "device_kind": "mps",
+            "current_allocated_bytes": None,
+            "driver_allocated_bytes": None,
+        }
+        s = format_memory_summary(snapshot)
+        assert "n/a" in s
+
+    def test_cpu_format_with_rss(self):
+        snapshot = {
+            "device_kind": "cpu",
+            "current_allocated_bytes": 1_500_000_000,
+        }
+        s = format_memory_summary(snapshot)
+        assert "cpu" in s
+        assert "rss=1.50GB" in s
+
+    def test_cpu_format_without_rss(self):
+        snapshot = {
+            "device_kind": "cpu",
+            "current_allocated_bytes": None,
+        }
+        s = format_memory_summary(snapshot)
+        # Falls through to the catch-all branch
+        assert "cpu" in s
+
+    def test_unknown_device_kind(self):
+        snapshot = {
+            "device_kind": "tpu",
+            "current_allocated_bytes": None,
+        }
+        s = format_memory_summary(snapshot)
+        assert "tpu" in s
+
+    def test_summary_is_single_line(self):
+        snapshot = {
+            "device_kind": "cuda",
+            "peak_allocated_bytes": 1_000_000_000,
+            "current_allocated_bytes": 500_000_000,
+            "device_total_bytes": 80_000_000_000,
+        }
+        s = format_memory_summary(snapshot)
+        assert "\n" not in s

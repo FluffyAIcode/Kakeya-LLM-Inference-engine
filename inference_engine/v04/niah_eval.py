@@ -42,7 +42,7 @@ import dataclasses
 import math
 import random
 import time
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -497,3 +497,173 @@ def evaluate(
         decoded_texts.append(text)
         latencies_s.append(latency)
     return aggregate_recall(name, samples, decoded_texts, latencies_s)
+
+
+# ---------------------------------------------------------------------------
+# Memory measurement helpers
+# ---------------------------------------------------------------------------
+#
+# ADR 0008 §11.5 §"Five properties" item 1 — "constant memory in
+# context length" — is a measurable claim, not a presumption. The
+# helpers below let runners record per-config peak / current memory
+# on the active device and emit it into the run's JSON evidence so
+# the constant-memory claim becomes empirically verifiable rather
+# than rhetorical.
+#
+# CUDA: torch.cuda.max_memory_allocated tracks the high-water mark
+# since the last reset. Reset before each config evaluation, sample
+# after, and the peak is the config's memory cost.
+#
+# MPS: torch.mps does not expose a peak counter as of torch 2.x, so
+# we record current_allocated and driver_allocated as point-in-time
+# samples. Mac runs cannot demonstrate the sustained-memory claim
+# with the same precision as CUDA runs but they can still show
+# rough magnitudes.
+#
+# CPU: optional dependency on psutil. If present, RSS is recorded;
+# if absent, memory fields are None and the run continues. Tests
+# pass psutil-less to verify graceful degradation.
+
+
+def reset_memory_peak(device: torch.device) -> None:
+    """Reset the device's peak-memory counter so a subsequent
+    :func:`record_memory` capture reflects only the period after
+    this call.
+
+    Idempotent. Safe to call on devices that don't track peaks
+    (MPS, CPU); the call is a no-op there.
+    """
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(device)
+    elif device.type == "mps":
+        # No-op: torch.mps does not expose reset_peak_memory_stats
+        # in the current torch line. Documented limitation; the
+        # MPS branch reports point-in-time allocations only.
+        pass
+    # CPU path: nothing to reset; RSS is process-level and we
+    # baseline against a "before" snapshot in record_memory if
+    # the caller wants per-config delta.
+
+
+def record_memory(device: torch.device) -> Dict[str, Any]:
+    """Capture a memory snapshot on the given device.
+
+    Returns a dict whose shape depends on the device kind:
+
+    * **cuda**: ``{
+        "device_kind": "cuda",
+        "current_allocated_bytes": int,
+        "current_reserved_bytes": int,
+        "peak_allocated_bytes": int,        # since last reset
+        "peak_reserved_bytes": int,         # since last reset
+        "device_total_bytes": int,
+      }``
+    * **mps**: ``{
+        "device_kind": "mps",
+        "current_allocated_bytes": int,
+        "driver_allocated_bytes": int,
+        "peak_allocated_bytes": None,       # not exposed on MPS
+        "peak_reserved_bytes": None,
+        "device_total_bytes": None,
+      }``
+    * **cpu**: ``{
+        "device_kind": "cpu",
+        "current_allocated_bytes": int|None,  # process RSS via psutil
+        "peak_allocated_bytes": None,
+        ...
+      }``
+
+    All bytes fields are ``int`` when measurable, ``None`` when the
+    device kind doesn't expose that metric. JSON-serialisable.
+
+    Synchronizes the CUDA stream before sampling so async kernels
+    have committed; MPS path doesn't currently expose a sync API for
+    memory accounting (kernels are typically already complete when
+    the eval loop is between samples).
+    """
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        props = torch.cuda.get_device_properties(device)
+        return {
+            "device_kind": "cuda",
+            "device_name": props.name,
+            "device_total_bytes": int(props.total_memory),
+            "current_allocated_bytes": int(torch.cuda.memory_allocated(device)),
+            "current_reserved_bytes": int(torch.cuda.memory_reserved(device)),
+            "peak_allocated_bytes": int(torch.cuda.max_memory_allocated(device)),
+            "peak_reserved_bytes": int(torch.cuda.max_memory_reserved(device)),
+        }
+    if device.type == "mps":
+        # torch.mps.current_allocated_memory and
+        # torch.mps.driver_allocated_memory are stable since torch 2.0.
+        try:
+            current = int(torch.mps.current_allocated_memory())
+        except Exception:
+            current = None
+        try:
+            driver = int(torch.mps.driver_allocated_memory())
+        except Exception:
+            driver = None
+        return {
+            "device_kind": "mps",
+            "device_name": "Apple MPS",
+            "device_total_bytes": None,
+            "current_allocated_bytes": current,
+            "driver_allocated_bytes": driver,
+            "peak_allocated_bytes": None,
+            "peak_reserved_bytes": None,
+        }
+    # CPU or other: try psutil for process RSS.
+    rss: Optional[int] = None
+    try:
+        import psutil  # type: ignore
+        rss = int(psutil.Process().memory_info().rss)
+    except Exception:
+        rss = None
+    return {
+        "device_kind": device.type,
+        "device_name": str(device),
+        "device_total_bytes": None,
+        "current_allocated_bytes": rss,
+        "peak_allocated_bytes": None,
+        "peak_reserved_bytes": None,
+    }
+
+
+def format_memory_summary(snapshot: Dict[str, Any]) -> str:
+    """Return a one-line human-readable summary of a memory snapshot.
+
+    Used by runners to print per-config memory at the same density
+    as the latency / recall summary lines. Returns a string suitable
+    for direct ``print()``-ing; callers prepend their own prefix.
+    """
+    kind = snapshot.get("device_kind", "?")
+    if kind == "cuda":
+        peak = snapshot.get("peak_allocated_bytes")
+        cur = snapshot.get("current_allocated_bytes")
+        total = snapshot.get("device_total_bytes")
+        if peak is not None and total is not None and total > 0:
+            pct = peak / total * 100
+            return (
+                f"cuda peak={peak / 1e9:.2f}GB ({pct:.0f}% of "
+                f"{total / 1e9:.0f}GB)  current={cur / 1e9:.2f}GB"
+            )
+        return f"cuda peak={peak} current={cur}"
+    if kind == "mps":
+        cur = snapshot.get("current_allocated_bytes")
+        drv = snapshot.get("driver_allocated_bytes")
+        if cur is not None:
+            cur_str = f"{cur / 1e9:.2f}GB"
+        else:
+            cur_str = "n/a"
+        if drv is not None:
+            drv_str = f"{drv / 1e9:.2f}GB"
+        else:
+            drv_str = "n/a"
+        return f"mps current={cur_str} driver={drv_str} (no peak counter)"
+    cur = snapshot.get("current_allocated_bytes")
+    if cur is not None:
+        return f"cpu rss={cur / 1e9:.2f}GB"
+    return f"{kind} (no memory accounting available)"
