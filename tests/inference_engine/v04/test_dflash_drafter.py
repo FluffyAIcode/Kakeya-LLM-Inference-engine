@@ -154,14 +154,61 @@ class TestFromPretrainedLocal:
 
     @pytest.mark.network
     def test_require_trained_embed_default_raises_on_random(self, tmp_path):
+        # The synthetic checkpoint includes a DFlash dflash_config block
+        # by default, which now triggers the architectural exception path
+        # (DFlash genuinely doesn't own embed_tokens). To exercise the
+        # raise-on-random behaviour, write a checkpoint WITHOUT
+        # dflash_config (a "pretend standalone Qwen3" checkpoint).
+        import json
         d = _write_drafter_checkpoint(
             tmp_path, embed_tokens_trained=False,
         )
+        # Strip dflash_config from config.json to make the loader treat
+        # this as a standalone Qwen3 (where the trained-embed gate IS
+        # appropriate).
+        config_path = d / "config.json"
+        cfg = json.loads(config_path.read_text())
+        cfg.pop("dflash_config", None)
+        cfg.pop("target_layer_ids", None)
+        cfg.pop("block_size", None)
+        config_path.write_text(json.dumps(cfg))
+
         with pytest.raises(ValueError, match="NOT trained"):
             DFlashDrafter.from_pretrained(
                 str(d), dtype=torch.float32, device="cpu",
                 trust_remote_code=False,
             )
+
+    @pytest.mark.network
+    def test_dflash_config_bypasses_trained_embed_gate(self, tmp_path):
+        """Regression for 2026-06-09 user-side bug:
+
+        Real DFlash baseline checkpoints (alignment-trained) ship without
+        embed_tokens because DFlash shares the verifier's at inference
+        time. The trained-embed gate then false-positives with the
+        Normal(0, 0.02) random-init variance signature (~4e-4).
+
+        Fix: when config.json declares a DFlash architecture (presence
+        of dflash_config / target_layer_ids / block_size), the gate is
+        skipped and an architectural warning is appended instead.
+        """
+        # Synthetic checkpoint WITH dflash_config (the default helper
+        # already includes it; just confirm random-init embeddings load
+        # successfully when the DFlash markers are present).
+        d = _write_drafter_checkpoint(
+            tmp_path, embed_tokens_trained=False,
+        )
+        drafter = DFlashDrafter.from_pretrained(
+            str(d), dtype=torch.float32, device="cpu",
+            trust_remote_code=False,
+        )
+        assert drafter.embed_tokens_trained is False  # the diagnostic still records the truth
+        # And the architectural warning is appended:
+        warnings_text = " ".join(drafter.architectural_warnings)
+        assert "ARCHITECTURAL WARNING" in warnings_text
+        assert "shared embed_tokens" in warnings_text
+        assert "PR #93" in warnings_text
+        assert "plumbing only, not product semantics" in warnings_text
 
     @pytest.mark.network
     def test_require_trained_embed_false_bypasses(self, tmp_path):

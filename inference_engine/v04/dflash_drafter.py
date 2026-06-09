@@ -197,7 +197,29 @@ class DFlashDrafter:
             **hf_kwargs,
         )
 
-        if require_trained_embed and not result.embed_tokens_trained:
+        # DFlash architectural exception: the drafter does NOT own its own
+        # embed_tokens — it shares the verifier's at inference time (per
+        # ADR §11.7.0 + PR #93's dflash_drafter.py docstring lines 7-15).
+        # So a properly-published DFlash baseline checkpoint will ALWAYS
+        # show embed_tokens.weight.var() ≈ 4e-4 (the Normal(0, 0.02)
+        # random-init signature), because the safetensors file does NOT
+        # carry embed_tokens and Qwen3ForCausalLM constructs them with
+        # default random init.
+        #
+        # Detection: the DFlash config.json carries dflash_config.
+        # target_layer_ids and block_size — these are the architectural
+        # markers that "this checkpoint expects shared embed_tokens from
+        # a verifier, not its own". When detected, the trained-embed gate
+        # is architecturally inappropriate (would correctly catch a real
+        # bug for a standalone Qwen3 checkpoint, but produces a false
+        # positive for a DFlash drafter).
+        is_dflash = bool(
+            result.inspection.config.get("dflash_config")
+            or result.inspection.config.get("target_layer_ids")
+            or result.inspection.config.get("block_size")
+        )
+
+        if require_trained_embed and not result.embed_tokens_trained and not is_dflash:
             raise ValueError(
                 f"DFlashDrafter.from_pretrained({path_or_repo!r}): the loaded "
                 f"checkpoint's embed_tokens.weight.var() = "
@@ -209,6 +231,51 @@ class DFlashDrafter:
                 f"key remap (run 'python -m inference_engine.v04.dflash_loader "
                 f"inspect {path_or_repo}' for the diagnose dump)."
             )
+
+        if is_dflash:
+            # KNOWN ARCHITECTURAL LIMITATION (recorded 2026-06-09):
+            #
+            # This loader (PR #96) treats the DFlash drafter as a
+            # standalone Qwen3 model. The K3 native DFlash implementation
+            # on PR #93's branch
+            # (AgentMemory/v04-pr-k3-dflash-native-integration-2815)
+            # implements the proper architecture:
+            #
+            #   * No own embed_tokens (uses verifier's at inference)
+            #   * No own lm_head (uses verifier's)
+            #   * fc + hidden_norm consume verifier hidden states from
+            #     dflash_config.target_layer_ids (with +1 shift per
+            #     vLLM PR #41703)
+            #   * Non-causal block attention with block_size=16
+            #   * Block-diffusion mask-token decoding
+            #
+            # Loading via THIS module produces a model whose
+            # embed_tokens are randomly initialised. Calling
+            # .propose_kv() will run the forward (validates plumbing
+            # shape + dtype + device end-to-end) but the resulting
+            # K/V tensors at every layer derive from random embeddings
+            # — they are NOT the K/V tensors a properly-injected
+            # DFlash drafter would produce. The proposer-role smoke
+            # validates LOAD + FORWARD plumbing, not product semantics.
+            #
+            # Resolution: merge PR #93 to main, retire this module
+            # (or rewrite it to delegate to PR #93's DFlashDrafter).
+            # Tracked as the "PR #96 retirement" item.
+            warning = (
+                "ARCHITECTURAL WARNING: this DFlash checkpoint expects "
+                "shared embed_tokens with the verifier (per "
+                "dflash_config in config.json), but PR #96's DFlashDrafter "
+                "loads it as a standalone Qwen3 with random-init embeddings. "
+                "The proposer K/V produced by this loader's propose_kv() "
+                "validates plumbing only, not product semantics. The proper "
+                "implementation lives on PR #93's branch "
+                "(AgentMemory/v04-pr-k3-dflash-native-integration-2815) "
+                "and should be used for any meaningful K/V evidence. "
+                f"embed_tokens.weight.var() = {result.embed_tokens_var:.6e} "
+                f"(typical random-init signature; DFlash design, NOT a bug)."
+            )
+            result.architectural_warnings.append(warning)
+            logger.warning(warning)
 
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(
