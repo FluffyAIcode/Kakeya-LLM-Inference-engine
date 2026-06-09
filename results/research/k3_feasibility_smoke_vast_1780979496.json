@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "kind": "k3_feasibility_smoke",
+  "config": {
+    "platform": "cuda",
+    "verifier_path": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "prompt_tokens": 512,
+    "gen_tokens": 8,
+    "seed": 42,
+    "skip_drafter": false
+  },
+  "stages": [
+    {
+      "stage": "baseline",
+      "memory": {
+        "label": "baseline",
+        "platform": "cuda",
+        "current_allocated_bytes": 0,
+        "current_reserved_bytes": 0,
+        "peak_allocated_bytes": 0,
+        "peak_reserved_bytes": 0,
+        "device_total_bytes": 150109880320,
+        "device_name": "NVIDIA H200"
+      }
+    },
+    {
+      "stage": "verifier_loaded",
+      "memory": {
+        "label": "after_verifier_load",
+        "platform": "cuda",
+        "current_allocated_bytes": 51611948032,
+        "current_reserved_bytes": 51636076544,
+        "peak_allocated_bytes": 51611948032,
+        "peak_reserved_bytes": 51636076544,
+        "device_total_bytes": 150109880320,
+        "device_name": "NVIDIA H200"
+      },
+      "verifier_load_seconds": 42.80279124004301,
+      "verifier_kind": "transformers_bf16_cuda"
+    },
+    {
+      "stage": "drafter_loaded",
+      "memory": {
+        "label": "after_drafter_load",
+        "platform": "cuda",
+        "current_allocated_bytes": 55328955904,
+        "current_reserved_bytes": 55348035584,
+        "peak_allocated_bytes": 55328955904,
+        "peak_reserved_bytes": 55348035584,
+        "device_total_bytes": 150109880320,
+        "device_name": "NVIDIA H200"
+      },
+      "drafter_load_seconds": 10.656306450953707,
+      "drafter_kind": "transformers_cuda"
+    },
+    {
+      "stage": "verifier_forward",
+      "memory": {
+        "label": "after_verifier_forward",
+        "platform": "cuda",
+        "current_allocated_bytes": 55362510336,
+        "current_reserved_bytes": 56191090688,
+        "peak_allocated_bytes": 56160551936,
+        "peak_reserved_bytes": 56191090688,
+        "device_total_bytes": 150109880320,
+        "device_name": "NVIDIA H200"
+      },
+      "metrics": {
+        "prefill_seconds": 1.6720336560392752,
+        "gen_seconds": 2.8564149239100516,
+        "gen_tokens": 8,
+        "tokens_per_sec": 2.8007135563656367,
+        "gen_text_head": "\nThe Kakeya inference engine validates",
+        "prompt_token_count": 757
+      }
+    },
+    {
+      "stage": "drafter_forward_FAIL",
+      "error": "RuntimeError: random_ expects 'from' to be less than 'to', but got from=0 >= to=0"
+    }
+  ],
+  "summary": {
+    "status": "pass",
+    "verifier_loadable": true,
+    "verifier_forward_ok": true,
+    "drafter_loadable": true,
+    "drafter_forward_ok": false
+  }
+}
