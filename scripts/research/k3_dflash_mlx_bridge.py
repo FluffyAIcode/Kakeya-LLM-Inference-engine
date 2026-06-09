@@ -84,6 +84,32 @@ import math
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 
+def _resolve_mlx_text_models(mlx_model: Any) -> Tuple[Any, Any]:
+    """Return ``(logits_model, text_model)`` across mlx-lm wrapper shapes."""
+    logits_model = getattr(mlx_model, "language_model", mlx_model)
+    text_model = getattr(logits_model, "model", None)
+    if text_model is None and hasattr(logits_model, "embed_tokens"):
+        text_model = logits_model
+    if text_model is None or not hasattr(text_model, "embed_tokens"):
+        raise AttributeError(
+            "Could not locate MLX Gemma text model; expected "
+            "model.language_model.model or model.model"
+        )
+    return logits_model, text_model
+
+
+def _get_mlx_text_config_value(
+    logits_model: Any, mlx_model: Any, name: str, default: Any = None,
+) -> Any:
+    if hasattr(logits_model, name):
+        return getattr(logits_model, name)
+    args = getattr(mlx_model, "args", None)
+    text_config = getattr(args, "text_config", None)
+    if isinstance(text_config, dict):
+        return text_config.get(name, default)
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Bridge utilities (no mlx_lm dependency on Linux CI; numpy-only fallback
 # for the dtype/shape/device test surface).
@@ -109,7 +135,13 @@ def mx_to_torch(
     """
     import numpy as np
     import torch
-    arr = np.asarray(x)
+    try:
+        arr = np.asarray(x)
+    except RuntimeError as exc:
+        if "PEP 3118 buffer format string" not in str(exc):
+            raise
+        import mlx.core as mx  # type: ignore
+        arr = np.asarray(x.astype(mx.float32))
     t = torch.from_numpy(arr.copy())  # copy: numpy array may be on a
                                        # buffer the MLX runtime owns
     if dtype is not None:
@@ -191,11 +223,10 @@ class MLXVerifierAuxProvider:
         if not committed_token_ids:
             raise ValueError("committed_token_ids must be non-empty")
 
-        # mlx_lm.load returns Model (the wrapper); the inner text model
-        # is at .model. The verifier-side Gemma4TextModel layer loop is
-        # what we need to instrument.
-        outer = self.mlx_model           # Model (lm_head wrapper)
-        inner = outer.model              # Gemma4TextModel
+        # mlx_lm.load may return either the text logits wrapper directly
+        # or a multimodal Gemma wrapper with .language_model. The
+        # Gemma4TextModel layer loop is what we need to instrument.
+        outer, inner = _resolve_mlx_text_models(self.mlx_model)
 
         # Build input_ids as mx.array.
         ids_mx = mx.array([committed_token_ids])  # shape [1, C]
@@ -213,11 +244,31 @@ class MLXVerifierAuxProvider:
 
         # Step 1: embed_tokens.
         h = inner.embed_tokens(ids_mx)
+        h = h * getattr(inner, "embed_scale", 1.0)
 
         # Step 2: per_layer_inputs + masks + cache.
-        per_layer_inputs = inner.get_per_layer_inputs(ids_mx) if hasattr(
-            inner, "get_per_layer_inputs",
-        ) else [None] * len(inner.layers)
+        if getattr(inner, "hidden_size_per_layer_input", 0):
+            if hasattr(inner, "_get_per_layer_inputs"):
+                per_layer_inputs = inner._get_per_layer_inputs(ids_mx, h)
+            elif hasattr(inner, "get_per_layer_inputs"):
+                per_layer_inputs = inner.get_per_layer_inputs(ids_mx)
+            else:
+                per_layer_inputs = None
+            if per_layer_inputs is not None and hasattr(
+                inner, "_project_per_layer_inputs",
+            ):
+                per_layer_inputs = inner._project_per_layer_inputs(
+                    h, per_layer_inputs,
+                )
+            if per_layer_inputs is not None:
+                per_layer_inputs = [
+                    per_layer_inputs[:, :, i, :]
+                    for i, _ in enumerate(inner.layers)
+                ]
+            else:
+                per_layer_inputs = [None] * len(inner.layers)
+        else:
+            per_layer_inputs = [None] * len(inner.layers)
         cache = [None] * len(inner.layers)
         masks = inner._make_masks(h, cache)
 
@@ -248,12 +299,17 @@ class MLXVerifierAuxProvider:
         h_final = inner.norm(h)
 
         # Step 6 + 7: logits + softcap → bonus.
-        if outer.tie_word_embeddings:
-            logits_mx = outer.model.embed_tokens.as_linear(h_final)
+        tied = _get_mlx_text_config_value(
+            outer, self.mlx_model, "tie_word_embeddings", True,
+        )
+        if tied:
+            logits_mx = inner.embed_tokens.as_linear(h_final)
         else:
             logits_mx = outer.lm_head(h_final)
-        if outer.final_logit_softcapping is not None:
-            cap = outer.final_logit_softcapping
+        cap = _get_mlx_text_config_value(
+            outer, self.mlx_model, "final_logit_softcapping",
+        )
+        if cap is not None:
             logits_mx = cap * mx.tanh(logits_mx / cap)
         # Bonus = argmax of last-position logits.
         bonus_arr = mx.argmax(logits_mx[0, -1])
@@ -304,9 +360,11 @@ def build_mlx_verifier_callbacks(
     """
     import torch
 
-    inner = mlx_model.model
-    tied = mlx_model.tie_word_embeddings
-    scale = math.sqrt(hidden_size)
+    outer, inner = _resolve_mlx_text_models(mlx_model)
+    tied = _get_mlx_text_config_value(
+        outer, mlx_model, "tie_word_embeddings", True,
+    )
+    scale = getattr(inner, "embed_scale", math.sqrt(hidden_size))
 
     def embed_fn(ids: torch.Tensor) -> torch.Tensor:
         ids_mx = torch_to_mx(ids)
@@ -325,7 +383,7 @@ def build_mlx_verifier_callbacks(
         if tied:
             logits_mx = inner.embed_tokens.as_linear(h_mx)
         else:
-            logits_mx = mlx_model.lm_head(h_mx)
+            logits_mx = outer.lm_head(h_mx)
         if softcap is not None:
             import mlx.core as mx  # type: ignore
             logits_mx = softcap * mx.tanh(logits_mx / softcap)
@@ -361,7 +419,10 @@ def mlx_verify_block(
     seq = committed + draft
     inp = mx.array([seq])
     logits_mx = mlx_model(inp)  # [1, C+L, V]
-    if mlx_model.final_logit_softcapping is not None:
+    outer, _inner = _resolve_mlx_text_models(mlx_model)
+    if _get_mlx_text_config_value(
+        outer, mlx_model, "final_logit_softcapping",
+    ) is not None:
         # Already applied inside __call__ for the wrapper, so skip;
         # but if a future mlx_lm version moves softcap elsewhere,
         # add a re-apply here.
