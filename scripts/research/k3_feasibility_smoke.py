@@ -255,6 +255,24 @@ def _diagnose_mlx_load_failure(
     else:
         diag["config_json"] = None
 
+    # Tokenizer + processor configs — needed for the Gemma 4 multimodal
+    # extra_special_tokens shape diagnosis (bug4 fingerprint, added
+    # 2026-06-09 after the bug1 fingerprint mis-classified a tokenizer-
+    # path failure as a quantization-config-shape failure).
+    tokenizer_config_path = p / "tokenizer_config.json"
+    if tokenizer_config_path.exists():
+        try:
+            diag["tokenizer_config_json"] = json.loads(tokenizer_config_path.read_text())
+        except Exception as tc_e:
+            diag["tokenizer_config_parse_error"] = f"{type(tc_e).__name__}: {tc_e}"
+
+    processor_config_path = p / "processor_config.json"
+    if processor_config_path.exists():
+        try:
+            diag["processor_config_json"] = json.loads(processor_config_path.read_text())
+        except Exception as pc_e:
+            diag["processor_config_parse_error"] = f"{type(pc_e).__name__}: {pc_e}"
+
     manifest_path = p / "k3_setup_manifest.json"
     if manifest_path.exists():
         try:
@@ -291,8 +309,57 @@ def _diagnose_mlx_load_failure(
         diag["error_message"] + "\n" + "\n".join(diag.get("traceback") or [])
     ).lower()
     config = diag.get("config_json") or {}
+    tok_config = diag.get("tokenizer_config_json") or {}
 
-    if "'list' object has no attribute 'keys'" in error_text:
+    # Bug 4 (added 2026-06-09 after bug1 mis-classified a tokenizer-path
+    # failure): Gemma 4 multimodal tokenizer's extra_special_tokens is
+    # passed as a list to transformers' _set_model_specific_special_tokens
+    # which expects a dict. Specific traceback signature:
+    #   File "tokenization_utils_base.py", line ~1210
+    #   in _set_model_specific_special_tokens
+    #     self.SPECIAL_TOKENS_ATTRIBUTES = ... + list(special_tokens.keys())
+    # AttributeError: 'list' object has no attribute 'keys'
+    bug4_traceback_match = (
+        "_set_model_specific_special_tokens" in error_text
+        or "tokenization_utils_base" in error_text
+    )
+    bug4_config_match = isinstance(
+        tok_config.get("extra_special_tokens"), list,
+    )
+    if bug4_traceback_match or bug4_config_match:
+        evidence_parts = []
+        if bug4_traceback_match:
+            evidence_parts.append(
+                "Traceback fires inside _set_model_specific_special_tokens "
+                "in transformers/tokenization_utils_base.py; the failing "
+                "line calls .keys() on self.extra_special_tokens which "
+                "should be a dict but is a list."
+            )
+        if bug4_config_match:
+            evidence_parts.append(
+                f"tokenizer_config.json's 'extra_special_tokens' field is "
+                f"a list (len={len(tok_config['extra_special_tokens'])}); "
+                "transformers _set_model_specific_special_tokens expects "
+                "a dict mapping token-name → token-string."
+            )
+        fingerprints.append({
+            "id": "bug4_gemma4_extra_special_tokens_list_shape",
+            "evidence": " ".join(evidence_parts),
+            "suggested_workaround": (
+                "Run scripts/research/k3_patch_gemma4_tokenizer_config.py "
+                "<verifier_path> to convert tokenizer_config.json's "
+                "extra_special_tokens from a list to a dict (using Gemma 4 "
+                "multimodal token names: audio_token, boa_token, eoa_token, "
+                "image_token, boi_token, eoi_token, video_token). The "
+                "script backs up the original to .bak and writes a patched "
+                "version. Re-run the smoke after patching."
+            ),
+        })
+
+    # Bug 1 (kept for backward-compat, but with refined match: only fires
+    # when the traceback DOESN'T match the bug4 tokenizer pattern, since
+    # that pattern shares the 'list has no keys' error message).
+    if "'list' object has no attribute 'keys'" in error_text and not bug4_traceback_match:
         fingerprints.append({
             "id": "bug1_quant_config_list_vs_dict",
             "evidence": "AttributeError on .keys() suggests upstream code "
