@@ -471,10 +471,27 @@ def _round_trip_resident_through_compressor(
     K_round_tripped, V_round_tripped = compressor.decompress(pos_tensor.cpu())
     # Reassemble: K/V at evicted positions are unchanged; K/V at
     # resident positions get the round-tripped values.
+    #
+    # KakeyaLattice's decompress returns fp32 on the lattice's compute
+    # device (typically CPU); the verifier's K, V are typically
+    # bf16/fp16 on MPS/CUDA. ``index_copy_`` requires self and source
+    # to share dtype AND device. The K2.A.2 stateful path
+    # (``_V04SessionCache.update``) handles this at line 380; the
+    # K2.A.1 stateless path here was missing the cast — surfaced as
+    # ``RuntimeError: index_copy_(): self and source expected to have
+    # the same dtype, but got (self) BFloat16 and (source) Float`` on
+    # the first Mac M4 production-smoke (2026-06-09). This cast
+    # mirrors line 380 + 408 to close the regression.
     K_out = K.clone()
     V_out = V.clone()
-    K_out.index_copy_(-2, pos_tensor, K_round_tripped)
-    V_out.index_copy_(-2, pos_tensor, V_round_tripped)
+    K_out.index_copy_(
+        -2, pos_tensor,
+        K_round_tripped.to(device=K_out.device, dtype=K_out.dtype),
+    )
+    V_out.index_copy_(
+        -2, pos_tensor,
+        V_round_tripped.to(device=V_out.device, dtype=V_out.dtype),
+    )
     return K_out, V_out
 
 
