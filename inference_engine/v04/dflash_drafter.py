@@ -307,6 +307,9 @@ class DFlashDrafter(nn.Module):
                 f"aux concat feature dim {cat.shape[-1]} != fc_in_features "
                 f"{self.cfg.fc_in_features}"
             )
+        # The verifier hands aux hidden in its own dtype (often upcast to
+        # fp32 for the capture); cast to the drafter's compute dtype.
+        cat = cat.to(self.fc.weight.dtype)
         return self.hidden_norm(self.fc(cat))
 
     # -- transformer forward ----------------------------------------------
@@ -436,11 +439,14 @@ class DFlashDrafter(nn.Module):
             masked = block[0] == cfg.mask_token_id
             if not bool(masked.any()):
                 break
-            block_embeds = embed_fn(block)  # [1, block_size, hidden]
-            h = torch.cat([aux_proj.to(block_embeds.dtype), block_embeds], dim=1)
+            block_embeds = embed_fn(block).to(aux_proj.dtype)  # [1, block_size, hidden]
+            h = torch.cat([aux_proj, block_embeds], dim=1)
             h = self.backbone(h, position_ids, attn_bias)  # [1, T, hidden]
             block_h = h[:, 1:, :]  # drop the register
             logits = lm_head_fn(block_h)  # [1, block_size, vocab]
+            # The drafter must never propose the mask sentinel as a real
+            # token; forbid it before argmax.
+            logits[..., cfg.mask_token_id] = float("-inf")
             x0 = torch.argmax(logits, dim=-1)  # [1, block_size]
             probs = torch.softmax(logits.float(), dim=-1)
             conf = probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)[0]  # [block_size]
@@ -456,10 +462,11 @@ class DFlashDrafter(nn.Module):
 
         if bool((block[0] == cfg.mask_token_id).any()):
             # Collapse any leftover masks to argmax rather than emit <mask>.
-            block_embeds = embed_fn(block)
-            h = torch.cat([aux_proj.to(block_embeds.dtype), block_embeds], dim=1)
+            block_embeds = embed_fn(block).to(aux_proj.dtype)
+            h = torch.cat([aux_proj, block_embeds], dim=1)
             h = self.backbone(h, position_ids, attn_bias)
             logits = lm_head_fn(h[:, 1:, :])
+            logits[..., cfg.mask_token_id] = float("-inf")
             x0 = torch.argmax(logits, dim=-1)[0]
             leftover = block[0] == cfg.mask_token_id
             block[0] = torch.where(leftover, x0, block[0])
