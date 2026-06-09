@@ -1,0 +1,31 @@
+{
+  "name": "dflash-kakeya-baseline",
+  "kind": "dflash_drafter",
+  "role": "baseline speculative-decoding drafter for kakeya inference",
+  "base_model": "z-lab/gemma-4-26B-A4B-it-DFlash",
+  "verifier_model": "google/gemma-4-26B-A4B-it",
+  "loader": "inference_engine.v04.dflash_drafter.DFlashDrafter.from_pretrained",
+  "dtype": "bfloat16",
+  "params": 429689088,
+  "block_size": 16,
+  "aux_layer_ids": [2, 7, 12, 18, 23, 28],
+  "alignment": {
+    "trainer": "scripts/research/k3_dflash_alignment_train.py",
+    "scope": "full",
+    "steps": 6000,
+    "lr": 5e-05,
+    "prompts": 64,
+    "usable_sequences": 58,
+    "train_match": 0.71
+  },
+  "acceptance": {
+    "held_out": {"rate": 0.107, "length": 2.45, "n_prompts": 8, "block_size": 16},
+    "in_domain": {"rate": 0.561, "length": 8.62},
+    "reference_humaneval": {"rate": 0.447, "length": 7.7}
+  },
+  "evidence": [
+    "results/research/k3_dflash_specdecode_corpus_heldout.json",
+    "results/research/dflash_aligned_corpus_report.json"
+  ],
+  "notes": "Research baseline; held-out acceptance is corpus-size-limited and improves with more alignment data. Lossless vs greedy AR is guaranteed by the verifier accept loop."
+}

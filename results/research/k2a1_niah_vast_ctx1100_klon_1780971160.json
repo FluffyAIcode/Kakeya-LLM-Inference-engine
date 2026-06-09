@@ -1,0 +1,844 @@
+{
+  "schema_version": 5,
+  "kind": "k1e_niah_validation",
+  "config": {
+    "model": "google/gemma-3-1b-it",
+    "device": "cuda",
+    "dtype": "torch.bfloat16",
+    "attn_impl": "sdpa",
+    "n_samples": 20,
+    "haystack_min_lines": 935,
+    "haystack_max_lines": 1265,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "prompt_token_len_min": 19033,
+    "prompt_token_len_max": 25273,
+    "prompt_token_len_mean": 21475
+  },
+  "kl": {
+    "kl_on": true,
+    "lattice": "D4",
+    "q_range": 38,
+    "codec_name": "kakeyalattice-D4-Q38"
+  },
+  "results": {
+    "oracle_full_attention": {
+      "name": "oracle_full_attention",
+      "recall": 0.6,
+      "samples_correct": 12,
+      "samples_total": 20,
+      "mean_latency_s": 33.16732037441106,
+      "median_latency_s": 33.59785815048963,
+      "per_sample_decoded": [
+        "This is a classic riddle! The answer is:\n\n**BETA-1409**\n\nLet me know",
+        "This is a classic riddle! The secret code is: **Delta-3286**.\n\nLet me know if",
+        "BETA-7912\n\n\n\n\n\n\n\n",
+        "This is a classic riddle! The secret code is BETA-4582.",
+        "KAPPA-1434\n\n\n\n\n\n\n\n",
+        "This is a classic riddle! The answer is:\n\n**Pine-9928**\n\nLet me know if",
+        "This is a fun, challenging prompt! The response is a deliberately cryptic and nonsensical string of characters. It\u2019s",
+        "This is a classic riddle! The answer is:\n\n**Pine-7924**\n\nLet me know if",
+        "Gamma-4527\n\n\n\n\n\n\n\n",
+        "BETA-7224",
+        "This is a classic riddle! The answer is:\n\n**\"The quick brown fox jumps over the lazy dog.\"**",
+        "The secret code is PINE-8527.",
+        "This is a tricky question! The answer is: \u201cBIRCH-7201\u201d.",
+        "EPSILON-6925\n\n\n\n\n\n\n",
+        "This is a riddle! The answer is:\n\n**Pine-2139**\n\nLet me know if you",
+        "This is a classic riddle! The secret code is \u201cMAPLE-5741\u201d.",
+        "This is a classic riddle! The answer is:\n\n**OAK-2654**\n\nLet me know",
+        "This is a classic riddle! The answer is:\n\n**\"This is a test.\"**\n\nLet me know if",
+        "This is a riddle! The answer is:\n\n**ZETA-4432**\n\nLet me know if",
+        "The secret code is KAPPA-3803."
+      ],
+      "per_sample_correct": [
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        0.6349772970517937,
+        0.6979295023834923,
+        0.6553736442486434,
+        0.7376568314157529,
+        0.661783949135726,
+        0.713553274212111,
+        0.7207546819899016,
+        0.7276182780213368,
+        0.683807856840377,
+        0.7399157693704425,
+        0.6825303800080247,
+        0.7452877105138916,
+        0.7353229346234725,
+        0.6576076596966506,
+        0.7275519066879641,
+        0.7151109234744518,
+        0.7010691983617435,
+        1.7073981302279575,
+        0.6864260057332437,
+        0.7502911083073589
+      ],
+      "mean_throughput_tokens_per_sec": 0.7540983521152168,
+      "median_throughput_tokens_per_sec": 0.7143320988432814,
+      "min_throughput_tokens_per_sec": 0.6349772970517937,
+      "max_throughput_tokens_per_sec": 1.7073981302279575
+    },
+    "v03_sink_window": {
+      "name": "v03_sink_window",
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 20,
+      "mean_latency_s": 16.850349712820027,
+      "median_latency_s": 16.25868412508862,
+      "per_sample_decoded": [
+        "Okay, let's tackle this.\n\n**Question:** What is the secret code?\n\n**Answer:**  It",
+        "Okay, let's try to figure out what's the secret code.\n\nOkay, let's try to",
+        "Okay, let's break this down.\n\nYou've presented a series of questions and answers. It seems like",
+        "This is a good.\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n",
+        "Okay, let's try this.\n\nYou're asking me to do something.\n\nI'm not sure",
+        "Okay, let's break this down.\n\n**Question:** What is the secret code?\n**Answer:**  ",
+        "Okay, let's break this down.\n\nThe question is: \"What is the secret code?\"\n\nThe answer",
+        "1:\n1.\n1\n1\n11\n1\n11\n1\n1111",
+        "Okay, let's clarify.\n\nThe secret code is a simple prompt\n\nIs there anything else I can help you",
+        "Okay, let's break this down.\n\nThe question is: \"What is the secret code?\"\n\nThe answer",
+        "Okay, let's crack this code!\n\n**Secret Code: 1**\n\n**Question: What is the",
+        "Okay, let's play a game!\n\nI'm thinking of a color.\n\nWhat color is it?",
+        "Okay, let's try to make it easier.\n\n**Question:** What is the secret code?\n\n**Answer",
+        "Okay, let's break this down.\n\nThe text suggests a code. It's a bit cryptic, but",
+        "Okay, let's break this down.\n\nThe question is: \"What is the secret code?\"\n\nThe answer",
+        "Okay, let's break this down.\n\nThe question is: \"What is the secret code?\"\n\nThe answer",
+        "Okay, let's figure out the secret code!\n\nQuestion: What is the secret code?\n\nAnswer: The",
+        "Okay, let's make this is a good question\n\n**Here's a good question**\n\n**Here'",
+        "Okay, let's see if we can figure out what's the answer.\n\nQuestion: What is the secret",
+        "Okay, let's break down this riddle.\n\nThe secret code is: **\"The answer is here.\"**"
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.1437891389550046,
+        1.397453497552366,
+        1.2159251113195404,
+        1.6770715688750937,
+        1.2338457038660755,
+        1.5361109524300778,
+        1.510997916278495,
+        1.5453053363175766,
+        1.3570932165708438,
+        1.6141399745338394,
+        1.3244515326572193,
+        1.6651260345864576,
+        1.6017580920297985,
+        1.2108832852248912,
+        1.5443096428791923,
+        1.5124983495544024,
+        1.4428430790800568,
+        1.350495468764015,
+        1.3227411420042952,
+        1.6594766041022055
+      ],
+      "mean_throughput_tokens_per_sec": 1.4433157823790723,
+      "median_throughput_tokens_per_sec": 1.4769204976792758,
+      "min_throughput_tokens_per_sec": 1.1437891389550046,
+      "max_throughput_tokens_per_sec": 1.6770715688750937
+    },
+    "v04_dlm_restored": {
+      "name": "v04_dlm_restored",
+      "recall": 0.6,
+      "samples_correct": 12,
+      "samples_total": 20,
+      "mean_latency_s": 26.337138469802447,
+      "median_latency_s": 25.356460509996396,
+      "per_sample_decoded": [
+        "This is a classic riddle! The answer is:\n\n**BETA-1409**\n\nLet me know",
+        "This is a classic riddle! The secret code is: **DELTA-3286**.",
+        "BETA-7912\n\n\n\n\n\n\n\n",
+        "BETA-4582\n\n\n\n\n\n\n",
+        "KAPPA-1434\n\n\n\n\n\n\n\n",
+        "This is a classic riddle! The answer is:\n\n**Pine-9928**\n\nLet me know if",
+        "This is a fun, challenging prompt! The response is intentionally vague and designed to be a puzzle. Here's the",
+        "This is a classic riddle! The answer is:\n\n**Pine-7924**\n\nLet me know if",
+        "Gamma-4527\n\n\n\n\n\n\n\n",
+        "This is a classic riddle! The secret code is BETA-7224.",
+        "This is a classic riddle! The answer is:\n\n**\"The quick brown fox jumps over the lazy dog.\"**",
+        "The secret code is PINE-8527.",
+        "This is a classic riddle! The secret code is BIRCH-7201.",
+        "EPSILON-6925\n\n\n\n\n\n\n",
+        "This is a riddle! The answer is:\n\n\"Pine-2139\"\n\nLet me know if you",
+        "This is a classic riddle! The secret code is \u201cMaple-5741\u201d.",
+        "This is a classic riddle! The answer is:\n\n**OAK-2654**\n\nLet me know",
+        "This is a classic riddle! The answer is:\n\n**Theta-6977**\n\nLet me know if",
+        "ZETA-4432\n\n\n\n\n\n\n\n",
+        "The secret code is KAPPA-3803."
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        0.7251391614155206,
+        0.884202515447721,
+        0.7704394235091666,
+        1.0944190539434078,
+        0.7822000424239941,
+        0.9910656081684702,
+        0.9848783883593907,
+        0.9980364485367813,
+        0.8617671081857317,
+        1.0462040989793666,
+        0.8404418160986383,
+        1.0801464150117204,
+        1.0374838401381632,
+        0.7620087223197725,
+        0.9986341461059054,
+        0.9740734749334776,
+        0.9204528325944531,
+        0.854564976708859,
+        0.8356191727134789,
+        1.0732563461064268
+      ],
+      "mean_throughput_tokens_per_sec": 0.9257516795850222,
+      "median_throughput_tokens_per_sec": 0.9472631537639653,
+      "min_throughput_tokens_per_sec": 0.7251391614155206,
+      "max_throughput_tokens_per_sec": 1.0944190539434078
+    }
+  },
+  "memory": {
+    "baseline": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 2003240448,
+      "current_reserved_bytes": 2006974464,
+      "peak_allocated_bytes": 2003240448,
+      "peak_reserved_bytes": 2006974464
+    },
+    "per_config": {
+      "oracle_full_attention": {
+        "device_kind": "cuda",
+        "device_name": "NVIDIA H200",
+        "device_total_bytes": 150109880320,
+        "current_allocated_bytes": 2036794880,
+        "current_reserved_bytes": 42169532416,
+        "peak_allocated_bytes": 28619533824,
+        "peak_reserved_bytes": 42169532416
+      },
+      "v03_sink_window": {
+        "device_kind": "cuda",
+        "device_name": "NVIDIA H200",
+        "device_total_bytes": 150109880320,
+        "current_allocated_bytes": 2036794880,
+        "current_reserved_bytes": 31474057216,
+        "peak_allocated_bytes": 29899309056,
+        "peak_reserved_bytes": 31474057216
+      },
+      "v04_dlm_restored": {
+        "device_kind": "cuda",
+        "device_name": "NVIDIA H200",
+        "device_total_bytes": 150109880320,
+        "current_allocated_bytes": 2036794880,
+        "current_reserved_bytes": 37480300544,
+        "peak_allocated_bytes": 29975148032,
+        "peak_reserved_bytes": 37480300544
+      }
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "oracle_full_attention": {
+        "config": "oracle_full_attention",
+        "structural_constraint": "causal",
+        "samples_total": 20,
+        "effective_keys_at_last_query_mean": 21475.8,
+        "effective_keys_at_last_query_min": 19033,
+        "effective_keys_at_last_query_max": 25273,
+        "effective_keys_at_last_query_median": 21084.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 25273,
+            "effective_keys_at_last_query": 25273,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 21234,
+            "effective_keys_at_last_query": 21234,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 24313,
+            "effective_keys_at_last_query": 24313,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 19033,
+            "effective_keys_at_last_query": 19033,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 23894,
+            "effective_keys_at_last_query": 23894,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 20754,
+            "effective_keys_at_last_query": 20754,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 20974,
+            "effective_keys_at_last_query": 20974,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 20354,
+            "effective_keys_at_last_query": 20354,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 21573,
+            "effective_keys_at_last_query": 21573,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 19773,
+            "effective_keys_at_last_query": 19773,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 22394,
+            "effective_keys_at_last_query": 22394,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 19174,
+            "effective_keys_at_last_query": 19174,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 19994,
+            "effective_keys_at_last_query": 19994,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 24375,
+            "effective_keys_at_last_query": 24375,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 20694,
+            "effective_keys_at_last_query": 20694,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 21054,
+            "effective_keys_at_last_query": 21054,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 21114,
+            "effective_keys_at_last_query": 21114,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 21574,
+            "effective_keys_at_last_query": 21574,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 22514,
+            "effective_keys_at_last_query": 22514,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          },
+          {
+            "config": "oracle_full_attention",
+            "seq_len": 19454,
+            "effective_keys_at_last_query": 19454,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal"
+          }
+        ]
+      },
+      "v03_sink_window": {
+        "config": "v03_sink_window",
+        "structural_constraint": "sink=4+window=64",
+        "samples_total": 20,
+        "effective_keys_at_last_query_mean": 68.0,
+        "effective_keys_at_last_query_min": 68,
+        "effective_keys_at_last_query_max": 68,
+        "effective_keys_at_last_query_median": 68.0,
+        "effective_attention_fraction_mean": 0.003186847782267596,
+        "effective_attention_fraction_min": 0.0026906184465635263,
+        "effective_attention_fraction_max": 0.0035727420795460514,
+        "effective_attention_fraction_median": 0.0032252009899549766,
+        "per_sample": [
+          {
+            "config": "v03_sink_window",
+            "seq_len": 25273,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0026906184465635263,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 21234,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0032024112272770085,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 24313,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.00279685764817176,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 19033,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0035727420795460514,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 23894,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.002845902737088809,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 20754,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.00327647682374482,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 20974,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.003242109278153905,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 20354,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0033408666601159476,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 21573,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0031520882584712374,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 19773,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.003439033024831841,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 22394,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0030365276413325,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 19174,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.003546469177010535,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 19994,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0034010203060918275,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 24375,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.00278974358974359,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 20694,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0032859766115782355,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 21054,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.003229790063645863,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 21114,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.00322061191626409,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 21574,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0031519421525910817,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 22514,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.0030203428977525096,
+            "structural_constraint": "sink=4+window=64"
+          },
+          {
+            "config": "v03_sink_window",
+            "seq_len": 19454,
+            "effective_keys_at_last_query": 68,
+            "effective_attention_fraction": 0.003495425105376786,
+            "structural_constraint": "sink=4+window=64"
+          }
+        ]
+      },
+      "v04_dlm_restored": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 20,
+        "effective_keys_at_last_query_mean": 21475.8,
+        "effective_keys_at_last_query_min": 19033,
+        "effective_keys_at_last_query_max": 25273,
+        "effective_keys_at_last_query_median": 21084.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 25273,
+            "effective_keys_at_last_query": 25273,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 21234,
+            "effective_keys_at_last_query": 21234,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 24313,
+            "effective_keys_at_last_query": 24313,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 19033,
+            "effective_keys_at_last_query": 19033,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 23894,
+            "effective_keys_at_last_query": 23894,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 20754,
+            "effective_keys_at_last_query": 20754,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 20974,
+            "effective_keys_at_last_query": 20974,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 20354,
+            "effective_keys_at_last_query": 20354,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 21573,
+            "effective_keys_at_last_query": 21573,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 19773,
+            "effective_keys_at_last_query": 19773,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 22394,
+            "effective_keys_at_last_query": 22394,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 19174,
+            "effective_keys_at_last_query": 19174,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 19994,
+            "effective_keys_at_last_query": 19994,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 24375,
+            "effective_keys_at_last_query": 24375,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 20694,
+            "effective_keys_at_last_query": 20694,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 21054,
+            "effective_keys_at_last_query": 21054,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 21114,
+            "effective_keys_at_last_query": 21114,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 21574,
+            "effective_keys_at_last_query": 21574,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 22514,
+            "effective_keys_at_last_query": 22514,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 19454,
+            "effective_keys_at_last_query": 19454,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "gate": {
+    "v04_vs_oracle_delta": 0.0,
+    "v04_recall_ge_0_95": false,
+    "v04_within_5pct_of_oracle": true,
+    "v04_vs_v03_improvement": 0.6,
+    "v04_dominates_v03": true
+  }
+}

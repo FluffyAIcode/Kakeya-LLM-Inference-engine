@@ -1,14 +1,33 @@
 # NOTE on transformers version pin:
-#   The proposer checkpoint dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1 ships a
-#   custom modeling file (`modeling_qwen3.py`) that depends on transformers
-#   4.x APIs (specifically `decoder_layer.attention_type`). transformers 5.x
-#   removed those APIs, so we pin to 4.x project-wide.
+#   Pin lifted 2026-06-09 — was `<5.0` to keep the legacy Qwen3 dLM
+#   proposer (`dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1`) running, since
+#   its custom `modeling_qwen3.py` depends on the 4.x
+#   `decoder_layer.attention_type` API that transformers 5.x removed.
 #
-#   On macOS, this means using a dedicated venv (e.g. `python3 -m venv
-#   .venv`) — do NOT install into a system Python where transformers 5.x is
-#   already present. `scripts/setup_mac.sh` handles this correctly.
+#   K3 critical path needs transformers 5.0+:
+#     * Gemma 4 26B-A4B verifier (per ADR 0008 §11.7.0)
+#     * scripts/research/k3_dflash_specdecode_eval.py and
+#       k3_dflash_alignment_train.py (load Gemma 4 via transformers)
+#
+#   So the upper bound was dropped.
+#
+#   KNOWN ISSUE (K2.B Qwen backport path, NOT K3 critical path): under
+#   transformers 5.x, attempts to load
+#   `dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1` will likely raise an
+#   AttributeError on `attention_type`. This affects:
+#       * `training/repr_align/proposer_surgery.py`
+#       * `kv_cache_proposer/proposer.py`
+#       * `inference_engine/proposer/sparse_logits.py`
+#       * `inference_engine/backends/mlx/proposer.py`
+#       * `tests/system/test_http_*_real_engine.py` (if they download)
+#   None of these are on the K3 critical path. K2.B Qwen backport is
+#   the natural place to author a compat patch when that path resumes
+#   after K3 ships.
+#
+#   For now, if you need the legacy Qwen3 dLM path, install transformers
+#   4.x in a dedicated venv:  pip install 'transformers>=4.45,<5.0'
 torch>=2.4,<3.0
-transformers>=4.45,<5.0
+transformers>=4.45
 accelerate>=0.34
 safetensors>=0.4
 huggingface_hub>=0.24

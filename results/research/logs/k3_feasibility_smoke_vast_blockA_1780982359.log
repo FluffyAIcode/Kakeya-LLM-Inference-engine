@@ -1,0 +1,27 @@
+[k3-smoke] platform: cuda
+[k3-smoke] verifier:  google/gemma-4-26B-A4B-it
+[k3-smoke] drafter:   z-lab/gemma-4-26B-A4B-it-DFlash
+[k3-smoke] prompt n:  512
+[k3-smoke] gen n:     8
+[k3-smoke] loading verifier (CUDA bf16): google/gemma-4-26B-A4B-it
+Loading weights:   0%|          | 0/1013 [00:00<?, ?it/s]Loading weights:   0%|          | 2/1013 [00:00<01:47,  9.42it/s]Loading weights:   0%|          | 4/1013 [00:00<02:09,  7.79it/s]Loading weights:   2%|▏         | 25/1013 [00:00<00:18, 54.75it/s]Loading weights:   3%|▎         | 34/1013 [00:00<00:19, 50.62it/s]Loading weights:   5%|▍         | 48/1013 [00:01<00:18, 52.55it/s]Loading weights:   7%|▋         | 69/1013 [00:01<00:14, 62.95it/s]Loading weights:   9%|▉         | 91/1013 [00:01<00:10, 89.67it/s]Loading weights:  10%|█         | 103/1013 [00:01<00:10, 83.45it/s]Loading weights:  11%|█▏        | 114/1013 [00:01<00:13, 66.01it/s]Loading weights:  13%|█▎        | 135/1013 [00:02<00:12, 71.28it/s]Loading weights:  15%|█▌        | 157/1013 [00:02<00:11, 75.20it/s]Loading weights:  18%|█▊        | 178/1013 [00:02<00:08, 95.71it/s]Loading weights:  19%|█▉        | 190/1013 [00:02<00:09, 88.95it/s]Loading weights:  20%|█▉        | 201/1013 [00:02<00:11, 71.81it/s]Loading weights:  22%|██▏       | 222/1013 [00:03<00:08, 92.72it/s]Loading weights:  23%|██▎       | 234/1013 [00:03<00:09, 81.42it/s]Loading weights:  24%|██▍       | 244/1013 [00:03<00:09, 82.49it/s]Loading weights:  25%|██▌       | 254/1013 [00:03<00:10, 71.50it/s]Loading weights:  26%|██▌       | 265/1013 [00:03<00:13, 55.42it/s]Loading weights:  28%|██▊       | 287/1013 [00:04<00:09, 80.19it/s]Loading weights:  29%|██▉       | 298/1013 [00:04<00:09, 71.97it/s]Loading weights:  31%|███       | 309/1013 [00:04<00:09, 77.48it/s]Loading weights:  31%|███▏      | 319/1013 [00:04<00:10, 67.90it/s]Loading weights:  33%|███▎      | 331/1013 [00:04<00:11, 57.42it/s]Loading weights:  35%|███▍      | 353/1013 [00:04<00:08, 82.31it/s]Loading weights:  36%|███▌      | 364/1013 [00:05<00:08, 73.06it/s]Loading weights:  37%|███▋      | 376/1013 [00:05<00:10, 60.67it/s]Loading weights:  39%|███▉      | 396/1013 [00:05<00:07, 79.55it/s]Loading weights:  40%|████      | 406/1013 [00:05<00:08, 71.35it/s]Loading weights:  41%|████▏     | 419/1013 [00:06<00:09, 62.67it/s]Loading weights:  43%|████▎     | 440/1013 [00:06<00:06, 86.46it/s]Loading weights:  45%|████▍     | 452/1013 [00:06<00:07, 79.69it/s]Loading weights:  46%|████▌     | 462/1013 [00:06<00:06, 82.66it/s]Loading weights:  47%|████▋     | 472/1013 [00:06<00:07, 75.41it/s]Loading weights:  48%|████▊     | 485/1013 [00:06<00:07, 67.05it/s]Loading weights:  50%|████▉     | 506/1013 [00:06<00:05, 91.41it/s]Loading weights:  51%|█████     | 517/1013 [00:07<00:05, 84.15it/s]Loading weights:  52%|█████▏    | 528/1013 [00:07<00:07, 67.84it/s]Loading weights:  54%|█████▍    | 549/1013 [00:07<00:05, 92.46it/s]Loading weights:  55%|█████▌    | 561/1013 [00:07<00:05, 83.42it/s]Loading weights:  56%|█████▋    | 572/1013 [00:07<00:06, 68.29it/s]Loading weights:  59%|█████▊    | 594/1013 [00:08<00:05, 73.86it/s]Loading weights:  61%|██████    | 615/1013 [00:08<00:04, 90.63it/s]Loading weights:  62%|██████▏   | 626/1013 [00:08<00:04, 81.95it/s]Loading weights:  63%|██████▎   | 638/1013 [00:08<00:05, 68.62it/s]Loading weights:  78%|███████▊  | 791/1013 [00:08<00:00, 314.59it/s]Loading weights:  96%|█████████▌| 973/1013 [00:08<00:00, 605.52it/s]Loading weights: 100%|██████████| 1013/1013 [00:08<00:00, 112.82it/s]
+[k3-smoke] verifier loaded in 14.5s
+[k3-smoke] loading drafter (cuda): z-lab/gemma-4-26B-A4B-it-DFlash
+Loading weights:   0%|          | 0/56 [00:00<?, ?it/s]Loading weights:  66%|██████▌   | 37/56 [00:00<00:00, 354.44it/s]Loading weights: 100%|██████████| 56/56 [00:00<00:00, 377.28it/s]
+[transformers] [1mQwen3ForCausalLM LOAD REPORT[0m from: z-lab/gemma-4-26B-A4B-it-DFlash
+Key                       | Status     | 
+--------------------------+------------+-
+hidden_norm.weight        | UNEXPECTED | 
+fc.weight                 | UNEXPECTED | 
+lm_head.weight            | MISSING    | 
+model.embed_tokens.weight | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+[k3-smoke] drafter loaded in 3.8s
+[transformers] The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+[k3-smoke] verifier forward OK; gen=8 tokens in 2.85s (2.81 tok/s)
+[k3-smoke] drafter forward OK; 757 tokens in 0.421s
+[k3-smoke] report -> results/research/k3_feasibility_smoke_vast_blockA_1780982359.json
+[k3-smoke] PASS
