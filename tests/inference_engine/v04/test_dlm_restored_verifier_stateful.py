@@ -636,3 +636,191 @@ class TestStatefulIncrementalEvictedKVShape:
                 f"if this fails, _stateful_incremental_forward is producing "
                 f"the wrong layout for V04SessionCache.set_evicted_kv."
             )
+
+
+def _make_minimal_cache(
+    num_layers: int = 2,
+    sink_size: int = 2,
+    window_size: int = 2,
+    cache_token_count_at_start: int = 0,
+    n_new_tokens: int = 4,
+):
+    """Module-level helper for tests that don't have access to the
+    TestV04SessionCache class's _make_cache method."""
+    compressors = [IdentityCompressor() for _ in range(num_layers)]
+    cache = _V04SessionCache(
+        compressors=compressors,
+        sink_size=sink_size, window_size=window_size,
+        cache_token_count_at_start=cache_token_count_at_start,
+        n_new_tokens=n_new_tokens,
+    )
+    return cache, {
+        "num_layers": num_layers,
+        "sink_size": sink_size,
+        "window_size": window_size,
+    }
+
+
+class TestV04SessionCacheHFContract:
+    """Regression tests for the HF Cache contract surface.
+
+    The 2026-06-09 Mac M4 production-smoke v4 crash was:
+
+        AttributeError: '_V04SessionCache' object has no attribute
+                        'get_mask_sizes'
+
+    Cause: K2.A.2 was implemented against an older transformers Cache
+    contract (4.x pre-mid-cycle); transformers 4.57 added
+    ``get_mask_sizes`` to the Cache base class, called from
+    masking_utils._preprocess_mask_arguments via
+    ``past_key_values.get_mask_sizes(cache_position, layer_idx)``.
+
+    These tests validate the contract surface as audited against the
+    INSTALLED transformers source, so future transformers upgrades
+    that add new Cache methods fail this test (in CI) instead of
+    failing on a real Mac mini run after the model has loaded.
+    """
+
+    def test_implements_required_attribute_surface(self):
+        """Direct existence check for the methods/properties
+        Gemma3Attention.forward + masking_utils call on
+        past_key_values."""
+        from inference_engine.v04.dlm_restored_verifier import _V04SessionCache
+        cache, _ = _make_minimal_cache()
+        # Required by gemma3 modeling
+        assert callable(getattr(cache, "get_seq_length", None))
+        assert isinstance(getattr(cache, "is_initialized", None), bool)
+        assert callable(getattr(cache, "update", None))
+        # Required by masking_utils
+        assert callable(getattr(cache, "get_mask_sizes", None))
+        # DELIBERATELY ABSENT — see _V04SessionCache docstring on why
+        assert not hasattr(cache, "is_sliding"), (
+            "_V04SessionCache should NOT expose is_sliding; masking_utils "
+            "gates sliding-window logic on hasattr(past_key_values, "
+            "'is_sliding'). Defining it would re-impose sliding masking on "
+            "the already-merged v0.4 K/V tensor and mask out dLM-restored "
+            "evicted positions, defeating the entire architecture."
+        )
+
+    def test_get_mask_sizes_returns_full_t(self):
+        """get_mask_sizes must return (T_full, 0) for any layer_idx.
+
+        v0.4 update() returns a full [T_full, T_full] K/V tensor
+        starting at position 0, so kv_length=T_full and kv_offset=0."""
+        from inference_engine.v04.dlm_restored_verifier import _V04SessionCache
+        cache, params = _make_minimal_cache(
+            cache_token_count_at_start=10, n_new_tokens=4,
+        )
+        cache_position = torch.arange(10, 14)
+        kv_length, kv_offset = cache.get_mask_sizes(cache_position, layer_idx=0)
+        # T_full = cache_token_count_at_start + n_new_tokens = 14
+        assert kv_length == 14
+        assert kv_offset == 0
+        # Same answer for every layer
+        for l in range(params["num_layers"]):
+            assert cache.get_mask_sizes(cache_position, l) == (14, 0)
+
+    def test_is_initialized_is_true(self):
+        from inference_engine.v04.dlm_restored_verifier import _V04SessionCache
+        cache, _ = _make_minimal_cache()
+        assert cache.is_initialized is True
+
+    def test_audit_against_installed_transformers_source(self):
+        """Pinned-style audit: read the installed transformers 4.x
+        gemma3 + masking_utils source files, extract every
+        attribute/method accessed on a `past_key_values` reference,
+        and assert _V04SessionCache either implements it or
+        deliberately omits it (with a recorded reason in this test).
+
+        When transformers ships a NEW method we need to handle, this
+        test fails with the new method's name in the error, instead
+        of the user catching it on a real Mac mini run.
+        """
+        import os
+        import re
+        try:
+            import transformers
+        except ImportError:
+            pytest.skip("transformers not importable — audit not applicable")
+
+        from inference_engine.v04.dlm_restored_verifier import _V04SessionCache
+
+        tdir = os.path.dirname(transformers.__file__)
+        files = [
+            "models/gemma3/modeling_gemma3.py",
+            "masking_utils.py",
+        ]
+        called: set = set()
+        for f in files:
+            full = os.path.join(tdir, f)
+            if not os.path.exists(full):
+                continue
+            text = open(full).read()
+            for m in re.finditer(
+                r"past_key_values?\.([a-z_][a-zA-Z_]*)", text,
+            ):
+                called.add(m.group(1))
+
+        # Methods/properties this test confirms are implemented OR
+        # deliberately omitted with an architectural justification
+        # (recorded inline). Any name in `called` that is NOT in
+        # this allow-list AND not implemented on _V04SessionCache
+        # MUST be added to one of the two sets, with a code change
+        # AND a documented reason.
+        IMPLEMENTED = {
+            "get_seq_length",
+            "update",
+            "is_initialized",
+            "get_mask_sizes",
+        }
+        DELIBERATELY_OMITTED = {
+            # Re-imposing sliding-window masking on top of the already-
+            # merged v0.4 K/V tensor would mask out dLM-restored
+            # evicted positions. masking_utils gates this behind
+            # hasattr(...), so leaving it undefined falls through to
+            # default full-attention masking — correct for v0.4.
+            "is_sliding",
+        }
+        SAFE_TO_IGNORE = {
+            # These names appear in transformers source but only on
+            # specialised cache classes (HybridCache, etc.) that
+            # gemma3 doesn't construct via past_key_values=…—they're
+            # never called on a user-supplied cache like ours.
+            "self_attention_cache", "cross_attention_cache",
+            "conv_cache", "shared_layers", "layers",
+            "key_cache", "value_cache", "is_updated",
+            "has_previous_state", "to_legacy_cache",
+            "from_legacy_cache", "append",
+            "get_linear_cache", "set_linear_cache",
+        }
+
+        unexpected = called - IMPLEMENTED - DELIBERATELY_OMITTED - SAFE_TO_IGNORE
+        if unexpected:
+            pytest.fail(
+                f"transformers {transformers.__version__} calls these new "
+                f"methods on past_key_values that _V04SessionCache neither "
+                f"implements nor deliberately omits: {sorted(unexpected)}.\n"
+                f"\n"
+                f"Action required: for each method, either:\n"
+                f"  (a) implement it on _V04SessionCache and add to "
+                f"      IMPLEMENTED set in this test, OR\n"
+                f"  (b) confirm masking_utils / gemma3 modeling guards "
+                f"      access with hasattr(...) so leaving it undefined "
+                f"      is safe, then add to DELIBERATELY_OMITTED with a "
+                f"      one-sentence justification, OR\n"
+                f"  (c) confirm it's only called on a specialised cache "
+                f"      type that v0.4 never constructs, and add to "
+                f"      SAFE_TO_IGNORE.\n"
+                f"\n"
+                f"Do NOT just delete the method from this test's scrutiny — "
+                f"the whole point is to catch future transformers upgrades."
+            )
+
+        # Sanity: confirm the methods we believe we implement are
+        # actually present on the class (catches accidental deletion).
+        for name in IMPLEMENTED:
+            assert hasattr(_V04SessionCache, name), (
+                f"_V04SessionCache lost {name!r} — IMPLEMENTED set is now "
+                f"out of sync with the actual class definition. "
+                f"Either restore the method or update the IMPLEMENTED set."
+            )

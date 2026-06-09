@@ -270,12 +270,65 @@ class _V04SessionCache:
         self._evicted_positions = list(evicted_positions)
         self._resident_positions = list(resident_positions)
 
-    # -- HF Cache contract: get_seq_length, update -----------------------------
+    # -- HF Cache contract -----------------------------------------------------
+    #
+    # Audited against transformers 4.57's models/gemma3/modeling_gemma3.py +
+    # masking_utils.py for the methods/attributes called on
+    # ``past_key_values``. Required surface (verified 2026-06-09):
+    #   * get_seq_length(layer_idx)            — gemma3 modeling
+    #   * is_initialized                        — gemma3 modeling (boolean)
+    #   * update(K, V, layer_idx, cache_kwargs) — gemma3 modeling (Cache.update)
+    #   * get_mask_sizes(cache_position, layer_idx) -> (kv_length, kv_offset)
+    #                                             — masking_utils
+    #   * is_sliding                            — masking_utils, hasattr-gated
+    # We DELIBERATELY DO NOT define ``is_sliding``. masking_utils gates all
+    # sliding-window logic behind ``hasattr(past_key_values, "is_sliding")``;
+    # leaving it undefined makes masking_utils fall through to default full-
+    # attention masking, which is correct for v0.4: by the time the verifier
+    # forward fires, ``update()`` has already assembled the FULL [T_full,
+    # T_full] K/V tensor (sink + window resident + reconstructed evicted +
+    # new tokens), so the model should attend over all of T_full uniformly.
+    # Re-introducing sliding-window masking on top of an already-merged K/V
+    # tensor would mask out the dLM-restored evicted positions and defeat
+    # the entire v0.4 architecture.
 
     def get_seq_length(self, layer_idx: int = 0) -> int:
         """How many tokens are in the cache. After the verifier
         forward consumes new tokens, the seq length is t_full."""
         return self._t_full
+
+    @property
+    def is_initialized(self) -> bool:
+        """HF gemma3 modeling reads this to decide whether to skip cache
+        initialisation. We construct _V04SessionCache fully populated
+        in :meth:`DLMRestoredVerifier._stateful_incremental_forward`
+        (set_partition + set_evicted_kv per layer) BEFORE model.forward,
+        so the cache is initialised by the time HF asks."""
+        return True
+
+    def get_mask_sizes(
+        self, cache_position: torch.Tensor, layer_idx: int,
+    ) -> Tuple[int, int]:
+        """HF Cache.get_mask_sizes contract (added in transformers 4.x
+        cycle, used by ``masking_utils._preprocess_mask_arguments``).
+
+        Returns ``(kv_length, kv_offset)`` for the attention mask
+        construction:
+
+          * ``kv_length`` — the K/V tensor length the attention will
+            see at this layer. v0.4 :meth:`update` returns the full
+            assembled ``[B, kv_heads, T_full, head_dim]`` so
+            ``kv_length = T_full``.
+          * ``kv_offset`` — where in the sequence the new query
+            positions begin attending. We start the K/V at position
+            0 (sink ∪ window-resident ∪ reconstructed-evicted span
+            position 0 through cache_token_count-1), so
+            ``kv_offset = 0``.
+
+        Reference: transformers/cache_utils.py base ``Cache.get_mask_sizes``.
+        """
+        del cache_position, layer_idx  # unused: same answer for every layer
+        return self._t_full, 0
 
     def update(
         self,
