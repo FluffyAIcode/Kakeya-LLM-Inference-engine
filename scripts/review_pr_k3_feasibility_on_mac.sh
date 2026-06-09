@@ -3,7 +3,18 @@
 #
 # K3 production scale per ADR 0008 §11.7 corrected:
 #   verifier:  google/gemma-4-26B-A4B-it      (26B A4B MoE, 4B active)
-#   drafter:   z-lab/gemma-4-26B-A4B-it-DFlash (0.4B block-diffusion)
+#   drafter:   models/dflash-kakeya-baseline  (alignment-trained DFlash
+#                                              drafter; 859 MB bf16, Git
+#                                              LFS, commit 19a2d5c — the
+#                                              new authoritative baseline
+#                                              for all Kakeya inference
+#                                              tests/dev as of 2026-06-09).
+#                                              Override with the upstream
+#                                              HF id z-lab/gemma-4-26B-
+#                                              A4B-it-DFlash via
+#                                              DRAFTER_ID env var ONLY for
+#                                              research-baseline comparison
+#                                              (NOT alignment-trained).
 #
 # Mac M4 24 GB cannot fit the verifier at bf16 (~52 GB). Two-step
 # Mac path:
@@ -47,10 +58,22 @@
 # Env knobs:
 #   VERIFIER_PATH    (models/gemma-4-26B-A4B-it-mlx-4bit)
 #                     local 4-bit MLX model directory
+#   DRAFTER_ID       (models/dflash-kakeya-baseline)
+#                     Alignment-trained Kakeya inference baseline
+#                     (default; LFS, 859 MB bf16). Override with
+#                     'z-lab/gemma-4-26B-A4B-it-DFlash' for
+#                     research-baseline comparison only.
 #   PROMPT_TOKENS    (512)
 #   GEN_TOKENS       (8)
 #   SEED             (42)
 #   SKIP_DRAFTER=1            verifier-only smoke
+#   SKIP_VERIFIER=1           drafter-only smoke (useful while
+#                             upstream mlx_lm Gemma 4 MoE compat
+#                             bug blocks the verifier path)
+#   PROPOSER_KV_CAPTURE=1     after drafter loads, exercise
+#                             drafter.propose_kv() — the v0.4
+#                             dLM K/V Restoration proposer-role
+#                             primitive (per ADR §11.5)
 #   ALLOW_MISSING_QUANTIZE=1  proceed even if verifier path missing
 #                             (will fail at load step; useful for
 #                             scripted dry-run)
@@ -74,10 +97,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 VERIFIER_PATH="${VERIFIER_PATH:-models/gemma-4-26B-A4B-it-mlx-4bit}"
+DRAFTER_ID="${DRAFTER_ID:-models/dflash-kakeya-baseline}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-512}"
 GEN_TOKENS="${GEN_TOKENS:-8}"
 SEED="${SEED:-42}"
 SKIP_DRAFTER="${SKIP_DRAFTER:-0}"
+SKIP_VERIFIER="${SKIP_VERIFIER:-0}"
+PROPOSER_KV_CAPTURE="${PROPOSER_KV_CAPTURE:-0}"
 ALLOW_MISSING_QUANTIZE="${ALLOW_MISSING_QUANTIZE:-0}"
 
 stamp="$(date +%s)"
@@ -89,15 +115,19 @@ log="${log_dir}/k3_feasibility_smoke_mac_${stamp}.log"
 
 echo "==> K3 hardware feasibility smoke (Mac M4)"
 echo "    Verifier (4-bit MLX): $VERIFIER_PATH"
-echo "    Drafter:              z-lab/gemma-4-26B-A4B-it-DFlash"
+echo "    Drafter:              $DRAFTER_ID"
 echo "    Prompt:               $PROMPT_TOKENS tokens"
 echo "    Gen:                  $GEN_TOKENS tokens"
 echo "    Skip drafter:         $SKIP_DRAFTER"
+echo "    Skip verifier:        $SKIP_VERIFIER"
+echo "    Proposer KV capture:  $PROPOSER_KV_CAPTURE"
 echo "    Report:               $report"
 echo
 
-# Pre-flight 1: quantized verifier exists?
-if [[ ! -d "$VERIFIER_PATH" ]]; then
+# Pre-flight 1: quantized verifier exists? (skipped when SKIP_VERIFIER=1)
+if [[ "$SKIP_VERIFIER" == "1" ]]; then
+    echo "[pre-flight] SKIP_VERIFIER=1 set; bypassing verifier-dir check."
+elif [[ ! -d "$VERIFIER_PATH" ]]; then
     if [[ "$ALLOW_MISSING_QUANTIZE" == "1" ]]; then
         echo "WARN: verifier path '$VERIFIER_PATH' missing; proceeding due to ALLOW_MISSING_QUANTIZE=1"
     else
@@ -134,12 +164,15 @@ fi
 flags=(
     --platform mac
     --verifier-path "$VERIFIER_PATH"
+    --drafter-id "$DRAFTER_ID"
     --prompt-tokens "$PROMPT_TOKENS"
     --gen-tokens "$GEN_TOKENS"
     --seed "$SEED"
     --output "$report"
 )
 [[ "$SKIP_DRAFTER" == "1" ]] && flags+=(--skip-drafter)
+[[ "$SKIP_VERIFIER" == "1" ]] && flags+=(--skip-verifier)
+[[ "$PROPOSER_KV_CAPTURE" == "1" ]] && flags+=(--proposer-kv-capture)
 
 echo "==> Running smoke"
 PYTHONPATH=.:sdks/python python3 scripts/research/k3_feasibility_smoke.py \
