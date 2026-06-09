@@ -1,0 +1,27 @@
+[k3-sd-mac] verifier_path: models/gemma-4-26B-A4B-it-mlx-4bit
+[k3-sd-mac] drafter_id:    models/dflash-kakeya-baseline
+[k3-sd-mac] drafter_device: mps
+[k3-sd-mac] loading MLX verifier ...
+[k3-sd-mac]   loaded in 6.2s
+[k3-sd-mac] loading DFlash drafter (torch.bfloat16) ...
+[k3-sd-mac]   loaded in 2.1s
+Traceback (most recent call last):
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_dflash_specdecode_eval_mac.py", line 367, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_dflash_specdecode_eval_mac.py", line 209, in main
+    embed_fn, lm_head_fn = build_mlx_verifier_callbacks(
+                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        mlx_model, hidden_size=hidden, softcap=softcap,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        bridge_dtype=drafter_dtype, bridge_device=args.drafter_device,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_dflash_mlx_bridge.py", line 307, in build_mlx_verifier_callbacks
+    inner = mlx_model.model
+            ^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/mlx/nn/layers/base.py", line 103, in __getattr__
+    super(Module, self).__getattribute__(key)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+AttributeError: 'Model' object has no attribute 'model'
