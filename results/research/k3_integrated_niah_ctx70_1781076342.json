@@ -1,0 +1,341 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v3_attn_distill",
+    "f_theta_config": {
+      "drafter_num_layers": 5,
+      "drafter_num_kv_heads": 8,
+      "drafter_head_dim": 128,
+      "verifier_num_layers": 30,
+      "verifier_num_kv_heads": 8,
+      "verifier_head_dim": 256,
+      "rank": 768,
+      "verifier_layer_kv_heads": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2
+      ],
+      "verifier_layer_head_dims": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512
+      ]
+    },
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "skip_oracle": false,
+    "identity_restore": false,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model",
+      "samples_total": 10,
+      "samples_correct": 0,
+      "recall": 0.0,
+      "mean_latency_s": 2.517939622409176,
+      "median_latency_s": 2.6519388455199078,
+      "per_sample_decoded": [
+        "There is no secret code provided in the text.",
+        "The provided text does not contain a secret code.",
+        "There is no secret code provided in the text.\nthought\nThere is no secret code provided in the",
+        "The provided text does not contain a secret code.",
+        "There is no secret code provided in the text.",
+        "The provided text does not contain a secret code.\n\n",
+        "There is no secret code provided in the text.",
+        "The provided text does not contain a secret code.\n\n[instruction]\nThe user wants me to find",
+        "The provided text does not contain a secret code.\nthought\nThe provided text does not contain",
+        "I do not know the secret code.\nthought\nI do not know the secret code."
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "per_sample_decode_tokens": [
+        14,
+        14,
+        24,
+        14,
+        14,
+        20,
+        14,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        5.736363681116686,
+        7.716042599545884,
+        7.9512812752174655,
+        6.722051725289905,
+        7.934755345152868,
+        6.78769157640746,
+        7.210029225580785,
+        8.381915886677966,
+        7.411872786128763,
+        7.819242974306768
+      ],
+      "mean_throughput_tokens_per_sec": 7.367124707542454,
+      "median_throughput_tokens_per_sec": 7.563957692837324,
+      "min_throughput_tokens_per_sec": 5.736363681116686,
+      "max_throughput_tokens_per_sec": 8.381915886677966
+    },
+    "oracle": {
+      "name": "oracle",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 2.3246362071717157,
+      "median_latency_s": 2.303811051941011,
+      "per_sample_decoded": [
+        "BETA-1409\n//thought\nBETA-1409",
+        "DELTA-3286\n\nthought\nDELTA-3286\n",
+        "ORCHID-9935\n10. **Final Answer:** ORCHID-99",
+        "ETA-1520\n\n\nthought\nthought\nETA-15",
+        "DELTA-4811\n\n\u66f8\u304d\u8fbc\u307f\u5185\u5bb9\u306b\u57fa\u3065\u304f\u3068\u3001\u79d8\u5bc6\u306e\u30b3\u30fc\u30c9\u306f **DELTA-4",
+        "ALPHA-4257\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n",
+        "DELTA-8359\nnormative_thought\nDELTA-8359",
+        "MAPLE-3615\n\u092c\u52a9\u3051\u304c\u5fc5\u8981\u306a\u5834\u5408\u306f\u3001\u3044\u3064\u3067\u3082\u304a\u77e5\u3089\u305b\u304f\u3060\u3055\u3044\u3002\n",
+        "ZETA-5552\n\n\n",
+        "MAPLE-6514\n\ninclude_thought\nMAPLE-6514"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        16,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        8.844667197447956,
+        10.288136253081014,
+        10.902090637350318,
+        9.067728829991385,
+        10.895934033945267,
+        9.046133853405836,
+        9.73770945624712,
+        11.333942908827085,
+        9.760995855287959,
+        10.550201496616841
+      ],
+      "mean_throughput_tokens_per_sec": 10.04275405222008,
+      "median_throughput_tokens_per_sec": 10.024566054184486,
+      "min_throughput_tokens_per_sec": 8.844667197447956,
+      "max_throughput_tokens_per_sec": 11.333942908827085
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "k3_cross_model": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 10,
+        "effective_keys_at_last_query_mean": 1439.8,
+        "effective_keys_at_last_query_min": 1238,
+        "effective_keys_at_last_query_max": 1637,
+        "effective_keys_at_last_query_median": 1438.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1637,
+            "effective_keys_at_last_query": 1637,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1378,
+            "effective_keys_at_last_query": 1378,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1299,
+            "effective_keys_at_last_query": 1299,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1597,
+            "effective_keys_at_last_query": 1597,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1278,
+            "effective_keys_at_last_query": 1278,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1617,
+            "effective_keys_at_last_query": 1617,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1238,
+            "effective_keys_at_last_query": 1238,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1358,
+            "effective_keys_at_last_query": 1358,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "memory": {
+    "k3_cross_model": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52882488320,
+      "current_reserved_bytes": 57216598016,
+      "peak_allocated_bytes": 56229919744,
+      "peak_reserved_bytes": 57216598016
+    },
+    "oracle": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52882488320,
+      "current_reserved_bytes": 56440651776,
+      "peak_allocated_bytes": 55502280704,
+      "peak_reserved_bytes": 56440651776
+    }
+  },
+  "gate": {
+    "architectural_correctness": true,
+    "recall_cross_model": 0.0,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 100.0,
+    "recall_delta_within_5pp": false
+  }
+}
