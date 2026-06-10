@@ -1,3 +1,4 @@
 models/dflash-kakeya-baseline/*.safetensors filter=lfs diff=lfs merge=lfs -text
 results/research/f_theta_v1/f_theta_weights.pt filter=lfs diff=lfs merge=lfs -text
 results/research/f_theta_v3_attn_distill/f_theta_weights.pt filter=lfs diff=lfs merge=lfs -text
+results/research/f_theta_v4a_warmstart_hybrid/f_theta_weights.pt filter=lfs diff=lfs merge=lfs -text
