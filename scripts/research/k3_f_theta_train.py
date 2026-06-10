@@ -338,7 +338,7 @@ def _f_theta_loss(
 
     # Per-layer targets + MSE (layers can have heterogeneous kv_dim).
     layer_kv_heads = cfg.layer_kv_heads
-    head_dim = cfg.verifier_head_dim
+    layer_head_dims = cfg.layer_head_dims
     idx_pos = idx.to(seq.verifier_k[0].device)
     loss = pred_k[0].new_zeros(())
     n_layers = cfg.verifier_num_layers
@@ -346,10 +346,10 @@ def _f_theta_loss(
         v_k_sub = seq.verifier_k[li].index_select(0, idx_pos)  # [T_sub, kv_dim_i]
         v_v_sub = seq.verifier_v[li].index_select(0, idx_pos)
         tgt_k = v_k_sub.view(
-            1, v_k_sub.size(0), layer_kv_heads[li], head_dim,
+            1, v_k_sub.size(0), layer_kv_heads[li], layer_head_dims[li],
         ).float()
         tgt_v = v_v_sub.view(
-            1, v_v_sub.size(0), layer_kv_heads[li], head_dim,
+            1, v_v_sub.size(0), layer_kv_heads[li], layer_head_dims[li],
         ).float()
         loss = loss + F.mse_loss(pred_k[li].float(), tgt_k)
         loss = loss + F.mse_loss(pred_v[li].float(), tgt_v)
@@ -409,26 +409,32 @@ def main() -> int:
     # Derive f_θ config from drafter + verifier shapes. Gemma 4's config
     # nests decoder dims under .text_config, so resolve it first.
     v_cfg = resolve_text_config(verifier.config)
-    head_dim = v_cfg.head_dim
-    # Read per-layer KV-head counts directly off the decoder layers:
-    # Gemma 4 uses 8 KV heads on sliding layers, 4 on full-attention
-    # layers (v_proj may be None there → V shares K's projection).
+    # Read per-layer (head_dim, KV-head count) directly off the decoder
+    # layers. Gemma 4 uses head_dim=256 / 8 KV heads on sliding layers
+    # and head_dim=512 (global_head_dim) / 2 KV heads on full-attention
+    # layers (where v_proj is None: K == V).
     v_layers = get_verifier_decoder(verifier).layers
+    layer_head_dims = tuple(int(layer.self_attn.head_dim) for layer in v_layers)
     layer_kv_heads = tuple(
-        layer.self_attn.k_proj.out_features // head_dim for layer in v_layers
+        layer.self_attn.k_proj.out_features // hd
+        for layer, hd in zip(v_layers, layer_head_dims)
     )
-    uniform = len(set(layer_kv_heads)) == 1
+    uniform_heads = len(set(layer_kv_heads)) == 1
+    uniform_dims = len(set(layer_head_dims)) == 1
     f_cfg = FThetaConfig(
         drafter_num_layers=drafter.cfg.num_hidden_layers,
         drafter_num_kv_heads=drafter.cfg.num_key_value_heads,
         drafter_head_dim=drafter.cfg.head_dim,
         verifier_num_layers=v_cfg.num_hidden_layers,
         verifier_num_kv_heads=layer_kv_heads[0],
-        verifier_head_dim=head_dim,
+        verifier_head_dim=layer_head_dims[0],
         rank=args.rank,
-        verifier_layer_kv_heads=None if uniform else layer_kv_heads,
+        verifier_layer_kv_heads=None if uniform_heads else layer_kv_heads,
+        verifier_layer_head_dims=None if uniform_dims else layer_head_dims,
     )
     print(f"[f_theta-train] verifier per-layer kv heads: {layer_kv_heads}",
+          file=sys.stderr)
+    print(f"[f_theta-train] verifier per-layer head dims: {layer_head_dims}",
           file=sys.stderr)
     print(f"[f_theta-train] f_θ config: {f_cfg}", file=sys.stderr)
 

@@ -130,6 +130,10 @@ class FThetaConfig:
     # Per-layer KV head counts (len == verifier_num_layers). None ⇒
     # uniform verifier_num_kv_heads for every layer.
     verifier_layer_kv_heads: Optional[Tuple[int, ...]] = None
+    # Per-layer head dims (len == verifier_num_layers). None ⇒ uniform
+    # verifier_head_dim. Gemma 4 uses 256 on sliding layers and 512
+    # (global_head_dim) on its full-attention layers.
+    verifier_layer_head_dims: Optional[Tuple[int, ...]] = None
 
     @property
     def drafter_kv_dim(self) -> int:
@@ -150,9 +154,21 @@ class FThetaConfig:
         return tuple(int(h) for h in self.verifier_layer_kv_heads)
 
     @property
+    def layer_head_dims(self) -> Tuple[int, ...]:
+        """Per-layer head dims (always length ``verifier_num_layers``)."""
+        if self.verifier_layer_head_dims is None:
+            return tuple(
+                self.verifier_head_dim
+                for _ in range(self.verifier_num_layers)
+            )
+        return tuple(int(d) for d in self.verifier_layer_head_dims)
+
+    @property
     def layer_kv_dims(self) -> Tuple[int, ...]:
-        """Per-layer K (or V) feature dim = kv_heads[i] * head_dim."""
-        return tuple(h * self.verifier_head_dim for h in self.layer_kv_heads)
+        """Per-layer K (or V) feature dim = kv_heads[i] * head_dim[i]."""
+        return tuple(
+            h * d for h, d in zip(self.layer_kv_heads, self.layer_head_dims)
+        )
 
     @property
     def encoder_in_features(self) -> int:
@@ -163,13 +179,16 @@ class FThetaConfig:
         d = dataclasses.asdict(self)
         if self.verifier_layer_kv_heads is not None:
             d["verifier_layer_kv_heads"] = list(self.verifier_layer_kv_heads)
+        if self.verifier_layer_head_dims is not None:
+            d["verifier_layer_head_dims"] = list(self.verifier_layer_head_dims)
         return d
 
     @classmethod
     def from_json_dict(cls, d: dict) -> "FThetaConfig":
+        list_fields = {"verifier_layer_kv_heads", "verifier_layer_head_dims"}
         kwargs: dict = {}
         for k, v in d.items():
-            if k == "verifier_layer_kv_heads":
+            if k in list_fields:
                 kwargs[k] = None if v is None else tuple(int(x) for x in v)
             else:
                 kwargs[k] = int(v)
@@ -243,13 +262,13 @@ class FThetaProjection(nn.Module):
         # encoder's weight dtype so matmul dtypes agree.
         drafter_concat = drafter_concat.to(encoder.weight.dtype)
         rep = encoder(drafter_concat)  # [B, T, rank]
-        head_dim = self.config.verifier_head_dim
         kv_heads = self.config.layer_kv_heads
+        head_dims = self.config.layer_head_dims
         outs: List[torch.Tensor] = []
         for li, dec in enumerate(decoders):
-            o = dec(rep)  # [B, T, kv_heads[li] * head_dim]
+            o = dec(rep)  # [B, T, kv_heads[li] * head_dims[li]]
             B, T, _ = o.shape
-            outs.append(o.view(B, T, kv_heads[li], head_dim))
+            outs.append(o.view(B, T, kv_heads[li], head_dims[li]))
         return outs
 
     def forward_k(self, drafter_k_concat: torch.Tensor) -> List[torch.Tensor]:
