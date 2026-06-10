@@ -54,6 +54,11 @@ from inference_engine.v04.cross_model_dlm_verifier import (
     CrossModelDLMRestoredVerifier,
     CrossModelLayerMapping,
 )
+# Mac MLX variant — imports lazily inside class methods to keep module
+# importable on Linux CI (where mlx is unavailable).
+from inference_engine.v04.cross_model_dlm_verifier_mlx import (
+    MLXCrossModelDLMRestoredVerifier,
+)
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -134,4 +139,5 @@ __all__ = [
     # K/V Restoration (the integrated Kakeya inference architecture)
     "CrossModelDLMRestoredVerifier",
     "CrossModelLayerMapping",
+    "MLXCrossModelDLMRestoredVerifier",
 ]
