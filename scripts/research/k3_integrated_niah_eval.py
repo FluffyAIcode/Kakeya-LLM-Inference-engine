@@ -115,6 +115,16 @@ def parse_args() -> argparse.Namespace:
              "isolates 'is the restoration machinery correct?' from 'is "
              "f_θ accurate enough?'.",
     )
+    ap.add_argument(
+        "--mix-alpha-sweep", default="",
+        help="S6 fidelity→recall diagnostic. Comma-separated alphas in "
+             "[0,1]. At each alpha, evicted-position K/V = alpha*true + "
+             "(1-alpha)*f_θ. alpha=0 is pure f_θ, alpha=1 is identity "
+             "(oracle-equivalent). Maps recall vs residual K/V error so we "
+             "can read off the fidelity threshold recall needs. Runs the "
+             "sweep in a single model load and writes a sweep JSON, then "
+             "exits (skips the normal cross-model/oracle run).",
+    )
     return ap.parse_args()
 
 
@@ -266,6 +276,107 @@ def main() -> int:
             all_attention_functions=ALL_ATTENTION_FUNCTIONS,
         )
         return out.logits[0, -1]
+
+    # ---------- S6: fidelity→recall sweep (alpha-interpolation) ----------
+    if args.mix_alpha_sweep:
+        from inference_engine.v04.cross_model_dlm_verifier import (
+            capture_verifier_own_kv,
+        )
+        from inference_engine.v04.kv_merge import compute_evicted_positions
+
+        orig_project = cross_verifier.project_drafter_kv
+        alphas = [float(x) for x in args.mix_alpha_sweep.split(",") if x.strip()]
+        cfg = f_theta.config
+        lhd = cfg.layer_head_dims
+        full_dim = max(lhd)
+        all_idx = list(range(cfg.verifier_num_layers))
+        full_idx = [i for i in all_idx if lhd[i] == full_dim]
+
+        # Baseline residual error of f_θ vs true (sample 0, evicted positions),
+        # so each alpha maps to an effective relative K/V error (1-alpha)^2.
+        def _rel_mse_layers(tk, tv, fk, fv, idx, layers):
+            num = den = 0.0
+            for li in layers:
+                t = tk[li].index_select(1, idx.to(tk[li].device)).float()
+                f = fk[li].index_select(1, idx.to(fk[li].device)).to(t.device).float()
+                num += float(((f - t) ** 2).sum()); den += float((t ** 2).sum())
+                tvv = tv[li].index_select(1, idx.to(tv[li].device)).float()
+                fvv = fv[li].index_select(1, idx.to(fv[li].device)).to(tvv.device).float()
+                num += float(((fvv - tvv) ** 2).sum()); den += float((tvv ** 2).sum())
+            return num / max(den, 1e-9)
+
+        with torch.no_grad():
+            ids0 = sample_ids[0]
+            ev0 = compute_evicted_positions(
+                int(ids0.size(1)), args.sink_size, args.window_size)
+            idx0 = torch.tensor(ev0, dtype=torch.long)
+            tk0, tv0 = capture_verifier_own_kv(verifier, ids0)
+            fk0, fv0 = orig_project(ids0)
+            relmse0_all = _rel_mse_layers(tk0, tv0, fk0, fv0, idx0, all_idx)
+            relmse0_full = _rel_mse_layers(tk0, tv0, fk0, fv0, idx0, full_idx)
+        print(f"[s6] f_θ baseline rel_mse: overall={relmse0_all:.4f} "
+              f"full_attn={relmse0_full:.4f}", file=sys.stderr)
+
+        def _make_mixed(alpha):
+            def _mixed(ids):
+                tk, tv = capture_verifier_own_kv(verifier, ids)
+                fk, fv = orig_project(ids)
+                mk, mv = [], []
+                for i in range(len(fk)):
+                    t = tk[i].to(device=fk[i].device, dtype=fk[i].dtype)
+                    tvv = tv[i].to(device=fv[i].device, dtype=fv[i].dtype)
+                    mk.append(alpha * t + (1.0 - alpha) * fk[i])
+                    mv.append(alpha * tvv + (1.0 - alpha) * fv[i])
+                return mk, mv
+            return _mixed
+
+        sweep_rows = []
+        for a in alphas:
+            cross_verifier.project_drafter_kv = _make_mixed(a)
+            dec, lat, tok = _greedy(_cross_step)
+            res = aggregate_recall(f"mix_a{a}", samples, dec, lat, tok)
+            eff = (1.0 - a) ** 2
+            row = {
+                "alpha": a,
+                "recall": res.recall,
+                "samples_correct": res.samples_correct,
+                "samples_total": res.samples_total,
+                "eff_rel_mse_overall": eff * relmse0_all,
+                "eff_rel_mse_full_attn": eff * relmse0_full,
+            }
+            sweep_rows.append(row)
+            print(f"[s6] alpha={a:.3f} recall={res.recall:.3f} "
+                  f"({res.samples_correct}/{res.samples_total}) "
+                  f"eff_rel_mse_full={eff * relmse0_full:.4f}", file=sys.stderr)
+
+        sweep_report = {
+            "kind": "k3_s6_fidelity_recall_sweep",
+            "config": {
+                "f_theta_dir": args.f_theta_dir,
+                "n_samples": args.n_samples,
+                "sink_size": args.sink_size,
+                "window_size": args.window_size,
+                "max_new_tokens": args.max_new_tokens,
+                "haystack_min_lines": args.haystack_min_lines,
+                "haystack_max_lines": args.haystack_max_lines,
+                "seed": args.seed,
+                "prompt_token_lens": seq_lens,
+            },
+            "f_theta_baseline_rel_mse": {
+                "overall": relmse0_all, "full_attn": relmse0_full,
+            },
+            "sweep": sweep_rows,
+        }
+        out_path = Path(args.output) if args.output else Path(
+            f"results/research/k3_s6_fidelity_sweep_{int(time.time())}.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(sweep_report, indent=2))
+        print(f"\n[s6] DONE. sweep written to {out_path}", file=sys.stderr)
+        for r in sweep_rows:
+            print(f"  alpha={r['alpha']:.3f}  recall={r['recall']:.3f}  "
+                  f"eff_rel_mse_full={r['eff_rel_mse_full_attn']:.4f}",
+                  file=sys.stderr)
+        return 0
 
     cross_decoded, cross_lat, cross_tok = _greedy(_cross_step)
     cross_res = aggregate_recall(
