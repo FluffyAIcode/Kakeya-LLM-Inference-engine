@@ -184,7 +184,9 @@ def main() -> int:
             messages, add_generation_prompt=True, tokenize=True,
             return_tensors="pt",
         )
-        if isinstance(ids, list):
+        if hasattr(ids, "keys"):          # BatchEncoding / dict
+            ids = ids["input_ids"]
+        elif isinstance(ids, list):
             ids = torch.tensor([ids])
         return ids.to(device)
 
