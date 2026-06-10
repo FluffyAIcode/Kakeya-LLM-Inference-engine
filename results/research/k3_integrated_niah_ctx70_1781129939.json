@@ -1,0 +1,341 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v4a_warmstart_hybrid",
+    "f_theta_config": {
+      "drafter_num_layers": 5,
+      "drafter_num_kv_heads": 8,
+      "drafter_head_dim": 128,
+      "verifier_num_layers": 30,
+      "verifier_num_kv_heads": 8,
+      "verifier_head_dim": 256,
+      "rank": 256,
+      "verifier_layer_kv_heads": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2
+      ],
+      "verifier_layer_head_dims": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512
+      ]
+    },
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "skip_oracle": false,
+    "identity_restore": false,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model",
+      "samples_total": 10,
+      "samples_correct": 0,
+      "recall": 0.0,
+      "mean_latency_s": 3.3142378951073623,
+      "median_latency_s": 3.2595019129803404,
+      "per_sample_decoded": [
+        "The provided text does not contain a secret code; it appears to be a prompt containing instructional text and a placeholder question.",
+        "The provided text does not contain a secret code. It appears to be a prompt containing instructions, a pattern of numbers,",
+        "The provided text does not contain a \"secret code.\" It appears to be a prompt containing a series of instructions, a",
+        "The provided text does not contain a secret code; it appears to be a prompt containing various instructions and examples.",
+        "The provided text does not contain a secret code; it appears to be a prompt containing instructional text and a placeholder question.",
+        "The provided text does not contain a secret code; it appears to be a prompt containing instructional text and a placeholder question.",
+        "The provided text does not contain a secret code; it appears to be a prompt containing instructional text and a placeholder question.",
+        "The provided text does not contain a secret code. It appears to be a prompt containing instructional text and a placeholder question.",
+        "The provided text does not contain a secret code. It appears to be a prompt containing instructional text and a placeholder question.",
+        "The provided text does not contain a secret code. It appears to be a prompt containing instructional text and a placeholder question."
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        6.158678376134239,
+        7.10090388473375,
+        7.424078257868762,
+        6.236516091894493,
+        8.124545174588512,
+        6.915023123806111,
+        7.303092019892089,
+        8.403624325722832,
+        7.616933818115398,
+        7.825795769741083
+      ],
+      "mean_throughput_tokens_per_sec": 7.310919084249727,
+      "median_throughput_tokens_per_sec": 7.363585138880426,
+      "min_throughput_tokens_per_sec": 6.158678376134239,
+      "max_throughput_tokens_per_sec": 8.403624325722832
+    },
+    "oracle": {
+      "name": "oracle",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 2.319360340514686,
+      "median_latency_s": 2.291858280019369,
+      "per_sample_decoded": [
+        "BETA-1409\n//thought\nBETA-1409",
+        "DELTA-3286\n\nthought\nDELTA-3286\n",
+        "ORCHID-9935\n10. **Final Answer:** ORCHID-99",
+        "ETA-1520\n\n\nthought\nthought\nETA-15",
+        "DELTA-4811\n\n\u66f8\u304d\u8fbc\u307f\u5185\u5bb9\u306b\u57fa\u3065\u304f\u3068\u3001\u79d8\u5bc6\u306e\u30b3\u30fc\u30c9\u306f **DELTA-4",
+        "ALPHA-4257\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n",
+        "DELTA-8359\nnormative_thought\nDELTA-8359",
+        "MAPLE-3615\n\u092c\u52a9\u3051\u304c\u5fc5\u8981\u306a\u5834\u5408\u306f\u3001\u3044\u3064\u3067\u3082\u304a\u77e5\u3089\u305b\u304f\u3060\u3055\u3044\u3002\n",
+        "ZETA-5552\n\n\n",
+        "MAPLE-6514\n\ninclude_thought\nMAPLE-6514"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        16,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        8.924847071158883,
+        10.420643598378328,
+        10.88049672145145,
+        9.116012437745775,
+        10.984900257247734,
+        9.014853564479848,
+        9.707780285239126,
+        11.31113673466426,
+        9.749458559937297,
+        10.523565547932998
+      ],
+      "mean_throughput_tokens_per_sec": 10.06336947782357,
+      "median_throughput_tokens_per_sec": 10.085051079157813,
+      "min_throughput_tokens_per_sec": 8.924847071158883,
+      "max_throughput_tokens_per_sec": 11.31113673466426
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "k3_cross_model": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 10,
+        "effective_keys_at_last_query_mean": 1439.8,
+        "effective_keys_at_last_query_min": 1238,
+        "effective_keys_at_last_query_max": 1637,
+        "effective_keys_at_last_query_median": 1438.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1637,
+            "effective_keys_at_last_query": 1637,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1378,
+            "effective_keys_at_last_query": 1378,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1299,
+            "effective_keys_at_last_query": 1299,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1597,
+            "effective_keys_at_last_query": 1597,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1278,
+            "effective_keys_at_last_query": 1278,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1617,
+            "effective_keys_at_last_query": 1617,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1238,
+            "effective_keys_at_last_query": 1238,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1358,
+            "effective_keys_at_last_query": 1358,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "memory": {
+    "k3_cross_model": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52630830080,
+      "current_reserved_bytes": 56975425536,
+      "peak_allocated_bytes": 55998552064,
+      "peak_reserved_bytes": 56975425536
+    },
+    "oracle": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52630830080,
+      "current_reserved_bytes": 56178507776,
+      "peak_allocated_bytes": 55250622464,
+      "peak_reserved_bytes": 56178507776
+    }
+  },
+  "gate": {
+    "architectural_correctness": true,
+    "recall_cross_model": 0.0,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 100.0,
+    "recall_delta_within_5pp": false
+  }
+}
