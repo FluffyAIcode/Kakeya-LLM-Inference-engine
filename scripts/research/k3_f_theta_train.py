@@ -198,6 +198,10 @@ def _capture_verifier_kv(
     k_capture: List[torch.Tensor] = [None] * num_layers
     v_capture: List[torch.Tensor] = [None] * num_layers
     handles = []
+    # Gemma 4 has KV-sharing layers where v_proj is None; there the
+    # value_states equal the raw k_proj output (pre k_norm / pre RoPE).
+    # Capture V from the k_proj output for those layers.
+    v_shared_from_k: List[int] = []
 
     for i, layer in enumerate(layers):
         attn = layer.self_attn
@@ -213,7 +217,10 @@ def _capture_verifier_kv(
             return hook
 
         handles.append(attn.k_proj.register_forward_hook(_make_k_hook(i)))
-        handles.append(attn.v_proj.register_forward_hook(_make_v_hook(i)))
+        if getattr(attn, "v_proj", None) is not None:
+            handles.append(attn.v_proj.register_forward_hook(_make_v_hook(i)))
+        else:
+            v_shared_from_k.append(i)
 
     try:
         with torch.no_grad():
@@ -226,6 +233,9 @@ def _capture_verifier_kv(
         raise RuntimeError(
             "verifier K capture missing some layers — hooks did not fire"
         )
+    # Fill V for v_proj-None layers with the captured k_proj output.
+    for i in v_shared_from_k:
+        v_capture[i] = k_capture[i]
     # Each k_capture[i] is [B, T, num_kv_heads × head_dim] = [B, T, kv_dim]
     # Stack to [num_layers, B, T, kv_dim] then drop B (assume B=1)
     K = torch.stack(k_capture, dim=0)  # [L_v, B, T, kv_dim]
