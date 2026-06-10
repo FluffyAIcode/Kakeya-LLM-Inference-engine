@@ -107,6 +107,14 @@ def parse_args() -> argparse.Namespace:
         help="Skip the full-attention oracle baseline (saves time but "
              "loses the |delta vs oracle| gate signal).",
     )
+    ap.add_argument(
+        "--identity-restore", action="store_true",
+        help="Diagnostic: restore evicted positions with the verifier's "
+             "OWN true pre-norm K/V instead of the f_θ projection. Under "
+             "this mode cross-model recall should match the oracle — it "
+             "isolates 'is the restoration machinery correct?' from 'is "
+             "f_θ accurate enough?'.",
+    )
     return ap.parse_args()
 
 
@@ -166,6 +174,20 @@ def main() -> int:
     print(f"[k3-integrated] cross-model verifier ready "
           f"(sink={args.sink_size}, window={args.window_size})",
           file=sys.stderr)
+
+    if args.identity_restore:
+        # Diagnostic: restore evicted positions with the verifier's own
+        # true pre-norm K/V (not f_θ). Validates the restoration
+        # machinery independent of f_θ accuracy.
+        from inference_engine.v04.cross_model_dlm_verifier import (
+            capture_verifier_own_kv,
+        )
+        cross_verifier.project_drafter_kv = (
+            lambda ids: capture_verifier_own_kv(verifier, ids)
+        )
+        print("[k3-integrated] IDENTITY-RESTORE diagnostic enabled "
+              "(evicted K/V come from verifier's own k_proj/v_proj)",
+              file=sys.stderr)
 
     # ---------- NIAH dataset ----------
     samples: List[NIAHSample] = make_niah_dataset(
@@ -307,6 +329,7 @@ def main() -> int:
             "max_new_tokens": args.max_new_tokens,
             "seed": args.seed,
             "skip_oracle": bool(args.skip_oracle),
+            "identity_restore": bool(args.identity_restore),
             "prompt_token_lens": seq_lens,
         },
         "results": {

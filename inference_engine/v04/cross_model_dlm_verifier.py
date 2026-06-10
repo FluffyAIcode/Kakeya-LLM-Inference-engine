@@ -456,6 +456,64 @@ class CrossModelDLMRestoredVerifier:
 # ---------------------------------------------------------------------------
 
 
+@torch.no_grad()
+def capture_verifier_own_kv(
+    verifier_model: Any, input_ids: torch.Tensor,
+) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    """Capture the verifier's OWN pre-norm per-layer K/V via k_proj /
+    v_proj forward hooks (identity-restoration diagnostic).
+
+    Returns ``(k_layers, v_layers)``: per-layer lists where element
+    ``i`` is ``[B, T, kv_heads_i, head_dim_i]`` (heterogeneous per
+    layer, matching the f_θ output layout). Layers whose ``v_proj`` is
+    ``None`` (Gemma 4 full-attention K==V) take V from the k_proj
+    output, mirroring the model's own behaviour.
+
+    Injecting these at evicted positions reproduces exactly what the
+    verifier would have computed under full attention — so cross-model
+    recall under identity restoration should match the oracle. This
+    isolates "is the K/V Restoration machinery correct?" (this helper)
+    from "is f_θ accurate enough?" (the trained projection).
+    """
+    layers = get_verifier_decoder(verifier_model).layers
+    n = len(layers)
+    k_cap: List[Optional[torch.Tensor]] = [None] * n
+    v_cap: List[Optional[torch.Tensor]] = [None] * n
+    v_shared: List[int] = []
+    handles = []
+    for i, layer in enumerate(layers):
+        attn = layer.self_attn
+
+        def _kh(_m, _inp, out, idx=i):
+            k_cap[idx] = out.detach()
+
+        def _vh(_m, _inp, out, idx=i):
+            v_cap[idx] = out.detach()
+
+        handles.append(attn.k_proj.register_forward_hook(_kh))
+        if getattr(attn, "v_proj", None) is not None:
+            handles.append(attn.v_proj.register_forward_hook(_vh))
+        else:
+            v_shared.append(i)
+    try:
+        verifier_model(input_ids=input_ids, use_cache=False)
+    finally:
+        for h in handles:
+            h.remove()
+    for i in v_shared:
+        v_cap[i] = k_cap[i]
+    if any(k is None for k in k_cap) or any(v is None for v in v_cap):
+        raise RuntimeError("verifier own-K/V capture missing some layers")
+    k_layers: List[torch.Tensor] = []
+    v_layers: List[torch.Tensor] = []
+    for i, layer in enumerate(layers):
+        hd = layer.self_attn.head_dim
+        b, t, kvdim = k_cap[i].shape
+        k_layers.append(k_cap[i].view(b, t, kvdim // hd, hd))
+        v_layers.append(v_cap[i].view(b, t, kvdim // hd, hd))
+    return k_layers, v_layers
+
+
 def _capture_drafter_kv(
     *, verifier_model: Any, drafter: Any, input_ids: torch.Tensor,
 ) -> KVCapture:
