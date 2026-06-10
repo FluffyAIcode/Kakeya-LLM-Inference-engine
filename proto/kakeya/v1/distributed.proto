@@ -1,0 +1,198 @@
+// Copyright 2026 Kakeya contributors.
+//
+// Kakeya multi-host plane — capability exchange + remote block
+// proposal (ADR 0009, v0.5-M1 milestone).
+//
+// This file is the wire contract for the agent capability exchange
+// platform between Kakeya nodes (Mac minis and heterogeneous CPU
+// hosts) and for the first exchanged capability: serving dLM-proposer
+// draft blocks to a remote AR verifier's speculative-decoding loop.
+//
+// Design properties (see ADR 0009 §4 and
+// docs/design/agent-capability-exchange-platform.md):
+//
+//   * Gossip, not registry: ExchangeCapabilities is a symmetric
+//     push-pull merge; there is no coordinator node.
+//   * Last-writer-wins per node_id on announced_at_unix; TTL expiry.
+//   * Token-ids-only proposal payloads: a wrong or stale remote draft
+//     can only lower acceptance rate, never corrupt verifier output,
+//     because the verifier-side greedy accept rule is unchanged.
+//   * mlx.distributed is an OPTIONAL bulk-tensor data plane advertised
+//     via NodeCapability.ring_address; this gRPC plane is the control
+//     plane and works on fleets with no MLX at all.
+//
+// Stability: Unstable until v0.5 GA (same policy runtime.proto had
+// before v0.3 GA). Breaking edits require an ADR-update commit.
+
+syntax = "proto3";
+
+package kakeya.v1;
+
+// -----------------------------------------------------------------------------
+// Services
+// -----------------------------------------------------------------------------
+
+// CapabilityService is served by every Kakeya node that participates
+// in a fleet. Both RPCs are safe to call from any peer at any time;
+// neither mutates anything beyond the callee's capability registry.
+service CapabilityService {
+  // ExchangeCapabilities is the gossip primitive. The caller sends
+  // every capability card it currently holds (its own card included);
+  // the callee merges those cards into its registry (last-writer-wins
+  // on announced_at_unix, own card never overwritten) and replies
+  // with its merged view. The caller merges the response. After one
+  // round both sides hold the union of their prior views.
+  rpc ExchangeCapabilities(ExchangeCapabilitiesRequest) returns (ExchangeCapabilitiesResponse);
+
+  // GetNodeCapability returns only the callee's own card. Cheap
+  // probe used for liveness checks and diagnostics; does not mutate
+  // the callee's registry.
+  rpc GetNodeCapability(GetNodeCapabilityRequest) returns (GetNodeCapabilityResponse);
+}
+
+// ProposerService serves speculative-decoding draft blocks. The
+// contract is DLMProposer.propose_block (ADR 0001) lifted onto the
+// wire: committed prefix in, exactly block_size draft token ids out.
+service ProposerService {
+  // ProposeBlock drafts exactly block_size tokens conditioned on the
+  // committed prefix. Unknown model_id returns NOT_FOUND; malformed
+  // arguments (empty prefix, non-positive block_size/num_steps)
+  // return INVALID_ARGUMENT.
+  rpc ProposeBlock(ProposeBlockRequest) returns (ProposeBlockResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Capability messages
+// -----------------------------------------------------------------------------
+
+// CapabilityRole classifies what a node can do with a given model
+// for another node's agent workload.
+enum CapabilityRole {
+  CAPABILITY_ROLE_UNSPECIFIED = 0;
+
+  // The node can run this model as an AR verifier (sink+window KV).
+  CAPABILITY_ROLE_VERIFIER = 1;
+
+  // The node can serve ProposeBlock with this model (dLM, DFlash,
+  // or the model-free n-gram proposer advertised as model_id
+  // "ngram").
+  CAPABILITY_ROLE_PROPOSER = 2;
+
+  // Reserved for future exchanged capabilities (ADR 0009 §4).
+  CAPABILITY_ROLE_EMBEDDER = 3;
+  CAPABILITY_ROLE_TOOL = 4;
+}
+
+// ModelCapability is one (model, role) a node offers.
+message ModelCapability {
+  // HuggingFace-style id ("Qwen/Qwen3-0.6B",
+  // "mlx-community/Qwen3-1.7B-4bit") or the reserved id "ngram" for
+  // the model-free prompt-lookup proposer.
+  string model_id = 1;
+
+  CapabilityRole role = 2;
+
+  // Quantization label, informational: "bf16", "4bit-mlx", "none".
+  string quantization = 3;
+
+  // Measured throughput hint in tokens/second for this (model, role)
+  // on this node. 0 = unmeasured. Placement uses this as the primary
+  // score; nodes should publish a real measurement when they have
+  // one.
+  double tokens_per_second = 4;
+}
+
+// NodeCapability is one node's capability card. See
+// docs/design/agent-capability-exchange-platform.md §1.
+message NodeCapability {
+  // Stable fleet-unique identity, operator-assigned ("mini-attic")
+  // or generated. Two nodes sharing a node_id is an operator error;
+  // last-writer-wins applies regardless.
+  string node_id = 1;
+
+  // host:port where this node's gRPC services (RuntimeService,
+  // CapabilityService, ProposerService) are reachable by peers.
+  string grpc_address = 2;
+
+  // Informational platform label: "mac-m4-24gb", "linux-x86", ...
+  string platform = 3;
+
+  // Unified-memory capacity in bytes; placement tiebreak signal.
+  uint64 unified_memory_bytes = 4;
+
+  // Installed mlx version; empty string when MLX is unavailable on
+  // this node (e.g. Linux x86 fleet members).
+  string mlx_version = 5;
+
+  // Models this node offers, one entry per (model, role).
+  repeated ModelCapability models = 6;
+
+  // Wall-clock freshness stamp (seconds since the Unix epoch) set by
+  // the owning node each time it re-announces. Merge keeps the card
+  // with the larger value per node_id. Fleet clocks are assumed
+  // NTP-synced; ttl_seconds must be much larger than worst-case
+  // clock skew (design doc §2).
+  double announced_at_unix = 7;
+
+  // Card lifetime. A card is expired (dropped on merge and snapshot)
+  // once now > announced_at_unix + ttl_seconds.
+  double ttl_seconds = 8;
+
+  // Optional mlx.distributed ring endpoint for bulk-tensor flows
+  // (ADR 0009 §4 item 4). Empty when the node is not part of a ring.
+  string ring_address = 9;
+}
+
+message ExchangeCapabilitiesRequest {
+  // Every card the caller currently holds, its own included.
+  repeated NodeCapability known_nodes = 1;
+}
+
+message ExchangeCapabilitiesResponse {
+  // The callee's post-merge view of the fleet, its own card included.
+  repeated NodeCapability known_nodes = 1;
+}
+
+message GetNodeCapabilityRequest {}
+
+message GetNodeCapabilityResponse {
+  // The callee's own card only.
+  NodeCapability node = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Remote proposal messages
+// -----------------------------------------------------------------------------
+
+message ProposeBlockRequest {
+  // The committed prefix (prompt + accepted tokens), raw token ids in
+  // the verifier tokenizer's vocabulary. Same opacity contract as
+  // runtime.proto: the server never templates or interprets them.
+  repeated uint32 committed_token_ids = 1;
+
+  // Number of draft tokens to return. The response carries exactly
+  // this many token_ids or the RPC fails; partial blocks are a
+  // malformed-proposer error, mirroring SpeculativeDecoder's refusal
+  // to continue on short blocks.
+  uint32 block_size = 2;
+
+  // Diffusion denoising steps for dLM proposers. Proposers that do
+  // not iterate (DFlash single-pass, n-gram lookup) accept and
+  // ignore it, matching the in-process propose_block contract.
+  uint32 num_steps = 3;
+
+  // Which advertised proposer model to use. Empty string selects the
+  // serving node's default proposer.
+  string model_id = 4;
+}
+
+message ProposeBlockResponse {
+  // Exactly block_size draft token ids.
+  repeated uint32 token_ids = 1;
+
+  // Accounting mirrored from BlockProposal so the caller's
+  // ProposerStats stay meaningful across the wire.
+  uint32 diffusion_steps = 2;
+  uint32 forward_passes = 3;
+  uint64 peak_activation_bytes = 4;
+}

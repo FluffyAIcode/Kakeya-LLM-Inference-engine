@@ -165,6 +165,35 @@ with client.create_session() as session:
 
 That's where the 4400× latency-drift improvement comes from.
 
+## Multi-host: capability exchange + distributed spec decode (v0.5-M1)
+
+Per [ADR 0009](docs/adr/0009-mlx-distributed-spec-decode-and-capability-exchange.md),
+Kakeya nodes on one LAN (Mac minis, plus Linux CPU hosts) can now
+**gossip capability cards** — which models each node has warmed, in
+which role (verifier / proposer), with how much unified memory — and
+**trade work**: an AR verifier on one node drives speculative decoding
+with draft blocks served by a proposer on another node. The greedy
+accept rule runs locally and is unchanged, so remote drafts can change
+throughput but never tokens.
+
+```bash
+# Node B (proposer host)
+PYTHONPATH=. python3 scripts/demo_distributed_spec_decode.py \
+    --role proposer-node --bind 0.0.0.0:50061 --node-id node-b
+
+# Node A (verifier host) — discovers B, plans placement, decodes
+PYTHONPATH=. python3 scripts/demo_distributed_spec_decode.py \
+    --role verifier-node --bind 0.0.0.0:50060 --node-id node-a \
+    --peer <node-b-ip>:50061 --verifier-id Qwen/Qwen3-0.6B
+```
+
+The production runtime joins a fleet with the same flags on
+`scripts/start_grpc_runtime_server.py` (`--node-id`, `--peer`,
+`--serve-ngram-proposer`). `mlx.distributed` rings are advertised on
+capability cards (`ring_address`) as the bulk-tensor data plane for
+the K3 hidden-state flows; the control plane is pure gRPC and needs no
+MLX. Design details: [agent capability exchange platform](docs/design/agent-capability-exchange-platform.md).
+
 ## Deprecated HTTP shim
 
 The OpenAI-compatible HTTP API at `/v1/chat/completions` still works for
@@ -311,6 +340,8 @@ scripts/
 | v0.4 proposer-back-in | designing | Wire `SparseLogitsProposer` into the session-bound coordinator; restores speculative decoding to both gRPC and HTTP paths |
 | v0.4 alignment training | designing | [ADR 0004](docs/adr/0004-alignment-training-data-preparation-policy.md) Stage 2-4: data prep → training → ship aligned proposer |
 | v0.4 cross-request KV reuse | designing | Sessions survive across requests on gRPC; turns 9 ms intra-session drift into 0 ms inter-request drift |
+| **v0.5-M1 multi-host milestone** | ✅ landed | [ADR 0009](docs/adr/0009-mlx-distributed-spec-decode-and-capability-exchange.md): agent **capability exchange** between Mac mini hosts (gossip `CapabilityService`, TTL registry, deterministic placement) + **distributed speculative decoding** (remote `ProposerService` drafts, local greedy verification, byte-identical output) + optional `mlx.distributed` ring probe for bulk-tensor flows. See [design doc](docs/design/agent-capability-exchange-platform.md) and `scripts/demo_distributed_spec_decode.py` |
+| v0.5 GA multi-host hardening | queued | mTLS node identity, Bonjour seed discovery, K3 DFlash hidden-state flow over the mlx.distributed ring |
 
 ## Continuous integration
 
