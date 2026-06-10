@@ -261,10 +261,19 @@ class AttentionTargetData:
       sin    [1, T, head_dim]            — RoPE sine table
       attention_mask                      — captured causal/sliding mask
 
+    For hybrid loss (loss_type=attn_distill_hybrid), additionally:
+
+      k_raw  [T, num_kv_heads × head_dim] — k_proj output, pre-norm
+      v_raw  [T, num_kv_heads × head_dim] — v_proj output, pre-norm
+
+    These are needed to compute K/V direction (cosine post-norm) +
+    magnitude (pre-norm) losses that prevent the f_θ-collapse
+    degeneracy exposed by the 2026-06-10 alpha-sweep diagnostic
+    (f_θ raw rel_mse = 1331× target — k_norm/v_norm normalised the
+    scale away so attn-output loss alone didn't constrain it).
+
     All tensors stored bf16 to halve memory (cast to fp32 on use).
-    Stored on CPU; transferred to GPU per training step. For T=512,
-    one sequence costs ≈ 30 layers × 13 MB ≈ 390 MB (CPU bf16); for
-    a 64-prompt corpus that is ≈ 25 GB CPU RAM.
+    Stored on CPU; transferred to GPU per training step.
     """
     q_raw: List[torch.Tensor]            # per-layer pre-norm Q
     o_tgt: List[torch.Tensor]            # per-layer attn module output
@@ -273,6 +282,10 @@ class AttentionTargetData:
     attention_mask: Optional[torch.Tensor]
     num_heads_per_layer: List[int]
     head_dim_per_layer: List[int]
+    # Optional pre-norm K/V tgt for hybrid loss (None for legacy
+    # attn_distill which only needs Q + O_tgt).
+    k_raw_tgt: Optional[List[torch.Tensor]] = None
+    v_raw_tgt: Optional[List[torch.Tensor]] = None
 
 
 @dataclass
@@ -381,9 +394,15 @@ def _capture_verifier_kv(
 
 def _capture_attention_target_data(
     verifier_model: torch.nn.Module, input_ids: torch.Tensor,
+    *, capture_raw_kv: bool = False,
 ) -> AttentionTargetData:
     """Run verifier forward with hooks to capture per-layer attention
     distillation targets (Q_raw, O_tgt, cos, sin, attention_mask).
+
+    If ``capture_raw_kv`` is True, also capture per-layer K_raw and
+    V_raw (k_proj and v_proj outputs, pre-norm) — required by the
+    hybrid loss that constrains K/V direction + magnitude in addition
+    to attention output.
 
     Returns an :class:`AttentionTargetData` with all tensors moved to
     CPU bf16 (the per-step training loop streams these back to GPU).
@@ -396,6 +415,9 @@ def _capture_attention_target_data(
     cos_capture: List[Optional[torch.Tensor]] = [None] * num_layers
     sin_capture: List[Optional[torch.Tensor]] = [None] * num_layers
     mask_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    k_raw_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    v_raw_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    v_shared_from_k: List[int] = []        # full-attn layers: V_raw == K_raw
     handles = []
 
     for i, layer in enumerate(layers):
@@ -442,6 +464,22 @@ def _capture_attention_target_data(
         handles.append(
             attn.register_forward_pre_hook(_make_pre_hook(i), with_kwargs=True),
         )
+        if capture_raw_kv:
+            def _make_k_hook(idx):
+                def hook(_mod, _inp, output):
+                    k_raw_capture[idx] = output.detach()
+                return hook
+
+            def _make_v_hook(idx):
+                def hook(_mod, _inp, output):
+                    v_raw_capture[idx] = output.detach()
+                return hook
+
+            handles.append(attn.k_proj.register_forward_hook(_make_k_hook(i)))
+            if getattr(attn, "v_proj", None) is not None:
+                handles.append(attn.v_proj.register_forward_hook(_make_v_hook(i)))
+            else:
+                v_shared_from_k.append(i)
 
     try:
         with torch.no_grad():
@@ -477,6 +515,18 @@ def _capture_attention_target_data(
         else None
     )
 
+    k_raw_list: Optional[List[torch.Tensor]] = None
+    v_raw_list: Optional[List[torch.Tensor]] = None
+    if capture_raw_kv:
+        if any(k is None for k in k_raw_capture):
+            raise RuntimeError("hybrid capture: K_raw missing some layers")
+        for i in v_shared_from_k:
+            v_raw_capture[i] = k_raw_capture[i]
+        if any(v is None for v in v_raw_capture):
+            raise RuntimeError("hybrid capture: V_raw missing some layers")
+        k_raw_list = [_to_cpu_bf16(k[0]) for k in k_raw_capture]
+        v_raw_list = [_to_cpu_bf16(v[0]) for v in v_raw_capture]
+
     return AttentionTargetData(
         q_raw=q_list,
         o_tgt=o_list,
@@ -485,6 +535,8 @@ def _capture_attention_target_data(
         attention_mask=mask_cpu,
         num_heads_per_layer=num_heads_per_layer,
         head_dim_per_layer=head_dim_per_layer,
+        k_raw_tgt=k_raw_list,
+        v_raw_tgt=v_raw_list,
     )
 
 
@@ -495,6 +547,7 @@ def _collect_sequence(
     *,
     capture_legacy_kv: bool = False,
     capture_attn_target: bool = True,
+    capture_raw_kv_in_attn_target: bool = False,
 ) -> CapturedSequence:
     """Capture paired drafter + verifier data for one input sequence.
 
@@ -519,7 +572,10 @@ def _collect_sequence(
 
     attn_target: Optional[AttentionTargetData] = None
     if capture_attn_target:
-        attn_target = _capture_attention_target_data(verifier_model, input_ids)
+        attn_target = _capture_attention_target_data(
+            verifier_model, input_ids,
+            capture_raw_kv=capture_raw_kv_in_attn_target,
+        )
 
     # Drafter K/V capture (always; cheap and small, ~5 MB per seq).
     capture = _capture_drafter_kv(
@@ -552,6 +608,11 @@ def _attention_distillation_loss(
     sample_positions: Optional[int] = None,
     seed: Optional[int] = None,
     diag_buf: Optional[Dict[str, float]] = None,
+    hybrid: bool = False,
+    lambda_k_dir: float = 1.0,
+    lambda_v_dir: float = 1.0,
+    lambda_k_mag: float = 0.1,
+    lambda_v_mag: float = 0.1,
 ) -> torch.Tensor:
     """Attention-output distillation loss (the v3 / one-shot principled loss).
 
@@ -635,7 +696,17 @@ def _attention_distillation_loss(
 
     n_layers = cfg.verifier_num_layers
     loss = pred_k_per_layer[0].new_zeros(())
-    diag = {"mse_O_total": 0.0, "abs_O_target": 0.0}
+    diag = {
+        "mse_O_total": 0.0, "abs_O_target": 0.0,
+        # Hybrid-loss diagnostics (zero unless hybrid=True):
+        "k_dir_total": 0.0, "v_dir_total": 0.0,
+        "k_mag_total": 0.0, "v_mag_total": 0.0,
+    }
+    if hybrid and (target.k_raw_tgt is None or target.v_raw_tgt is None):
+        raise RuntimeError(
+            "hybrid=True requires AttentionTargetData with k_raw_tgt + v_raw_tgt; "
+            "set capture_raw_kv_in_attn_target=True in _collect_sequence."
+        )
 
     for li in range(n_layers):
         layer = layers[li]
@@ -670,14 +741,15 @@ def _attention_distillation_loss(
         Q = Q.transpose(1, 2)                           # [1, n_heads, T, head_dim]
 
         # K pipeline (f_θ output → norm → RoPE → transpose)
-        K_pred = pred_k_per_layer[li].to(dtype=compute_dtype)  # [1, T, kv_heads, head_dim]
-        K = attn.k_norm(K_pred)
-        K = apply_rotary_pos_emb(K, cos, sin, unsqueeze_dim=2)
-        K = K.transpose(1, 2)                           # [1, kv_heads, T, head_dim]
+        K_pred_pre = pred_k_per_layer[li].to(dtype=compute_dtype)  # [1, T, kv_heads, head_dim]
+        K_pred_normed = attn.k_norm(K_pred_pre)            # post-k_norm, pre-RoPE
+        K = apply_rotary_pos_emb(K_pred_normed, cos, sin, unsqueeze_dim=2)
+        K = K.transpose(1, 2)                              # [1, kv_heads, T, head_dim]
 
         # V pipeline (f_θ output → v_norm → transpose, no RoPE)
-        V_pred = pred_v_per_layer[li].to(dtype=compute_dtype)
-        V = attn.v_norm(V_pred).transpose(1, 2)          # [1, kv_heads, T, head_dim]
+        V_pred_pre = pred_v_per_layer[li].to(dtype=compute_dtype)
+        V_pred_normed = attn.v_norm(V_pred_pre)            # post-v_norm
+        V = V_pred_normed.transpose(1, 2)                  # [1, kv_heads, T, head_dim]
 
         # GQA: repeat K, V to match num_heads
         if n_heads != kv_heads:
@@ -729,12 +801,73 @@ def _attention_distillation_loss(
         diag["mse_O_total"] += float(l_o.detach().item())
         diag["abs_O_target"] += float(O_tgt_eval.float().abs().mean().item())
 
+        # Hybrid-loss extension: direct K/V supervision in post-norm
+        # space (cosine direction) + pre-norm space (magnitude). Prevents
+        # the f_θ degeneracy exposed by 2026-06-10 alpha-sweep evidence
+        # (raw K/V rel_mse 1331×; k_norm hides scale errors from
+        # attn_distill loss; alpha-sweep shows recall=0 for any alpha<1.0
+        # because off-scale f_θ K/V dominate raw-space mixing).
+        if hybrid:
+            k_raw_tgt = target.k_raw_tgt[li].to(
+                device=device, dtype=compute_dtype,
+            ).unsqueeze(0)
+            v_raw_tgt = target.v_raw_tgt[li].to(
+                device=device, dtype=compute_dtype,
+            ).unsqueeze(0)
+            # Reshape tgt to [1, T, kv_heads, head_dim] (same as pred)
+            K_tgt_pre = k_raw_tgt.view(1, T, kv_heads, head_dim)
+            V_tgt_pre = v_raw_tgt.view(1, T, kv_heads, head_dim)
+
+            # Apply norm to tgt (same pipeline as pred)
+            K_tgt_normed = attn.k_norm(K_tgt_pre)
+            V_tgt_normed = attn.v_norm(V_tgt_pre)
+
+            # Direction loss: cosine sim on POST-NORM K, V (per
+            # (position, head) vector, last-dim is head_dim).
+            cos_K = F.cosine_similarity(
+                K_pred_normed.float(), K_tgt_normed.float(), dim=-1,
+            )
+            cos_V = F.cosine_similarity(
+                V_pred_normed.float(), V_tgt_normed.float(), dim=-1,
+            )
+            l_k_dir = (1.0 - cos_K).mean()
+            l_v_dir = (1.0 - cos_V).mean()
+
+            # Magnitude loss: MSE on PRE-NORM L2 norms, normalised by
+            # tgt's mean-square so loss is scale-comparable across
+            # layers with very different K/V magnitudes (sliding vs full).
+            pred_k_mag = K_pred_pre.float().norm(dim=-1)
+            tgt_k_mag = K_tgt_pre.float().norm(dim=-1)
+            pred_v_mag = V_pred_pre.float().norm(dim=-1)
+            tgt_v_mag = V_tgt_pre.float().norm(dim=-1)
+            denom_k = tgt_k_mag.pow(2).mean().clamp(min=1e-6)
+            denom_v = tgt_v_mag.pow(2).mean().clamp(min=1e-6)
+            l_k_mag = F.mse_loss(pred_k_mag, tgt_k_mag) / denom_k
+            l_v_mag = F.mse_loss(pred_v_mag, tgt_v_mag) / denom_v
+
+            loss = loss + (
+                lambda_k_dir * l_k_dir + lambda_v_dir * l_v_dir
+                + lambda_k_mag * l_k_mag + lambda_v_mag * l_v_mag
+            )
+            diag["k_dir_total"] += float(l_k_dir.detach().item())
+            diag["v_dir_total"] += float(l_v_dir.detach().item())
+            diag["k_mag_total"] += float(l_k_mag.detach().item())
+            diag["v_mag_total"] += float(l_v_mag.detach().item())
+
+            del K_tgt_pre, V_tgt_pre, K_tgt_normed, V_tgt_normed
+
         # Free GPU memory of cached per-layer tensors before next layer
         del q_raw, o_tgt, cos, sin, Q, K, V, O_inner, O_pred
+        del K_pred_pre, K_pred_normed, V_pred_pre, V_pred_normed
 
     if diag_buf is not None:
         diag_buf["mse_O_mean"] = diag["mse_O_total"] / max(n_layers, 1)
         diag_buf["abs_O_target_mean"] = diag["abs_O_target"] / max(n_layers, 1)
+        if hybrid:
+            diag_buf["k_dir_mean"] = diag["k_dir_total"] / max(n_layers, 1)
+            diag_buf["v_dir_mean"] = diag["v_dir_total"] / max(n_layers, 1)
+            diag_buf["k_mag_mean"] = diag["k_mag_total"] / max(n_layers, 1)
+            diag_buf["v_mag_mean"] = diag["v_mag_total"] / max(n_layers, 1)
     return loss / max(n_layers, 1)
 
 
@@ -809,10 +942,10 @@ def _f_theta_loss(
         Optional dict to receive per-component aggregates (cos_K_mean,
         cos_V_mean, mag_K_mean, mag_V_mean, mse_mean, mse_O_mean) for logging.
     """
-    if loss_type == "attn_distill":
+    if loss_type in ("attn_distill", "attn_distill_hybrid"):
         if layers is None or apply_rotary_pos_emb is None or device is None:
             raise ValueError(
-                "attn_distill requires layers + apply_rotary_pos_emb + device"
+                f"{loss_type} requires layers + apply_rotary_pos_emb + device"
             )
         return _attention_distillation_loss(
             f_theta, seq, layers,
@@ -823,6 +956,7 @@ def _f_theta_loss(
                 else sample_positions
             ),
             seed=seed, diag_buf=diag_buf,
+            hybrid=(loss_type == "attn_distill_hybrid"),
         )
 
     if seq.verifier_k is None or seq.verifier_v is None:
@@ -1088,11 +1222,37 @@ def main() -> int:
              "default falls back to 256 if 0 is passed.",
     )
     ap.add_argument(
-        "--loss-type", default="attn_distill",
-        choices=["attn_distill", "mse", "cos_mag", "combined"],
-        help="Training loss. v3 default attn_distill (attention-output "
-             "distillation, the principled one-shot loss). v2 used "
-             "combined (cos+mag); v1 used mse.",
+        "--loss-type", default="attn_distill_hybrid",
+        choices=["attn_distill", "attn_distill_hybrid", "mse", "cos_mag", "combined"],
+        help="Training loss. RECOMMENDED post-2026-06-10 alpha-sweep evidence: "
+             "attn_distill_hybrid (= attn_distill + direct K/V direction + "
+             "magnitude constraints). Prevents f_θ collapse degeneracy where "
+             "raw K/V are 36× off-scale but k_norm hides it from attn_distill "
+             "alone. attn_distill is the v3 design (vulnerable to the "
+             "collapse). Others are legacy v1/v2.",
+    )
+    ap.add_argument(
+        "--lambda-k-dir", type=float, default=1.0,
+        help="Hybrid loss weight on K direction (cosine post-norm).",
+    )
+    ap.add_argument(
+        "--lambda-v-dir", type=float, default=1.0,
+        help="Hybrid loss weight on V direction (cosine post-norm).",
+    )
+    ap.add_argument(
+        "--lambda-k-mag", type=float, default=0.1,
+        help="Hybrid loss weight on K magnitude (pre-norm L2 norm MSE, normalised).",
+    )
+    ap.add_argument(
+        "--lambda-v-mag", type=float, default=0.1,
+        help="Hybrid loss weight on V magnitude.",
+    )
+    ap.add_argument(
+        "--init-from", default=None,
+        help="Optional path to existing f_θ checkpoint dir to warm-start from "
+             "(e.g. --init-from results/research/f_theta_v3_attn_distill). "
+             "Loads weights then continues training. Useful to fine-tune an "
+             "attn_distill checkpoint with hybrid loss for fewer steps.",
     )
     ap.add_argument(
         "--rank", type=int, default=None,
@@ -1119,7 +1279,7 @@ def main() -> int:
     # Resolve rank default per loss type (rank ↑ for attn_distill = more
     # f_θ capacity; legacy losses keep v1's 256 for direct comparability).
     if args.rank is None:
-        args.rank = 768 if args.loss_type == "attn_distill" else 256
+        args.rank = 768 if args.loss_type in ("attn_distill", "attn_distill_hybrid") else 256
         print(
             f"[f_theta-train] using rank={args.rank} (loss_type={args.loss_type})",
             file=sys.stderr,
@@ -1130,7 +1290,7 @@ def main() -> int:
     # attention module's pre/post forward and capture position_embeddings
     # + attention_mask + post-o_proj output. SDPA fuses these and breaks
     # the hook contract. For legacy losses, sdpa is fine (and faster).
-    attn_impl = "eager" if args.loss_type == "attn_distill" else "sdpa"
+    attn_impl = "eager" if args.loss_type in ("attn_distill", "attn_distill_hybrid") else "sdpa"
     apply_rotary_pos_emb = None
     if args.loss_type == "attn_distill":
         from transformers.models.gemma4.modeling_gemma4 import (  # type: ignore
@@ -1188,6 +1348,27 @@ def main() -> int:
 
     f_theta = FThetaProjection(f_cfg).to(device, dtype=torch.float32)
     n_params = sum(p.numel() for p in f_theta.parameters())
+
+    # Warm-start from existing checkpoint (e.g. fine-tuning attn_distill
+    # with hybrid loss for fewer steps without re-collecting K/V).
+    if args.init_from:
+        from inference_engine.v04.f_theta import FThetaProjection as _FT
+        print(f"[f_theta-train] warm-start: loading weights from {args.init_from}",
+              file=sys.stderr)
+        warm = _FT.from_pretrained(args.init_from, dtype=torch.float32, device=device)
+        # Validate config compatibility
+        if warm.config != f_cfg:
+            print(
+                f"[f_theta-train]   WARNING: init-from config differs from "
+                f"current — this is OK if shapes match. \n"
+                f"      init-from: {warm.config}\n"
+                f"      current:   {f_cfg}",
+                file=sys.stderr,
+            )
+        f_theta.load_state_dict(warm.state_dict())
+        del warm
+        print("[f_theta-train]   warm-start loaded; continuing from those weights",
+              file=sys.stderr)
     print(f"[f_theta-train] f_θ params: {n_params:,}", file=sys.stderr)
 
     # ---------------- Build training corpus (PROMPTS + optional NIAH) ----------------
@@ -1217,7 +1398,8 @@ def main() -> int:
 
     # ---------------- Data collection ----------------
     capture_legacy_kv = args.loss_type in ("mse", "cos_mag", "combined")
-    capture_attn_target = args.loss_type == "attn_distill"
+    capture_attn_target = args.loss_type in ("attn_distill", "attn_distill_hybrid")
+    capture_raw_kv_in_attn_target = args.loss_type == "attn_distill_hybrid"
     print(
         f"[f_theta-train] data capture: legacy_kv={capture_legacy_kv} "
         f"attn_target={capture_attn_target}",
@@ -1253,6 +1435,7 @@ def main() -> int:
             verifier, drafter, full_ids,
             capture_legacy_kv=capture_legacy_kv,
             capture_attn_target=capture_attn_target,
+            capture_raw_kv_in_attn_target=capture_raw_kv_in_attn_target,
         )
         sequences.append(seq)
         if (pi + 1) % 10 == 0 or pi == len(corpus_prompts) - 1:
@@ -1271,7 +1454,7 @@ def main() -> int:
     # losses (memory reduction matters there).
     if args.sample_positions <= 0:
         args.sample_positions = (
-            0 if args.loss_type == "attn_distill" else 256
+            0 if args.loss_type in ("attn_distill", "attn_distill_hybrid") else 256
         )
     print(
         f"[f_theta-train] training: loss_type={args.loss_type} "
@@ -1304,7 +1487,7 @@ def main() -> int:
             sample_positions=args.sample_positions,
             loss_type=args.loss_type,
             diag_buf=diag_buf,
-            layers=v_layers if args.loss_type == "attn_distill" else None,
+            layers=(v_layers if args.loss_type in ("attn_distill", "attn_distill_hybrid") else None),
             apply_rotary_pos_emb=apply_rotary_pos_emb,
             device=device,
         )
@@ -1324,7 +1507,7 @@ def main() -> int:
                     f" cosK={diag_buf.get('cos_K_total', 0):.4f}"
                     f" cosV={diag_buf.get('cos_V_total', 0):.4f}"
                 )
-            elif args.loss_type == "attn_distill":
+            elif args.loss_type in ("attn_distill", "attn_distill_hybrid"):
                 # mse_O_mean is the per-layer attn-output MSE; abs_O_target
                 # is the magnitude of O_tgt (so MSE/abs is "noise ratio").
                 mse_o = diag_buf.get("mse_O_mean", 0)
@@ -1334,6 +1517,13 @@ def main() -> int:
                     f" |O_tgt|={abs_o:.4f}"
                     f" ratio={mse_o / max(abs_o ** 2, 1e-12):.4f}"
                 )
+                if args.loss_type == "attn_distill_hybrid":
+                    extra_msg += (
+                        f" kDir={diag_buf.get('k_dir_mean', 0):.4f}"
+                        f" vDir={diag_buf.get('v_dir_mean', 0):.4f}"
+                        f" kMag={diag_buf.get('k_mag_mean', 0):.4f}"
+                        f" vMag={diag_buf.get('v_mag_mean', 0):.4f}"
+                    )
             print(
                 f"[f_theta-train] step={step} lr={cur_lr:.2e} "
                 f"loss={sum(recent)/len(recent):.6f} "

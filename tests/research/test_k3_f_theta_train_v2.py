@@ -400,6 +400,147 @@ class TestAttentionDistillationLoss:
 # ---------------------------------------------------------------------------
 
 
+class TestAttentionDistillationHybridLoss:
+    """v3 hybrid loss — fixes the f_θ collapse degeneracy exposed by
+    the 2026-06-10 alpha-sweep diagnostic (raw K/V rel_mse 1331×;
+    k_norm hides scale errors from attn_distill alone)."""
+
+    def _build_synthetic_with_raw_kv(self, T=16):
+        from inference_engine.v04.f_theta import FThetaConfig, FThetaProjection
+        torch.manual_seed(0)
+        n_d_layers, d_kv_heads, d_head = 2, 2, 4
+        n_v_layers = 3
+        n_heads, head_dim, hidden = 4, 4, 16
+        n_kv_heads = 2
+
+        cfg = FThetaConfig(
+            drafter_num_layers=n_d_layers,
+            drafter_num_kv_heads=d_kv_heads, drafter_head_dim=d_head,
+            verifier_num_layers=n_v_layers,
+            verifier_num_kv_heads=n_kv_heads, verifier_head_dim=head_dim,
+            rank=8,
+        )
+        f_theta = FThetaProjection(cfg).float()
+
+        layers = [
+            _StubLayer(n_heads, n_kv_heads, head_dim, hidden)
+            for _ in range(n_v_layers)
+        ]
+
+        target = _mod.AttentionTargetData(
+            q_raw=[torch.randn(T, n_heads * head_dim, dtype=torch.bfloat16)
+                   for _ in range(n_v_layers)],
+            o_tgt=[torch.randn(T, hidden, dtype=torch.bfloat16)
+                   for _ in range(n_v_layers)],
+            cos=[torch.randn(1, T, head_dim, dtype=torch.bfloat16)
+                 for _ in range(n_v_layers)],
+            sin=[torch.randn(1, T, head_dim, dtype=torch.bfloat16)
+                 for _ in range(n_v_layers)],
+            attention_mask=None,
+            num_heads_per_layer=[n_heads] * n_v_layers,
+            head_dim_per_layer=[head_dim] * n_v_layers,
+            k_raw_tgt=[torch.randn(T, n_kv_heads * head_dim, dtype=torch.bfloat16)
+                       for _ in range(n_v_layers)],
+            v_raw_tgt=[torch.randn(T, n_kv_heads * head_dim, dtype=torch.bfloat16)
+                       for _ in range(n_v_layers)],
+        )
+        seq = _mod.CapturedSequence(
+            seq_len=T,
+            drafter_k=torch.randn(n_d_layers, T, d_kv_heads * d_head),
+            drafter_v=torch.randn(n_d_layers, T, d_kv_heads * d_head),
+            attn_target=target,
+        )
+        return f_theta, layers, seq
+
+    def test_hybrid_runs_and_emits_full_diag(self):
+        f_theta, layers, seq = self._build_synthetic_with_raw_kv()
+        diag = {}
+        loss = _mod._attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+            hybrid=True, diag_buf=diag,
+        )
+        assert torch.is_tensor(loss) and loss.dim() == 0
+        for k in ("mse_O_mean", "k_dir_mean", "v_dir_mean",
+                  "k_mag_mean", "v_mag_mean"):
+            assert k in diag, f"missing diag key: {k}"
+
+    def test_hybrid_requires_raw_kv_tgt(self):
+        f_theta, layers, _ = self._build_synthetic_with_raw_kv()
+        # Build seq WITHOUT k_raw_tgt/v_raw_tgt — should fail loud
+        T = 16; n_v = 3; n_kv = 2; hd = 4
+        target_no_raw = _mod.AttentionTargetData(
+            q_raw=[torch.randn(T, 4*hd, dtype=torch.bfloat16) for _ in range(n_v)],
+            o_tgt=[torch.randn(T, 16, dtype=torch.bfloat16) for _ in range(n_v)],
+            cos=[torch.randn(1, T, hd, dtype=torch.bfloat16) for _ in range(n_v)],
+            sin=[torch.randn(1, T, hd, dtype=torch.bfloat16) for _ in range(n_v)],
+            attention_mask=None,
+            num_heads_per_layer=[4]*n_v, head_dim_per_layer=[hd]*n_v,
+        )
+        seq_no_raw = _mod.CapturedSequence(
+            seq_len=T,
+            drafter_k=torch.randn(2, T, 8), drafter_v=torch.randn(2, T, 8),
+            attn_target=target_no_raw,
+        )
+        with pytest.raises(RuntimeError, match="k_raw_tgt"):
+            _mod._attention_distillation_loss(
+                f_theta, seq_no_raw, layers,
+                apply_rotary_pos_emb=_identity_rotary_pos_emb,
+                device=torch.device("cpu"),
+                hybrid=True,
+            )
+
+    def test_hybrid_dispatch_via_loss_type(self):
+        f_theta, layers, seq = self._build_synthetic_with_raw_kv()
+        diag = {}
+        loss = _mod._f_theta_loss(
+            f_theta, seq, sample_positions=0,
+            loss_type="attn_distill_hybrid",
+            diag_buf=diag,
+            layers=layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+        )
+        assert torch.is_tensor(loss) and loss.dim() == 0
+        assert "k_dir_mean" in diag
+
+    def test_hybrid_loss_strictly_higher_than_attn_distill_alone(self):
+        """Hybrid adds direction + magnitude terms; with random initial
+        f_θ, all four components are non-trivial → hybrid > attn_distill
+        (which only has the mse_O term). Verifies the additional terms
+        actually affect the loss, not silently zero."""
+        f_theta, layers, seq = self._build_synthetic_with_raw_kv()
+        loss_attn_only = _mod._attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+            hybrid=False,
+        )
+        loss_hybrid = _mod._attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+            hybrid=True,
+        )
+        assert float(loss_hybrid.detach()) > float(loss_attn_only.detach())
+
+    def test_hybrid_grad_flows_to_f_theta(self):
+        f_theta, layers, seq = self._build_synthetic_with_raw_kv()
+        loss = _mod._attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+            hybrid=True,
+        )
+        loss.backward()
+        any_grad = any(
+            p.grad is not None and p.grad.norm().item() > 0
+            for p in f_theta.parameters()
+        )
+        assert any_grad
+
+
 class TestAttentionTargetDataDataclass:
 
     def test_fields_present(self):
@@ -434,3 +575,25 @@ class TestAttentionTargetDataDataclass:
             attn_target=td,
         )
         assert seq.attn_target is td
+
+    def test_attention_target_data_optional_raw_kv_for_hybrid(self):
+        """k_raw_tgt and v_raw_tgt fields default to None; populated
+        when capture_raw_kv=True is passed during data collection."""
+        td_legacy = _mod.AttentionTargetData(
+            q_raw=[], o_tgt=[], cos=[], sin=[],
+            attention_mask=None,
+            num_heads_per_layer=[], head_dim_per_layer=[],
+        )
+        assert td_legacy.k_raw_tgt is None
+        assert td_legacy.v_raw_tgt is None
+
+        td_hybrid = _mod.AttentionTargetData(
+            q_raw=[torch.zeros(8, 16)], o_tgt=[torch.zeros(8, 32)],
+            cos=[torch.zeros(1, 8, 4)], sin=[torch.zeros(1, 8, 4)],
+            attention_mask=None,
+            num_heads_per_layer=[4], head_dim_per_layer=[4],
+            k_raw_tgt=[torch.randn(8, 8)],
+            v_raw_tgt=[torch.randn(8, 8)],
+        )
+        assert td_hybrid.k_raw_tgt is not None
+        assert td_hybrid.v_raw_tgt is not None

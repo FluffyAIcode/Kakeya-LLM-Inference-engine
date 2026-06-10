@@ -82,13 +82,18 @@ STEPS="${STEPS:-20000}"
 LR="${LR:-1e-3}"
 LR_SCHEDULE="${LR_SCHEDULE:-cosine}"
 WARMUP_STEPS="${WARMUP_STEPS:-500}"
-LOSS_TYPE="${LOSS_TYPE:-attn_distill}"
+LOSS_TYPE="${LOSS_TYPE:-attn_distill_hybrid}"
+INIT_FROM="${INIT_FROM:-}"           # optional warm-start checkpoint dir
+LAMBDA_K_DIR="${LAMBDA_K_DIR:-1.0}"
+LAMBDA_V_DIR="${LAMBDA_V_DIR:-1.0}"
+LAMBDA_K_MAG="${LAMBDA_K_MAG:-0.1}"
+LAMBDA_V_MAG="${LAMBDA_V_MAG:-0.1}"
 RANK="${RANK:-}"        # empty = trainer auto-picks (768 for attn_distill, else 256)
 N_PROMPTS="${N_PROMPTS:-64}"
 N_NIAH_PROMPTS="${N_NIAH_PROMPTS:-64}"
 GEN_LEN="${GEN_LEN:-512}"
 SAMPLE_POSITIONS="${SAMPLE_POSITIONS:-0}"   # 0 = full T (attn_distill default)
-SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v3}"
+SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v4_hybrid}"
 SEED="${SEED:-0}"
 
 stamp="$(date +%s)"
@@ -167,13 +172,22 @@ print(f'transformers {transformers.__version__}', file=sys.stderr)
 fi
 
 # Run
-echo "==> Running f_θ training (v3)"
+echo "==> Running f_θ training"
 extra_flags=()
 if [[ "$N_NIAH_PROMPTS" -eq 0 ]]; then
     extra_flags+=(--no-niah-prompts)
 fi
 if [[ -n "$RANK" ]]; then
     extra_flags+=(--rank "$RANK")
+fi
+if [[ -n "$INIT_FROM" ]]; then
+    extra_flags+=(--init-from "$INIT_FROM")
+fi
+if [[ "$LOSS_TYPE" == "attn_distill_hybrid" ]]; then
+    extra_flags+=(--lambda-k-dir "$LAMBDA_K_DIR")
+    extra_flags+=(--lambda-v-dir "$LAMBDA_V_DIR")
+    extra_flags+=(--lambda-k-mag "$LAMBDA_K_MAG")
+    extra_flags+=(--lambda-v-mag "$LAMBDA_V_MAG")
 fi
 PYTHONPATH=.:sdks/python python3 scripts/research/k3_f_theta_train.py \
     --steps "$STEPS" \
