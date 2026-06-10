@@ -61,6 +61,7 @@ What this module does NOT do (deliberately, scope-out)
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import torch
@@ -219,14 +220,8 @@ class CrossModelDLMRestoredVerifier:
         cross-model verifier injects at evicted positions during its
         attention forward.
         """
-        # The drafter is a DFlashDrafter (PR #93). For cross-model K/V
-        # capture we need the underlying Qwen3-style backbone — drafter.layers
-        # exposes the layer ModuleList with k_proj / v_proj. Wrap into the
-        # standard capture_proposer_kv pattern by adapting the model
-        # surface: capture_proposer_kv expects model.model.layers OR
-        # model.transformer.h. DFlashDrafter has `.layers` directly, so
-        # we wrap.
         capture = _capture_drafter_kv(
+            verifier_model=self.verifier_model,
             drafter=self.drafter,
             input_ids=input_ids,
         )
@@ -395,46 +390,40 @@ class CrossModelDLMRestoredVerifier:
 # ---------------------------------------------------------------------------
 
 
-def _capture_drafter_kv(*, drafter: Any, input_ids: torch.Tensor) -> KVCapture:
+def _capture_drafter_kv(
+    *, verifier_model: Any, drafter: Any, input_ids: torch.Tensor,
+) -> KVCapture:
     """Capture pre-norm pre-RoPE K/V from the DFlash drafter at every
     drafter layer at every position.
 
     DFlashDrafter (PR #93) has a non-standard structure: it doesn't
-    follow the embed → layers → norm → lm_head pattern that
-    `capture_proposer_kv` expects (which assumes `model.model.layers`
-    or `model.transformer.h`). Instead, DFlashDrafter is intended to
-    be driven via `draft_block(aux_hidden_context, bonus, ...)`.
+    follow the embed → layers → norm → lm_head pattern. It's a flat
+    ``nn.Module`` with ``.layers`` directly + an architectural choice
+    that **embed_tokens are shared with the verifier** (DFlash design:
+    no own embeddings or lm_head).
 
-    For K/V capture, we need to instrument `drafter.layers` directly.
-    DFlash forward is non-causal and conditioned on aux hiddens; we
-    can't run it standalone. So we use the K/V projection at each
-    layer's `self_attn.k_proj` / `v_proj` via forward hooks during a
-    SYNTHETIC forward where the drafter receives uniform-zero hidden
-    states (or, more correctly: the user passes in the verifier's
-    aux hiddens for proper K/V values).
+    Capture strategy:
 
-    For the cross-model verifier, the calling pattern is:
-      1. Run verifier forward to get aux hiddens (already done by
-         the user before calling CrossModelDLMRestoredVerifier).
-      2. Pass aux hiddens into drafter's draft_block to get drafter
-         K/V at every layer (capture via forward hooks).
+      1. ``verifier_model.get_input_embeddings()(input_ids) * scale``
+         → real embedded hiddens (Gemma scaling: ``× sqrt(hidden_size)``).
+      2. Pass these embedded hiddens through ``drafter.layers`` with
+         ``ctx_k = ctx_v = None`` per layer (no aux conditioning).
+      3. Forward hooks on each layer's ``self_attn.k_proj`` /
+         ``self_attn.v_proj`` capture pre-norm pre-RoPE K, V values
+         per layer per position.
 
-    This requires API extension on DFlashDrafter — exposing a
-    `forward_with_capture(aux_hidden_context)` method that runs the
-    layer loop and returns KVCapture. Not implemented yet — for the
-    first iteration we use a SIMPLIFIED capture path: run the
-    drafter's layer modules with a zero-initialized context and
-    capture K/V via hooks.
+    This produces K/V values from drafter layers operating on REAL
+    embedded hiddens (not synthetic zero) but WITHOUT aux conditioning
+    on verifier mid-layer hiddens. For f_θ first-iteration training,
+    this is the correct level: f_θ learns to project drafter K/V
+    (computed without aux) into verifier K/V space. Adding aux
+    conditioning is a follow-up that can be plumbed into both training
+    and inference paths once first-iteration f_θ validates the
+    architecture.
 
-    NOTE (recorded 2026-06-09): the K/V values captured this way are
-    NOT the same as the K/V the drafter would produce when conditioned
-    on actual verifier hiddens. f_θ is trained on the proper K/V (with
-    aux conditioning). For the first integration test, this serves as
-    a plumbing verification — the architectural correctness check is
-    that the verifier's effective_attention_fraction == 1.0 (it
-    "sees" all positions even with sink+window cache); recall quality
-    requires properly-conditioned drafter K/V which is the next
-    integration step.
+    Required because :func:`capture_proposer_kv` doesn't support the
+    DFlashDrafter shape — it looks for ``model.model.layers`` or
+    ``model.transformer.h`` and DFlashDrafter has neither.
     """
     # Capture K, V via forward hooks on each drafter layer's k_proj / v_proj.
     layers = list(drafter.layers)
@@ -460,19 +449,29 @@ def _capture_drafter_kv(*, drafter: Any, input_ids: torch.Tensor) -> KVCapture:
         handles.append(attn.v_proj.register_forward_hook(_make_v_hook(i)))
 
     try:
-        # Synthetic forward: feed zero hidden into the drafter's layers
-        # to fire the k_proj / v_proj hooks. The captured K/V values are
-        # placeholder for the first integration test (not conditioned on
-        # verifier aux hiddens; see docstring NOTE).
+        # Embed input_ids using the verifier's embed_tokens (DFlash
+        # design: shares verifier embeddings, no own lookup table).
+        # Apply Gemma's × sqrt(hidden) scaling per the alignment
+        # training pipeline convention.
         cfg = drafter.cfg
-        B, T = input_ids.shape
-        device = next(drafter.parameters()).device
-        dtype = next(drafter.parameters()).dtype
-        hidden = torch.zeros(B, T, cfg.hidden_size, device=device, dtype=dtype)
-        query_positions = torch.arange(T, device=device)
-        # Run each layer with empty context; this fires the hooks.
+        verifier_embed = verifier_model.get_input_embeddings()
+        embed_scale = math.sqrt(cfg.hidden_size)
+
+        drafter_param = next(drafter.parameters())
+        drafter_dtype = drafter_param.dtype
+        drafter_device = drafter_param.device
+
         with torch.no_grad():
-            h = hidden
+            input_ids_for_embed = input_ids.to(verifier_embed.weight.device)
+            embedded = verifier_embed(input_ids_for_embed) * embed_scale
+            embedded = embedded.to(device=drafter_device, dtype=drafter_dtype)
+            T = embedded.size(1)
+            query_positions = torch.arange(T, device=drafter_device)
+            # Run each drafter layer with NO aux conditioning (ctx_k =
+            # ctx_v = None). The k_proj / v_proj hooks fire on the
+            # query hidden states' projection, capturing pre-norm
+            # pre-RoPE K/V at every layer at every position.
+            h = embedded
             for layer in layers:
                 h = layer(h, query_positions, ctx_k=None, ctx_v=None)
     finally:
@@ -481,8 +480,9 @@ def _capture_drafter_kv(*, drafter: Any, input_ids: torch.Tensor) -> KVCapture:
 
     if any(k is None for k in k_capture):
         raise RuntimeError("drafter K capture missing some layers")
+    if any(v is None for v in v_capture):
+        raise RuntimeError("drafter V capture missing some layers")
 
-    cfg = drafter.cfg
     keys = []
     values = []
     for k_raw, v_raw in zip(k_capture, v_capture):

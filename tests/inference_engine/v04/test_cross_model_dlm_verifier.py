@@ -194,13 +194,23 @@ class TestConstruction:
 
 class TestProjectDrafterKV:
     """project_drafter_kv runs the drafter forward + f_θ projection
-    and returns verifier-K, verifier-V tensors of the right shape."""
+    and returns verifier-K, verifier-V tensors of the right shape.
+
+    Synthetic verifier needs a real ``get_input_embeddings()`` since
+    _capture_drafter_kv now uses verifier embed_tokens (corrected
+    2026-06-09 to use real embedded hiddens, not synthetic zero).
+    """
 
     def test_returns_correct_shape(self):
         f_cfg = _tiny_f_theta_config()
         f_theta = FThetaProjection(f_cfg)
         drafter = DFlashDrafter(_tiny_drafter_config())
         verifier = _SyntheticVerifier()
+        # Synthetic verifier needs a real embed_tokens for the
+        # _capture_drafter_kv path (verifier_model.get_input_embeddings()
+        # is called).
+        verifier.embed_tokens = torch.nn.Embedding(64, 16)  # vocab 64, hidden 16
+        verifier.get_input_embeddings = lambda: verifier.embed_tokens
         v = CrossModelDLMRestoredVerifier(
             verifier_model=verifier, drafter=drafter, f_theta=f_theta,
         )

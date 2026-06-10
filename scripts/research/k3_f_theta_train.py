@@ -82,7 +82,7 @@ import torch
 import torch.nn.functional as F
 
 from inference_engine.v04.f_theta import FThetaConfig, FThetaProjection
-from inference_engine.v04.kv_capture import capture_proposer_kv
+from inference_engine.v04.cross_model_dlm_verifier import _capture_drafter_kv
 from inference_engine.v04.dflash_drafter import DFlashDrafter
 
 
@@ -239,11 +239,18 @@ def _collect_sequence(
     input_ids: torch.Tensor,
 ) -> CapturedSequence:
     """Capture paired drafter + verifier K/V for one input sequence."""
-    # Verifier
+    # Verifier — k_proj / v_proj forward hooks
     v_k, v_v = _capture_verifier_kv(verifier_model, input_ids)
 
-    # Drafter
-    capture = capture_proposer_kv(drafter.model, input_ids)
+    # Drafter — uses verifier embed_tokens (DFlash shares verifier's),
+    # runs drafter layers without aux conditioning, captures K/V via
+    # forward hooks on k_proj/v_proj. See _capture_drafter_kv docstring
+    # in cross_model_dlm_verifier for the architectural choice.
+    capture = _capture_drafter_kv(
+        verifier_model=verifier_model,
+        drafter=drafter,
+        input_ids=input_ids,
+    )
     # capture.keys[i] shape: [B, T, num_d_kv_heads, head_dim]
     # Flatten last two dims and stack across layers.
     k_flat = [k.flatten(-2, -1) for k in capture.keys]
