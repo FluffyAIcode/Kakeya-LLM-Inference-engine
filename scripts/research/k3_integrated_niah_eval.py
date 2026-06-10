@@ -62,6 +62,7 @@ ladder evidence + PR #93's CUDA baselines.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import random
@@ -168,129 +169,128 @@ def main() -> int:
 
     # ---------- NIAH dataset ----------
     samples: List[NIAHSample] = make_niah_dataset(
-        tokenizer,
         n_samples=args.n_samples,
         haystack_min_lines=args.haystack_min_lines,
         haystack_max_lines=args.haystack_max_lines,
         seed=args.seed,
     )
-    print(f"[k3-integrated] generated {len(samples)} NIAH samples", file=sys.stderr)
+
+    # Encode prompts via chat template (ADR 0008 §2.4: the runtime is
+    # template-free; the harness applies the template), matching the
+    # K1.E NIAH harness convention.
+    def encode_chat(prompt_text: str) -> torch.Tensor:
+        messages = [{"role": "user", "content": prompt_text}]
+        ids = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_tensors="pt",
+        )
+        if isinstance(ids, list):
+            ids = torch.tensor([ids])
+        return ids.to(device)
+
+    sample_ids = [encode_chat(s.prompt_text) for s in samples]
+    seq_lens = [int(t.size(1)) for t in sample_ids]
+    eos_id = tokenizer.eos_token_id
+    print(
+        f"[k3-integrated] dataset: {len(samples)} samples, prompt token len "
+        f"min={min(seq_lens)} max={max(seq_lens)} "
+        f"mean={sum(seq_lens) // len(seq_lens)}",
+        file=sys.stderr,
+    )
+
+    def _greedy(decode_step) -> Tuple[List[str], List[float], List[int]]:
+        """Run greedy decode over all samples with a per-step callable
+        ``decode_step(cur_ids) -> logits[0, -1]``. Returns per-sample
+        (decoded_text, latency_s, decode_token_count)."""
+        decoded_all: List[str] = []
+        lat_all: List[float] = []
+        tok_all: List[int] = []
+        for i in range(len(samples)):
+            cur = sample_ids[i]
+            gen: List[int] = []
+            t0 = time.perf_counter()
+            for _ in range(args.max_new_tokens):
+                last_logits = decode_step(cur)
+                nxt = int(torch.argmax(last_logits).item())
+                gen.append(nxt)
+                if eos_id is not None and nxt == eos_id:
+                    break
+                cur = torch.cat(
+                    [cur, torch.tensor([[nxt]], device=device, dtype=torch.long)],
+                    dim=1,
+                )
+            lat_all.append(time.perf_counter() - t0)
+            decoded_all.append(tokenizer.decode(gen, skip_special_tokens=True))
+            tok_all.append(len(gen))
+            print(
+                f"[k3-integrated]   sample {i}: T={seq_lens[i]} tokens={len(gen)} "
+                f"decoded[:48]={decoded_all[-1][:48]!r}",
+                file=sys.stderr,
+            )
+        return decoded_all, lat_all, tok_all
 
     # ---------- Run integrated cross-model verifier ----------
-    cross_results: List[Dict[str, Any]] = []
-    cross_attn_window: List[Dict[str, Any]] = []
+    print("[k3-integrated] running K3 cross-model verifier (f_θ restoration)",
+          file=sys.stderr, flush=True)
     reset_memory_peak(device)
 
-    for i, sample in enumerate(samples):
-        input_ids = torch.tensor(
-            [sample.input_ids], dtype=torch.long, device=device,
-        )
-        T = int(input_ids.size(1))
-
-        # Run cross-model verifier
-        outputs = cross_verifier.forward(
-            input_ids,
+    def _cross_step(cur):
+        out = cross_verifier.forward(
+            cur,
             apply_rotary_pos_emb=apply_rotary_pos_emb,
             eager_attention_forward=eager_attention_forward,
             all_attention_functions=ALL_ATTENTION_FUNCTIONS,
         )
-        # Greedy decode max_new_tokens after the prompt
-        cur = input_ids
-        gen_tokens: List[int] = []
-        for _ in range(args.max_new_tokens):
-            out = cross_verifier.forward(
-                cur,
-                apply_rotary_pos_emb=apply_rotary_pos_emb,
-                eager_attention_forward=eager_attention_forward,
-                all_attention_functions=ALL_ATTENTION_FUNCTIONS,
-            )
-            nxt = int(torch.argmax(out.logits[0, -1]).item())
-            gen_tokens.append(nxt)
-            cur = torch.cat(
-                [cur, torch.tensor([[nxt]], device=device, dtype=torch.long)],
-                dim=1,
-            )
+        return out.logits[0, -1]
 
-        decoded = tokenizer.decode(gen_tokens, skip_special_tokens=True)
-        is_correct = recall_predicate(decoded, sample)
-        cross_results.append({
-            "sample_idx": i,
-            "decoded": decoded[:200],
-            "is_correct": is_correct,
-            "seq_len": T,
-        })
-
-        # effective_attention_fraction at the last query position
-        attn_w = compute_effective_attention_window(
-            seq_len=T,
-            sink_size=args.sink_size,
-            window_size=args.window_size,
-            evicted_kv_restored=True,    # K3 architecture: evicted K/V are restored
-            structural_constraint=(
-                f"causal_with_dlm_reconstruction "
-                f"(local_cache=sink={args.sink_size}+window={args.window_size}, "
-                f"k3_cross_model_f_theta)"
-            ),
-        )
-        cross_attn_window.append(attn_w)
-
-        print(
-            f"[k3-integrated] sample {i}: T={T} correct={is_correct} "
-            f"decoded[:60]={decoded[:60]!r}",
-            file=sys.stderr,
-        )
-
-    # ---------- Aggregate ----------
-    cross_recall = aggregate_recall(cross_results)
-    cross_attn_agg = aggregate_attention_window_metrics(cross_attn_window)
-    cross_mem = record_memory(device, label="after_k3_cross_model")
+    cross_decoded, cross_lat, cross_tok = _greedy(_cross_step)
+    cross_res = aggregate_recall(
+        "k3_cross_model", samples, cross_decoded, cross_lat, cross_tok,
+    )
+    cross_mem = record_memory(device)
+    cross_attn_agg = aggregate_attention_window_metrics(
+        "v04_dlm_restored",
+        prompt_token_lens=seq_lens,
+        sink_size=args.sink_size,
+        window_size=args.window_size,
+    )
+    print(
+        f"[k3-integrated] cross-model recall={cross_res.recall:.3f} "
+        f"({cross_res.samples_correct}/{cross_res.samples_total})",
+        file=sys.stderr,
+    )
 
     # ---------- Optional oracle baseline ----------
-    oracle_results = None
-    oracle_recall = None
+    oracle_res = None
     oracle_mem = None
     if not args.skip_oracle:
         print("[k3-integrated] running full-attention oracle baseline",
               file=sys.stderr, flush=True)
         reset_memory_peak(device)
-        oracle_results = []
-        for i, sample in enumerate(samples):
-            input_ids = torch.tensor(
-                [sample.input_ids], dtype=torch.long, device=device,
-            )
-            cur = input_ids
-            gen_tokens = []
-            for _ in range(args.max_new_tokens):
-                with torch.no_grad():
-                    out = verifier(input_ids=cur, use_cache=False)
-                nxt = int(torch.argmax(out.logits[0, -1]).item())
-                gen_tokens.append(nxt)
-                cur = torch.cat(
-                    [cur, torch.tensor([[nxt]], device=device, dtype=torch.long)],
-                    dim=1,
-                )
-            decoded = tokenizer.decode(gen_tokens, skip_special_tokens=True)
-            is_correct = recall_predicate(decoded, sample)
-            oracle_results.append({
-                "sample_idx": i,
-                "decoded": decoded[:200],
-                "is_correct": is_correct,
-                "seq_len": int(input_ids.size(1)),
-            })
-            print(
-                f"[k3-integrated]   oracle sample {i}: correct={is_correct}",
-                file=sys.stderr,
-            )
-        oracle_recall = aggregate_recall(oracle_results)
-        oracle_mem = record_memory(device, label="after_oracle")
+
+        def _oracle_step(cur):
+            with torch.no_grad():
+                out = verifier(input_ids=cur, use_cache=False)
+            return out.logits[0, -1]
+
+        oracle_decoded, oracle_lat, oracle_tok = _greedy(_oracle_step)
+        oracle_res = aggregate_recall(
+            "oracle", samples, oracle_decoded, oracle_lat, oracle_tok,
+        )
+        oracle_mem = record_memory(device)
+        print(
+            f"[k3-integrated] oracle recall={oracle_res.recall:.3f} "
+            f"({oracle_res.samples_correct}/{oracle_res.samples_total})",
+            file=sys.stderr,
+        )
 
     # ---------- Build report ----------
     recall_delta = (
-        abs(cross_recall["recall"] - oracle_recall["recall"])
-        if oracle_recall else None
+        abs(cross_res.recall - oracle_res.recall) if oracle_res else None
     )
+    eff_frac_mean = cross_attn_agg.get("effective_attention_fraction_mean")
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "k3_integrated_niah_acceptance",
         "config": {
             "verifier_id": args.verifier_id,
@@ -305,18 +305,11 @@ def main() -> int:
             "max_new_tokens": args.max_new_tokens,
             "seed": args.seed,
             "skip_oracle": bool(args.skip_oracle),
+            "prompt_token_lens": seq_lens,
         },
         "results": {
-            "k3_cross_model": {
-                "name": "k3_cross_model",
-                **cross_recall,
-                "per_sample": cross_results,
-            },
-            **(
-                {"oracle": {"name": "oracle", **oracle_recall,
-                            "per_sample": oracle_results}}
-                if oracle_recall else {}
-            ),
+            "k3_cross_model": dataclasses.asdict(cross_res),
+            **({"oracle": dataclasses.asdict(oracle_res)} if oracle_res else {}),
         },
         "attention_window": {
             "per_config": {"k3_cross_model": cross_attn_agg},
@@ -326,9 +319,9 @@ def main() -> int:
             **({"oracle": oracle_mem} if oracle_mem else {}),
         },
         "gate": {
-            "architectural_correctness": (
-                cross_attn_agg.get("effective_attention_fraction_mean") == 1.0
-            ),
+            "architectural_correctness": (eff_frac_mean == 1.0),
+            "recall_cross_model": cross_res.recall,
+            "recall_oracle": oracle_res.recall if oracle_res else None,
             "recall_delta_vs_oracle_pp": (
                 recall_delta * 100 if recall_delta is not None else None
             ),
@@ -343,31 +336,28 @@ def main() -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2))
+
+    print(f"\n[k3-integrated] DONE.", file=sys.stderr)
     print(
-        f"\n[k3-integrated] DONE.\n"
-        f"  cross-model recall: {cross_recall['recall']:.3f} "
-        f"({cross_recall['samples_correct']}/{cross_recall['samples_total']})\n"
-        f"  oracle recall:      "
-        f"{oracle_recall['recall']:.3f} ({oracle_recall['samples_correct']}/{oracle_recall['samples_total']})"
-        if oracle_recall else
-        f"\n[k3-integrated] DONE.\n"
-        f"  cross-model recall: {cross_recall['recall']:.3f} "
-        f"({cross_recall['samples_correct']}/{cross_recall['samples_total']})\n"
-        f"  oracle:             skipped",
+        f"  cross-model recall: {cross_res.recall:.3f} "
+        f"({cross_res.samples_correct}/{cross_res.samples_total})",
         file=sys.stderr,
     )
-    if recall_delta is not None:
-        print(f"  |delta vs oracle|: {recall_delta * 100:.2f} pp", file=sys.stderr)
+    if oracle_res is not None:
+        print(
+            f"  oracle recall:      {oracle_res.recall:.3f} "
+            f"({oracle_res.samples_correct}/{oracle_res.samples_total})",
+            file=sys.stderr,
+        )
+        print(f"  |delta vs oracle|:  {recall_delta * 100:.2f} pp", file=sys.stderr)
         print(
             f"  ADR §11.8 1a gate (≤ 5pp): "
             f"{'PASS' if recall_delta <= 0.05 else 'FAIL'}",
             file=sys.stderr,
         )
-    print(
-        f"  effective_attention_fraction: "
-        f"{cross_attn_agg.get('effective_attention_fraction_mean')}",
-        file=sys.stderr,
-    )
+    else:
+        print("  oracle:             skipped", file=sys.stderr)
+    print(f"  effective_attention_fraction: {eff_frac_mean}", file=sys.stderr)
     print(f"  Report: {out_path}", file=sys.stderr)
     return 0
 
