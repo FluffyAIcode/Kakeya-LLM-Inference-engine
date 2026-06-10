@@ -238,6 +238,10 @@ class FThetaProjection(nn.Module):
                 f"last dim {drafter_concat.size(-1)} != "
                 f"encoder_in_features {self.config.encoder_in_features}"
             )
+        # f_θ weights may be a different dtype than the captured drafter
+        # K/V (e.g. f_θ in fp32, drafter in bf16). Cast the input to the
+        # encoder's weight dtype so matmul dtypes agree.
+        drafter_concat = drafter_concat.to(encoder.weight.dtype)
         rep = encoder(drafter_concat)  # [B, T, rank]
         head_dim = self.config.verifier_head_dim
         kv_heads = self.config.layer_kv_heads
