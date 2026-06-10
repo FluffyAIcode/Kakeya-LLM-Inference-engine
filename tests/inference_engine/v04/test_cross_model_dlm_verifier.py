@@ -77,7 +77,9 @@ class _SyntheticVerifierAttention(nn.Module):
         self.o_proj = nn.Linear(32, 32, bias=False)
         self.q_norm = nn.Identity()
         self.k_norm = nn.Identity()
+        self.v_norm = nn.Identity()   # Gemma 4 runs V through v_norm
         self.head_dim = 8
+        self.num_key_value_groups = 1
         self.scaling = 8 ** -0.5
         self.attention_dropout = 0.0
         self.sliding_window = None
@@ -217,11 +219,15 @@ class TestProjectDrafterKV:
         B, T = 1, 6
         ids = torch.randint(0, 64, (B, T), dtype=torch.long)
         v_k, v_v = v.project_drafter_kv(ids)
-        assert tuple(v_k.shape) == (
-            B, T, f_cfg.verifier_num_layers,
-            f_cfg.verifier_num_kv_heads, f_cfg.verifier_head_dim,
+        # Per-layer list contract (layers may have heterogeneous KV heads).
+        assert len(v_k) == f_cfg.verifier_num_layers
+        assert len(v_v) == f_cfg.verifier_num_layers
+        per_layer = (
+            B, T, f_cfg.verifier_num_kv_heads, f_cfg.verifier_head_dim,
         )
-        assert tuple(v_v.shape) == tuple(v_k.shape)
+        for ko, vo in zip(v_k, v_v):
+            assert tuple(ko.shape) == per_layer
+            assert tuple(vo.shape) == per_layer
 
 
 class TestNoEvictPath:
@@ -266,6 +272,52 @@ class TestNoEvictPath:
             # project_drafter_kv was NOT called
             pass
         assert calls["drafter"] == 0
+
+
+def _gemma4_style_rope(x, cos, sin, unsqueeze_dim=2):
+    """Mirror Gemma 4's apply_rotary_pos_emb(x, cos, sin, unsqueeze_dim)."""
+    c = cos.unsqueeze(unsqueeze_dim)
+    s = sin.unsqueeze(unsqueeze_dim)
+    half = x.shape[-1] // 2
+    rot = torch.cat([-x[..., half:], x[..., :half]], dim=-1)
+    return x * c + rot * s
+
+
+def _synthetic_eager(module, q, k, v, mask, dropout=0.0, scaling=1.0,
+                     sliding_window=None, **kw):
+    """Minimal eager attention returning [B, T, H, D] like HF's."""
+    attn = torch.matmul(q, k.transpose(-1, -2)) * scaling
+    if mask is not None:
+        attn = attn + mask[..., : k.shape[-2]]
+    attn = attn.softmax(dim=-1)
+    out = torch.matmul(attn, v)             # [B, H, T, D]
+    return out.transpose(1, 2).contiguous(), None   # [B, T, H, D]
+
+
+class TestPatchedForwardRestore:
+    """Exercise the Gemma 4-style patched attention forward end-to-end on
+    the synthetic verifier with real evictions, so signature/shape/RoPE
+    regressions are caught without the 26B model."""
+
+    def test_forward_with_eviction_runs_and_injects(self):
+        f_cfg = _tiny_f_theta_config()
+        f_theta = FThetaProjection(f_cfg)
+        drafter = DFlashDrafter(_tiny_drafter_config())
+        verifier = _SyntheticVerifier()
+        verifier.embed_tokens = torch.nn.Embedding(64, 16)
+        verifier.get_input_embeddings = lambda: verifier.embed_tokens
+        v = CrossModelDLMRestoredVerifier(
+            verifier_model=verifier, drafter=drafter, f_theta=f_theta,
+            sink_size=1, window_size=2,    # sink+window = 3
+        )
+        B, T = 1, 6                        # evicted positions [1, 2, 3]
+        ids = torch.randint(0, 64, (B, T), dtype=torch.long)
+        out = v.forward(
+            ids,
+            apply_rotary_pos_emb=_gemma4_style_rope,
+            eager_attention_forward=_synthetic_eager,
+        )
+        assert out.logits.shape == (B, T, 64)
 
 
 class TestExports:

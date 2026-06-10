@@ -125,7 +125,7 @@ def main() -> int:
 
     # ---------- Verifier (CUDA bf16) ----------
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from transformers.models.gemma3.modeling_gemma3 import (  # type: ignore
+    from transformers.models.gemma4.modeling_gemma4 import (  # type: ignore
         apply_rotary_pos_emb, eager_attention_forward, ALL_ATTENTION_FUNCTIONS,
     )
 

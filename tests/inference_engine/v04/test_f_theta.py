@@ -77,9 +77,12 @@ class TestForwardShapes:
         B, T = 2, 7
         x = torch.randn(B, T, c.encoder_in_features)
         y = m.forward_k(x)
-        assert tuple(y.shape) == (
-            B, T, c.verifier_num_layers, c.verifier_num_kv_heads, c.verifier_head_dim,
-        )
+        assert isinstance(y, list)
+        assert len(y) == c.verifier_num_layers
+        for layer_out in y:
+            assert tuple(layer_out.shape) == (
+                B, T, c.verifier_num_kv_heads, c.verifier_head_dim,
+            )
 
     def test_forward_v_shape(self):
         c = _tiny_config()
@@ -87,9 +90,29 @@ class TestForwardShapes:
         B, T = 1, 3
         x = torch.randn(B, T, c.encoder_in_features)
         y = m.forward_v(x)
-        assert tuple(y.shape) == (
-            B, T, c.verifier_num_layers, c.verifier_num_kv_heads, c.verifier_head_dim,
+        assert isinstance(y, list)
+        assert len(y) == c.verifier_num_layers
+        for layer_out in y:
+            assert tuple(layer_out.shape) == (
+                B, T, c.verifier_num_kv_heads, c.verifier_head_dim,
+            )
+
+    def test_heterogeneous_layer_kv_heads(self):
+        """Per-layer KV-head counts (Gemma 4: 8 sliding, 4 full)."""
+        c = FThetaConfig(
+            drafter_num_layers=2, drafter_num_kv_heads=2, drafter_head_dim=4,
+            verifier_num_layers=4, verifier_num_kv_heads=8, verifier_head_dim=8,
+            rank=16, verifier_layer_kv_heads=(8, 4, 8, 4),
         )
+        assert c.layer_kv_dims == (64, 32, 64, 32)
+        m = FThetaProjection(c)
+        B, T = 1, 3
+        x = torch.randn(B, T, c.encoder_in_features)
+        y = m.forward_k(x)
+        assert [t.shape[2] for t in y] == [8, 4, 8, 4]
+        # JSON round-trip preserves the per-layer field
+        c2 = FThetaConfig.from_json_dict(c.to_json_dict())
+        assert c2 == c
 
     def test_forward_k_rejects_wrong_rank(self):
         c = _tiny_config()
@@ -122,9 +145,12 @@ class TestForwardKVPack:
             for _ in range(c.drafter_num_layers)
         ]
         k_out, v_out = m.forward_kv_pack(k_per_layer, v_per_layer)
-        expected = (B, T, c.verifier_num_layers, c.verifier_num_kv_heads, c.verifier_head_dim)
-        assert tuple(k_out.shape) == expected
-        assert tuple(v_out.shape) == expected
+        assert len(k_out) == c.verifier_num_layers
+        assert len(v_out) == c.verifier_num_layers
+        per_layer = (B, T, c.verifier_num_kv_heads, c.verifier_head_dim)
+        for ko, vo in zip(k_out, v_out):
+            assert tuple(ko.shape) == per_layer
+            assert tuple(vo.shape) == per_layer
 
     def test_rejects_wrong_layer_count(self):
         c = _tiny_config()
@@ -162,8 +188,10 @@ class TestForwardKVPack:
         with torch.no_grad():
             k_out_direct = m.forward_k(k_concat)
             v_out_direct = m.forward_v(v_concat)
-        assert torch.allclose(k_out_pack, k_out_direct, atol=1e-6)
-        assert torch.allclose(v_out_pack, v_out_direct, atol=1e-6)
+        for kp, kd in zip(k_out_pack, k_out_direct):
+            assert torch.allclose(kp, kd, atol=1e-6)
+        for vp, vd in zip(v_out_pack, v_out_direct):
+            assert torch.allclose(vp, vd, atol=1e-6)
 
 
 class TestParameterCount:
@@ -218,8 +246,10 @@ class TestSaveLoadRoundTrip:
             y_k_2 = m2.forward_k(x_k)
             y_v_2 = m2.forward_v(x_v)
 
-        assert torch.allclose(y_k_1, y_k_2)
-        assert torch.allclose(y_v_1, y_v_2)
+        for a, b in zip(y_k_1, y_k_2):
+            assert torch.allclose(a, b)
+        for a, b in zip(y_v_1, y_v_2):
+            assert torch.allclose(a, b)
 
     def test_load_rejects_missing_config(self, tmp_path):
         # Write only weights, no config
@@ -267,12 +297,8 @@ class TestGradientFlow:
         m = FThetaProjection(c)
         B, T = 1, 3
         x = torch.randn(B, T, c.encoder_in_features, requires_grad=False)
-        target = torch.randn(
-            B, T, c.verifier_num_layers,
-            c.verifier_num_kv_heads, c.verifier_head_dim,
-        )
-        out = m.forward_k(x)
-        loss = ((out - target) ** 2).mean()
+        out = m.forward_k(x)   # list of [B, T, H, D]
+        loss = sum(((o) ** 2).mean() for o in out)
         loss.backward()
         # encoder_k should have a grad
         assert m.encoder_k.weight.grad is not None

@@ -247,14 +247,15 @@ class CrossModelDLMRestoredVerifier:
     @torch.no_grad()
     def project_drafter_kv(
         self, input_ids: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Run the drafter forward over input_ids, project K/V through f_θ.
 
         Returns
         -------
-        (verifier_k, verifier_v) tensors of shape
-        ``[B, T, verifier_num_layers, verifier_num_kv_heads, verifier_head_dim]``
-        on the f_θ device.
+        (verifier_k, verifier_v): per-layer lists of length
+        ``verifier_num_layers``, element ``i`` shaped
+        ``[B, T, layer_kv_heads[i], verifier_head_dim]`` on the f_θ
+        device. Per-layer KV-head counts can differ (Gemma 4).
 
         These are the per-position-per-verifier-layer K/V that the
         cross-model verifier injects at evicted positions during its
@@ -309,9 +310,9 @@ class CrossModelDLMRestoredVerifier:
         if not evicted_positions:
             return self.verifier_model(input_ids=input_ids, use_cache=False)
 
-        # f_θ projection
-        verifier_k_full, verifier_v_full = self.project_drafter_kv(input_ids)
-        # verifier_k_full shape: [B, T, L_v, num_kv_heads_v, head_dim_v]
+        # f_θ projection → per-layer lists (layers can have different
+        # KV-head counts on Gemma 4).
+        verifier_k_layers, verifier_v_layers = self.project_drafter_kv(input_ids)
 
         # Patch verifier attention forwards to inject K/V at evicted
         # positions. Restore originals after the forward.
@@ -325,8 +326,8 @@ class CrossModelDLMRestoredVerifier:
                     attn,
                     layer_idx=layer_idx,
                     evicted_positions=evicted_positions,
-                    verifier_k_at_layer=verifier_k_full[:, :, layer_idx],
-                    verifier_v_at_layer=verifier_v_full[:, :, layer_idx],
+                    verifier_k_at_layer=verifier_k_layers[layer_idx],
+                    verifier_v_at_layer=verifier_v_layers[layer_idx],
                     apply_rotary_pos_emb=apply_rotary_pos_emb,
                     eager_attention_forward=eager_attention_forward,
                     all_attention_functions=all_attention_functions,
@@ -351,47 +352,72 @@ class CrossModelDLMRestoredVerifier:
         instead of using the verifier's own k_proj / v_proj at those
         positions.
 
-        The patched forward replicates the standard verifier attention
-        layer (Q, K, V projections + RoPE + GQA + softmax) with one
-        change: after K, V are computed at every position, K and V at
-        evicted positions are OVERWRITTEN with the f_θ-projected values
-        (after k_norm + RoPE applied to match the standard pipeline).
+        Mirrors Gemma 4's ``Gemma4TextAttention.forward`` exactly (RoPE
+        applied per-tensor on the ``[B, T, H, D]`` layout with
+        ``unsqueeze_dim=2``; ``q_norm`` / ``k_norm`` / ``v_norm``;
+        ``v_proj`` is ``None`` on full-attention layers where V = raw K)
+        with one change: at evicted positions K/V come from the
+        f_θ-projected values (after k_norm + RoPE for K, after v_norm
+        for V), so the verifier attends over full context despite
+        holding only sink+window in its local cache.
         """
         def _patched_forward(
             hidden_states: torch.Tensor,
             position_embeddings: Tuple[torch.Tensor, torch.Tensor],
             attention_mask: Optional[torch.Tensor] = None,
+            shared_kv_states: Any = None,
             past_key_values=None,
             cache_position=None,
             **kwargs,
         ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-            B, T, _ = hidden_states.shape
-
-            input_shape = (B, T)
-            hidden_shape = (*input_shape, -1, attn_module.head_dim)
-
-            query_states = attn_module.q_proj(hidden_states).view(*hidden_shape).transpose(1, 2)
-            key_states = attn_module.k_proj(hidden_states).view(*hidden_shape).transpose(1, 2)
-            value_states = attn_module.v_proj(hidden_states).view(*hidden_shape).transpose(1, 2)
-
-            query_states = attn_module.q_norm(query_states)
-            key_states = attn_module.k_norm(key_states)
-
+            input_shape = hidden_states.shape[:-1]   # [B, T]
+            head_dim = attn_module.head_dim
+            hidden_shape = (*input_shape, -1, head_dim)
             cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(
-                query_states, key_states, cos, sin,
+
+            # Query (Gemma 4: norm → RoPE on [B,T,Hq,D] → transpose)
+            query_states = attn_module.q_proj(hidden_states).view(hidden_shape)
+            query_states = attn_module.q_norm(query_states)
+            query_states = apply_rotary_pos_emb(
+                query_states, cos, sin, unsqueeze_dim=2,
             )
+            query_states = query_states.transpose(1, 2)   # [B, Hq, T, D]
+
+            # Key / Value. Full-attention layers have v_proj=None ⇒ the
+            # value is the raw k_proj output (pre k_norm), per Gemma 4.
+            k_lin = attn_module.k_proj(hidden_states).view(hidden_shape)
+            if getattr(attn_module, "v_proj", None) is not None:
+                v_lin = attn_module.v_proj(hidden_states).view(hidden_shape)
+            else:
+                v_lin = k_lin
+            key_states = attn_module.k_norm(k_lin)
+            key_states = apply_rotary_pos_emb(
+                key_states, cos, sin, unsqueeze_dim=2,
+            )
+            key_states = key_states.transpose(1, 2)        # [B, Hkv, T, D]
+            value_states = attn_module.v_norm(v_lin).transpose(1, 2)  # [B, Hkv, T, D]
 
             # Inject f_θ K/V at evicted positions.
             # verifier_k_at_layer shape: [B, T, num_kv_heads_v, head_dim_v]
-            # K/V from k_proj also at all T positions; we overwrite the
-            # evicted slice with f_θ output (after k_norm + RoPE).
+            # (pre-norm pre-RoPE). prepare_restored_attention_kv applies
+            # k_norm + RoPE to K; V must be v_norm'd here to match the
+            # local branch (Gemma 4 runs V through v_norm).
             if evicted_positions:
+                idx = torch.tensor(
+                    evicted_positions, device=key_states.device, dtype=torch.long,
+                )
+                cap_k_pre = verifier_k_at_layer.index_select(1, idx).to(
+                    device=key_states.device, dtype=key_states.dtype,
+                )
+                cap_v_pre = verifier_v_at_layer.index_select(1, idx).to(
+                    device=value_states.device, dtype=value_states.dtype,
+                )
+                cap_v_norm = attn_module.v_norm(cap_v_pre)
                 key_states, value_states = prepare_restored_attention_kv(
                     K_local=key_states,
                     V_local=value_states,
-                    captured_K_pre_norm=verifier_k_at_layer,
-                    captured_V=verifier_v_at_layer,
+                    captured_K_pre_norm=cap_k_pre,
+                    captured_V=cap_v_norm,
                     evicted_positions=evicted_positions,
                     k_norm=attn_module.k_norm,
                     position_embeddings=(cos, sin),
