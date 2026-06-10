@@ -91,6 +91,8 @@ LAMBDA_V_MAG="${LAMBDA_V_MAG:-0.1}"
 RANK="${RANK:-}"        # empty = trainer auto-picks (768 for attn_distill, else 256)
 N_PROMPTS="${N_PROMPTS:-64}"
 N_NIAH_PROMPTS="${N_NIAH_PROMPTS:-64}"
+NIAH_MIN_LINES="${NIAH_MIN_LINES:-30}"
+NIAH_MAX_LINES="${NIAH_MAX_LINES:-90}"
 GEN_LEN="${GEN_LEN:-512}"
 SAMPLE_POSITIONS="${SAMPLE_POSITIONS:-0}"   # 0 = full T (attn_distill default)
 SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v4_hybrid}"
@@ -116,6 +118,7 @@ echo "    Peak LR:           $LR (schedule: $LR_SCHEDULE, warmup: $WARMUP_STEPS)
 echo "    Rank:              $rank_msg"
 echo "    N general prompts: $N_PROMPTS"
 echo "    N NIAH prompts:    $N_NIAH_PROMPTS"
+echo "    NIAH lines:        ${NIAH_MIN_LINES}-${NIAH_MAX_LINES}"
 echo "    Gen len:           $GEN_LEN"
 echo "    Sample positions:  $SAMPLE_POSITIONS  (0 = full T)"
 echo "    Save dir:          $SAVE_DIR"
@@ -176,6 +179,9 @@ echo "==> Running f_θ training"
 extra_flags=()
 if [[ "$N_NIAH_PROMPTS" -eq 0 ]]; then
     extra_flags+=(--no-niah-prompts)
+else
+    extra_flags+=(--niah-min-lines "$NIAH_MIN_LINES")
+    extra_flags+=(--niah-max-lines "$NIAH_MAX_LINES")
 fi
 if [[ -n "$RANK" ]]; then
     extra_flags+=(--rank "$RANK")
