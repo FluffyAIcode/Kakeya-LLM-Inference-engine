@@ -52,7 +52,10 @@ RANK="${RANK:-256}"
 N_PROMPTS="${N_PROMPTS:-64}"
 GEN_LEN="${GEN_LEN:-128}"
 SAMPLE_POSITIONS="${SAMPLE_POSITIONS:-256}"
-SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v1}"
+# v3: relative (magnitude-normalized) MSE + per-component diagnostics.
+# Default output dir is f_theta_v3 so the v1 evidence is not overwritten.
+SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v3}"
+LOSS_MODE="${LOSS_MODE:-relmse}"
 SEED="${SEED:-0}"
 
 stamp="$(date +%s)"
@@ -69,6 +72,7 @@ echo "    Rank:            $RANK"
 echo "    N prompts:       $N_PROMPTS"
 echo "    Gen len:         $GEN_LEN"
 echo "    Sample positions: $SAMPLE_POSITIONS"
+echo "    Loss mode:       $LOSS_MODE"
 echo "    Save dir:        $SAVE_DIR"
 echo "    Log:             $log"
 echo
@@ -131,6 +135,7 @@ PYTHONPATH=.:sdks/python python3 scripts/research/k3_f_theta_train.py \
     --n-prompts "$N_PROMPTS" \
     --gen-len "$GEN_LEN" \
     --sample-positions "$SAMPLE_POSITIONS" \
+    --loss-mode "$LOSS_MODE" \
     --save "$SAVE_DIR" \
     --seed "$SEED" 2>&1 | tee "$log"
 exit_code=${PIPESTATUS[0]}
