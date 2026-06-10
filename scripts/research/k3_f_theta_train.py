@@ -82,7 +82,11 @@ import torch
 import torch.nn.functional as F
 
 from inference_engine.v04.f_theta import FThetaConfig, FThetaProjection
-from inference_engine.v04.cross_model_dlm_verifier import _capture_drafter_kv
+from inference_engine.v04.cross_model_dlm_verifier import (
+    _capture_drafter_kv,
+    get_verifier_decoder,
+    resolve_text_config,
+)
 from inference_engine.v04.dflash_drafter import DFlashDrafter
 
 
@@ -189,7 +193,7 @@ def _capture_verifier_kv(
     (verifier_k, verifier_v) of shape [num_v_layers, T, verifier_kv_dim]
     each, on the verifier's device.
     """
-    layers = verifier_model.model.layers
+    layers = get_verifier_decoder(verifier_model).layers
     num_layers = len(layers)
     k_capture: List[torch.Tensor] = [None] * num_layers
     v_capture: List[torch.Tensor] = [None] * num_layers
@@ -386,14 +390,16 @@ def main() -> int:
     for p in drafter.parameters():
         p.requires_grad_(False)
 
-    # Derive f_θ config from drafter + verifier shapes
+    # Derive f_θ config from drafter + verifier shapes. Gemma 4's config
+    # nests decoder dims under .text_config, so resolve it first.
+    v_cfg = resolve_text_config(verifier.config)
     f_cfg = FThetaConfig(
         drafter_num_layers=drafter.cfg.num_hidden_layers,
         drafter_num_kv_heads=drafter.cfg.num_key_value_heads,
         drafter_head_dim=drafter.cfg.head_dim,
-        verifier_num_layers=verifier.config.num_hidden_layers,
-        verifier_num_kv_heads=verifier.config.num_key_value_heads,
-        verifier_head_dim=verifier.config.head_dim,
+        verifier_num_layers=v_cfg.num_hidden_layers,
+        verifier_num_kv_heads=v_cfg.num_key_value_heads,
+        verifier_head_dim=v_cfg.head_dim,
         rank=args.rank,
     )
     print(f"[f_theta-train] f_θ config: {f_cfg}", file=sys.stderr)

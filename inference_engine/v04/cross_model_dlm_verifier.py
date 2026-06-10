@@ -73,6 +73,45 @@ from inference_engine.v04.kv_merge import compute_evicted_positions
 from inference_engine.v04.restored_attention import prepare_restored_attention_kv
 
 
+def resolve_text_config(config: Any) -> Any:
+    """Return the text-decoder sub-config for multimodal HF configs.
+
+    Gemma 4 (``Gemma4Config``) is a multimodal composite whose decoder
+    dimensions live under ``config.text_config`` (with sibling
+    ``vision_config`` / ``audio_config``). Flat text-only configs
+    (e.g. Gemma 3) expose the attributes directly. This helper returns
+    ``config.text_config`` when present, else ``config`` itself, so
+    callers can read ``num_hidden_layers`` / ``num_key_value_heads`` /
+    ``head_dim`` uniformly.
+    """
+    return getattr(config, "text_config", None) or config
+
+
+def get_verifier_decoder(model: Any) -> Any:
+    """Locate the decoder module exposing ``.layers`` / ``.embed_tokens``.
+
+    Handles two HF layouts:
+      * flat:        ``model.model``               (Gemma 3, Llama, ...)
+      * multimodal:  ``model.model.language_model`` (Gemma 4 conditional
+                     generation — text decoder nested beside vision/audio
+                     towers)
+    """
+    base = getattr(model, "model", model)
+    lm = getattr(base, "language_model", None)
+    if lm is not None and hasattr(lm, "layers"):
+        return lm
+    if hasattr(base, "layers"):
+        return base
+    for attr in ("language_model", "text_model", "decoder"):
+        sub = getattr(base, attr, None)
+        if sub is not None and hasattr(sub, "layers"):
+            return sub
+    raise AttributeError(
+        "could not locate decoder layers on verifier model "
+        f"(type={type(model).__name__})"
+    )
+
+
 @dataclasses.dataclass
 class CrossModelLayerMapping:
     """How drafter K/V layers project to verifier K/V layers under f_θ.
@@ -149,8 +188,9 @@ class CrossModelDLMRestoredVerifier:
 
     def _validate_dimensions(self) -> None:
         cfg = self.f_theta.config
-        # Verifier dimensions
-        v_cfg = self.verifier_model.config
+        # Verifier dimensions (resolve multimodal text sub-config, e.g.
+        # Gemma 4's config.text_config)
+        v_cfg = resolve_text_config(self.verifier_model.config)
         v_layers = getattr(v_cfg, "num_hidden_layers", None)
         v_kv_heads = getattr(v_cfg, "num_key_value_heads", None)
         v_head_dim = getattr(v_cfg, "head_dim", None)
@@ -275,7 +315,7 @@ class CrossModelDLMRestoredVerifier:
 
         # Patch verifier attention forwards to inject K/V at evicted
         # positions. Restore originals after the forward.
-        layers = self.verifier_model.model.layers
+        layers = get_verifier_decoder(self.verifier_model).layers
         originals: List[Callable] = []
         try:
             for layer_idx, layer in enumerate(layers):
