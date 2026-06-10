@@ -66,6 +66,41 @@ The verification is only valid if you have, IN THIS SESSION:
 If any of those is unverifiable, stop and tell the user — do NOT
 recommend the GPU-time-spending command.
 
+### R4 — PRE-TRAINING FIDELITY PROBE (agent behavior)
+
+Before recommending any GPU training that costs **> 30 min wall**,
+the agent MUST first design + run a **fidelity probe** taking
+**≤ 10%** of the planned training wall, and emit a probe-verified
+block in the same response:
+
+```
+Probe verified:
+  - Hypothesis: <what the training is supposed to achieve>
+  - Probe wall: <minutes>
+  - Probe outcome: <PASS / FAIL>
+  - Reasoning: <why the probe outcome supports / falsifies the
+                hypothesis>
+```
+
+If the probe FAILS the hypothesis (e.g. existing-checkpoint metric
+already shows the planned change won't break through a known floor),
+the agent MUST NOT recommend the training run. Pivot to a different
+hypothesis instead.
+
+**Common probe patterns** (research-driven):
+- "Bigger model / more steps / more data will improve metric X" →
+  probe = run existing best checkpoint on the eval distribution and
+  measure metric X. If metric X is at a floor, scale-up won't break
+  the floor; the bottleneck is upstream.
+- "New loss function will fix problem Y" → probe = run new loss for
+  500-1000 steps; verify loss decomposes as designed (each term
+  non-trivial + decreases). Catches collapse / degeneracy.
+- "New architecture variant will help" → probe = train tiny version
+  (~3 layers, rank 32). Verify shape + loss curve sanity.
+
+User's GPU credits are real money + real time. R4 is the rule that
+makes those credits efficient.
+
 ## Failure Log Pointer
 
 `docs/agent-workflow-rules.md` maintains an append-only failure log.
