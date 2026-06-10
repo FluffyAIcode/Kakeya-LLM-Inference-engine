@@ -1292,7 +1292,7 @@ def main() -> int:
     # the hook contract. For legacy losses, sdpa is fine (and faster).
     attn_impl = "eager" if args.loss_type in ("attn_distill", "attn_distill_hybrid") else "sdpa"
     apply_rotary_pos_emb = None
-    if args.loss_type == "attn_distill":
+    if args.loss_type in ("attn_distill", "attn_distill_hybrid"):
         from transformers.models.gemma4.modeling_gemma4 import (  # type: ignore
             apply_rotary_pos_emb,
         )
