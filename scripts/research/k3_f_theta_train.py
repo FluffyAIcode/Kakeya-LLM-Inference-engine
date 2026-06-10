@@ -1,32 +1,72 @@
 """K3 Block C — Train ``f_θ`` K/V projection: drafter K/V → verifier K/V.
 
-v2 (2026-06-10) — fixes recall=0 from f_θ v1
-============================================
+v3 (2026-06-10) — one-shot principled trainer, attention-output distillation
+===========================================================================
 
 PR #103 v1 evidence: identity-restore recall = 1.0 (machinery correct);
-f_θ-projected recall = 0.0 (training inadequate). Root causes:
+f_θ-projected recall = 0.0 (training inadequate).
 
-  (a) **Wrong loss objective**: pure MSE on raw K/V. Final MSE 3.70
-      ≈ 2σ noise per element. Attention is exp(QK^T); 2σ noise on K
-      destroys softmax peakedness → lexical content lost at evicted
-      positions. Solution: cosine + magnitude per-vector loss
-      (direction-preserving, scale-aware) replaces pure MSE. Cosine
-      preserves attention scores; magnitude preserves softmax scale.
+Per user request 2026-06-10: "一步到位，不要中间态" — skip the v2
+intermediate (cos+mag) and ship the principled fix directly.
 
-  (b) **Tiny corpus, no NIAH structure**: 62 prompts × ~600 tokens
-      ≈ 37k unique tokens, zero needle-in-a-haystack patterns. The
-      eval is 100% NIAH; training never saw retrieval structure.
-      Solution: synthetic NIAH-style training prompts (haystack +
-      needle line) generated alongside the existing corpus, default
-      50% NIAH / 50% PROMPTS.
+The ONE-SHOT principled fix
+---------------------------
 
-  (c) **Trivial training duration**: 4000 steps × ~15ms ≈ 59s. The
-      LR=1e-3 AdamW had barely warmed. Solution: default 20000 steps
-      with cosine LR schedule (warmup → peak → cosine decay), 5×
-      more training compute.
+**Attention-output distillation loss** (the v3 default
+``--loss-type attn_distill``). For each verifier layer ℓ:
 
-  (d) **No LR schedule**: constant lr=1e-3, never anneals. Solution:
-      cosine schedule with linear warmup.
+    K_pred_ℓ, V_pred_ℓ = f_θ(drafter_KV)[ℓ]
+
+    Q_for_attn = q_norm(Q_raw_ℓ).view(B, T, H_q, D) → RoPE → transpose
+    K_for_attn = k_norm(K_pred_ℓ).view(B, T, H_kv, D) → RoPE → transpose
+    V_for_attn = v_norm(V_pred_ℓ).view(B, T, H_kv, D) → transpose
+
+    O_pred_ℓ = o_proj(scaled_dot_product_attention(Q, K, V, mask, scale))
+
+    loss_ℓ = MSE(O_pred_ℓ, O_tgt_ℓ)              # O_tgt is the verifier's
+                                                   actual attn output captured
+                                                   during data collection
+
+    Total = mean over layers
+
+This is the **mathematically right loss for K/V projection**. It directly
+optimises "f_θ-injected K/V produces equivalent verifier attention output",
+accounting for: GQA grouping, RoPE positional encoding, causal/sliding
+mask, k_norm/q_norm/v_norm, AND the layer's o_proj. Unlike pure MSE
+(v1) or cos+mag (v2), this loss exposes the gradient to the actual
+quantity that propagates through the residual stream at inference.
+
+To make this affordable on H200, data collection caches per layer per
+sequence (Q_raw, O_tgt, cos, sin, attention_mask) on CPU bf16; training
+streams these to GPU per step. Verifier forward is run ONCE per
+sequence (not per training step). For 64 sequences × 30 layers × T=512,
+cache is ~25 GB CPU RAM (fits comfortably).
+
+Three additional changes (carried over from v2 design)
+------------------------------------------------------
+
+  (a) **Larger f_θ rank**: default 256 → 768 for ``attn_distill``
+      (more capacity at the encoder bottleneck; ~88M params total
+      vs v1's 32M). Legacy losses keep rank=256.
+
+  (b) **NIAH-style synthetic training prompts**: 64 prompts (50% of
+      corpus) match the eval's haystack+needle pattern with
+      independent seeds, so f_θ sees retrieval structure at training.
+
+  (c) **Cosine LR schedule + 20000 steps**: linear warmup (500 steps)
+      then cosine decay to peak/100. v1's 4000 constant-lr steps was
+      grossly undertrained (59 s of training).
+
+Reproducibility
+---------------
+
+v1 reproduction:
+    --loss-type mse --steps 4000 --gen-len 128 --lr-schedule const
+    --no-niah-prompts --rank 256
+v2 reproduction:
+    --loss-type combined --steps 20000 --gen-len 512 --lr-schedule cosine
+    (default in v2 — see git log of this file pre-v3)
+v3 (default): --loss-type attn_distill (everything above tuned for it)
 
 Reproducibility
 ---------------
@@ -120,7 +160,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -203,29 +243,67 @@ PROMPTS = [
 
 
 @dataclass
+class AttentionTargetData:
+    """Per-layer attention-output distillation target data.
+
+    Captured during data collection by running the verifier forward
+    once with hooks on every layer. Used by the attention-output
+    distillation loss (v3 / one-shot trainer) to evaluate
+    ``attention(Q, f_θ(K), f_θ(V))`` against the verifier's actual
+    attention output without needing to re-run the verifier at every
+    training step.
+
+    Per-layer (length = num_verifier_layers):
+
+      q_raw  [T, num_heads × head_dim]   — q_proj output, pre-norm
+      o_tgt  [T, hidden_dim]             — attn module output, post-o_proj
+      cos    [1, T, head_dim]            — RoPE cosine table
+      sin    [1, T, head_dim]            — RoPE sine table
+      attention_mask                      — captured causal/sliding mask
+
+    All tensors stored bf16 to halve memory (cast to fp32 on use).
+    Stored on CPU; transferred to GPU per training step. For T=512,
+    one sequence costs ≈ 30 layers × 13 MB ≈ 390 MB (CPU bf16); for
+    a 64-prompt corpus that is ≈ 25 GB CPU RAM.
+    """
+    q_raw: List[torch.Tensor]            # per-layer pre-norm Q
+    o_tgt: List[torch.Tensor]            # per-layer attn module output
+    cos: List[torch.Tensor]              # per-layer RoPE cos
+    sin: List[torch.Tensor]              # per-layer RoPE sin
+    attention_mask: Optional[torch.Tensor]
+    num_heads_per_layer: List[int]
+    head_dim_per_layer: List[int]
+
+
+@dataclass
 class CapturedSequence:
-    """Paired drafter / verifier K/V over one training sequence.
+    """Paired drafter / verifier data over one training sequence.
 
-    All tensors are kept on the same device as the models that
-    produced them (typically CUDA). Memory cost per sequence:
+    All tensors live on the device that produced them by default; the
+    attention distillation tensors are CPU bf16 to keep total cache
+    size manageable for 64-prompt corpora.
 
-      drafter_k:  num_drafter_layers × T × drafter_kv_dim × 2 (bytes/bf16)
-      drafter_v:  same
-      verifier_k: num_verifier_layers × T × verifier_kv_dim × 2
-      verifier_v: same
+    Two paths populate this:
 
-    For T=512, Gemma 4 26B-A4B + DFlash 0.4B at bf16:
-      drafter K+V: 5 × 512 × 256 × 2 × 2 = ~2.5 MB
-      verifier K+V: 30 × 512 × 2048 × 2 × 2 = ~125 MB
-      total per sequence: ~128 MB
+      legacy K/V path (loss_type ∈ mse, cos_mag, combined):
+        drafter_k, drafter_v, verifier_k, verifier_v
+        attn_target = None
+
+      attention-output distillation (loss_type = attn_distill, default):
+        drafter_k, drafter_v, attn_target (verifier_k/verifier_v omitted)
+
+    The attn_distill path is the one-shot principled trainer. The
+    legacy path is kept for v1/v2 reproducibility / ablation but is
+    not the default after v3.
     """
     seq_len: int
     drafter_k: torch.Tensor          # [num_d_layers, T, drafter_kv_dim]
     drafter_v: torch.Tensor          # [num_d_layers, T, drafter_kv_dim]
-    # Verifier K/V are per-layer lists because Gemma 4 uses heterogeneous
-    # KV-head counts across layers (8 on sliding layers, 4 on full layers).
-    verifier_k: List[torch.Tensor]   # num_v_layers × [T, kv_dim_i]
-    verifier_v: List[torch.Tensor]   # num_v_layers × [T, kv_dim_i]
+    # Legacy K/V (None when attn_distill captured instead)
+    verifier_k: Optional[List[torch.Tensor]] = None
+    verifier_v: Optional[List[torch.Tensor]] = None
+    # Attention-output distillation target data (None for legacy path)
+    attn_target: Optional[AttentionTargetData] = None
 
 
 def _capture_verifier_kv(
@@ -301,38 +379,363 @@ def _capture_verifier_kv(
     return k_list, v_list
 
 
+def _capture_attention_target_data(
+    verifier_model: torch.nn.Module, input_ids: torch.Tensor,
+) -> AttentionTargetData:
+    """Run verifier forward with hooks to capture per-layer attention
+    distillation targets (Q_raw, O_tgt, cos, sin, attention_mask).
+
+    Returns an :class:`AttentionTargetData` with all tensors moved to
+    CPU bf16 (the per-step training loop streams these back to GPU).
+    """
+    layers = get_verifier_decoder(verifier_model).layers
+    num_layers = len(layers)
+
+    q_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    o_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    cos_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    sin_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    mask_capture: List[Optional[torch.Tensor]] = [None] * num_layers
+    handles = []
+
+    for i, layer in enumerate(layers):
+        attn = layer.self_attn
+
+        def _make_q_hook(idx):
+            def hook(_mod, _inp, output):
+                q_capture[idx] = output.detach()
+            return hook
+
+        def _make_o_hook(idx):
+            def hook(_mod, _inp, output):
+                # attn module returns (attn_output, attn_weights)
+                if isinstance(output, tuple):
+                    o_capture[idx] = output[0].detach()
+                else:
+                    o_capture[idx] = output.detach()
+            return hook
+
+        def _make_pre_hook(idx):
+            def hook(_mod, args, kwargs):
+                # Gemma 4 attention.forward signature:
+                #   (hidden_states, position_embeddings, attention_mask, ...)
+                pos_emb = None
+                if "position_embeddings" in kwargs:
+                    pos_emb = kwargs["position_embeddings"]
+                elif len(args) >= 2:
+                    pos_emb = args[1]
+                if pos_emb is not None:
+                    cos, sin = pos_emb
+                    cos_capture[idx] = cos.detach()
+                    sin_capture[idx] = sin.detach()
+                am = None
+                if "attention_mask" in kwargs:
+                    am = kwargs["attention_mask"]
+                elif len(args) >= 3:
+                    am = args[2]
+                if am is not None:
+                    mask_capture[idx] = am.detach()
+            return hook
+
+        handles.append(attn.q_proj.register_forward_hook(_make_q_hook(i)))
+        handles.append(attn.register_forward_hook(_make_o_hook(i)))
+        handles.append(
+            attn.register_forward_pre_hook(_make_pre_hook(i), with_kwargs=True),
+        )
+
+    try:
+        with torch.no_grad():
+            _ = verifier_model(input_ids=input_ids, use_cache=False)
+    finally:
+        for h in handles:
+            h.remove()
+
+    if any(q is None for q in q_capture):
+        raise RuntimeError("attention distill: Q capture missing some layers")
+    if any(o is None for o in o_capture):
+        raise RuntimeError("attention distill: O capture missing some layers")
+    if any(c is None for c in cos_capture):
+        raise RuntimeError("attention distill: cos capture missing some layers")
+
+    num_heads_per_layer: List[int] = []
+    head_dim_per_layer: List[int] = []
+    for layer in layers:
+        attn = layer.self_attn
+        head_dim_per_layer.append(int(attn.head_dim))
+        num_heads_per_layer.append(int(attn.q_proj.out_features // attn.head_dim))
+
+    # Stack and move to CPU bf16. Drop batch dim (B=1).
+    def _to_cpu_bf16(t: torch.Tensor) -> torch.Tensor:
+        return t.to(dtype=torch.bfloat16, device="cpu", copy=True)
+
+    q_list = [_to_cpu_bf16(q[0]) for q in q_capture]      # [T, n_heads*head_dim]
+    o_list = [_to_cpu_bf16(o[0]) for o in o_capture]      # [T, hidden]
+    cos_list = [_to_cpu_bf16(c) for c in cos_capture]     # [1, T, head_dim] or [B, T, head_dim]
+    sin_list = [_to_cpu_bf16(s) for s in sin_capture]
+    mask_cpu = (
+        mask_capture[0].to(device="cpu", copy=True) if mask_capture[0] is not None
+        else None
+    )
+
+    return AttentionTargetData(
+        q_raw=q_list,
+        o_tgt=o_list,
+        cos=cos_list,
+        sin=sin_list,
+        attention_mask=mask_cpu,
+        num_heads_per_layer=num_heads_per_layer,
+        head_dim_per_layer=head_dim_per_layer,
+    )
+
+
 def _collect_sequence(
     verifier_model: torch.nn.Module,
     drafter: DFlashDrafter,
     input_ids: torch.Tensor,
+    *,
+    capture_legacy_kv: bool = False,
+    capture_attn_target: bool = True,
 ) -> CapturedSequence:
-    """Capture paired drafter + verifier K/V for one input sequence."""
-    # Verifier — k_proj / v_proj forward hooks
-    v_k, v_v = _capture_verifier_kv(verifier_model, input_ids)
+    """Capture paired drafter + verifier data for one input sequence.
 
-    # Drafter — uses verifier embed_tokens (DFlash shares verifier's),
-    # runs drafter layers without aux conditioning, captures K/V via
-    # forward hooks on k_proj/v_proj. See _capture_drafter_kv docstring
-    # in cross_model_dlm_verifier for the architectural choice.
+    Parameters
+    ----------
+    capture_legacy_kv : bool
+        If True, capture verifier K/V via k_proj/v_proj hooks (used by
+        loss_type ∈ mse | cos_mag | combined). Default False — the v3
+        attn_distill path doesn't need it.
+    capture_attn_target : bool
+        If True, capture per-layer Q + O_tgt + cos/sin/mask (used by
+        loss_type=attn_distill, the v3 default).
+    """
+    if not (capture_legacy_kv or capture_attn_target):
+        raise ValueError(
+            "must capture at least one of legacy_kv or attn_target"
+        )
+
+    v_k = v_v = None
+    if capture_legacy_kv:
+        v_k, v_v = _capture_verifier_kv(verifier_model, input_ids)
+
+    attn_target: Optional[AttentionTargetData] = None
+    if capture_attn_target:
+        attn_target = _capture_attention_target_data(verifier_model, input_ids)
+
+    # Drafter K/V capture (always; cheap and small, ~5 MB per seq).
     capture = _capture_drafter_kv(
         verifier_model=verifier_model,
         drafter=drafter,
         input_ids=input_ids,
     )
-    # capture.keys[i] shape: [B, T, num_d_kv_heads, head_dim]
-    # Flatten last two dims and stack across layers.
     k_flat = [k.flatten(-2, -1) for k in capture.keys]
     v_flat = [v.flatten(-2, -1) for v in capture.values]
-    d_k = torch.stack(k_flat, dim=0)[:, 0]  # [L_d, T, drafter_kv_dim]
+    d_k = torch.stack(k_flat, dim=0)[:, 0]
     d_v = torch.stack(v_flat, dim=0)[:, 0]
 
     return CapturedSequence(
         seq_len=int(input_ids.size(1)),
         drafter_k=d_k.detach(),
         drafter_v=d_v.detach(),
-        verifier_k=[t.detach() for t in v_k],
-        verifier_v=[t.detach() for t in v_v],
+        verifier_k=[t.detach() for t in v_k] if v_k is not None else None,
+        verifier_v=[t.detach() for t in v_v] if v_v is not None else None,
+        attn_target=attn_target,
     )
+
+
+def _attention_distillation_loss(
+    f_theta: FThetaProjection,
+    seq: CapturedSequence,
+    layers: Sequence[torch.nn.Module],
+    *,
+    apply_rotary_pos_emb: Any,
+    device: torch.device,
+    sample_positions: Optional[int] = None,
+    seed: Optional[int] = None,
+    diag_buf: Optional[Dict[str, float]] = None,
+) -> torch.Tensor:
+    """Attention-output distillation loss (the v3 / one-shot principled loss).
+
+    For each verifier layer ℓ:
+
+      K_pred_ℓ = f_θ_K(drafter_KV)[ℓ]
+      V_pred_ℓ = f_θ_V(drafter_KV)[ℓ]
+
+      Q_for_attn  = q_norm(Q_raw_ℓ).view(B, T, H_q, D) → RoPE → transpose
+      K_for_attn  = k_norm(K_pred_ℓ).view(B, T, H_kv, D) → RoPE → transpose
+      V_for_attn  = v_norm(V_pred_ℓ).view(B, T, H_kv, D) → transpose
+
+      GQA repeat K_for_attn, V_for_attn to H_q
+      O_inner = scaled_dot_product_attention(Q, K, V, mask)
+      O_pred  = o_proj(O_inner.reshape(B, T, H_q*D))
+
+      loss_ℓ = MSE(O_pred, O_tgt_ℓ)         # O_tgt captured during data
+                                              collection (verifier's actual
+                                              attn module post-o_proj output)
+
+    Total loss = mean over layers.
+
+    This is the principled training objective for K/V replacement: it
+    directly optimises "f_θ-injected K/V produces equivalent verifier
+    attention output". Unlike pure-MSE-on-K/V (v1) or cos+mag (v2),
+    this loss accounts for:
+
+      * GQA: same num_heads/num_kv_heads/head_dim per layer
+      * RoPE: same positional encoding the verifier uses at inference
+      * Causal mask (and sliding-window for sliding layers): captured
+        from the verifier's own forward
+      * o_proj: every layer's downstream projection that f_θ K/V
+        ultimately propagates through
+
+    Memory: per training step, K_pred/V_pred at full T positions are
+    needed for attention's K, V dims. We sample only the OUTPUT side
+    (where loss is evaluated) when ``sample_positions`` < T to save
+    on attention output + o_proj memory; this reduces gradient noise
+    only marginally because the loss is averaged across positions.
+    Default ``None`` ⇒ use all T output positions (recommended for
+    short sequences T ≤ 1024).
+    """
+    if seq.attn_target is None:
+        raise RuntimeError(
+            "attn_distill loss requires CapturedSequence.attn_target; "
+            "call _collect_sequence with capture_attn_target=True"
+        )
+    target = seq.attn_target
+    cfg = f_theta.config
+    T = seq.seq_len
+
+    # f_θ forward (drafter K/V on CPU/GPU, f_θ on GPU). We pull drafter
+    # K/V to f_θ's device + cast to f_θ encoder dtype.
+    f_dtype = next(f_theta.parameters()).dtype
+    drafter_k = seq.drafter_k.to(device=device).unsqueeze(0)  # [1, L_d, T, kv_dim]
+    drafter_v = seq.drafter_v.to(device=device).unsqueeze(0)
+    d_k_list = []
+    d_v_list = []
+    for li in range(cfg.drafter_num_layers):
+        k_per = drafter_k[:, li].view(
+            1, T, cfg.drafter_num_kv_heads, cfg.drafter_head_dim,
+        )
+        v_per = drafter_v[:, li].view(
+            1, T, cfg.drafter_num_kv_heads, cfg.drafter_head_dim,
+        )
+        d_k_list.append(k_per)
+        d_v_list.append(v_per)
+    pred_k_per_layer, pred_v_per_layer = f_theta.forward_kv_pack(d_k_list, d_v_list)
+    # pred_k_per_layer[ℓ]: [1, T, kv_heads_ℓ, head_dim_ℓ] in fp32
+
+    # Sample positions for output-side loss
+    if sample_positions is not None and sample_positions < T:
+        if seed is not None:
+            g = torch.Generator(device="cpu").manual_seed(seed)
+        else:
+            g = None
+        idx = torch.randperm(T, generator=g)[:sample_positions].to(device)
+        idx, _ = idx.sort()
+    else:
+        idx = None
+
+    n_layers = cfg.verifier_num_layers
+    loss = pred_k_per_layer[0].new_zeros(())
+    diag = {"mse_O_total": 0.0, "abs_O_target": 0.0}
+
+    for li in range(n_layers):
+        layer = layers[li]
+        attn = layer.self_attn
+
+        # Move per-layer cached tensors to GPU (bf16 cache → cast to compute dtype)
+        compute_dtype = next(layer.parameters()).dtype
+        q_raw = target.q_raw[li].to(device=device, dtype=compute_dtype).unsqueeze(0)
+        o_tgt = target.o_tgt[li].to(device=device, dtype=compute_dtype).unsqueeze(0)
+        cos = target.cos[li].to(device=device, dtype=compute_dtype)
+        sin = target.sin[li].to(device=device, dtype=compute_dtype)
+        if cos.ndim == 2:
+            cos = cos.unsqueeze(0)
+        if sin.ndim == 2:
+            sin = sin.unsqueeze(0)
+
+        n_heads = target.num_heads_per_layer[li]
+        head_dim = target.head_dim_per_layer[li]
+        kv_heads = cfg.layer_kv_heads[li]
+        kv_head_dim = cfg.layer_head_dims[li]
+        if kv_head_dim != head_dim:
+            # Sanity: f_θ's per-layer head_dim must match verifier's
+            # actual head_dim. (Both come from the verifier config.)
+            raise RuntimeError(
+                f"layer {li}: f_θ head_dim {kv_head_dim} != verifier {head_dim}"
+            )
+
+        # Q pipeline: q_norm → RoPE → transpose
+        Q = q_raw.view(1, T, n_heads, head_dim)
+        Q = attn.q_norm(Q)
+        Q = apply_rotary_pos_emb(Q, cos, sin, unsqueeze_dim=2)
+        Q = Q.transpose(1, 2)                           # [1, n_heads, T, head_dim]
+
+        # K pipeline (f_θ output → norm → RoPE → transpose)
+        K_pred = pred_k_per_layer[li].to(dtype=compute_dtype)  # [1, T, kv_heads, head_dim]
+        K = attn.k_norm(K_pred)
+        K = apply_rotary_pos_emb(K, cos, sin, unsqueeze_dim=2)
+        K = K.transpose(1, 2)                           # [1, kv_heads, T, head_dim]
+
+        # V pipeline (f_θ output → v_norm → transpose, no RoPE)
+        V_pred = pred_v_per_layer[li].to(dtype=compute_dtype)
+        V = attn.v_norm(V_pred).transpose(1, 2)          # [1, kv_heads, T, head_dim]
+
+        # GQA: repeat K, V to match num_heads
+        if n_heads != kv_heads:
+            n_rep = n_heads // kv_heads
+            if n_heads % kv_heads != 0:
+                raise RuntimeError(
+                    f"layer {li}: n_heads {n_heads} not divisible by "
+                    f"kv_heads {kv_heads}"
+                )
+            K = K.repeat_interleave(n_rep, dim=1)
+            V = V.repeat_interleave(n_rep, dim=1)
+
+        # Attention with the verifier's actual mask + scaling
+        scale = float(getattr(attn, "scaling", head_dim ** -0.5))
+        # Use scaled_dot_product_attention; if attention_mask is None,
+        # use causal=True.
+        attn_mask = target.attention_mask
+        if attn_mask is None:
+            O_inner = F.scaled_dot_product_attention(
+                Q, K, V, scale=scale, is_causal=True,
+            )
+        else:
+            attn_mask_dev = attn_mask.to(device=device, dtype=compute_dtype)
+            # attention_mask shapes vary (B, 1, T, T) or (B, T, T); align
+            # to what scaled_dot_product_attention accepts.
+            if attn_mask_dev.ndim == 4 and attn_mask_dev.size(0) == 1:
+                pass
+            elif attn_mask_dev.ndim == 3:
+                attn_mask_dev = attn_mask_dev.unsqueeze(1)
+            elif attn_mask_dev.ndim == 2:
+                attn_mask_dev = attn_mask_dev.unsqueeze(0).unsqueeze(0)
+            O_inner = F.scaled_dot_product_attention(
+                Q, K, V, attn_mask=attn_mask_dev, scale=scale,
+            )
+
+        # o_proj (linear, frozen weights → no grad through it)
+        O_inner = O_inner.transpose(1, 2).reshape(1, T, n_heads * head_dim).contiguous()
+        O_pred = attn.o_proj(O_inner)
+
+        if idx is not None:
+            O_pred_eval = O_pred.index_select(1, idx)
+            O_tgt_eval = o_tgt.index_select(1, idx)
+        else:
+            O_pred_eval = O_pred
+            O_tgt_eval = o_tgt
+
+        l_o = F.mse_loss(O_pred_eval.float(), O_tgt_eval.float())
+        loss = loss + l_o
+        diag["mse_O_total"] += float(l_o.detach().item())
+        diag["abs_O_target"] += float(O_tgt_eval.float().abs().mean().item())
+
+        # Free GPU memory of cached per-layer tensors before next layer
+        del q_raw, o_tgt, cos, sin, Q, K, V, O_inner, O_pred
+
+    if diag_buf is not None:
+        diag_buf["mse_O_mean"] = diag["mse_O_total"] / max(n_layers, 1)
+        diag_buf["abs_O_target_mean"] = diag["abs_O_target"] / max(n_layers, 1)
+    return loss / max(n_layers, 1)
 
 
 def _per_vector_cosine_mag_loss(
@@ -385,23 +788,48 @@ def _f_theta_loss(
     *,
     sample_positions: int = 256,
     seed: Optional[int] = None,
-    loss_type: str = "combined",
+    loss_type: str = "attn_distill",
     diag_buf: Optional[Dict[str, float]] = None,
+    layers: Optional[Sequence[torch.nn.Module]] = None,
+    apply_rotary_pos_emb: Optional[Any] = None,
+    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
     """Compute the configured loss for one sequence (subsampled positions).
 
     Parameters
     ----------
     loss_type : str
+        ``"attn_distill"`` — v3 default (one-shot principled): attention-output
+                              distillation. Requires ``layers`` +
+                              ``apply_rotary_pos_emb`` + ``device``.
         ``"mse"``       — v1 MSE on raw K and V (kept for reproducibility).
         ``"cos_mag"``   — v2 cosine + magnitude on K and V.
-        ``"combined"``  — v2 default. Cosine + magnitude with a small
-                          MSE weight (0.1) for stability when norms are
-                          near zero.
+        ``"combined"``  — v2 cosine + magnitude + 0.1× normalised MSE.
     diag_buf : dict
         Optional dict to receive per-component aggregates (cos_K_mean,
-        cos_V_mean, mag_K_mean, mag_V_mean, mse_mean) for logging.
+        cos_V_mean, mag_K_mean, mag_V_mean, mse_mean, mse_O_mean) for logging.
     """
+    if loss_type == "attn_distill":
+        if layers is None or apply_rotary_pos_emb is None or device is None:
+            raise ValueError(
+                "attn_distill requires layers + apply_rotary_pos_emb + device"
+            )
+        return _attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=apply_rotary_pos_emb,
+            device=device,
+            sample_positions=(
+                None if sample_positions <= 0 or sample_positions >= seq.seq_len
+                else sample_positions
+            ),
+            seed=seed, diag_buf=diag_buf,
+        )
+
+    if seq.verifier_k is None or seq.verifier_v is None:
+        raise RuntimeError(
+            f"loss_type={loss_type!r} requires legacy K/V capture; "
+            "ensure data collection ran with capture_legacy_kv=True"
+        )
     T = seq.seq_len
     if seed is not None:
         g = torch.Generator(device="cpu").manual_seed(seed)
@@ -638,7 +1066,6 @@ def main() -> int:
         help="Linear warmup steps for cosine schedule (ignored if const)",
     )
     ap.add_argument("--weight-decay", type=float, default=0.01)
-    ap.add_argument("--rank", type=int, default=256)
     ap.add_argument("--n-prompts", type=int, default=64,
                     help="General prompts from PROMPTS list (capped at 62)")
     ap.add_argument(
@@ -654,12 +1081,23 @@ def main() -> int:
     ap.add_argument("--niah-max-lines", type=int, default=90)
     ap.add_argument("--gen-len", type=int, default=512,
                     help="Tokens generated per prompt during data collection")
-    ap.add_argument("--sample-positions", type=int, default=256,
-                    help="Random positions sampled per training step (memory reduction)")
     ap.add_argument(
-        "--loss-type", default="combined",
-        choices=["mse", "cos_mag", "combined"],
-        help="Training loss (v2 default combined; v1 used mse)",
+        "--sample-positions", type=int, default=0,
+        help="Random output-side positions per training step. 0 (default) "
+             "= use all T positions. For legacy losses (mse/cos_mag/combined) "
+             "default falls back to 256 if 0 is passed.",
+    )
+    ap.add_argument(
+        "--loss-type", default="attn_distill",
+        choices=["attn_distill", "mse", "cos_mag", "combined"],
+        help="Training loss. v3 default attn_distill (attention-output "
+             "distillation, the principled one-shot loss). v2 used "
+             "combined (cos+mag); v1 used mse.",
+    )
+    ap.add_argument(
+        "--rank", type=int, default=None,
+        help="f_θ encoder bottleneck. Default 768 for attn_distill, 256 "
+             "for legacy losses (v1/v2). Override to override default.",
     )
     ap.add_argument("--save", default="results/research/f_theta_v1")
     ap.add_argument("--seed", type=int, default=0)
@@ -678,13 +1116,32 @@ def main() -> int:
         )
     dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    # Resolve rank default per loss type (rank ↑ for attn_distill = more
+    # f_θ capacity; legacy losses keep v1's 256 for direct comparability).
+    if args.rank is None:
+        args.rank = 768 if args.loss_type == "attn_distill" else 256
+        print(
+            f"[f_theta-train] using rank={args.rank} (loss_type={args.loss_type})",
+            file=sys.stderr,
+        )
 
-    print(f"[f_theta-train] loading verifier {args.verifier_id}",
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    # Eager attention is required for attn_distill so we can hook the
+    # attention module's pre/post forward and capture position_embeddings
+    # + attention_mask + post-o_proj output. SDPA fuses these and breaks
+    # the hook contract. For legacy losses, sdpa is fine (and faster).
+    attn_impl = "eager" if args.loss_type == "attn_distill" else "sdpa"
+    apply_rotary_pos_emb = None
+    if args.loss_type == "attn_distill":
+        from transformers.models.gemma4.modeling_gemma4 import (  # type: ignore
+            apply_rotary_pos_emb,
+        )
+
+    print(f"[f_theta-train] loading verifier {args.verifier_id} (attn={attn_impl})",
           file=sys.stderr, flush=True)
     tok = AutoTokenizer.from_pretrained(args.verifier_id)
     verifier = AutoModelForCausalLM.from_pretrained(
-        args.verifier_id, dtype=dtype, attn_implementation="sdpa",
+        args.verifier_id, dtype=dtype, attn_implementation=attn_impl,
         device_map="auto" if device.type == "cuda" else None,
     ).eval()
     for p in verifier.parameters():
@@ -759,7 +1216,14 @@ def main() -> int:
         )
 
     # ---------------- Data collection ----------------
-    print(f"[f_theta-train] collecting K/V from {len(corpus_prompts)} prompts ...",
+    capture_legacy_kv = args.loss_type in ("mse", "cos_mag", "combined")
+    capture_attn_target = args.loss_type == "attn_distill"
+    print(
+        f"[f_theta-train] data capture: legacy_kv={capture_legacy_kv} "
+        f"attn_target={capture_attn_target}",
+        file=sys.stderr,
+    )
+    print(f"[f_theta-train] collecting from {len(corpus_prompts)} prompts ...",
           file=sys.stderr, flush=True)
     sequences: List[CapturedSequence] = []
     t0 = time.perf_counter()
@@ -785,7 +1249,11 @@ def main() -> int:
                     break
             full_ids = cur
 
-        seq = _collect_sequence(verifier, drafter, full_ids)
+        seq = _collect_sequence(
+            verifier, drafter, full_ids,
+            capture_legacy_kv=capture_legacy_kv,
+            capture_attn_target=capture_attn_target,
+        )
         sequences.append(seq)
         if (pi + 1) % 10 == 0 or pi == len(corpus_prompts) - 1:
             print(
@@ -798,10 +1266,18 @@ def main() -> int:
           file=sys.stderr)
 
     # ---------------- Training ----------------
+    # Resolve sample_positions: 0 ⇒ full-T for attn_distill (the design
+    # choice — every position contributes); fall back to 256 for legacy
+    # losses (memory reduction matters there).
+    if args.sample_positions <= 0:
+        args.sample_positions = (
+            0 if args.loss_type == "attn_distill" else 256
+        )
     print(
         f"[f_theta-train] training: loss_type={args.loss_type} "
         f"schedule={args.lr_schedule} (warmup={args.warmup_steps}) "
-        f"steps={args.steps} peak_lr={args.lr}",
+        f"steps={args.steps} peak_lr={args.lr} "
+        f"sample_positions={args.sample_positions}",
         file=sys.stderr,
     )
     optimizer = torch.optim.AdamW(
@@ -828,6 +1304,9 @@ def main() -> int:
             sample_positions=args.sample_positions,
             loss_type=args.loss_type,
             diag_buf=diag_buf,
+            layers=v_layers if args.loss_type == "attn_distill" else None,
+            apply_rotary_pos_emb=apply_rotary_pos_emb,
+            device=device,
         )
         if initial_loss is None:
             initial_loss = float(loss.item())
@@ -839,16 +1318,26 @@ def main() -> int:
         final_diag = diag_buf  # last step's per-component breakdown
         if step % args.log_every == 0:
             recent = losses_window[-args.log_every:]
-            cos_msg = ""
+            extra_msg = ""
             if args.loss_type in ("cos_mag", "combined"):
-                cos_msg = (
+                extra_msg = (
                     f" cosK={diag_buf.get('cos_K_total', 0):.4f}"
                     f" cosV={diag_buf.get('cos_V_total', 0):.4f}"
+                )
+            elif args.loss_type == "attn_distill":
+                # mse_O_mean is the per-layer attn-output MSE; abs_O_target
+                # is the magnitude of O_tgt (so MSE/abs is "noise ratio").
+                mse_o = diag_buf.get("mse_O_mean", 0)
+                abs_o = diag_buf.get("abs_O_target_mean", 1e-6)
+                extra_msg = (
+                    f" mseO={mse_o:.6f}"
+                    f" |O_tgt|={abs_o:.4f}"
+                    f" ratio={mse_o / max(abs_o ** 2, 1e-12):.4f}"
                 )
             print(
                 f"[f_theta-train] step={step} lr={cur_lr:.2e} "
                 f"loss={sum(recent)/len(recent):.6f} "
-                f"(init={initial_loss:.6f}){cos_msg}",
+                f"(init={initial_loss:.6f}){extra_msg}",
                 file=sys.stderr, flush=True,
             )
     train_elapsed = time.perf_counter() - t0

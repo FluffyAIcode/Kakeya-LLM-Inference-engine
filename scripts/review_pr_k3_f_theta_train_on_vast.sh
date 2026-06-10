@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # vast.ai (CUDA) reviewer aid for K3 Block C — f_θ K/V projection training.
 #
-# v2 (2026-06-10): defaults updated to fix recall=0 from v1 evidence.
-#   - --loss-type combined  (cosine + magnitude + small MSE; v1 was MSE)
-#   - --steps 20000          (5× longer; v1 was 4k → 59s, undertrained)
-#   - --gen-len 512          (4× longer sequences; v1 was 128)
-#   - --lr-schedule cosine   (v1 was constant)
-#   - --warmup-steps 500     (linear warmup → cosine decay to peak/100)
+# v3 (2026-06-10) — ONE-SHOT principled trainer.
+#   - --loss-type attn_distill   (attention-output distillation — the
+#                                 mathematically right loss for K/V
+#                                 projection; v1 was raw MSE on K/V,
+#                                 v2 intermediate was cos+mag)
+#   - --rank 768                 (3× v1's 256 capacity at f_θ bottleneck)
+#   - --steps 20000              (5× v1; v1 was 4k → 59s, undertrained)
+#   - --gen-len 512              (4× v1; v1 was 128)
+#   - --lr-schedule cosine       (linear warmup → cosine decay to peak/100)
 #   - +64 NIAH-style synthetic prompts (v1 had zero retrieval data)
-# v1 reproduction: pass STEPS=4000 GEN_LEN=128 LR_SCHEDULE=const
-#   LOSS_TYPE=mse N_NIAH_PROMPTS=0
+# v1 reproduction: STEPS=4000 GEN_LEN=128 LR_SCHEDULE=const LOSS_TYPE=mse
+#   N_NIAH_PROMPTS=0 RANK=256
 #
 # Pre-flight: Gemma 4 26B-A4B-it verifier (gated, needs HF_TOKEN) +
 # DFlash drafter from models/dflash-kakeya-baseline/ (Git LFS, in main
@@ -21,19 +24,20 @@
 # results/research/f_theta_v2/) containing f_theta_config.json +
 # f_theta_weights.pt, plus a training report at $SAVE_DIR.json.
 #
-# Env knobs (v2 defaults):
+# Env knobs (v3 defaults):
 #
-#   STEPS              20000       training steps (v2 = 5× v1)
-#   LR                 1e-3        peak AdamW learning rate
-#   LR_SCHEDULE        cosine      const | cosine
+#   STEPS              20000          training steps (v3 = 5× v1)
+#   LR                 1e-3           peak AdamW learning rate
+#   LR_SCHEDULE        cosine         const | cosine
 #   WARMUP_STEPS       500
-#   LOSS_TYPE          combined    mse | cos_mag | combined
-#   RANK               256         f_θ low-rank bottleneck
-#   N_PROMPTS          64          general prompts (PROMPTS list)
-#   N_NIAH_PROMPTS     64          (v2) synthetic NIAH-style prompts
-#   GEN_LEN            512         tokens generated per prompt (v2 = 4× v1)
-#   SAMPLE_POSITIONS   256
-#   SAVE_DIR           results/research/f_theta_v2
+#   LOSS_TYPE          attn_distill   attn_distill | mse | cos_mag | combined
+#   RANK               (auto)         empty = trainer auto-picks 768 for
+#                                     attn_distill / 256 for legacy losses
+#   N_PROMPTS          64
+#   N_NIAH_PROMPTS     64
+#   GEN_LEN            512
+#   SAMPLE_POSITIONS   0              0 = full T (recommended for attn_distill)
+#   SAVE_DIR           results/research/f_theta_v3
 #   SEED               0
 #
 # Usage (from vast.ai host with repo synced):
@@ -47,21 +51,23 @@
 #
 #   # v1 reproduction (for direct comparability with PR #103 evidence):
 #   STEPS=4000 GEN_LEN=128 LR_SCHEDULE=const LOSS_TYPE=mse \
-#       N_NIAH_PROMPTS=0 SAVE_DIR=results/research/f_theta_v1_repro \
+#       RANK=256 N_NIAH_PROMPTS=0 \
+#       SAVE_DIR=results/research/f_theta_v1_repro \
 #       HF_TOKEN=hf_xxx bash $0
 #
 # Expected timing on H200:
-#   - Data collection:  ~10-15 min (128 prompts × 512 gen_len each;
-#     NIAH prompts are longer due to haystack)
-#   - Training 20k steps × ~15ms/step ≈ 5-10 min
-#   - Total wall: ~20-30 min  (was ~8-15 min for v1)
+#   - Data collection:  ~15-25 min (128 prompts × 512 gen_len each;
+#     NIAH prompts longer due to haystack; eager-attn forward is
+#     somewhat slower than sdpa)
+#   - Training 20k steps × ~80 ms/step (attention forward through
+#     all 30 layers per step) ≈ 25-30 min
+#   - Total wall: ~40-60 min
 #
 # Validation gates (printed at end):
-#   * loss_reduction_factor ≥ 5.0 (v2 target; v1 was 13.7× but loss
-#     stayed too high in absolute terms)
-#   * cosK_total < 0.05 → cos sim > 0.95 → attention direction
-#     well-preserved (v2-only diagnostic)
-#   * f_theta_weights.pt non-empty (~130 MB at rank=256)
+#   * loss_reduction_factor ≥ 5.0
+#   * mseO/|O_tgt|^2 ratio < 0.05 → attention output preserved
+#     (v3 attn_distill diagnostic)
+#   * f_theta_weights.pt non-empty (~352 MB at rank=768)
 #
 # These are sanity gates, not product gates. Product gate is the
 # integrated NIAH ladder evidence (separate reviewer aid:
@@ -76,13 +82,13 @@ STEPS="${STEPS:-20000}"
 LR="${LR:-1e-3}"
 LR_SCHEDULE="${LR_SCHEDULE:-cosine}"
 WARMUP_STEPS="${WARMUP_STEPS:-500}"
-LOSS_TYPE="${LOSS_TYPE:-combined}"
-RANK="${RANK:-256}"
+LOSS_TYPE="${LOSS_TYPE:-attn_distill}"
+RANK="${RANK:-}"        # empty = trainer auto-picks (768 for attn_distill, else 256)
 N_PROMPTS="${N_PROMPTS:-64}"
 N_NIAH_PROMPTS="${N_NIAH_PROMPTS:-64}"
 GEN_LEN="${GEN_LEN:-512}"
-SAMPLE_POSITIONS="${SAMPLE_POSITIONS:-256}"
-SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v2}"
+SAMPLE_POSITIONS="${SAMPLE_POSITIONS:-0}"   # 0 = full T (attn_distill default)
+SAVE_DIR="${SAVE_DIR:-results/research/f_theta_v3}"
 SEED="${SEED:-0}"
 
 stamp="$(date +%s)"
@@ -90,19 +96,25 @@ log_dir="results/research/logs"
 mkdir -p "$log_dir"
 log="${log_dir}/k3_f_theta_train_vast_${stamp}.log"
 
-echo "==> K3 Block C — f_θ K/V projection training (vast.ai CUDA, v2)"
-echo "    Verifier:         google/gemma-4-26B-A4B-it (bf16, sdpa)"
-echo "    Drafter:          models/dflash-kakeya-baseline (in main, Git LFS)"
-echo "    Steps:            $STEPS"
-echo "    Peak LR:          $LR (schedule: $LR_SCHEDULE, warmup: $WARMUP_STEPS)"
-echo "    Loss type:        $LOSS_TYPE"
-echo "    Rank:             $RANK"
+attn_impl_msg="eager"
+if [[ "$LOSS_TYPE" != "attn_distill" ]]; then attn_impl_msg="sdpa"; fi
+rank_msg="$RANK"
+if [[ -z "$RANK" ]]; then
+    if [[ "$LOSS_TYPE" == "attn_distill" ]]; then rank_msg="auto (768)"; else rank_msg="auto (256)"; fi
+fi
+echo "==> K3 Block C — f_θ K/V projection training (vast.ai CUDA, v3)"
+echo "    Verifier:          google/gemma-4-26B-A4B-it (bf16, $attn_impl_msg)"
+echo "    Drafter:           models/dflash-kakeya-baseline (in main, Git LFS)"
+echo "    Loss type:         $LOSS_TYPE"
+echo "    Steps:             $STEPS"
+echo "    Peak LR:           $LR (schedule: $LR_SCHEDULE, warmup: $WARMUP_STEPS)"
+echo "    Rank:              $rank_msg"
 echo "    N general prompts: $N_PROMPTS"
-echo "    N NIAH prompts:   $N_NIAH_PROMPTS"
-echo "    Gen len:          $GEN_LEN"
-echo "    Sample positions: $SAMPLE_POSITIONS"
-echo "    Save dir:         $SAVE_DIR"
-echo "    Log:              $log"
+echo "    N NIAH prompts:    $N_NIAH_PROMPTS"
+echo "    Gen len:           $GEN_LEN"
+echo "    Sample positions:  $SAMPLE_POSITIONS  (0 = full T)"
+echo "    Save dir:          $SAVE_DIR"
+echo "    Log:               $log"
 echo
 
 # Pre-flight 1: HF token
@@ -155,10 +167,13 @@ print(f'transformers {transformers.__version__}', file=sys.stderr)
 fi
 
 # Run
-echo "==> Running f_θ training (v2)"
+echo "==> Running f_θ training (v3)"
 extra_flags=()
 if [[ "$N_NIAH_PROMPTS" -eq 0 ]]; then
     extra_flags+=(--no-niah-prompts)
+fi
+if [[ -n "$RANK" ]]; then
+    extra_flags+=(--rank "$RANK")
 fi
 PYTHONPATH=.:sdks/python python3 scripts/research/k3_f_theta_train.py \
     --steps "$STEPS" \
@@ -166,7 +181,6 @@ PYTHONPATH=.:sdks/python python3 scripts/research/k3_f_theta_train.py \
     --lr-schedule "$LR_SCHEDULE" \
     --warmup-steps "$WARMUP_STEPS" \
     --loss-type "$LOSS_TYPE" \
-    --rank "$RANK" \
     --n-prompts "$N_PROMPTS" \
     --n-niah-prompts "$N_NIAH_PROMPTS" \
     --gen-len "$GEN_LEN" \
