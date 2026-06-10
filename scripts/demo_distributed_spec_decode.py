@@ -174,6 +174,10 @@ async def _run_verifier_node(args: argparse.Namespace) -> int:
     prompt_ids = verifier.tokenizer.apply_chat_template(
         [{"role": "user", "content": args.prompt}],
         add_generation_prompt=True,
+        # Echo-style answers are where the n-gram proposer shines;
+        # Qwen3's thinking preamble is novel text the lookup cannot
+        # draft. Templates without the variable ignore it harmlessly.
+        enable_thinking=args.enable_thinking,
     )
 
     # --- 4. Greedy baseline (same verifier, local only) --------------
@@ -231,6 +235,9 @@ def main() -> int:
     ap.add_argument("--prompt",
                     default="List the numbers from 1 to 30, separated by "
                             "commas, then repeat the exact same list again.")
+    ap.add_argument("--enable-thinking", action="store_true",
+                    help="Keep Qwen3's <think> preamble (default off "
+                         "for the demo; see prompt_ids comment).")
     ap.add_argument("--max-new-tokens", type=int, default=48)
     ap.add_argument("--block-size", type=int, default=8)
     ap.add_argument("--sink", type=int, default=4)
