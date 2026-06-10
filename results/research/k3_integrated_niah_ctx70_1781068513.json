@@ -1,0 +1,341 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v3",
+    "f_theta_config": {
+      "drafter_num_layers": 5,
+      "drafter_num_kv_heads": 8,
+      "drafter_head_dim": 128,
+      "verifier_num_layers": 30,
+      "verifier_num_kv_heads": 8,
+      "verifier_head_dim": 256,
+      "rank": 256,
+      "verifier_layer_kv_heads": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2
+      ],
+      "verifier_layer_head_dims": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512
+      ]
+    },
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "skip_oracle": false,
+    "identity_restore": false,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model",
+      "samples_total": 10,
+      "samples_correct": 0,
+      "recall": 0.0,
+      "mean_latency_s": 3.1495972006814554,
+      "median_latency_s": 3.059754148533102,
+      "per_sample_decoded": [
+        "The answer is not provided in the text, but the most common answer to your question is \"none.\"\n",
+        "The answer is not provided in your prompt, but if you are looking for a summary of the concept, it is the",
+        "The answer is not provided in the text, but the most common answer to your request is \"none.\"\n",
+        "The answer is not provided in your prompt, but if you are looking for a summary of the concept, it is the",
+        "The answer is not provided in your prompt, but if you are looking for the mathematical pattern, it is often used to",
+        "The answer is not provided in your prompt, but if you are looking for the mathematical pattern, it is often used to",
+        "The answer is not provided in the text, but the most common way to describe the process is through the concept of \"",
+        "The answer is not provided in your prompt, but if you are looking for the mathematical pattern, it is often used to",
+        "The answer is not provided in the text, but the most common answer to your request is \"none.\"\n",
+        "The answer is not provided in the text, but the most common answer to your question is \"none.\"\n"
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        6.2070867127715,
+        7.932219627535308,
+        8.291359108189146,
+        7.008412416802919,
+        8.370435176930217,
+        7.070491579160498,
+        7.501191191409204,
+        8.685075989001042,
+        7.757266181325466,
+        8.090605730834971
+      ],
+      "mean_throughput_tokens_per_sec": 7.691414371396027,
+      "median_throughput_tokens_per_sec": 7.844742904430387,
+      "min_throughput_tokens_per_sec": 6.2070867127715,
+      "max_throughput_tokens_per_sec": 8.685075989001042
+    },
+    "oracle": {
+      "name": "oracle",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 2.3137687641661615,
+      "median_latency_s": 2.2856665939325467,
+      "per_sample_decoded": [
+        "BETA-1409\n//thought\nBETA-1409",
+        "DELTA-3286\n\nthought\nDELTA-3286\n",
+        "ORCHID-9935\n10. **Final Answer:** ORCHID-99",
+        "ETA-1520\n\n\nthought\nthought\nETA-15",
+        "DELTA-4811\n\n\u66f8\u304d\u8fbc\u307f\u5185\u5bb9\u306b\u57fa\u3065\u304f\u3068\u3001\u79d8\u5bc6\u306e\u30b3\u30fc\u30c9\u306f **DELTA-4",
+        "ALPHA-4257\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n",
+        "DELTA-8359\nnormative_thought\nDELTA-8359",
+        "MAPLE-3615\n\u092c\u52a9\u3051\u304c\u5fc5\u8981\u306a\u5834\u5408\u306f\u3001\u3044\u3064\u3067\u3082\u304a\u77e5\u3089\u305b\u304f\u3060\u3055\u3044\u3002\n",
+        "ZETA-5552\n\n\n",
+        "MAPLE-6514\n\ninclude_thought\nMAPLE-6514"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        16,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        8.937504896687521,
+        10.458159710745528,
+        10.927325998858077,
+        9.147766838175468,
+        11.032589170610064,
+        9.043170935143527,
+        9.724476859457319,
+        11.275149094848834,
+        9.784510335702079,
+        10.54261813143324
+      ],
+      "mean_throughput_tokens_per_sec": 10.087327197166164,
+      "median_throughput_tokens_per_sec": 10.121335023223804,
+      "min_throughput_tokens_per_sec": 8.937504896687521,
+      "max_throughput_tokens_per_sec": 11.275149094848834
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "k3_cross_model": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 10,
+        "effective_keys_at_last_query_mean": 1439.8,
+        "effective_keys_at_last_query_min": 1238,
+        "effective_keys_at_last_query_max": 1637,
+        "effective_keys_at_last_query_median": 1438.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1637,
+            "effective_keys_at_last_query": 1637,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1378,
+            "effective_keys_at_last_query": 1378,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1299,
+            "effective_keys_at_last_query": 1299,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1597,
+            "effective_keys_at_last_query": 1597,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1278,
+            "effective_keys_at_last_query": 1278,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1617,
+            "effective_keys_at_last_query": 1617,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1238,
+            "effective_keys_at_last_query": 1238,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1358,
+            "effective_keys_at_last_query": 1358,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "memory": {
+    "k3_cross_model": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52630830080,
+      "current_reserved_bytes": 56975425536,
+      "peak_allocated_bytes": 55998552064,
+      "peak_reserved_bytes": 56975425536
+    },
+    "oracle": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52630830080,
+      "current_reserved_bytes": 56178507776,
+      "peak_allocated_bytes": 55250622464,
+      "peak_reserved_bytes": 56178507776
+    }
+  },
+  "gate": {
+    "architectural_correctness": true,
+    "recall_cross_model": 0.0,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 100.0,
+    "recall_delta_within_5pp": false
+  }
+}
