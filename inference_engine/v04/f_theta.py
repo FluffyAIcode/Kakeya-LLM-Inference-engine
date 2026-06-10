@@ -95,7 +95,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -108,15 +108,28 @@ class FThetaConfig:
     Stored alongside the trained state_dict as ``f_theta_config.json``
     so the cross-model verifier can reconstruct the projection at load
     time without inferring shapes from the state_dict alone.
+
+    Heterogeneous verifier KV heads
+    -------------------------------
+    Production verifiers do not always use a uniform KV-head count
+    across layers. Gemma 4 26B-A4B, for example, uses 8 KV heads on its
+    sliding-attention layers and 4 KV heads on its full-attention
+    layers (head_dim is uniform at 256). ``verifier_layer_kv_heads``
+    captures the per-layer count; when ``None`` every layer uses
+    ``verifier_num_kv_heads`` (the legacy uniform behaviour, kept for
+    backward compatibility and the same-head-count case).
     """
 
     drafter_num_layers: int            # e.g. DFlash drafter 5 layers
     drafter_num_kv_heads: int          # e.g. DFlash 2 kv heads
     drafter_head_dim: int              # e.g. DFlash 128 head dim
     verifier_num_layers: int           # e.g. Gemma 4 26B-A4B 30 layers
-    verifier_num_kv_heads: int         # e.g. Gemma 4 8 kv heads
+    verifier_num_kv_heads: int         # representative / uniform KV head count
     verifier_head_dim: int             # e.g. Gemma 4 256 head dim
     rank: int = 256                    # encoder bottleneck
+    # Per-layer KV head counts (len == verifier_num_layers). None ⇒
+    # uniform verifier_num_kv_heads for every layer.
+    verifier_layer_kv_heads: Optional[Tuple[int, ...]] = None
 
     @property
     def drafter_kv_dim(self) -> int:
@@ -127,16 +140,40 @@ class FThetaConfig:
         return self.verifier_num_kv_heads * self.verifier_head_dim
 
     @property
+    def layer_kv_heads(self) -> Tuple[int, ...]:
+        """Per-layer KV head counts (always length ``verifier_num_layers``)."""
+        if self.verifier_layer_kv_heads is None:
+            return tuple(
+                self.verifier_num_kv_heads
+                for _ in range(self.verifier_num_layers)
+            )
+        return tuple(int(h) for h in self.verifier_layer_kv_heads)
+
+    @property
+    def layer_kv_dims(self) -> Tuple[int, ...]:
+        """Per-layer K (or V) feature dim = kv_heads[i] * head_dim."""
+        return tuple(h * self.verifier_head_dim for h in self.layer_kv_heads)
+
+    @property
     def encoder_in_features(self) -> int:
         """Concat dim across all drafter layers' K (or V) per position."""
         return self.drafter_num_layers * self.drafter_kv_dim
 
     def to_json_dict(self) -> dict:
-        return dataclasses.asdict(self)
+        d = dataclasses.asdict(self)
+        if self.verifier_layer_kv_heads is not None:
+            d["verifier_layer_kv_heads"] = list(self.verifier_layer_kv_heads)
+        return d
 
     @classmethod
     def from_json_dict(cls, d: dict) -> "FThetaConfig":
-        return cls(**{k: int(v) for k, v in d.items()})
+        kwargs: dict = {}
+        for k, v in d.items():
+            if k == "verifier_layer_kv_heads":
+                kwargs[k] = None if v is None else tuple(int(x) for x in v)
+            else:
+                kwargs[k] = int(v)
+        return cls(**kwargs)
 
 
 class FThetaProjection(nn.Module):
@@ -170,21 +207,48 @@ class FThetaProjection(nn.Module):
             config.encoder_in_features, config.rank, bias=False,
         )
 
-        # Per-verifier-layer decoders
+        # Per-verifier-layer decoders, each sized to its own layer's KV
+        # feature dim (heterogeneous KV-head counts are supported).
         self.decoders_k = nn.ModuleList([
-            nn.Linear(config.rank, config.verifier_kv_dim, bias=False)
-            for _ in range(config.verifier_num_layers)
+            nn.Linear(config.rank, kv_dim, bias=False)
+            for kv_dim in config.layer_kv_dims
         ])
         self.decoders_v = nn.ModuleList([
-            nn.Linear(config.rank, config.verifier_kv_dim, bias=False)
-            for _ in range(config.verifier_num_layers)
+            nn.Linear(config.rank, kv_dim, bias=False)
+            for kv_dim in config.layer_kv_dims
         ])
 
     # -----------------------------------------------------------------
     # Forward primitives
     # -----------------------------------------------------------------
 
-    def forward_k(self, drafter_k_concat: torch.Tensor) -> torch.Tensor:
+    def _project(
+        self,
+        drafter_concat: torch.Tensor,
+        encoder: nn.Module,
+        decoders: nn.ModuleList,
+    ) -> List[torch.Tensor]:
+        if drafter_concat.dim() != 3:
+            raise ValueError(
+                f"expected [B, T, encoder_in_features]; got shape "
+                f"{tuple(drafter_concat.shape)}"
+            )
+        if drafter_concat.size(-1) != self.config.encoder_in_features:
+            raise ValueError(
+                f"last dim {drafter_concat.size(-1)} != "
+                f"encoder_in_features {self.config.encoder_in_features}"
+            )
+        rep = encoder(drafter_concat)  # [B, T, rank]
+        head_dim = self.config.verifier_head_dim
+        kv_heads = self.config.layer_kv_heads
+        outs: List[torch.Tensor] = []
+        for li, dec in enumerate(decoders):
+            o = dec(rep)  # [B, T, kv_heads[li] * head_dim]
+            B, T, _ = o.shape
+            outs.append(o.view(B, T, kv_heads[li], head_dim))
+        return outs
+
+    def forward_k(self, drafter_k_concat: torch.Tensor) -> List[torch.Tensor]:
         """Project drafter K (concat across drafter layers) to per-verifier-layer K.
 
         Parameters
@@ -194,48 +258,15 @@ class FThetaProjection(nn.Module):
 
         Returns
         -------
-        [B, T, verifier_num_layers, verifier_num_kv_heads, verifier_head_dim]
+        List of ``verifier_num_layers`` tensors, each shape
+        ``[B, T, layer_kv_heads[i], verifier_head_dim]`` (per-layer KV
+        head counts can differ).
         """
-        if drafter_k_concat.dim() != 3:
-            raise ValueError(
-                f"expected [B, T, encoder_in_features]; got shape "
-                f"{tuple(drafter_k_concat.shape)}"
-            )
-        if drafter_k_concat.size(-1) != self.config.encoder_in_features:
-            raise ValueError(
-                f"last dim {drafter_k_concat.size(-1)} != "
-                f"encoder_in_features {self.config.encoder_in_features}"
-            )
-        rep = self.encoder_k(drafter_k_concat)  # [B, T, rank]
-        outs = [dec(rep) for dec in self.decoders_k]  # 30 × [B, T, verifier_kv_dim]
-        stacked = torch.stack(outs, dim=2)  # [B, T, num_verifier_layers, verifier_kv_dim]
-        # Reshape to per-head form: [B, T, L_v, num_kv_heads_v, head_dim_v]
-        B, T, L_v, _ = stacked.shape
-        return stacked.view(
-            B, T, L_v,
-            self.config.verifier_num_kv_heads, self.config.verifier_head_dim,
-        )
+        return self._project(drafter_k_concat, self.encoder_k, self.decoders_k)
 
-    def forward_v(self, drafter_v_concat: torch.Tensor) -> torch.Tensor:
+    def forward_v(self, drafter_v_concat: torch.Tensor) -> List[torch.Tensor]:
         """V counterpart of :meth:`forward_k`."""
-        if drafter_v_concat.dim() != 3:
-            raise ValueError(
-                f"expected [B, T, encoder_in_features]; got shape "
-                f"{tuple(drafter_v_concat.shape)}"
-            )
-        if drafter_v_concat.size(-1) != self.config.encoder_in_features:
-            raise ValueError(
-                f"last dim {drafter_v_concat.size(-1)} != "
-                f"encoder_in_features {self.config.encoder_in_features}"
-            )
-        rep = self.encoder_v(drafter_v_concat)
-        outs = [dec(rep) for dec in self.decoders_v]
-        stacked = torch.stack(outs, dim=2)
-        B, T, L_v, _ = stacked.shape
-        return stacked.view(
-            B, T, L_v,
-            self.config.verifier_num_kv_heads, self.config.verifier_head_dim,
-        )
+        return self._project(drafter_v_concat, self.encoder_v, self.decoders_v)
 
     # -----------------------------------------------------------------
     # KVCapture-aware helper
@@ -261,8 +292,9 @@ class FThetaProjection(nn.Module):
 
         Returns
         -------
-        (verifier_k, verifier_v) where each is shape
-        ``[B, T, verifier_num_layers, verifier_num_kv_heads, verifier_head_dim]``.
+        (verifier_k, verifier_v) where each is a list of
+        ``verifier_num_layers`` tensors, element ``i`` shaped
+        ``[B, T, layer_kv_heads[i], verifier_head_dim]``.
         """
         if len(drafter_k_per_layer) != self.config.drafter_num_layers:
             raise ValueError(

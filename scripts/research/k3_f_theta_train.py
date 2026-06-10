@@ -176,22 +176,25 @@ class CapturedSequence:
       total per sequence: ~128 MB
     """
     seq_len: int
-    drafter_k: torch.Tensor    # [num_d_layers, T, drafter_kv_dim]
-    drafter_v: torch.Tensor    # [num_d_layers, T, drafter_kv_dim]
-    verifier_k: torch.Tensor   # [num_v_layers, T, verifier_kv_dim]
-    verifier_v: torch.Tensor   # [num_v_layers, T, verifier_kv_dim]
+    drafter_k: torch.Tensor          # [num_d_layers, T, drafter_kv_dim]
+    drafter_v: torch.Tensor          # [num_d_layers, T, drafter_kv_dim]
+    # Verifier K/V are per-layer lists because Gemma 4 uses heterogeneous
+    # KV-head counts across layers (8 on sliding layers, 4 on full layers).
+    verifier_k: List[torch.Tensor]   # num_v_layers × [T, kv_dim_i]
+    verifier_v: List[torch.Tensor]   # num_v_layers × [T, kv_dim_i]
 
 
 def _capture_verifier_kv(
     verifier_model: torch.nn.Module, input_ids: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     """Run verifier forward and capture per-layer K, V via forward hooks
     on each decoder layer's k_proj / v_proj.
 
     Returns
     -------
-    (verifier_k, verifier_v) of shape [num_v_layers, T, verifier_kv_dim]
-    each, on the verifier's device.
+    (verifier_k, verifier_v): per-layer lists of length num_v_layers,
+    element ``i`` shaped ``[T, kv_dim_i]`` on the verifier's device.
+    Layers can have heterogeneous ``kv_dim_i`` (Gemma 4).
     """
     layers = get_verifier_decoder(verifier_model).layers
     num_layers = len(layers)
@@ -236,15 +239,22 @@ def _capture_verifier_kv(
     # Fill V for v_proj-None layers with the captured k_proj output.
     for i in v_shared_from_k:
         v_capture[i] = k_capture[i]
-    # Each k_capture[i] is [B, T, num_kv_heads × head_dim] = [B, T, kv_dim]
-    # Stack to [num_layers, B, T, kv_dim] then drop B (assume B=1)
-    K = torch.stack(k_capture, dim=0)  # [L_v, B, T, kv_dim]
-    V = torch.stack(v_capture, dim=0)
-    if K.size(1) != 1:
-        raise NotImplementedError(
-            f"f_θ training currently assumes batch=1 (got {K.size(1)})"
+    if any(v is None for v in v_capture):
+        raise RuntimeError(
+            "verifier V capture missing some layers — hooks did not fire"
         )
-    return K[:, 0], V[:, 0]   # [L_v, T, kv_dim]
+    # Per-layer lists; layers may have heterogeneous kv_dim (Gemma 4).
+    # Each k_capture[i] is [B, T, kv_dim_i]; assume B=1 and drop it.
+    k_list: List[torch.Tensor] = []
+    v_list: List[torch.Tensor] = []
+    for kc, vc in zip(k_capture, v_capture):
+        if kc.size(0) != 1:
+            raise NotImplementedError(
+                f"f_θ training currently assumes batch=1 (got {kc.size(0)})"
+            )
+        k_list.append(kc[0])   # [T, kv_dim_i]
+        v_list.append(vc[0])
+    return k_list, v_list
 
 
 def _collect_sequence(
@@ -276,8 +286,8 @@ def _collect_sequence(
         seq_len=int(input_ids.size(1)),
         drafter_k=d_k.detach(),
         drafter_v=d_v.detach(),
-        verifier_k=v_k.detach(),
-        verifier_v=v_v.detach(),
+        verifier_k=[t.detach() for t in v_k],
+        verifier_v=[t.detach() for t in v_v],
     )
 
 
@@ -305,13 +315,9 @@ def _f_theta_loss(
             seq.drafter_k.device,
         )
 
-    # Drafter K/V at sampled positions, reshaped to [B=1, T_sub, ...]
+    # Drafter K/V at sampled positions → list of [1, T_sub, num_kv_heads_d, head_dim_d]
     d_k_sub = seq.drafter_k.index_select(1, idx).unsqueeze(0)  # [1, L_d, T_sub, kv_dim]
     d_v_sub = seq.drafter_v.index_select(1, idx).unsqueeze(0)
-    # Permute so batch dim is first, then T, layer (forward_kv_pack
-    # expects a list of [B, T, num_kv_heads, head_dim]).
-    # d_k_sub is [1, L_d, T_sub, kv_dim] = [B, L_d, T, kv_dim]; we need
-    # list of L_d tensors each [B, T, num_kv_heads, head_dim].
     cfg = f_theta.config
     d_k_list = []
     d_v_list = []
@@ -327,27 +333,27 @@ def _f_theta_loss(
         d_k_list.append(k_per)
         d_v_list.append(v_per)
 
+    # Per-layer predictions: list of [1, T_sub, kv_heads_i, head_dim]
     pred_k, pred_v = f_theta.forward_kv_pack(d_k_list, d_v_list)
-    # pred_k: [1, T_sub, L_v, num_kv_heads_v, head_dim_v]
 
-    # Targets
-    v_k_sub = seq.verifier_k.index_select(1, idx)  # [L_v, T_sub, verifier_kv_dim]
-    v_v_sub = seq.verifier_v.index_select(1, idx)
-    v_k_target = v_k_sub.permute(1, 0, 2).unsqueeze(0)  # [1, T_sub, L_v, kv_dim]
-    v_v_target = v_v_sub.permute(1, 0, 2).unsqueeze(0)
-    v_k_target = v_k_target.view(
-        1, v_k_target.size(1), cfg.verifier_num_layers,
-        cfg.verifier_num_kv_heads, cfg.verifier_head_dim,
-    )
-    v_v_target = v_v_target.view(
-        1, v_v_target.size(1), cfg.verifier_num_layers,
-        cfg.verifier_num_kv_heads, cfg.verifier_head_dim,
-    )
-
-    # MSE in fp32 for stability
-    loss_k = F.mse_loss(pred_k.float(), v_k_target.float())
-    loss_v = F.mse_loss(pred_v.float(), v_v_target.float())
-    return (loss_k + loss_v) / 2.0
+    # Per-layer targets + MSE (layers can have heterogeneous kv_dim).
+    layer_kv_heads = cfg.layer_kv_heads
+    head_dim = cfg.verifier_head_dim
+    idx_pos = idx.to(seq.verifier_k[0].device)
+    loss = pred_k[0].new_zeros(())
+    n_layers = cfg.verifier_num_layers
+    for li in range(n_layers):
+        v_k_sub = seq.verifier_k[li].index_select(0, idx_pos)  # [T_sub, kv_dim_i]
+        v_v_sub = seq.verifier_v[li].index_select(0, idx_pos)
+        tgt_k = v_k_sub.view(
+            1, v_k_sub.size(0), layer_kv_heads[li], head_dim,
+        ).float()
+        tgt_v = v_v_sub.view(
+            1, v_v_sub.size(0), layer_kv_heads[li], head_dim,
+        ).float()
+        loss = loss + F.mse_loss(pred_k[li].float(), tgt_k)
+        loss = loss + F.mse_loss(pred_v[li].float(), tgt_v)
+    return loss / (2.0 * n_layers)
 
 
 def main() -> int:
@@ -403,15 +409,27 @@ def main() -> int:
     # Derive f_θ config from drafter + verifier shapes. Gemma 4's config
     # nests decoder dims under .text_config, so resolve it first.
     v_cfg = resolve_text_config(verifier.config)
+    head_dim = v_cfg.head_dim
+    # Read per-layer KV-head counts directly off the decoder layers:
+    # Gemma 4 uses 8 KV heads on sliding layers, 4 on full-attention
+    # layers (v_proj may be None there → V shares K's projection).
+    v_layers = get_verifier_decoder(verifier).layers
+    layer_kv_heads = tuple(
+        layer.self_attn.k_proj.out_features // head_dim for layer in v_layers
+    )
+    uniform = len(set(layer_kv_heads)) == 1
     f_cfg = FThetaConfig(
         drafter_num_layers=drafter.cfg.num_hidden_layers,
         drafter_num_kv_heads=drafter.cfg.num_key_value_heads,
         drafter_head_dim=drafter.cfg.head_dim,
         verifier_num_layers=v_cfg.num_hidden_layers,
-        verifier_num_kv_heads=v_cfg.num_key_value_heads,
-        verifier_head_dim=v_cfg.head_dim,
+        verifier_num_kv_heads=layer_kv_heads[0],
+        verifier_head_dim=head_dim,
         rank=args.rank,
+        verifier_layer_kv_heads=None if uniform else layer_kv_heads,
     )
+    print(f"[f_theta-train] verifier per-layer kv heads: {layer_kv_heads}",
+          file=sys.stderr)
     print(f"[f_theta-train] f_θ config: {f_cfg}", file=sys.stderr)
 
     f_theta = FThetaProjection(f_cfg).to(device, dtype=torch.float32)
