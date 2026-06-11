@@ -5,10 +5,15 @@ bounded-KV** inference path delivers *sustained high throughput at constant
 memory* as context grows — vs a vanilla full-KV baseline whose KV cache (and
 per-token attention cost) grow with context.
 
-This is the local-deployment benchmark: pick a model that fits the Mac
-comfortably (the 26B-A4B verifier is the wrong size for a 24 GB M4 — its
-weights saturate memory; Kakeya's KV-cache savings only help when KV, not
-weights, dominates). Defaults to a small fast 4-bit model.
+This is the local-deployment benchmark for the **Gemma 4 26B-A4B** verifier on
+a 24 GB M4: 4-bit weights are ~16 GB resident, leaving ~8 GB for KV + activations.
+With a vanilla full-KV cache, per-token attention cost and KV memory grow with
+context, so decode tok/s collapses and peak memory climbs toward the 24 GB
+ceiling at long context. The Kakeya sink+window cache bounds both: persistent KV
+is O(sink+window) and per-token attention is over the bounded window, so decode
+throughput and peak memory stay ~flat as context grows. (Long-range *recall*
+needs the separate K/V-Restoration path; this benchmark measures the throughput
++ memory envelope.)
 
 For each context length L it runs, on the SAME model:
 
@@ -26,14 +31,15 @@ Run on the Mac (Apple Silicon):
 
     source .venv-mac/bin/activate    # or your MLX venv
     PYTHONPATH=.:sdks/python python3 scripts/bench_mlx_kakeya_deployment.py \
-        --model-id mlx-community/Qwen3-1.7B-4bit \
-        --context-lengths 1024,4096,16384,32768 \
+        --model-id models/gemma-4-26B-A4B-it-mlx-4bit \
+        --context-lengths 512,2048,8192 \
         --gen-tokens 64 --sink-size 4 --window-size 64 \
         --output results/platform-tests/bench_mlx_kakeya_deployment.json
 
-Pick a larger model (still fitting the Mac, e.g. an 8B 4-bit on a 24 GB
-machine) to show the bounded-KV advantage at long context where the vanilla
-KV cache would otherwise dominate memory.
+The bounded-KV advantage grows with context: push --context-lengths higher
+(e.g. 16384,32768) to widen the gap, as long as the vanilla full-KV prefill
+still fits in memory. Use --skip-vanilla when vanilla would OOM at long context
+so the Kakeya path can still be measured.
 """
 
 from __future__ import annotations
@@ -158,7 +164,8 @@ def main() -> int:
         if not args.skip_kakeya:
             print(f"[bench] L={L}: Kakeya sink+window ...", file=sys.stderr, flush=True)
             try:
-                kcache = make_sink_window_cache(model, args.sink_size, args.window_size)
+                kcache = make_sink_window_cache(
+                    model, sink_size=args.sink_size, window_size=args.window_size)
                 row["kakeya"] = _decode(
                     mx, model, kcache, prompt_ids, args.gen_tokens, total_kv_bytes)
             except Exception as e:
@@ -231,9 +238,12 @@ def _full_cache_bytes(cache: list) -> int:
         shp = tuple(k.shape)  # [B, n_kv, S_buf, head_dim]
         if len(shp) != 4:
             continue
-        b, n_kv, _s, hd = shp
+        b, n_kv, s_buf, hd = shp
+        # Resident length = the actual stored buffer, capped (RotatingKVCache
+        # keeps <= max_size even though .offset is the global position).
+        seq = min(off, int(s_buf))
         itemsize = 2  # fp16/bf16 KV
-        total += 2 * b * n_kv * off * hd * itemsize
+        total += 2 * b * n_kv * seq * hd * itemsize
     return total
 
 
