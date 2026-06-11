@@ -36,27 +36,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import torch
+import torch.nn.functional as F
 
 
 # --------------------------------------------------------------------------- #
 # DFlash wiring helpers (mirrors scripts/research/k3_dflash_specdecode_eval.py)
 # --------------------------------------------------------------------------- #
 def _build_embed_lm_head(model, hidden_size, softcap):
-    emb = model.get_input_embeddings()
-    head = model.get_output_embeddings()
-    scale = math.sqrt(hidden_size)
-
-    # Reference DFlash embeds the drafter query with a plain (unscaled)
-    # lookup — NO Gemma ×sqrt(hidden) normalizer. The earlier ×sqrt scaling
-    # was a fidelity bug (crippled original-DFlash acceptance ~0.05 → 0.16
-    # once removed). Keep at 1.0 to match the reference.
-    scale = 1.0
+    # Use the RAW weight tensors (plain F.embedding + matmul) rather than the
+    # module forwards: this is leaner and, critically, side-steps any
+    # per-call accelerate hook on the drafter's hot path. Reference DFlash
+    # embeds with a plain (unscaled) lookup — no Gemma ×sqrt(hidden) (Gap-B).
+    emb_w = model.get_input_embeddings().weight.detach()
+    head_w = model.get_output_embeddings().weight.detach()
 
     def embed_fn(ids: torch.Tensor) -> torch.Tensor:
-        return emb(ids).float() * scale
+        return F.embedding(ids, emb_w).float()
 
     def lm_head_fn(h: torch.Tensor) -> torch.Tensor:
-        logits = head(h.to(head.weight.dtype)).float()
+        logits = (h.to(head_w.dtype) @ head_w.t()).float()
         if softcap is not None:
             logits = softcap * torch.tanh(logits / softcap)
         return logits
@@ -316,9 +314,13 @@ def main() -> int:
 
     print(f"[sd] loading verifier {args.verifier_id}", file=sys.stderr, flush=True)
     tok = AutoTokenizer.from_pretrained(args.verifier_id)
+    # Load WITHOUT device_map (the model fits on a single H200): device_map
+    # wraps every module in accelerate AlignDevicesHook, adding variable
+    # per-forward dispatch latency that inflated/destabilized the drafter's
+    # per-block embed/lm_head calls. A plain .to(device) is hook-free.
     verifier = AutoModelForCausalLM.from_pretrained(
-        args.verifier_id, dtype=dtype, attn_implementation="eager", device_map="auto",
-    ).eval()
+        args.verifier_id, dtype=dtype, attn_implementation="eager",
+    ).to(device).eval()
     for p in verifier.parameters():
         p.requires_grad_(False)
     print(f"[sd] loading drafter {args.drafter_id}", file=sys.stderr, flush=True)
