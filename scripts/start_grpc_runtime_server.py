@@ -13,6 +13,15 @@ Usage::
         --bind 127.0.0.1:50051 \
         --capacity 4 --sink 4 --window 64
 
+Multi-host capability plane (ADR 0009, v0.5-M1) — opt-in. Join a
+fleet of Kakeya nodes that gossip capability cards and serve remote
+draft blocks::
+
+    PYTHONPATH=.:sdks/python python3 scripts/start_grpc_runtime_server.py \
+        --backend mlx --verifier-id mlx-community/Qwen3-1.7B-4bit \
+        --node-id mini-attic --advertise 192.168.4.21:50051 \
+        --peer 192.168.4.22:50051 --serve-ngram-proposer
+
 This script is the symmetric counterpart of ``scripts/serve.py``
 (which boots the deprecated HTTP+SSE shim) and is exempt from unit-
 test coverage by the same convention used for ``serve.py`` /
@@ -125,6 +134,83 @@ def _build_verifier(
     raise SystemExit(f"unknown backend: {backend}")
 
 
+def _total_memory_bytes() -> int:
+    """Best-effort physical memory size; 0 when undeterminable."""
+    try:
+        import os
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return 0
+
+
+def _build_capability_registry(args: argparse.Namespace, *, backend: str):
+    """Build this node's CapabilityRegistry from CLI flags + probes."""
+    import platform as _platform
+    import time
+
+    from inference_engine.backends.mlx.env import probe_environment
+    from inference_engine.distributed.capability import (
+        NGRAM_MODEL_ID,
+        CapabilityRegistry,
+        CapabilityRole,
+        ModelCapability,
+        NodeCapability,
+    )
+    from inference_engine.distributed.mlx_ring import probe_ring_environment
+
+    models = [
+        ModelCapability(
+            model_id=args.verifier_id,
+            role=CapabilityRole.VERIFIER,
+            quantization="4bit-mlx" if "4bit" in args.verifier_id else "bf16",
+        ),
+    ]
+    if args.serve_ngram_proposer:
+        models.append(
+            ModelCapability(
+                model_id=NGRAM_MODEL_ID,
+                role=CapabilityRole.PROPOSER,
+                quantization="none",
+            ),
+        )
+
+    mlx_env = probe_environment()
+    ring_env = probe_ring_environment()
+    hostname = _platform.node() or "localhost"
+    self_card = NodeCapability(
+        node_id=args.node_id or hostname,
+        grpc_address=args.advertise or args.bind,
+        platform=f"{_platform.system()}-{_platform.machine()}-{backend}".lower(),
+        unified_memory_bytes=_total_memory_bytes(),
+        mlx_version=mlx_env.mlx_version or "",
+        models=tuple(models),
+        announced_at_unix=time.time(),
+        ttl_seconds=args.capability_ttl_s,
+        ring_address=ring_env.ring_address(hostname),
+    )
+    _LOG.info("capability card: %s @ %s ring=%r models=%s",
+              self_card.node_id, self_card.grpc_address,
+              self_card.ring_address,
+              [(m.model_id, m.role.name) for m in models])
+    return CapabilityRegistry(self_card=self_card)
+
+
+async def _exchange_loop(registry, peers, interval_s: float) -> None:
+    """Periodic gossip with seed peers until the task is cancelled."""
+    from inference_engine.distributed.exchange import exchange_once
+
+    while True:
+        report = await exchange_once(registry, peers)
+        if report.errors:
+            _LOG.warning("gossip errors: %s", report.errors)
+        if report.merged_cards:
+            _LOG.info(
+                "gossip merged %d card(s); fleet size now %d",
+                report.merged_cards, registry.peer_count + 1,
+            )
+        await asyncio.sleep(interval_s)
+
+
 async def _serve(args: argparse.Namespace) -> int:
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -180,6 +266,21 @@ async def _serve(args: argparse.Namespace) -> int:
     append_coord = AppendTokensCoordinator(store, verifier)
     gen_coord = GenerationCoordinator(store, verifier)
 
+    # Multi-host capability plane (ADR 0009): only constructed when
+    # the operator opts in via --enable-capability-exchange (implied
+    # by --peer / --serve-ngram-proposer).
+    distributed_enabled = bool(
+        args.enable_capability_exchange or args.peer or args.serve_ngram_proposer
+    )
+    registry = None
+    proposers = None
+    if distributed_enabled:
+        registry = _build_capability_registry(args, backend=args.backend)
+        if args.serve_ngram_proposer:
+            from inference_engine.distributed.capability import NGRAM_MODEL_ID
+            from inference_engine.distributed.ngram import NGramProposer
+            proposers = {NGRAM_MODEL_ID: NGramProposer()}
+
     config = GrpcServerConfig(
         bind_address=args.bind,
         max_concurrent_rpcs=args.max_concurrent_rpcs,
@@ -189,10 +290,22 @@ async def _serve(args: argparse.Namespace) -> int:
         append_coordinator=append_coord,
         generation_coordinator=gen_coord,
         config=config,
+        capability_registry=registry,
+        proposers=proposers,
     )
 
     await server.start()
     _LOG.info("kakeya gRPC RuntimeService listening on %s", args.bind)
+
+    exchange_task = None
+    if registry is not None and args.peer:
+        exchange_task = asyncio.create_task(
+            _exchange_loop(registry, list(args.peer), args.exchange_interval_s),
+        )
+        _LOG.info(
+            "capability gossip every %.1fs with peers: %s",
+            args.exchange_interval_s, args.peer,
+        )
 
     stop_event = asyncio.Event()
 
@@ -208,6 +321,12 @@ async def _serve(args: argparse.Namespace) -> int:
             pass
 
     await stop_event.wait()
+    if exchange_task is not None:
+        exchange_task.cancel()
+        try:
+            await exchange_task
+        except asyncio.CancelledError:
+            pass
     await server.stop(grace=args.shutdown_grace_s)
     _LOG.info("kakeya gRPC RuntimeService stopped cleanly")
     return 0
@@ -249,6 +368,32 @@ def main() -> int:
                          "SIGTERM/SIGINT before hard-aborting.")
     ap.add_argument("--log-level", default="INFO",
                     choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    # --- Multi-host capability plane (ADR 0009, v0.5-M1) -------------
+    ap.add_argument("--enable-capability-exchange", action="store_true",
+                    help="Serve kakeya.v1.CapabilityService on the same "
+                         "port and advertise this node's capability card. "
+                         "Implied by --peer / --serve-ngram-proposer.")
+    ap.add_argument("--node-id", default="",
+                    help="Fleet-unique node identity for the capability "
+                         "card. Defaults to the hostname.")
+    ap.add_argument("--advertise", default="",
+                    help="host:port that PEERS should use to reach this "
+                         "node (use the LAN address, not 127.0.0.1). "
+                         "Defaults to --bind.")
+    ap.add_argument("--peer", action="append", default=[],
+                    help="Seed peer address (host:port) for capability "
+                         "gossip. Repeatable. The fleet view converges "
+                         "as long as seed edges form a connected graph.")
+    ap.add_argument("--serve-ngram-proposer", action="store_true",
+                    help="Serve kakeya.v1.ProposerService with the "
+                         "model-free prompt-lookup proposer and advertise "
+                         "it (model_id 'ngram') on the capability card.")
+    ap.add_argument("--exchange-interval-s", type=float, default=30.0,
+                    help="Seconds between gossip rounds with --peer "
+                         "addresses.")
+    ap.add_argument("--capability-ttl-s", type=float, default=120.0,
+                    help="TTL of this node's capability card; peers drop "
+                         "it if not refreshed within this window.")
     ap.add_argument("--skip-cache-check", action="store_true",
                     help="Skip the HF-cache pre-flight assertion. By "
                          "default the server fails fast if the verifier "

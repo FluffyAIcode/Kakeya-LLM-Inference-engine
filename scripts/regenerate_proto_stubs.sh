@@ -59,12 +59,12 @@ touch "$OUT_ROOT/kakeya/v1/__init__.py"
 # (https://github.com/protocolbuffers/protobuf/issues/1491); buf-gen
 # would handle it natively but we do not depend on buf for codegen
 # in v0.3 (only for lint), so we patch the generated imports here.
-GRPC_FILE="$OUT_ROOT/kakeya/v1/runtime_pb2_grpc.py"
-if [ -f "$GRPC_FILE" ]; then
-    # `from kakeya.v1 import runtime_pb2` -> `from . import runtime_pb2`
-    sed -i.bak 's|^from kakeya\.v1 import runtime_pb2|from . import runtime_pb2|' "$GRPC_FILE"
+for GRPC_FILE in "$OUT_ROOT"/kakeya/v1/*_pb2_grpc.py; do
+    [ -f "$GRPC_FILE" ] || continue
+    # `from kakeya.v1 import <name>_pb2` -> `from . import <name>_pb2`
+    sed -i.bak 's|^from kakeya\.v1 import \([a-z_]*_pb2\)|from . import \1|' "$GRPC_FILE"
     rm -f "$GRPC_FILE.bak"
-fi
+done
 
 echo "Regenerated Python stubs into $OUT_ROOT"
 
