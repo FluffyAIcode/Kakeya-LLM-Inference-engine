@@ -1,0 +1,341 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v3",
+    "f_theta_config": {
+      "drafter_num_layers": 5,
+      "drafter_num_kv_heads": 8,
+      "drafter_head_dim": 128,
+      "verifier_num_layers": 30,
+      "verifier_num_kv_heads": 8,
+      "verifier_head_dim": 256,
+      "rank": 256,
+      "verifier_layer_kv_heads": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2
+      ],
+      "verifier_layer_head_dims": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512
+      ]
+    },
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "skip_oracle": false,
+    "identity_restore": false,
+    "prompt_token_lens": [
+      6417,
+      5418,
+      6177,
+      4857,
+      6078,
+      5298,
+      5358,
+      5198,
+      5497,
+      5057
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model",
+      "samples_total": 10,
+      "samples_correct": 0,
+      "recall": 0.0,
+      "mean_latency_s": 15.521560135192704,
+      "median_latency_s": 14.70968987501692,
+      "per_sample_decoded": [
+        "The answer is not provided in your prompt, but if you are referring to the mathematical concept of \"uniqueness,\" there",
+        "The answer is not provided in your prompt, but if you are referring to the \"answer\" mentioned in your request,",
+        "The answer is not provided in your prompt, but if you are looking for the \"answer\" to the pattern of your",
+        "The answer is not provided in your prompt, but if you are referring to the mathematical concept of \"error,\" the answer",
+        "The answer is not provided in your prompt, but if you are referring to the \"answer\" mentioned in your request,",
+        "The answer is not provided in your prompt, but if you are looking for the \"answer\" to the concept of the",
+        "The answer is not provided in your prompt, but if you are referring to the \"answer\" mentioned in your request,",
+        "The answer is not provided in your prompt, but if you are referring to the \"answer\" mentioned in your request,",
+        "The answer is not provided in your prompt, but if you are referring to the \"answer\" mentioned in your request,",
+        "The answer is not provided in your prompt, but if you are referring to the \"answer\" mentioned in your request,"
+      ],
+      "per_sample_correct": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.1593104804717458,
+        1.6162113211334634,
+        1.278380853879758,
+        1.9264362919289117,
+        1.3833352937796008,
+        1.6705276307297068,
+        1.6472388065081087,
+        1.731813204733399,
+        1.5907387153832044,
+        1.8181064912794849
+      ],
+      "mean_throughput_tokens_per_sec": 1.5822099089827384,
+      "median_throughput_tokens_per_sec": 1.631725063820786,
+      "min_throughput_tokens_per_sec": 1.1593104804717458,
+      "max_throughput_tokens_per_sec": 1.9264362919289117
+    },
+    "oracle": {
+      "name": "oracle",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 11.52455889149569,
+      "median_latency_s": 11.577874419512227,
+      "per_sample_decoded": [
+        "BETA-1409\n\nthought\nBETA-1409\n",
+        "The secret code is DELTA-3286.thought\nThe secret code is DELTA-",
+        "BETA-7912\nDESCRIBE THE PROCESS OF CREATING A CUSTOMIZED LEARNING PATH FOR",
+        "BETA-4582\n\nThe secret code is BETA-4582.",
+        "KAPPA-1434\n\n\n\n",
+        "PINE-9928\n\n\n",
+        "THETA-5557\n\nThe secret code is THETA-5557",
+        "PINE-7924\n\nthought\nPINE-7924\n",
+        "GAMMA-4527\nDESCRIBE THE PROCESS OF CREATING A CUSTOMIZED LEARNING PATH FOR",
+        "BETA-7224\n\nThe secret code is BETA-7224"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        15,
+        13,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.4674309280842615,
+        1.985925287577243,
+        1.5663550546275726,
+        2.3590022729639073,
+        1.7073061126593656,
+        2.0552204097452975,
+        2.022539898406225,
+        2.1258727343405055,
+        1.9480536635136798,
+        2.2382683879788963
+      ],
+      "mean_throughput_tokens_per_sec": 1.9475974749896956,
+      "median_throughput_tokens_per_sec": 2.004232592991734,
+      "min_throughput_tokens_per_sec": 1.4674309280842615,
+      "max_throughput_tokens_per_sec": 2.3590022729639073
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "k3_cross_model": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 10,
+        "effective_keys_at_last_query_mean": 5535.5,
+        "effective_keys_at_last_query_min": 4857,
+        "effective_keys_at_last_query_max": 6417,
+        "effective_keys_at_last_query_median": 5388.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6417,
+            "effective_keys_at_last_query": 6417,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5418,
+            "effective_keys_at_last_query": 5418,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6177,
+            "effective_keys_at_last_query": 6177,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 4857,
+            "effective_keys_at_last_query": 4857,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6078,
+            "effective_keys_at_last_query": 6078,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5298,
+            "effective_keys_at_last_query": 5298,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5358,
+            "effective_keys_at_last_query": 5358,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5198,
+            "effective_keys_at_last_query": 5198,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5497,
+            "effective_keys_at_last_query": 5497,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5057,
+            "effective_keys_at_last_query": 5057,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "memory": {
+    "k3_cross_model": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52631157248,
+      "current_reserved_bytes": 74801217536,
+      "peak_allocated_bytes": 69680971264,
+      "peak_reserved_bytes": 74801217536
+    },
+    "oracle": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52631157248,
+      "current_reserved_bytes": 66244837376,
+      "peak_allocated_bytes": 63333219840,
+      "peak_reserved_bytes": 66244837376
+    }
+  },
+  "gate": {
+    "architectural_correctness": true,
+    "recall_cross_model": 0.0,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 100.0,
+    "recall_delta_within_5pp": false
+  }
+}

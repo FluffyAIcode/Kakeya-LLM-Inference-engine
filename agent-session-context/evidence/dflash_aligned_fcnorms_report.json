@@ -1,0 +1,22 @@
+{
+  "kind": "k3_dflash_alignment_train",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "steps": 600,
+    "lr": 0.0001,
+    "block_size": 16,
+    "n_prompts": 8,
+    "gen_len": 160,
+    "prompt_min_ctx": 8,
+    "train_scope": "fc_norms",
+    "seed": 0,
+    "save": "results/research/dflash_aligned_fcnorms.pt",
+    "log_every": 25
+  },
+  "trainable_params": 47584768,
+  "n_windows": 1041,
+  "final_loss": 3.496910614967346,
+  "final_train_match": 0.1725,
+  "elapsed_s": 12.202172419056296
+}

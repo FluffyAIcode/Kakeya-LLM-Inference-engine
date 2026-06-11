@@ -1,0 +1,78 @@
+---
+pid: 305600
+cwd: "/workspace"
+command: "tmux -f /exec-daemon/tmux.portal.conf kill-session -t k3-v4-watcher 2>/dev/null; cd /workspace && WATCHER_INTERVAL_SEC=300 WATCHER_TIMEOUT_SEC=21600 bash scripts/research/k3_v4_evidence_watcher.sh 2>&1"
+started_at: 2026-06-10T14:07:02.150Z
+running_for_ms: 29392416 
+---
+[watcher] start 2026-06-10T14:07:02Z branch=AgentMemory/v04-pr-k3-block-c-f-theta-v2-trainer-fix-recall-8e7f interval=300s timeout=21600s
+[watcher] 2026-06-10T14:07:02Z idle elapsed=0s next_check_in=300s
+[watcher] 2026-06-10T14:12:02Z idle elapsed=300s next_check_in=300s
+[watcher] 2026-06-10T14:17:02Z idle elapsed=600s next_check_in=300s
+[watcher] 2026-06-10T14:22:02Z idle elapsed=900s next_check_in=300s
+[watcher] 2026-06-10T14:27:03Z idle elapsed=1200s next_check_in=300s
+[watcher] 2026-06-10T14:32:03Z idle elapsed=1501s next_check_in=300s
+[watcher] 2026-06-10T14:37:03Z idle elapsed=1801s next_check_in=300s
+[watcher] 2026-06-10T14:42:03Z idle elapsed=2101s next_check_in=300s
+[watcher] 2026-06-10T14:47:03Z idle elapsed=2401s next_check_in=300s
+[watcher] 2026-06-10T14:52:04Z idle elapsed=2701s next_check_in=300s
+[watcher] 2026-06-10T14:57:04Z idle elapsed=3002s next_check_in=300s
+[watcher] 2026-06-10T15:02:04Z idle elapsed=3302s next_check_in=300s
+[watcher] 2026-06-10T15:07:04Z idle elapsed=3602s next_check_in=300s
+[watcher] 2026-06-10T15:12:04Z idle elapsed=3902s next_check_in=300s
+[watcher] 2026-06-10T15:17:05Z idle elapsed=4202s next_check_in=300s
+[watcher] 2026-06-10T15:22:05Z idle elapsed=4503s next_check_in=300s
+[watcher] 2026-06-10T15:27:05Z idle elapsed=4803s next_check_in=300s
+[watcher] 2026-06-10T15:32:05Z idle elapsed=5103s next_check_in=300s
+[watcher] 2026-06-10T15:37:05Z idle elapsed=5403s next_check_in=300s
+[watcher] 2026-06-10T15:42:06Z idle elapsed=5703s next_check_in=300s
+[watcher] 2026-06-10T15:47:06Z idle elapsed=6004s next_check_in=300s
+[watcher] 2026-06-10T15:52:06Z idle elapsed=6304s next_check_in=300s
+[watcher] 2026-06-10T15:57:06Z idle elapsed=6604s next_check_in=300s
+[watcher] 2026-06-10T16:02:06Z idle elapsed=6904s next_check_in=300s
+[watcher] 2026-06-10T16:07:07Z idle elapsed=7204s next_check_in=300s
+[watcher] 2026-06-10T16:12:07Z idle elapsed=7505s next_check_in=300s
+[watcher] 2026-06-10T16:17:07Z idle elapsed=7805s next_check_in=300s
+[watcher] 2026-06-10T16:22:07Z idle elapsed=8105s next_check_in=300s
+[watcher] 2026-06-10T16:27:07Z idle elapsed=8405s next_check_in=300s
+[watcher] 2026-06-10T16:32:08Z idle elapsed=8705s next_check_in=300s
+[watcher] 2026-06-10T16:37:08Z idle elapsed=9006s next_check_in=300s
+[watcher] 2026-06-10T16:42:08Z idle elapsed=9306s next_check_in=300s
+[watcher] 2026-06-10T16:47:08Z idle elapsed=9606s next_check_in=300s
+[watcher] 2026-06-10T16:52:08Z idle elapsed=9906s next_check_in=300s
+[watcher] 2026-06-10T16:57:08Z idle elapsed=10206s next_check_in=300s
+[watcher] 2026-06-10T17:02:09Z idle elapsed=10506s next_check_in=300s
+[watcher] 2026-06-10T17:07:09Z idle elapsed=10807s next_check_in=300s
+[watcher] 2026-06-10T17:12:09Z idle elapsed=11107s next_check_in=300s
+[watcher] 2026-06-10T17:17:09Z idle elapsed=11407s next_check_in=300s
+[watcher] 2026-06-10T17:22:09Z idle elapsed=11707s next_check_in=300s
+[watcher] 2026-06-10T17:27:09Z idle elapsed=12007s next_check_in=300s
+[watcher] 2026-06-10T17:32:10Z idle elapsed=12307s next_check_in=300s
+[watcher] 2026-06-10T17:37:10Z idle elapsed=12608s next_check_in=300s
+[watcher] 2026-06-10T17:42:10Z idle elapsed=12908s next_check_in=300s
+[watcher] 2026-06-10T17:47:10Z idle elapsed=13208s next_check_in=300s
+[watcher] 2026-06-10T17:52:10Z idle elapsed=13508s next_check_in=300s
+[watcher] 2026-06-10T17:57:10Z idle elapsed=13808s next_check_in=300s
+[watcher] 2026-06-10T18:02:11Z idle elapsed=14108s next_check_in=300s
+[watcher] 2026-06-10T18:07:11Z idle elapsed=14409s next_check_in=300s
+[watcher] 2026-06-10T18:12:11Z idle elapsed=14709s next_check_in=300s
+[watcher] 2026-06-10T18:17:11Z idle elapsed=15009s next_check_in=300s
+[watcher] 2026-06-10T18:22:11Z idle elapsed=15309s next_check_in=300s
+[watcher] 2026-06-10T18:27:11Z idle elapsed=15609s next_check_in=300s
+[watcher] 2026-06-10T18:32:12Z idle elapsed=15909s next_check_in=300s
+[watcher] 2026-06-10T18:37:12Z idle elapsed=16210s next_check_in=300s
+[watcher] 2026-06-10T18:42:12Z idle elapsed=16510s next_check_in=300s
+[watcher] 2026-06-10T18:47:12Z idle elapsed=16810s next_check_in=300s
+[watcher] 2026-06-10T18:52:12Z idle elapsed=17110s next_check_in=300s
+[watcher] 2026-06-10T18:57:12Z idle elapsed=17410s next_check_in=300s
+[watcher] 2026-06-10T19:02:13Z idle elapsed=17710s next_check_in=300s
+[watcher] 2026-06-10T19:07:13Z idle elapsed=18011s next_check_in=300s
+[watcher] 2026-06-10T19:12:13Z idle elapsed=18311s next_check_in=300s
+[watcher] 2026-06-10T22:16:54Z TRIGGER:WATCHER_TIMEOUT elapsed=29392s
+[watcher] 2026-06-10T22:16:54Z exit
+
+---
+exit_code: 0
+elapsed_ms: 29392706
+ended_at: 2026-06-10T22:16:54.856Z
+---
