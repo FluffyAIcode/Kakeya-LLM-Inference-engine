@@ -340,18 +340,28 @@ class CrossModelDLMRestoredVerifier:
         # KV-head counts on Gemma 4).
         verifier_k_layers, verifier_v_layers = self.project_drafter_kv(input_ids)
 
+        # S5: for exact layers, replace the f_θ-restored K/V with the
+        # verifier's OWN true K/V (the recall-critical full-attention
+        # layers f_θ cannot reconstruct). All layers stay bounded
+        # (sink+window local cache + restored evicted K/V); only the
+        # SOURCE of the evicted K/V differs (true vs f_θ). In a real
+        # bounded engine those layers' K/V would be stored
+        # (optionally KakeyaLattice-compressed) rather than recomputed.
+        if self.exact_layer_indices:
+            true_k_layers, true_v_layers = capture_verifier_own_kv(
+                self.verifier_model, input_ids,
+            )
+            for li in self.exact_layer_indices:
+                verifier_k_layers[li] = true_k_layers[li]
+                verifier_v_layers[li] = true_v_layers[li]
+
         # Patch verifier attention forwards to inject K/V at evicted
         # positions. Restore originals after the forward.
         layers = get_verifier_decoder(self.verifier_model).layers
-        originals: List[Optional[Callable]] = []
+        originals: List[Callable] = []
         try:
             for layer_idx, layer in enumerate(layers):
                 attn = layer.self_attn
-                # S5: leave exact layers unpatched so they use the verifier's
-                # own (exact) K/V at evicted positions.
-                if layer_idx in self.exact_layer_indices:
-                    originals.append(None)
-                    continue
                 originals.append(attn.forward)
                 attn.forward = self._make_patched_forward(
                     attn,
@@ -366,8 +376,7 @@ class CrossModelDLMRestoredVerifier:
             return self.verifier_model(input_ids=input_ids, use_cache=False)
         finally:
             for layer_idx, layer in enumerate(layers):
-                if originals[layer_idx] is not None:
-                    layer.self_attn.forward = originals[layer_idx]
+                layer.self_attn.forward = originals[layer_idx]
 
     def _make_patched_forward(
         self, attn_module: nn.Module, *,
