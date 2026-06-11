@@ -470,6 +470,8 @@ def main() -> int:
           f"({cross_res.samples_correct}/{cross_res.samples_total})", file=sys.stderr)
 
     oracle_res = None
+    o_lat: List[float] = []
+    o_tok: List[int] = []
     if not args.skip_oracle:
         print("[mac] running oracle", file=sys.stderr, flush=True)
         if args.teacher_forced:
@@ -509,6 +511,11 @@ def main() -> int:
     cross_tps["eval_mode"] = eval_mode
     cross_tps["restored_forwards_per_sample"] = (
         1 if args.teacher_forced else args.max_new_tokens)
+    oracle_tps = _tps(o_lat, o_tok) if (o_lat and o_tok) else None
+    speedup_vs_oracle = None
+    if oracle_tps and oracle_tps["tokens_per_second"] and cross_tps["tokens_per_second"]:
+        speedup_vs_oracle = round(
+            cross_tps["tokens_per_second"] / oracle_tps["tokens_per_second"], 3)
     print(f"[mac] cross-model throughput ({eval_mode}): "
           f"{cross_tps['tokens_per_second']} tok/s "
           f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s, "
@@ -560,7 +567,11 @@ def main() -> int:
                 100 * (1 - mem_s5["total_resident_bytes"]
                        / max(mem_naive["total_resident_bytes"], 1)), 1),
         },
-        "throughput": {"k3_cross_model": cross_tps},
+        "throughput": {
+            "k3_cross_model": cross_tps,
+            **({"oracle_native_ar": oracle_tps} if oracle_tps else {}),
+            "cross_model_speedup_vs_oracle_ar": speedup_vs_oracle,
+        },
     }
     out_path = Path(args.output) if args.output else Path(
         f"results/research/k3_integrated_niah_mac_{int(time.time())}.json")
