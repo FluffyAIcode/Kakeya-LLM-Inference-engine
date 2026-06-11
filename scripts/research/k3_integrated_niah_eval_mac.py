@@ -76,6 +76,25 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--force-fused-specdecode", action="store_true",
                     help="Force DFlash fused spec-decode on MLX even if the "
                          "adaptive Mac path would use restored greedy decode.")
+    ap.add_argument("--direct-answer-prompt", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="For NIAH free generation, add a strict instruction to "
+                         "answer with only the secret code. This keeps short "
+                         "smokes from spending the token budget on Gemma4's "
+                         "thought/channel preamble. Use --no-direct-answer-prompt "
+                         "to reproduce the legacy prompt exactly.")
+    ap.add_argument("--chat-template-prompt", action="store_true",
+                    help="Deprecated compatibility flag; chat-template prompting "
+                         "is the default for Gemma4 NIAH.")
+    ap.add_argument("--raw-completion-prompt", action="store_true",
+                    help="Diagnostic only: bypass chat template and encode the "
+                         "NIAH prompt as a raw completion prompt.")
+    ap.add_argument("--content-channel-prefill",
+                    action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="With chat-template direct-answer prompts, append "
+                         "Gemma4's content channel marker before generation so "
+                         "short smokes do not spend tokens on the thought channel.")
     ap.add_argument("--block-size", type=int, default=4,
                     help="Spec-decode block size (drafted tokens per block).")
     ap.add_argument("--teacher-forced", action="store_true",
@@ -309,11 +328,43 @@ def main() -> int:
     )
 
     def encode(prompt_text: str) -> List[int]:
+        if args.direct_answer_prompt:
+            # The legacy padding repeats "answer" on every line; Gemma4 can
+            # latch onto that distractor in very short completion smokes.
+            # Keep the needle/question unchanged but make filler semantically
+            # neutral so recall measures retrieval of the secret code.
+            prompt_text = prompt_text.replace(
+                "and does not contain the answer.",
+                "and is unrelated filler.",
+            )
+            prompt_text = (
+                prompt_text
+                + "\n\nReturn only the secret code in PREFIX-NNNN format. "
+                  "Do not explain, reason, or add any other text."
+            )
+        if args.direct_answer_prompt and args.raw_completion_prompt:
+            try:
+                ids = tokenizer.encode(prompt_text, add_special_tokens=True)
+            except TypeError:
+                ids = tokenizer.encode(prompt_text)
+            if hasattr(ids, "tolist"):
+                ids = ids.tolist()
+            return list(ids)
         msgs = [{"role": "user", "content": prompt_text}]
         ids = tokenizer.apply_chat_template(msgs, add_generation_prompt=True)
         if hasattr(ids, "tolist"):
             ids = ids.tolist()
-        return list(ids)
+        ids = list(ids)
+        if args.direct_answer_prompt and args.content_channel_prefill:
+            try:
+                marker = tokenizer.encode(
+                    "<|channel>content\n<channel|>", add_special_tokens=False)
+            except TypeError:
+                marker = tokenizer.encode("<|channel>content\n<channel|>")
+            if hasattr(marker, "tolist"):
+                marker = marker.tolist()
+            ids.extend(list(marker))
+        return ids
 
     def encode_answer(answer_text: str) -> List[int]:
         try:
