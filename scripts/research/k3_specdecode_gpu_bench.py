@@ -305,7 +305,10 @@ def main() -> int:
             "decode_tokens_per_s_mean": round(
                 sum(r["decode_tokens_per_s"] for r in sd_rows) / n, 3),
             "mean_accept_len": round(sum(r["mean_accept_len"] for r in sd_rows) / n, 2),
-            "verifier_forwards_total": sum(r["verifier_forwards"] for r in sd_rows),
+            "time_breakdown_s_mean": {
+                k: round(sum(r["time_breakdown_s"][k] for r in sd_rows) / n, 3)
+                for k in ("aux_clean_forward", "drafter", "incremental_verify")
+            },
             "recall": round(sd_hits / n, 3),
             "per_sample": sd_rows,
         },
