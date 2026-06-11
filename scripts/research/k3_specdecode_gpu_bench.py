@@ -46,6 +46,12 @@ def _build_embed_lm_head(model, hidden_size, softcap):
     head = model.get_output_embeddings()
     scale = math.sqrt(hidden_size)
 
+    # Reference DFlash embeds the drafter query with a plain (unscaled)
+    # lookup — NO Gemma ×sqrt(hidden) normalizer. The earlier ×sqrt scaling
+    # was a fidelity bug (crippled original-DFlash acceptance ~0.05 → 0.16
+    # once removed). Keep at 1.0 to match the reference.
+    scale = 1.0
+
     def embed_fn(ids: torch.Tensor) -> torch.Tensor:
         return emb(ids).float() * scale
 
