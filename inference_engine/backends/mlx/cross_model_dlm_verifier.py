@@ -263,6 +263,12 @@ def _build_dispatch(orig_call: Callable) -> Callable:
             keys = self.rope(keys, offset=offset)
             values = self.v_norm(values)
             values = values.transpose(0, 2, 1, 3)
+            if mode == "capture_cache_detached":
+                start, end = cfg["slice_range"]
+                cfg["sink"][self.layer_idx] = (
+                    mx.stop_gradient(keys[:, :, start:end, :]),
+                    mx.stop_gradient(values[:, :, start:end, :]),
+                )
 
         queries = queries.transpose(0, 2, 1, 3)
         queries = self.rope(queries, offset=offset)
@@ -309,6 +315,35 @@ def capture_own_kv(mlx_model: Any, input_ids: Sequence[int]) -> Dict[int, Tuple[
     with _patched_attention_class(text_model):
         for layer in text_model.layers:
             layer.self_attn._kakeya_inject = {"mode": "capture", "sink": sink}
+        ids = mx.array([list(input_ids)])
+        _ = text_model(ids, cache=None)
+        mx.eval([t for kv in sink.values() for t in kv])
+    return sink
+
+
+def capture_own_kv_cache_slice_detached(
+    mlx_model: Any,
+    input_ids: Sequence[int],
+    *,
+    layer_indices: Sequence[int],
+    start: int,
+    end: int,
+) -> Dict[int, Tuple[Any, Any]]:
+    """Capture selected K/V in cache layout, detached from the forward graph."""
+    import mlx.core as mx  # type: ignore
+
+    text_model = resolve_mlx_text_model(mlx_model)
+    selected = set(map(int, layer_indices))
+    sink: Dict[int, Tuple[Any, Any]] = {}
+    with _patched_attention_class(text_model):
+        for idx, layer in enumerate(text_model.layers):
+            if idx not in selected:
+                continue
+            layer.self_attn._kakeya_inject = {
+                "mode": "capture_cache_detached",
+                "sink": sink,
+                "slice_range": (int(start), int(end)),
+            }
         ids = mx.array([list(input_ids)])
         _ = text_model(ids, cache=None)
         mx.eval([t for kv in sink.values() for t in kv])

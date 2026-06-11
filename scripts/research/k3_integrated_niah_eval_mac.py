@@ -112,7 +112,8 @@ def main() -> int:
     from inference_engine.v04.kv_merge import compute_evicted_positions
     from inference_engine.backends.mlx.cross_model_dlm_verifier import (
         resolve_mlx_text_model, mlx_full_attention_layer_indices,
-        kv_source_layer_map, capture_own_kv, restored_logits,
+        kv_source_layer_map, capture_own_kv,
+        capture_own_kv_cache_slice_detached, restored_logits,
         per_layer_kv_geometry, kv_memory_report,
     )
     from inference_engine.backends.mlx.cache import make_sink_window_cache
@@ -226,7 +227,18 @@ def main() -> int:
 
     def build_restoration(prompt_ids: List[int]):
         own = None
-        if exact_set:
+        evicted = compute_evicted_positions(
+            len(prompt_ids), args.sink_size, args.window_size,
+        )
+        if args.s5_exact_full_attn and not args.identity_restore and evicted:
+            own = capture_own_kv_cache_slice_detached(
+                mlx_model,
+                prompt_ids,
+                layer_indices=full_attn_idx,
+                start=int(evicted[0]),
+                end=int(evicted[-1]) + 1,
+            )
+        elif exact_set:
             own = capture_own_kv(mlx_model, prompt_ids)
 
         # S5 on Gemma 4: sliding-attention layers are local by design; adding
@@ -314,7 +326,11 @@ def main() -> int:
         for li, k_mx in rk.items():
             c = cache[li]
             v_mx = rv[li]
-            kb, vb = _post_rope_restored_bank(li, k_mx, v_mx, evicted)
+            attn = text_model.layers[li].self_attn
+            if int(k_mx.shape[1]) == int(getattr(attn, "n_kv_heads", -1)):
+                kb, vb = k_mx, v_mx
+            else:
+                kb, vb = _post_rope_restored_bank(li, k_mx, v_mx, evicted)
             if li in full_attn_idx and getattr(c, "keys", None) is not None:
                 # Full-attention layers are the long-context recall carriers in
                 # S5. Hand them back to MLX's native KVCache so decode appends
