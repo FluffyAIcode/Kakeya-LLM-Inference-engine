@@ -146,7 +146,7 @@ def main() -> int:
         help="Local MLX 4-bit verifier directory (default: standard Mac path).",
     )
     ap.add_argument(
-        "--drafter-id", default="models/dflash-kakeya-baseline",
+        "--drafter-id", default="z-lab/gemma-4-26B-A4B-it-DFlash",
         help="DFlash drafter source — local path or HF id. Default: the "
              "alignment-trained baseline on main (post PR #93 + #99 merge).",
     )

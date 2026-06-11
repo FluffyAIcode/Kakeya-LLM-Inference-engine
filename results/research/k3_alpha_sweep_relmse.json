@@ -1,0 +1,95 @@
+{
+  "kind": "k3_s6_fidelity_recall_sweep",
+  "config": {
+    "f_theta_dir": "/tmp/f_theta_v3_relmse",
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 24,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "seed": 42,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "f_theta_baseline_rel_mse": {
+    "overall": 0.2313521382961503,
+    "full_attn": 1.4451023524463593
+  },
+  "sweep": [
+    {
+      "alpha": 0.0,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.2313521382961503,
+      "eff_rel_mse_full_attn": 1.4451023524463593
+    },
+    {
+      "alpha": 0.5,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.05783803457403758,
+      "eff_rel_mse_full_attn": 0.36127558811158983
+    },
+    {
+      "alpha": 0.75,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.014459508643509394,
+      "eff_rel_mse_full_attn": 0.09031889702789746
+    },
+    {
+      "alpha": 0.9,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.002313521382961502,
+      "eff_rel_mse_full_attn": 0.014451023524463586
+    },
+    {
+      "alpha": 0.95,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.0005783803457403768,
+      "eff_rel_mse_full_attn": 0.0036127558811159047
+    },
+    {
+      "alpha": 0.98,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 9.25408553184603e-05,
+      "eff_rel_mse_full_attn": 0.0005780409409785448
+    },
+    {
+      "alpha": 0.99,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 2.3135213829615074e-05,
+      "eff_rel_mse_full_attn": 0.0001445102352446362
+    },
+    {
+      "alpha": 1.0,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.0,
+      "eff_rel_mse_full_attn": 0.0
+    }
+  ]
+}

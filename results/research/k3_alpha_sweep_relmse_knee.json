@@ -1,0 +1,63 @@
+{
+  "kind": "k3_s6_fidelity_recall_sweep",
+  "config": {
+    "f_theta_dir": "/tmp/f_theta_v3_relmse",
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 24,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "seed": 42,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "f_theta_baseline_rel_mse": {
+    "overall": 0.2313521382961503,
+    "full_attn": 1.4451023524463593
+  },
+  "sweep": [
+    {
+      "alpha": 0.1,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.18739523201988176,
+      "eff_rel_mse_full_attn": 1.1705329054815512
+    },
+    {
+      "alpha": 0.2,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.14806536850953622,
+      "eff_rel_mse_full_attn": 0.9248655055656702
+    },
+    {
+      "alpha": 0.3,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.11336254776511363,
+      "eff_rel_mse_full_attn": 0.708100152698716
+    },
+    {
+      "alpha": 0.4,
+      "recall": 0.6,
+      "samples_correct": 6,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.0832867697866141,
+      "eff_rel_mse_full_attn": 0.5202368468806894
+    }
+  ]
+}

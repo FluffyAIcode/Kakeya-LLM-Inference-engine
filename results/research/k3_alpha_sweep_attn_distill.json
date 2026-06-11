@@ -1,0 +1,87 @@
+{
+  "kind": "k3_s6_fidelity_recall_sweep",
+  "config": {
+    "f_theta_dir": "results/research/f_theta_v3_attn_distill",
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 24,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "seed": 42,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "f_theta_baseline_rel_mse": {
+    "overall": 1331.9405048759936,
+    "full_attn": 18254.26540890811
+  },
+  "sweep": [
+    {
+      "alpha": 0.0,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 1331.9405048759936,
+      "eff_rel_mse_full_attn": 18254.26540890811
+    },
+    {
+      "alpha": 0.1,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 1078.8718089495549,
+      "eff_rel_mse_full_attn": 14785.954981215571
+    },
+    {
+      "alpha": 0.25,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 749.2165339927465,
+      "eff_rel_mse_full_attn": 10268.024292510812
+    },
+    {
+      "alpha": 0.5,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 332.9851262189984,
+      "eff_rel_mse_full_attn": 4563.566352227028
+    },
+    {
+      "alpha": 0.75,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 83.2462815547496,
+      "eff_rel_mse_full_attn": 1140.891588056757
+    },
+    {
+      "alpha": 0.9,
+      "recall": 0.0,
+      "samples_correct": 0,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 13.31940504875993,
+      "eff_rel_mse_full_attn": 182.54265408908103
+    },
+    {
+      "alpha": 1.0,
+      "recall": 1.0,
+      "samples_correct": 10,
+      "samples_total": 10,
+      "eff_rel_mse_overall": 0.0,
+      "eff_rel_mse_full_attn": 0.0
+    }
+  ]
+}

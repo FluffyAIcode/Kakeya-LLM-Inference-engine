@@ -1,0 +1,44 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --compress-full-attn --drafter-device cpu --n-samples 10 --haystack-min-lines 60 --haystack-max-lines 81 --output results/research/k3_s5_kl_niah_ctx70_mac.json
+
+Commit under test:
+95613ed K3 MLX harness refactor (usability): amortize restoration and default to teacher-forced recall.
+
+Started: 2026-06-11T05:17:30.200Z
+Ended: 2026-06-11T05:34:03.301Z
+Elapsed: 993.101s
+Exit code: 0
+
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on cpu
+[mac] KakeyaLattice compression ON for full-attn layers (D4 Q38); bits/token/head=3232.0
+[mac] 10 samples, prompt len min=1240 max=1639
+[mac] running restored cross-model verifier (s5, teacher_forced)
+[mac]   sample 0: T=1639 pred[:48]='<|channel>ETA-1409'
+[mac]   sample 1: T=1380 pred[:48]='<|channel>-3286'
+[mac]   sample 2: T=1301 pred[:48]='<|channel>CHID-9935'
+[mac]   sample 3: T=1599 pred[:48]='<|channel>-1520'
+[mac]   sample 4: T=1280 pred[:48]='<|channel>-4811'
+[mac]   sample 5: T=1619 pred[:48]='<|channel>-4257'
+[mac]   sample 6: T=1500 pred[:48]='<|channel>-8359'
+[mac]   sample 7: T=1240 pred[:48]='<|channel>LE-3615'
+[mac]   sample 8: T=1500 pred[:48]='<|channel>ETA-5552'
+[mac]   sample 9: T=1360 pred[:48]='<|channel>LE-6514'
+[mac] cross-model recall = 0.000 (0/10)
+[mac] running oracle (full MLX forward)
+[mac]   sample 0: T=1639 pred[:48]='<|channel>ETA-1409'
+[mac]   sample 1: T=1380 pred[:48]='<|channel>-3286'
+[mac]   sample 2: T=1301 pred[:48]='<|channel>CHID-9935'
+[mac]   sample 3: T=1599 pred[:48]='<|channel>-1520'
+[mac]   sample 4: T=1280 pred[:48]='<|channel>-4811'
+[mac]   sample 5: T=1619 pred[:48]='<|channel>-4257'
+[mac]   sample 6: T=1500 pred[:48]='<|channel>-8359'
+[mac]   sample 7: T=1240 pred[:48]='<|channel>LE-3615'
+[mac]   sample 8: T=1500 pred[:48]='<|channel>ETA-5552'
+[mac]   sample 9: T=1360 pred[:48]='<|channel>LE-6514'
+[mac] oracle recall = 0.000
+[mac] KV resident @T=1639: S5=27.17 MB (growth 7.89 KB/tok); naive-full=369.23 MB
+[mac] cross-model throughput (teacher_forced): 0.0931 tok/s (66 tok / 708.976 s, 70.898 s/sample)
+
+[mac] DONE. cross=0.000 oracle=0.0 -> results/research/k3_s5_kl_niah_ctx70_mac.json

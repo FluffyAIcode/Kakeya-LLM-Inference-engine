@@ -49,6 +49,18 @@ from inference_engine.v04.dflash_drafter import (
     DFlashDrafter,
     DFlashProposer,
 )
+from inference_engine.v04.f_theta import FThetaConfig, FThetaProjection
+from inference_engine.v04.cross_model_dlm_verifier import (
+    CrossModelDLMRestoredVerifier,
+    CrossModelLayerMapping,
+)
+from inference_engine.v04.restored_sink_window_verifier import (
+    CrossModelRestoredSinkWindowVerifier,
+)
+from inference_engine.v04.build_restored import (
+    build_restored_speculative_decoder,
+    load_restored_verifier,
+)
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -122,4 +134,15 @@ __all__ = [
     "DFlashConfig",
     "DFlashDrafter",
     "DFlashProposer",
+    # K3 Block C — f_θ K/V projection
+    "FThetaConfig",
+    "FThetaProjection",
+    # K3 Block B — cross-model DLMRestoredVerifier with f_θ-mediated
+    # K/V Restoration (the integrated Kakeya inference architecture)
+    "CrossModelDLMRestoredVerifier",
+    "CrossModelLayerMapping",
+    # Gap 1 + Gap 2 — incremental restored verifier + served-path factories
+    "CrossModelRestoredSinkWindowVerifier",
+    "build_restored_speculative_decoder",
+    "load_restored_verifier",
 ]

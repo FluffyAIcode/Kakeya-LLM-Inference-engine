@@ -1,0 +1,22 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --compress-full-attn --drafter-device cpu --n-samples 10 --haystack-min-lines 60 --haystack-max-lines 81 --max-new-tokens 16 --output results/research/k3_s5_kl_niah_ctx70_mac.json
+
+Commit under test:
+91ecaa1 K3: make DFlash attention query-chunk env-tunable (KAKEYA_DFLASH_ATTN_QCHUNK) for tight-memory Macs
+
+Started: 2026-06-11T04:53:45.439Z
+Stopped: 2026-06-11T05:05:59.705Z
+Elapsed: 734.266s
+Exit code: unknown (manually stopped after no sample output)
+
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on cpu
+[mac] KakeyaLattice compression ON for full-attn layers (D4 Q38); bits/token/head=3232.0
+[mac] 10 samples, prompt len min=1240 max=1639
+[mac] running restored cross-model verifier (s5)
+
+No first sample completed after more than 12 minutes. Process remained alive
+but low-utilization (~7% CPU, ~2 GB RSS). This avoids the MPS OOM by moving
+the drafter/f_theta path to CPU, but the resulting product path is not usable
+for even ctx70.

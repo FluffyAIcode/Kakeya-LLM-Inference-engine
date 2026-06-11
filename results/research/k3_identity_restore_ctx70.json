@@ -1,0 +1,272 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v1",
+    "f_theta_config": {
+      "drafter_num_layers": 5,
+      "drafter_num_kv_heads": 8,
+      "drafter_head_dim": 128,
+      "verifier_num_layers": 30,
+      "verifier_num_kv_heads": 8,
+      "verifier_head_dim": 256,
+      "rank": 256,
+      "verifier_layer_kv_heads": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2
+      ],
+      "verifier_layer_head_dims": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512
+      ]
+    },
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "skip_oracle": true,
+    "identity_restore": true,
+    "prompt_token_lens": [
+      1637,
+      1378,
+      1299,
+      1597,
+      1278,
+      1617,
+      1498,
+      1238,
+      1498,
+      1358
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 5.108704237313941,
+      "median_latency_s": 5.052127701987047,
+      "per_sample_decoded": [
+        "BETA-1409\n//thought\nBETA-1409",
+        "DELTA-3286\n\nthought\nDELTA-3286\n",
+        "ORCHID-9935\n10. **Final Answer:** ORCHID-99",
+        "ETA-1520\n\n\nthought\nthought\nETA-15",
+        "DELTA-4811\n\n\u66f8\u304d\u8fbc\u307f\u5185\u5bb9\u306b\u57fa\u3065\u304f\u3068\u3001\u79d8\u5bc6\u306e\u30b3\u30fc\u30c9\u306f **DELTA-4",
+        "ALPHA-4257\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n    \n\n\n",
+        "DELTA-8359\nnormative_thought\nDELTA-8359",
+        "MAPLE-3615\n\u092c\u52a9\u3051\u304c\u5fc5\u8981\u306a\u5834\u5408\u306f\u3001\u3044\u3064\u3067\u3082\u304a\u77e5\u3089\u305b\u304f\u3060\u3055\u3044\u3002\n",
+        "ZETA-5552\n\n\n",
+        "MAPLE-6514\n\ninclude_thought\nMAPLE-6514"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        16,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        3.8454941553293023,
+        4.737514101160626,
+        4.94522928603496,
+        4.179844858322699,
+        4.995243891981496,
+        4.171802989047664,
+        4.451344750865639,
+        5.142973584540285,
+        4.53123556298915,
+        4.763504484631587
+      ],
+      "mean_throughput_tokens_per_sec": 4.576418766490341,
+      "median_throughput_tokens_per_sec": 4.634374832074888,
+      "min_throughput_tokens_per_sec": 3.8454941553293023,
+      "max_throughput_tokens_per_sec": 5.142973584540285
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "k3_cross_model": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 10,
+        "effective_keys_at_last_query_mean": 1439.8,
+        "effective_keys_at_last_query_min": 1238,
+        "effective_keys_at_last_query_max": 1637,
+        "effective_keys_at_last_query_median": 1438.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1637,
+            "effective_keys_at_last_query": 1637,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1378,
+            "effective_keys_at_last_query": 1378,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1299,
+            "effective_keys_at_last_query": 1299,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1597,
+            "effective_keys_at_last_query": 1597,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1278,
+            "effective_keys_at_last_query": 1278,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1617,
+            "effective_keys_at_last_query": 1617,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1238,
+            "effective_keys_at_last_query": 1238,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1498,
+            "effective_keys_at_last_query": 1498,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 1358,
+            "effective_keys_at_last_query": 1358,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "memory": {
+    "k3_cross_model": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52630830080,
+      "current_reserved_bytes": 56555995136,
+      "peak_allocated_bytes": 55607588864,
+      "peak_reserved_bytes": 56555995136
+    }
+  },
+  "gate": {
+    "architectural_correctness": true,
+    "recall_cross_model": 1.0,
+    "recall_oracle": null,
+    "recall_delta_vs_oracle_pp": null,
+    "recall_delta_within_5pp": false
+  }
+}

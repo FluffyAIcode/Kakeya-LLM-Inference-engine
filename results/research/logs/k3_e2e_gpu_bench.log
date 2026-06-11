@@ -1,0 +1,31 @@
+[e2e] loading verifier google/gemma-4-26B-A4B-it
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/1013 [00:00<?, ?it/s]Loading weights:   0%|          | 2/1013 [00:00<01:01, 16.41it/s]Loading weights:   0%|          | 4/1013 [00:00<01:55,  8.76it/s]Loading weights:   1%|▏         | 15/1013 [00:00<00:29, 33.27it/s]Loading weights:   3%|▎         | 26/1013 [00:00<00:23, 42.40it/s]Loading weights:   5%|▍         | 47/1013 [00:00<00:12, 79.16it/s]Loading weights:   6%|▌         | 58/1013 [00:01<00:13, 71.24it/s]Loading weights:   7%|▋         | 70/1013 [00:01<00:15, 61.03it/s]Loading weights:   9%|▉         | 91/1013 [00:01<00:10, 86.39it/s]Loading weights:  10%|█         | 102/1013 [00:01<00:11, 76.58it/s]Loading weights:  11%|█         | 113/1013 [00:01<00:10, 82.84it/s]Loading weights:  12%|█▏        | 123/1013 [00:01<00:11, 74.68it/s]Loading weights:  13%|█▎        | 134/1013 [00:01<00:10, 81.31it/s]Loading weights:  14%|█▍        | 144/1013 [00:02<00:12, 70.95it/s]Loading weights:  15%|█▌        | 156/1013 [00:02<00:10, 80.86it/s]Loading weights:  16%|█▋        | 166/1013 [00:02<00:11, 71.63it/s]Loading weights:  18%|█▊        | 179/1013 [00:02<00:13, 60.86it/s]Loading weights:  20%|█▉        | 200/1013 [00:02<00:09, 86.84it/s]Loading weights:  21%|██        | 211/1013 [00:03<00:10, 77.95it/s]Loading weights:  22%|██▏       | 222/1013 [00:03<00:09, 82.54it/s]Loading weights:  23%|██▎       | 232/1013 [00:03<00:11, 70.40it/s]Loading weights:  24%|██▍       | 242/1013 [00:03<00:10, 74.25it/s]Loading weights:  25%|██▍       | 251/1013 [00:03<00:12, 62.46it/s]Loading weights:  26%|██▌       | 265/1013 [00:03<00:10, 74.60it/s]Loading weights:  27%|██▋       | 274/1013 [00:04<00:11, 64.14it/s]Loading weights:  28%|██▊       | 287/1013 [00:04<00:09, 76.75it/s]Loading weights:  29%|██▉       | 296/1013 [00:04<00:11, 64.92it/s]Loading weights:  31%|███       | 309/1013 [00:04<00:09, 76.40it/s]Loading weights:  31%|███▏      | 318/1013 [00:04<00:10, 64.61it/s]Loading weights:  33%|███▎      | 331/1013 [00:04<00:08, 76.24it/s]Loading weights:  34%|███▎      | 340/1013 [00:04<00:10, 64.57it/s]Loading weights:  35%|███▍      | 353/1013 [00:05<00:08, 75.74it/s]Loading weights:  36%|███▌      | 362/1013 [00:05<00:10, 64.48it/s]Loading weights:  37%|███▋      | 375/1013 [00:05<00:08, 77.53it/s]Loading weights:  38%|███▊      | 384/1013 [00:05<00:09, 65.14it/s]Loading weights:  39%|███▉      | 396/1013 [00:05<00:08, 72.98it/s]Loading weights:  40%|███▉      | 405/1013 [00:05<00:09, 61.05it/s]Loading weights:  41%|████      | 417/1013 [00:06<00:08, 71.02it/s]Loading weights:  42%|████▏     | 426/1013 [00:06<00:09, 63.75it/s]Loading weights:  43%|████▎     | 440/1013 [00:06<00:07, 79.22it/s]Loading weights:  44%|████▍     | 450/1013 [00:06<00:07, 70.44it/s]Loading weights:  46%|████▌     | 462/1013 [00:06<00:06, 81.08it/s]Loading weights:  47%|████▋     | 472/1013 [00:06<00:07, 71.71it/s]Loading weights:  48%|████▊     | 484/1013 [00:07<00:08, 59.30it/s]Loading weights:  50%|█████     | 507/1013 [00:07<00:07, 68.83it/s]Loading weights:  52%|█████▏    | 527/1013 [00:07<00:07, 69.34it/s]Loading weights:  54%|█████▍    | 549/1013 [00:07<00:05, 90.95it/s]Loading weights:  55%|█████▌    | 561/1013 [00:07<00:05, 82.92it/s]Loading weights:  56%|█████▋    | 571/1013 [00:08<00:05, 85.12it/s]Loading weights:  57%|█████▋    | 581/1013 [00:08<00:05, 76.72it/s]Loading weights:  58%|█████▊    | 592/1013 [00:08<00:05, 82.82it/s]Loading weights:  59%|█████▉    | 602/1013 [00:08<00:05, 74.28it/s]Loading weights:  61%|██████    | 615/1013 [00:08<00:04, 85.68it/s]Loading weights:  62%|██████▏   | 625/1013 [00:08<00:05, 74.10it/s]Loading weights:  63%|██████▎   | 638/1013 [00:09<00:05, 63.31it/s]Loading weights:  77%|███████▋  | 784/1013 [00:09<00:00, 321.43it/s]Loading weights:  95%|█████████▍| 961/1013 [00:09<00:00, 622.86it/s]Loading weights: 100%|██████████| 1013/1013 [00:09<00:00, 109.50it/s]
+[e2e] loading drafter models/dflash-kakeya-baseline
+[e2e] loading f_θ results/research/f_theta_v5_s5_sliding
+[e2e] S5 exact full-attention layers: [5, 11, 17, 23, 29]
+
+[e2e] === rung: 60 haystack lines | prompt tokens min=1238 max=1238 ===
+[e2e] running standalone AR baseline ...
+[e2e]   AR sample 0: gen=16 recall=Y out[:40]='MAPLE-7890\n1.  **Identify the'
+[e2e]   AR sample 1: gen=16 recall=Y out[:40]='IOTA-8961\n10. **Note '
+[e2e]   AR sample 2: gen=16 recall=Y out[:40]='THETA-6866\nबつून'
+[e2e] running Kakeya restored path ...
+[e2e]   restored sample 0: gen=16 recall=Y resident_kv_tok=68 eff_ctx=1254 out[:40]='The secret code is **MAPLE-7890**.though'
+[e2e]   restored sample 1: gen=16 recall=Y resident_kv_tok=68 eff_ctx=1254 out[:40]='The secret code is **IOTA-8961**.---'
+[e2e]   restored sample 2: gen=16 recall=Y resident_kv_tok=68 eff_ctx=1254 out[:40]='The secret code is **THETA-6866**.\n'
+[e2e] rung 60: KV 282.5MB(AR) vs 16.71MB(restored) -> 16.9x saving; ctx 1254 tok over 68-tok window (18.4x); tok/s restored=2.259 ar=21.514; recall restored=1.0 ar=1.0
+
+[e2e] === rung: 160 haystack lines | prompt tokens min=3238 max=3238 ===
+[e2e] running standalone AR baseline ...
+[e2e]   AR sample 0: gen=16 recall=Y out[:40]='The secret code is MAPLE-7890.\nthought'
+[e2e]   AR sample 1: gen=16 recall=Y out[:40]='IOTA-8961\nDESCRIBE THE PROCESS OF CRE'
+[e2e]   AR sample 2: gen=16 recall=Y out[:40]='THETA-6866\nout of the box\nTH'
+[e2e] running Kakeya restored path ...
+[e2e]   restored sample 0: gen=16 recall=Y resident_kv_tok=68 eff_ctx=3254 out[:40]='The secret code is **MAPLE-7890**.---'
+[e2e]   restored sample 1: gen=16 recall=Y resident_kv_tok=68 eff_ctx=3254 out[:40]='The secret code is **IOTA-8961**.---'
+[e2e]   restored sample 2: gen=16 recall=Y resident_kv_tok=68 eff_ctx=3254 out[:40]='The secret code is **THETA-6866**.---'
+[e2e] rung 160: KV 733.06MB(AR) vs 16.71MB(restored) -> 43.9x saving; ctx 3254 tok over 68-tok window (47.9x); tok/s restored=1.273 ar=21.92; recall restored=1.0 ar=1.0
+
+[e2e] wrote results/research/k3_e2e_gpu_bench.json
+EXIT_CODE=0

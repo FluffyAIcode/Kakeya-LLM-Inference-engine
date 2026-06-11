@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "kind": "k3_dflash_specdecode_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "block_size": 15,
+    "num_steps": 8,
+    "max_new_tokens": 48,
+    "n_prompts": 4,
+    "aux_layer_ids": [
+      2,
+      7,
+      12,
+      18,
+      23,
+      28
+    ]
+  },
+  "aggregate": {
+    "acceptance_rate": 0.16160220994475138,
+    "acceptance_length": 3.1666666666666665,
+    "total_accepted": 117,
+    "total_drafted": 724,
+    "total_blocks": 54,
+    "lossless_vs_ar": true,
+    "reference_humaneval": {
+      "acceptance_length": 7.7,
+      "acceptance_rate": 0.447
+    }
+  },
+  "per_prompt": [
+    {
+      "prompt": "Write a Python function that returns the n-th Fibonacci number.",
+      "blocks": 12,
+      "block_accepts": [
+        4,
+        2,
+        2,
+        0,
+        1,
+        4,
+        5,
+        7,
+        0,
+        4,
+        4,
+        4
+      ],
+      "mean_accepted_per_block": 3.0833333333333335,
+      "tokens_generated": 48,
+      "verifier_forwards_spec": 12,
+      "lossless_vs_ar": true,
+      "decoded": "There are several ways to implement this depending on whether you prioritize readability, memory, or speed. Below are the three most common approaches.\n\n### 1. The Efficient Approach (Iterative)\nThis "
+    },
+    {
+      "prompt": "Explain in two sentences why the sky is blue.",
+      "blocks": 22,
+      "block_accepts": [
+        1,
+        2,
+        1,
+        6,
+        2,
+        0,
+        2,
+        4,
+        0,
+        0,
+        1,
+        1,
+        0,
+        2,
+        0,
+        0,
+        2,
+        1,
+        0,
+        1,
+        0,
+        0
+      ],
+      "mean_accepted_per_block": 1.1818181818181819,
+      "tokens_generated": 48,
+      "verifier_forwards_spec": 22,
+      "lossless_vs_ar": true,
+      "decoded": "The sky appears blue because of a phenomenon called Rayleigh scattering, where sunlight interacts with the gases and particles in Earth's atmosphere. As sunlight reaches the atmosphere, shorter blue w"
+    },
+    {
+      "prompt": "List three prime numbers greater than 100.",
+      "blocks": 5,
+      "block_accepts": [
+        0,
+        10,
+        3,
+        14,
+        8
+      ],
+      "mean_accepted_per_block": 7.0,
+      "tokens_generated": 40,
+      "verifier_forwards_spec": 5,
+      "lossless_vs_ar": true,
+      "decoded": "Here are three prime numbers greater than 100:\n\n1.  **101**\n2.  **103**\n3.  **107**"
+    },
+    {
+      "prompt": "Summarize the plot of Romeo and Juliet in one sentence.",
+      "blocks": 15,
+      "block_accepts": [
+        0,
+        0,
+        3,
+        0,
+        0,
+        1,
+        1,
+        1,
+        2,
+        3,
+        1,
+        2,
+        1,
+        2,
+        2
+      ],
+      "mean_accepted_per_block": 1.2666666666666666,
+      "tokens_generated": 34,
+      "verifier_forwards_spec": 15,
+      "lossless_vs_ar": true,
+      "decoded": "Two star-crossed lovers from feuding noble families take their own lives in a tragic misunderstanding, ultimately transforming their deaths into a catalyst for peace between their households."
+    }
+  ]
+}

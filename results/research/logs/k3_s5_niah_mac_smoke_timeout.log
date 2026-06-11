@@ -1,0 +1,16 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --n-samples 4 --haystack-min-lines 60 --haystack-max-lines 81 --max-new-tokens 16 --output results/research/k3_s5_niah_mac_smoke.json
+
+Started: 2026-06-11T03:34:06.986Z
+Stopped: 2026-06-11T03:49:33.104Z
+Elapsed: 926.118s
+Exit code: unknown (manually stopped after no sample output)
+
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on mps
+[mac] 4 samples, prompt len min=1301 max=1639
+[mac] running restored cross-model verifier (s5)
+
+No sample completed after roughly 15 minutes. Follow-up one-token diagnostic
+showed a single restored cross-model token took about 112s on this Mac path.

@@ -1,0 +1,88 @@
+{
+  "kind": "mlx_kakeya_deployment_benchmark",
+  "config": {
+    "model_id": "models/gemma-4-26B-A4B-it-mlx-4bit",
+    "context_lengths": [
+      512,
+      2048,
+      8192
+    ],
+    "gen_tokens": 64,
+    "sink_size": 4,
+    "window_size": 64
+  },
+  "env": {
+    "mlx_version": "0.31.2"
+  },
+  "results": [
+    {
+      "context_length": 512,
+      "kakeya": {
+        "prefill_s": 9.6883,
+        "decode_s": 3.5036,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 17.981,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 16024947900
+      },
+      "vanilla": {
+        "prefill_s": 1.498,
+        "decode_s": 2.5221,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 24.98,
+        "kv_bytes": 129536000,
+        "peak_memory_bytes": 16041187510
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 0.72,
+        "kv_bytes_ratio_x": 8.5
+      }
+    },
+    {
+      "context_length": 2048,
+      "kakeya": {
+        "prefill_s": 7.5367,
+        "decode_s": 7.1653,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 8.792,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 17490295530
+      },
+      "vanilla": {
+        "prefill_s": 6.3451,
+        "decode_s": 9.5656,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 6.586,
+        "kv_bytes": 252948480,
+        "peak_memory_bytes": 17467718378
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 1.335,
+        "kv_bytes_ratio_x": 16.5
+      }
+    },
+    {
+      "context_length": 8192,
+      "kakeya": {
+        "prefill_s": 43.6301,
+        "decode_s": 22.1921,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 2.839,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 22783444190
+      },
+      "vanilla": {
+        "prefill_s": 53.3461,
+        "decode_s": 22.9514,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 2.745,
+        "kv_bytes": 378777600,
+        "peak_memory_bytes": 22542763230
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 1.034,
+        "kv_bytes_ratio_x": 24.7
+      }
+    }
+  ]
+}

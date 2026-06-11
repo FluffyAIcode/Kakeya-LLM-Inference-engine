@@ -54,6 +54,19 @@ PROMPTS = [
     "Write a haiku about speculative decoding.",
 ]
 
+# HumanEval-style code-generation prompts — the regime the z-lab DFlash
+# reference (~0.447 / 7.7) is measured on. DFlash drafts code/structured
+# output far better than open-ended short Q&A, so this set characterizes
+# acceptance on the reference's distribution.
+CODE_PROMPTS = [
+    "Complete this Python function:\n\ndef has_close_elements(numbers: list[float], threshold: float) -> bool:\n    \"\"\"Return True if any two numbers are closer than threshold.\"\"\"\n",
+    "Complete this Python function:\n\ndef is_palindrome(s: str) -> bool:\n    \"\"\"Return True if s reads the same forwards and backwards, ignoring case and non-alphanumeric chars.\"\"\"\n",
+    "Complete this Python function:\n\ndef merge_sort(arr: list[int]) -> list[int]:\n    \"\"\"Return a new list with the elements of arr sorted ascending using merge sort.\"\"\"\n",
+    "Complete this Python function:\n\ndef gcd(a: int, b: int) -> int:\n    \"\"\"Return the greatest common divisor of a and b using the Euclidean algorithm.\"\"\"\n",
+    "Complete this Python function:\n\ndef flatten(nested: list) -> list:\n    \"\"\"Flatten an arbitrarily nested list of integers into a single flat list.\"\"\"\n",
+    "Complete this Python function:\n\ndef count_words(text: str) -> dict[str, int]:\n    \"\"\"Return a dict mapping each lowercased word in text to its frequency.\"\"\"\n",
+]
+
 # Disjoint from the alignment trainer's prompt corpus — for honest held-out
 # acceptance after alignment training (no topic/phrasing near-duplicates).
 HELD_OUT_PROMPTS = [
@@ -91,14 +104,17 @@ class VerifierAuxProvider(AuxHiddenProvider):
         return aux, bonus
 
 
-def _build_embed_lm_head(model, hidden_size, softcap):
+def _build_embed_lm_head(model, hidden_size, softcap, embed_scale=None):
     emb = model.get_input_embeddings()
     head = model.get_output_embeddings()
-    scale = math.sqrt(hidden_size)
+    # Reference DFlashQwen3Model.forward embeds with a PLAIN lookup
+    # (``self.embed_tokens(input_ids)``) — no Gemma ``×sqrt(hidden)``
+    # normalizer (that scale is applied inside the Gemma model body, not in
+    # the shared embed the Qwen3 drafter consumes). Default to no scale to
+    # match the reference; ``embed_scale`` overrides for A/B testing.
+    scale = 1.0 if embed_scale is None else float(embed_scale)
 
     def embed_fn(ids: torch.Tensor) -> torch.Tensor:
-        # Gemma scales token embeddings by sqrt(hidden) (PR #41703: DFlash
-        # draft path applies the target embedding normalization).
         return emb(ids).float() * scale
 
     def lm_head_fn(h: torch.Tensor) -> torch.Tensor:
@@ -156,12 +172,38 @@ def main() -> int:
     ap.add_argument("--drafter-state", default=None,
                     help="optional .pt state_dict to load over the drafter "
                          "(e.g. an alignment-trained checkpoint).")
+    ap.add_argument("--embed-scale", type=float, default=None,
+                    help="Scale applied to the shared embedding fed to the "
+                         "drafter. Default None = 1.0 (reference, no Gemma "
+                         "sqrt(hidden) normalizer). Pass e.g. 53.06 to A/B the "
+                         "old (incorrect) sqrt(2816) scaling.")
     ap.add_argument("--held-out", action="store_true",
                     help="evaluate on HELD_OUT_PROMPTS (disjoint from the "
                          "alignment trainer's prompts) for honest generalization.")
+    ap.add_argument("--prompt-set", choices=["default", "held-out", "code"],
+                    default=None,
+                    help="Which prompt set to use. 'code' = HumanEval-style "
+                         "(the z-lab reference regime). Overrides --held-out.")
+    ap.add_argument("--humaneval-jsonl", default=None,
+                    help="Path to the canonical HumanEval .jsonl (each line a "
+                         "problem with a 'prompt' field). Uses the first "
+                         "--n-prompts problems' prompts. This is the exact "
+                         "z-lab reference regime (~0.447 / 7.7).")
+    ap.add_argument("--raw-completion", action="store_true",
+                    help="Feed the raw prompt tokens (no chat template) — the "
+                         "native HumanEval code-completion setup.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
-    prompts = HELD_OUT_PROMPTS if args.held_out else PROMPTS
+    if args.humaneval_jsonl:
+        with open(args.humaneval_jsonl) as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        prompts = [r["prompt"] for r in rows[: args.n_prompts]]
+    elif args.prompt_set == "code":
+        prompts = CODE_PROMPTS
+    elif args.prompt_set == "held-out" or args.held_out:
+        prompts = HELD_OUT_PROMPTS
+    else:
+        prompts = PROMPTS
 
     device = torch.device("cuda")
     dtype = torch.bfloat16
@@ -183,7 +225,8 @@ def main() -> int:
     cfg = drafter.cfg
     hidden = cfg.hidden_size
     softcap = cfg.final_logit_softcapping
-    embed_fn, lm_head_fn = _build_embed_lm_head(verifier, hidden, softcap)
+    embed_fn, lm_head_fn = _build_embed_lm_head(
+        verifier, hidden, softcap, embed_scale=args.embed_scale)
     provider = VerifierAuxProvider(verifier, cfg.aux_layer_ids, device)
     proposer = DFlashProposer(drafter, provider, embed_fn, lm_head_fn)
 
@@ -198,14 +241,19 @@ def main() -> int:
 
     for pi in range(min(args.n_prompts, len(prompts))):
         prompt = prompts[pi]
-        msgs = [{"role": "user", "content": prompt}]
-        enc = tok.apply_chat_template(
-            msgs, add_generation_prompt=True, tokenize=True, return_tensors="pt",
-        )
-        # transformers 5.x may return a Tensor or a BatchEncoding/dict.
-        if hasattr(enc, "keys"):
-            enc = enc["input_ids"]
-        ids = enc[0].tolist()
+        if args.raw_completion:
+            # Native HumanEval code-completion: feed the raw prompt tokens
+            # (no chat template); the verifier continues the function body.
+            ids = tok(prompt, return_tensors="pt").input_ids[0].tolist()
+        else:
+            msgs = [{"role": "user", "content": prompt}]
+            enc = tok.apply_chat_template(
+                msgs, add_generation_prompt=True, tokenize=True, return_tensors="pt",
+            )
+            # transformers 5.x may return a Tensor or a BatchEncoding/dict.
+            if hasattr(enc, "keys"):
+                enc = enc["input_ids"]
+            ids = enc[0].tolist()
         committed = list(ids)
         generated: List[int] = []
         blk_accepts = []

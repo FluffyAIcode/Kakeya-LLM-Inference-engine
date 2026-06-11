@@ -202,6 +202,39 @@ def _apply_rope(
     return (x * cos) + (_rotate_half(x) * sin)
 
 
+# Query-chunk size for the drafter's non-causal attention. Bounds peak
+# attention memory to O(q_chunk × (C+T)); tune down on tight-memory hosts
+# (e.g. 24 GB Mac at long context). 0 ⇒ no chunking (single SDPA call).
+# Override at runtime with KAKEYA_DFLASH_ATTN_QCHUNK (e.g. 256 on a 24 GB Mac).
+import os as _os
+_ATTN_Q_CHUNK = int(_os.environ.get("KAKEYA_DFLASH_ATTN_QCHUNK", "1024") or "1024")
+
+
+def _chunked_sdpa(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    *, scale: float, q_chunk: Optional[int] = None,
+) -> torch.Tensor:
+    """Non-causal SDPA computed in query-dimension chunks.
+
+    ``q`` is ``[B, nh, T, hd]``; ``k``/``v`` ``[B, nh, C+T, hd]``. Returns
+    ``[B, nh, T, hd]``. Chunking the query dim keeps the (possibly
+    materialised) score tensor at ``[B, nh, q_chunk, C+T]`` so long-context
+    attention does not OOM on hosts/kernels without a flash path (MPS).
+    """
+    T = q.shape[-2]
+    if not q_chunk or q_chunk <= 0 or T <= q_chunk:
+        return F.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, is_causal=False, scale=scale,
+        )
+    outs = []
+    for start in range(0, T, q_chunk):
+        qc = q[:, :, start:start + q_chunk, :]
+        outs.append(F.scaled_dot_product_attention(
+            qc, k, v, attn_mask=None, is_causal=False, scale=scale,
+        ))
+    return torch.cat(outs, dim=2)
+
+
 class _DFlashAttention(nn.Module):
     """DFlash draft attention (faithful to vLLM ``DFlashQwen3Attention``).
 
@@ -271,10 +304,13 @@ class _DFlashAttention(nn.Module):
         rep = self.nh // self.nkv
         k = k.repeat_interleave(rep, dim=1)
         v = v.repeat_interleave(rep, dim=1)
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,nh,T,C+T]
-        # Non-causal: queries see all context + all query positions.
-        attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
-        out = torch.matmul(attn, v)  # [B, nh, T, hd]
+        # Non-causal (queries see all context + all query positions), no mask.
+        # Use SDPA, and **chunk over the query dimension** so peak attention
+        # memory stays O(chunk × (C+T)) instead of O(T × (C+T)). The full
+        # materialisation OOMs at long context (≈5 GB at T≈6k, nh=32) — and
+        # MPS's SDPA has no flash kernel for this shape, so it materialises
+        # too; query-chunking bounds it on every device/kernel.
+        out = _chunked_sdpa(q, k, v, scale=self.scale, q_chunk=_ATTN_Q_CHUNK)
         out = out.transpose(1, 2).contiguous().view(B, T, self.nh * self.hd)
         return self.o_proj(out)
 
@@ -467,6 +503,67 @@ class DFlashDrafter(nn.Module):
         ).clone()
         logits[..., self.cfg.mask_token_id] = float("-inf")  # never draft the sentinel
         return torch.argmax(logits[0], dim=-1).tolist()
+
+    # -- fused-engine fast path: draft from a PRECOMPUTED context K/V cache --
+    def make_context_kv(
+        self, aux_hidden_context: Sequence[torch.Tensor], positions: torch.Tensor,
+    ):
+        """Per-layer context K/V for ``positions`` from their aux hidden.
+
+        ``combine_aux`` (fc) + ``precompute_context_kv`` (hidden_norm + per-layer
+        k/v_proj + k_norm + RoPE). Returns a per-layer list of ``(k, v)``, each
+        ``[B, nkv, len(positions), hd]``. Use once at prefill, then
+        :meth:`extend_context_kv` incrementally for newly-committed tokens — so
+        the drafter never re-scans the whole committed prefix (O(L)/block, not
+        O(C)). This is component B of the fused spec-decode engine.
+        """
+        ctx_states = self.combine_aux(aux_hidden_context)
+        return self.precompute_context_kv(ctx_states, positions)
+
+    @staticmethod
+    def extend_context_kv(ctx_kv, new_kv):
+        """Append per-layer ``new_kv`` (from :meth:`make_context_kv`) to the
+        running ``ctx_kv`` cache along the sequence axis."""
+        out = []
+        for (ck, cv), (nk, nv) in zip(ctx_kv, new_kv):
+            out.append((
+                torch.cat([ck, nk.to(ck.dtype)], dim=2),
+                torch.cat([cv, nv.to(cv.dtype)], dim=2),
+            ))
+        return out
+
+    @torch.no_grad()
+    def draft_block_cached(
+        self,
+        ctx_kv,
+        bonus_token_id: int,
+        embed_fn: Callable[[torch.Tensor], torch.Tensor],
+        lm_head_fn: Callable[[torch.Tensor], torch.Tensor],
+        *,
+        block_size: int,
+        context_len: int,
+    ) -> List[int]:
+        """Draft ``block_size`` tokens using a PRECOMPUTED per-layer context
+        K/V cache (``ctx_kv`` covering positions ``0..context_len-1``).
+
+        Same single non-causal pass as :meth:`draft_block`, but skips the
+        O(C) context K/V recompute — the caller maintains ``ctx_kv``
+        incrementally. Cost is O(block_size) on the drafter.
+        """
+        cfg = self.cfg
+        device = ctx_kv[0][0].device
+        query_ids = torch.tensor(
+            [[int(bonus_token_id)] + [cfg.mask_token_id] * block_size],
+            dtype=torch.long, device=device,
+        )
+        query_positions = torch.arange(
+            context_len, context_len + 1 + block_size, device=device,
+        )
+        h = embed_fn(query_ids).to(self.fc.weight.dtype)
+        h = self._run_layers(h, query_positions, ctx_kv)
+        logits = lm_head_fn(h).clone()
+        logits[..., cfg.mask_token_id] = float("-inf")
+        return torch.argmax(logits[0, 1:1 + block_size], dim=-1).tolist()
 
     def draft_logits(
         self,

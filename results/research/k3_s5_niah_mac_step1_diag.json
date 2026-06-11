@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "k3_integrated_niah_acceptance_mac",
+  "config": {
+    "verifier_path": "models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+    "n_samples": 1,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "max_new_tokens": 1,
+    "seed": 42,
+    "s5_exact_full_attn": true,
+    "identity_restore": false,
+    "full_attention_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "prompt_token_lens": [
+      1639
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model_mac",
+      "samples_total": 1,
+      "samples_correct": 0,
+      "recall": 0.0,
+      "mean_latency_s": 111.98745520808734,
+      "median_latency_s": 111.98745520808734,
+      "per_sample_decoded": [
+        "<|channel>"
+      ],
+      "per_sample_correct": [
+        false
+      ],
+      "per_sample_decode_tokens": [
+        1
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        0.008929571603728911
+      ],
+      "mean_throughput_tokens_per_sec": 0.008929571603728911,
+      "median_throughput_tokens_per_sec": 0.008929571603728911,
+      "min_throughput_tokens_per_sec": 0.008929571603728911,
+      "max_throughput_tokens_per_sec": 0.008929571603728911
+    }
+  },
+  "gate": {
+    "recall_cross_model": 0.0,
+    "recall_oracle": null,
+    "recall_delta_vs_oracle_pp": null,
+    "recall_delta_within_5pp": false
+  }
+}

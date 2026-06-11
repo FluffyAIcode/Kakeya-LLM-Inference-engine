@@ -1,0 +1,61 @@
+{
+  "kind": "mlx_kakeya_deployment_benchmark",
+  "config": {
+    "model_id": "models/gemma-4-26B-A4B-it-mlx-4bit",
+    "context_lengths": [
+      512,
+      2048,
+      8192
+    ],
+    "gen_tokens": 64,
+    "sink_size": 4,
+    "window_size": 64
+  },
+  "env": {
+    "mlx_version": "0.31.2"
+  },
+  "results": [
+    {
+      "context_length": 512,
+      "kakeya": {
+        "error": "TypeError: make_sink_window_cache() takes 1 positional argument but 3 were given"
+      },
+      "vanilla": {
+        "prefill_s": 9.1962,
+        "decode_s": 4.4363,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 14.201,
+        "kv_bytes": 129536000,
+        "peak_memory_bytes": 16024951996
+      }
+    },
+    {
+      "context_length": 2048,
+      "kakeya": {
+        "error": "TypeError: make_sink_window_cache() takes 1 positional argument but 3 were given"
+      },
+      "vanilla": {
+        "prefill_s": 7.6443,
+        "decode_s": 5.9676,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 10.557,
+        "kv_bytes": 475566080,
+        "peak_memory_bytes": 17317280424
+      }
+    },
+    {
+      "context_length": 8192,
+      "kakeya": {
+        "error": "TypeError: make_sink_window_cache() takes 1 positional argument but 3 were given"
+      },
+      "vanilla": {
+        "prefill_s": 45.3409,
+        "decode_s": 20.705,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 3.043,
+        "kv_bytes": 1859686400,
+        "peak_memory_bytes": 22526543070
+      }
+    }
+  ]
+}
