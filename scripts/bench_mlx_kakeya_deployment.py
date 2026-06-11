@@ -15,17 +15,27 @@ throughput and peak memory stay ~flat as context grows. (Long-range *recall*
 needs the separate K/V-Restoration path; this benchmark measures the throughput
 + memory envelope.)
 
-For each context length L it runs, on the SAME model:
+Both paths run through mlx_lm's **own** ``generate_step`` engine (chunked
+prefill + pipelined async decode) — only the KV cache differs. This is the
+apples-to-apples test: from first principles Kakeya is just MLX + a tighter
+cache, so it should be *faster + lighter* than vanilla, never slower. If it is
+slower, the cache implementation has a bug. For each context length L, on the
+SAME model + SAME engine:
 
-  * **Kakeya** — sink+window bounded cache (``make_sink_window_cache``):
-    persistent KV is O(sink+window); per-token attention is over the bounded
-    window. (Note: this is the bounded-KV / StreamingLLM-class fast path —
-    long-range *recall* needs the separate, heavier K/V-Restoration; this
-    benchmark measures the throughput + memory envelope.)
-  * **Vanilla** — full KV cache (``make_prompt_cache``): KV grows with L,
-    per-token attention is over all L keys.
+  * **Vanilla** — the model's native cache (``make_prompt_cache`` →
+    ``model.make_cache()``: full ``KVCache`` for the 5 global layers,
+    ``RotatingKVCache(sliding_window)`` for the 25 sliding layers). The 5
+    global layers' KV grows with L; per-token attention there is over all L
+    keys.
+  * **Kakeya** — sink+window bounded cache (``make_sink_window_cache``) for
+    every layer: persistent KV is O(sink+window) and per-token attention is
+    over the bounded window for *all* layers (incl. the global ones). (Note:
+    this is the bounded-KV / StreamingLLM-class fast path — long-range *recall*
+    needs the separate K/V-Restoration; this benchmark measures the throughput
+    + memory envelope.)
 
-Reports, per L: prefill time, decode tok/s, persistent KV bytes, peak memory.
+Reports, per L: time-to-first-token (incl. prefill), decode tok/s, resident KV
+bytes, peak memory, and the kakeya/vanilla decode-speedup + KV-shrink ratios.
 
 Run on the Mac (Apple Silicon):
 
@@ -103,31 +113,50 @@ def _reset_peak_memory(mx) -> None:
             pass
 
 
-def _decode(mx, model, cache, prompt_ids: List[int], gen_tokens: int,
-            kv_bytes_fn) -> Dict[str, Any]:
-    """Prefill prompt + greedy-decode gen_tokens with the given cache.
-    Returns timing + memory metrics."""
+def _resident_kv_bytes(cache: list) -> int:
+    """Actual resident K+V bytes across a per-layer cache list.
+
+    Uses each tensor's real ``.nbytes`` (the allocated buffer), so it is
+    correct and uniform across *every* cache type — full ``KVCache``
+    (grows with context), ``RotatingKVCache`` (capped ring buffer) and our
+    ``SinkWindowKVCache`` (sink+window). This is the honest comparison: it
+    reflects what is physically held, not the unbounded global ``offset``.
+    """
+    total = 0
+    for c in cache:
+        for name in ("keys", "values"):
+            t = getattr(c, name, None)
+            nb = getattr(t, "nbytes", None) if t is not None else None
+            if nb is not None:
+                total += int(nb)
+    return total
+
+
+def _run(mx, generate_step, model, prompt_ids: List[int], gen_tokens: int,
+         cache) -> Dict[str, Any]:
+    """Prefill + greedy-decode ``gen_tokens`` using mlx_lm's *native*
+    ``generate_step`` (chunked prefill + pipelined async decode), swapping
+    only the KV cache. This isolates the cache's effect on the native engine.
+    Returns timing + memory metrics.
+    """
     _reset_peak_memory(mx)
-    ids = mx.array([prompt_ids])
+    prompt = mx.array(prompt_ids)
+    gen = generate_step(prompt, model, max_tokens=gen_tokens, prompt_cache=cache)
     t0 = time.perf_counter()
-    out = model(ids, cache=cache)
-    mx.eval(out)
-    prefill_s = time.perf_counter() - t0
-    tok = int(mx.argmax(out[0, -1]).item())
-    n = 1
+    first = next(gen)            # prefill + first decoded token
+    _ = first[0]                 # already an int (generate_step yields y.item())
+    ttft_s = time.perf_counter() - t0
+    n = 0
     t1 = time.perf_counter()
-    for _ in range(gen_tokens - 1):
-        out = model(mx.array([[tok]]), cache=cache)
-        mx.eval(out)
-        tok = int(mx.argmax(out[0, -1]).item())
+    for _tok, _lp in gen:
         n += 1
-    gen_s = time.perf_counter() - t1
+    decode_s = time.perf_counter() - t1
     return {
-        "prefill_s": round(prefill_s, 4),
-        "decode_s": round(gen_s, 4),
-        "decode_tokens": n - 1,
-        "decode_tokens_per_s": round((n - 1) / gen_s, 3) if gen_s > 0 else None,
-        "kv_bytes": int(kv_bytes_fn(cache)),
+        "ttft_s": round(ttft_s, 4),                 # time to first token (incl. prefill)
+        "decode_s": round(decode_s, 4),
+        "decode_tokens": n,                          # tokens after the first
+        "decode_tokens_per_s": round(n / decode_s, 3) if decode_s > 0 and n > 0 else None,
+        "kv_bytes": int(_resident_kv_bytes(cache)),
         "peak_memory_bytes": _peak_memory_bytes(mx),
     }
 
@@ -138,9 +167,8 @@ def main() -> int:
     import mlx.core as mx           # type: ignore
     import mlx_lm                   # type: ignore
     from mlx_lm.models.cache import make_prompt_cache  # type: ignore
-    from inference_engine.backends.mlx.cache import (
-        make_sink_window_cache, total_kv_bytes,
-    )
+    from mlx_lm.generate import generate_step  # type: ignore
+    from inference_engine.backends.mlx.cache import make_sink_window_cache
 
     ctx_lengths = [int(x) for x in args.context_lengths.split(",") if x.strip()]
     print(f"[bench] loading MLX model {args.model_id}", file=sys.stderr, flush=True)
@@ -161,26 +189,35 @@ def main() -> int:
     for L in ctx_lengths:
         prompt_ids = make_prompt(L)
         row: Dict[str, Any] = {"context_length": L}
+        if not args.skip_vanilla:
+            print(f"[bench] L={L}: vanilla (native make_prompt_cache) ...",
+                  file=sys.stderr, flush=True)
+            try:
+                vcache = make_prompt_cache(model)
+                row["vanilla"] = _run(
+                    mx, generate_step, model, prompt_ids, args.gen_tokens, vcache)
+            except Exception as e:  # OOM or unsupported → record and continue
+                row["vanilla"] = {"error": f"{type(e).__name__}: {e}"}
+                print(f"[bench] L={L}: vanilla path failed: {e}", file=sys.stderr)
+            finally:
+                # Free the (possibly large) vanilla KV before measuring kakeya,
+                # so its peak-memory reading isn't inflated by leftover state.
+                vcache = None
+                mx.clear_cache()
+
         if not args.skip_kakeya:
             print(f"[bench] L={L}: Kakeya sink+window ...", file=sys.stderr, flush=True)
             try:
                 kcache = make_sink_window_cache(
                     model, sink_size=args.sink_size, window_size=args.window_size)
-                row["kakeya"] = _decode(
-                    mx, model, kcache, prompt_ids, args.gen_tokens, total_kv_bytes)
+                row["kakeya"] = _run(
+                    mx, generate_step, model, prompt_ids, args.gen_tokens, kcache)
             except Exception as e:
                 row["kakeya"] = {"error": f"{type(e).__name__}: {e}"}
                 print(f"[bench] L={L}: kakeya path failed: {e}", file=sys.stderr)
-
-        if not args.skip_vanilla:
-            print(f"[bench] L={L}: vanilla full-KV ...", file=sys.stderr, flush=True)
-            try:
-                vcache = make_prompt_cache(model)
-                row["vanilla"] = _decode(
-                    mx, model, vcache, prompt_ids, args.gen_tokens,
-                    lambda c: _full_cache_bytes(c))
-            except Exception as e:  # OOM or unsupported → record and continue
-                row["vanilla"] = {"error": f"{type(e).__name__}: {e}"}
+            finally:
+                kcache = None
+                mx.clear_cache()
 
         k = row.get("kakeya", {})
         v = row.get("vanilla", {})
@@ -192,14 +229,18 @@ def main() -> int:
                 "decode_speedup_x": round(sp, 3),
                 "kv_bytes_ratio_x": round(v.get("kv_bytes", 0) / max(k.get("kv_bytes", 1), 1), 1),
             }
-        if k_ok:
-            print(f"[bench] L={L}: kakeya {k['decode_tokens_per_s']} tok/s "
-                  f"(prefill {k['prefill_s']}s, KV {k['kv_bytes']/1e6:.2f} MB, "
-                  f"peak {k['peak_memory_bytes']/1e9:.2f} GB)", file=sys.stderr)
         if v_ok:
             print(f"[bench] L={L}: vanilla {v['decode_tokens_per_s']} tok/s "
-                  f"(prefill {v['prefill_s']}s, KV {v['kv_bytes']/1e6:.2f} MB, "
+                  f"(ttft {v['ttft_s']}s, KV {v['kv_bytes']/1e6:.2f} MB, "
                   f"peak {v['peak_memory_bytes']/1e9:.2f} GB)", file=sys.stderr)
+        if k_ok:
+            print(f"[bench] L={L}: kakeya  {k['decode_tokens_per_s']} tok/s "
+                  f"(ttft {k['ttft_s']}s, KV {k['kv_bytes']/1e6:.2f} MB, "
+                  f"peak {k['peak_memory_bytes']/1e9:.2f} GB)", file=sys.stderr)
+        if k_ok and v_ok:
+            r = row["kakeya_vs_vanilla"]
+            print(f"[bench] L={L}: kakeya vs vanilla -> decode {r['decode_speedup_x']}x, "
+                  f"KV {r['kv_bytes_ratio_x']}x smaller", file=sys.stderr)
         rows.append(row)
 
     report = {
@@ -220,31 +261,6 @@ def main() -> int:
     out_path.write_text(json.dumps(report, indent=2))
     print(f"\n[bench] wrote {out_path}", file=sys.stderr)
     return 0
-
-
-def _full_cache_bytes(cache: list) -> int:
-    """Persistent KV bytes for an mlx_lm full-KV prompt cache.
-
-    Per layer: K and V are ``[B, n_kv, S, head_dim]`` with logical length
-    ``offset`` along the seq axis. Bytes ≈ 2 (K+V) × B×n_kv×offset×head_dim ×
-    itemsize (2 for fp16/bf16).
-    """
-    total = 0
-    for c in cache:
-        off = int(getattr(c, "offset", 0) or 0)
-        k = getattr(c, "keys", None)
-        if k is None or off <= 0:
-            continue
-        shp = tuple(k.shape)  # [B, n_kv, S_buf, head_dim]
-        if len(shp) != 4:
-            continue
-        b, n_kv, s_buf, hd = shp
-        # Resident length = the actual stored buffer, capped (RotatingKVCache
-        # keeps <= max_size even though .offset is the global position).
-        seq = min(off, int(s_buf))
-        itemsize = 2  # fp16/bf16 KV
-        total += 2 * b * n_kv * seq * hd * itemsize
-    return total
 
 
 if __name__ == "__main__":
