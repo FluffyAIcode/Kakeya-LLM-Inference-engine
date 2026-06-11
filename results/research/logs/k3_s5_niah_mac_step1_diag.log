@@ -1,0 +1,17 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --n-samples 1 --haystack-min-lines 60 --haystack-max-lines 81 --max-new-tokens 1 --skip-oracle --output results/research/k3_s5_niah_mac_step1_diag.json
+
+Started: 2026-06-11T03:49:41.976Z
+Ended: 2026-06-11T03:51:47.709Z
+Elapsed: 125.733s
+Exit code: 0
+
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on mps
+[mac] 1 samples, prompt len min=1639 max=1639
+[mac] running restored cross-model verifier (s5)
+[mac]   sample 0: T=1639 -> '<|channel>'
+[mac] cross-model recall = 0.000 (0/1)
+
+[mac] DONE. cross=0.000 oracle=skipped -> results/research/k3_s5_niah_mac_step1_diag.json
