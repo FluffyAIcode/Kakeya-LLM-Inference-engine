@@ -1,0 +1,26 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/bench_mlx_kakeya_deployment.py --model-id models/gemma-4-26B-A4B-it-mlx-4bit --context-lengths 512,2048,8192 --gen-tokens 64 --sink-size 4 --window-size 64 --output results/platform-tests/bench_gemma4_26b_mac_kakeya.json
+
+Commit under test:
+85b9c5a Fix Kakeya path in Mac deployment bench: make_sink_window_cache() takes keyword-only sink_size/window_size.
+
+Started: 2026-06-11T07:21:53.206Z
+Ended: 2026-06-11T07:25:12.257Z
+Elapsed: 199.051s
+Exit code: 0
+
+[bench] loading MLX model models/gemma-4-26B-A4B-it-mlx-4bit
+[bench] L=512: Kakeya sink+window ...
+[bench] L=512: vanilla full-KV ...
+[bench] L=512: kakeya 17.981 tok/s (prefill 9.6883s, KV 15.32 MB, peak 16.02 GB)
+[bench] L=512: vanilla 24.98 tok/s (prefill 1.498s, KV 129.54 MB, peak 16.04 GB)
+[bench] L=2048: Kakeya sink+window ...
+[bench] L=2048: vanilla full-KV ...
+[bench] L=2048: kakeya 8.792 tok/s (prefill 7.5367s, KV 15.32 MB, peak 17.49 GB)
+[bench] L=2048: vanilla 6.586 tok/s (prefill 6.3451s, KV 252.95 MB, peak 17.47 GB)
+[bench] L=8192: Kakeya sink+window ...
+[bench] L=8192: vanilla full-KV ...
+[bench] L=8192: kakeya 2.839 tok/s (prefill 43.6301s, KV 15.32 MB, peak 22.78 GB)
+[bench] L=8192: vanilla 2.745 tok/s (prefill 53.3461s, KV 378.78 MB, peak 22.54 GB)
+
+[bench] wrote results/platform-tests/bench_gemma4_26b_mac_kakeya.json
