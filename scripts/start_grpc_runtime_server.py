@@ -59,6 +59,8 @@ def _resolve_kv_dims(verifier) -> Tuple[int, int, int]:
     over gRPC match what the verifier is actually holding.
     """
     cfg = verifier.model.config
+    # Gemma 4 is multimodal: decoder dims live under config.text_config.
+    cfg = getattr(cfg, "text_config", None) or cfg
     num_layers = int(getattr(cfg, "num_hidden_layers"))
     # Qwen3 / Gemma / DeepSeek all support GQA — kv-heads is the
     # dimension that matters for KV cache size, not attention-heads.
@@ -79,6 +81,10 @@ def _build_verifier(
     verifier_id: str,
     sink: int,
     window: int,
+    drafter_id: str = "",
+    f_theta_dir: str = "",
+    s5_exact_full_attn: bool = True,
+    device: str = "cpu",
 ):
     cfg = VerifierConfig(
         model_id=verifier_id,
@@ -99,6 +105,23 @@ def _build_verifier(
             sys.exit(2)
         from inference_engine.backends.mlx.verifier import MLXSinkWindowVerifier
         return MLXSinkWindowVerifier(cfg)
+    if backend == "restored":
+        # f_θ + S5 K/V-Restoration verifier (the Kakeya inference path).
+        # Requires the DFlash drafter + trained f_θ checkpoint.
+        if not drafter_id or not f_theta_dir:
+            raise SystemExit(
+                "backend=restored requires --drafter-id and --f-theta-dir"
+            )
+        from inference_engine.v04.build_restored import load_restored_verifier
+        return load_restored_verifier(
+            verifier_id=verifier_id,
+            drafter_id=drafter_id,
+            f_theta_dir=f_theta_dir,
+            sink_size=sink,
+            window_size=window,
+            s5_exact_full_attn=s5_exact_full_attn,
+            device=device,
+        )
     raise SystemExit(f"unknown backend: {backend}")
 
 
@@ -128,6 +151,9 @@ async def _serve(args: argparse.Namespace) -> int:
     verifier = _build_verifier(
         backend=args.backend, verifier_id=args.verifier_id,
         sink=args.sink, window=args.window,
+        drafter_id=args.drafter_id, f_theta_dir=args.f_theta_dir,
+        s5_exact_full_attn=not args.no_s5_exact_full_attn,
+        device=args.device,
     )
 
     num_layers, num_kv_heads, head_dim = _resolve_kv_dims(verifier)
@@ -189,8 +215,19 @@ async def _serve(args: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--backend", choices=["cpu", "mlx"], default="cpu")
+    ap.add_argument("--backend", choices=["cpu", "mlx", "restored"], default="cpu")
     ap.add_argument("--verifier-id", default="Qwen/Qwen3-0.6B")
+    ap.add_argument("--device", default="cpu",
+                    help="Torch device for the restored backend "
+                         "(e.g. 'cuda' on a GPU host). Ignored by cpu/mlx.")
+    ap.add_argument("--drafter-id", default="",
+                    help="DFlash drafter id/path (backend=restored).")
+    ap.add_argument("--f-theta-dir", default="",
+                    help="Trained f_θ checkpoint dir (backend=restored).")
+    ap.add_argument("--no-s5-exact-full-attn", action="store_true",
+                    help="Disable S5 (keep f_θ for full-attention layers too). "
+                         "By default backend=restored uses S5 exact full-attn "
+                         "layers for recall.")
     ap.add_argument("--bind", default=DEFAULT_BIND_ADDRESS,
                     help=f"host:port to bind. Default: {DEFAULT_BIND_ADDRESS}")
     ap.add_argument("--capacity", type=int, default=4,

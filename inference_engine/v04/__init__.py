@@ -54,6 +54,13 @@ from inference_engine.v04.cross_model_dlm_verifier import (
     CrossModelDLMRestoredVerifier,
     CrossModelLayerMapping,
 )
+from inference_engine.v04.restored_sink_window_verifier import (
+    CrossModelRestoredSinkWindowVerifier,
+)
+from inference_engine.v04.build_restored import (
+    build_restored_speculative_decoder,
+    load_restored_verifier,
+)
 from inference_engine.v04.kv_compressor import (
     IdentityCompressor,
     KakeyaLatticeCompressor,
@@ -134,4 +141,8 @@ __all__ = [
     # K/V Restoration (the integrated Kakeya inference architecture)
     "CrossModelDLMRestoredVerifier",
     "CrossModelLayerMapping",
+    # Gap 1 + Gap 2 — incremental restored verifier + served-path factories
+    "CrossModelRestoredSinkWindowVerifier",
+    "build_restored_speculative_decoder",
+    "load_restored_verifier",
 ]
