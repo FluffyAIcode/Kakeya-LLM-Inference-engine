@@ -54,6 +54,19 @@ PROMPTS = [
     "Write a haiku about speculative decoding.",
 ]
 
+# HumanEval-style code-generation prompts — the regime the z-lab DFlash
+# reference (~0.447 / 7.7) is measured on. DFlash drafts code/structured
+# output far better than open-ended short Q&A, so this set characterizes
+# acceptance on the reference's distribution.
+CODE_PROMPTS = [
+    "Complete this Python function:\n\ndef has_close_elements(numbers: list[float], threshold: float) -> bool:\n    \"\"\"Return True if any two numbers are closer than threshold.\"\"\"\n",
+    "Complete this Python function:\n\ndef is_palindrome(s: str) -> bool:\n    \"\"\"Return True if s reads the same forwards and backwards, ignoring case and non-alphanumeric chars.\"\"\"\n",
+    "Complete this Python function:\n\ndef merge_sort(arr: list[int]) -> list[int]:\n    \"\"\"Return a new list with the elements of arr sorted ascending using merge sort.\"\"\"\n",
+    "Complete this Python function:\n\ndef gcd(a: int, b: int) -> int:\n    \"\"\"Return the greatest common divisor of a and b using the Euclidean algorithm.\"\"\"\n",
+    "Complete this Python function:\n\ndef flatten(nested: list) -> list:\n    \"\"\"Flatten an arbitrarily nested list of integers into a single flat list.\"\"\"\n",
+    "Complete this Python function:\n\ndef count_words(text: str) -> dict[str, int]:\n    \"\"\"Return a dict mapping each lowercased word in text to its frequency.\"\"\"\n",
+]
+
 # Disjoint from the alignment trainer's prompt corpus — for honest held-out
 # acceptance after alignment training (no topic/phrasing near-duplicates).
 HELD_OUT_PROMPTS = [
@@ -167,9 +180,18 @@ def main() -> int:
     ap.add_argument("--held-out", action="store_true",
                     help="evaluate on HELD_OUT_PROMPTS (disjoint from the "
                          "alignment trainer's prompts) for honest generalization.")
+    ap.add_argument("--prompt-set", choices=["default", "held-out", "code"],
+                    default=None,
+                    help="Which prompt set to use. 'code' = HumanEval-style "
+                         "(the z-lab reference regime). Overrides --held-out.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
-    prompts = HELD_OUT_PROMPTS if args.held_out else PROMPTS
+    if args.prompt_set == "code":
+        prompts = CODE_PROMPTS
+    elif args.prompt_set == "held-out" or args.held_out:
+        prompts = HELD_OUT_PROMPTS
+    else:
+        prompts = PROMPTS
 
     device = torch.device("cuda")
     dtype = torch.bfloat16
