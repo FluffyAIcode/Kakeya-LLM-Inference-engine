@@ -1,0 +1,37 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/bench_mlx_kakeya_deployment.py --model-id models/gemma-4-26B-A4B-it-mlx-4bit --context-lengths 512,2048,8192,16384 --gen-tokens 64 --sink-size 4 --window-size 64 --output results/platform-tests/bench_gemma4_26b_mac_kakeya_v2.json
+
+Commit under test:
+d70a783 Mac deployment bench: add MLX kernel warmup for both cache paths before timing
+d7d2a99 Mac deployment bench: drive BOTH vanilla and Kakeya through mlx_lm's native generate_step, swapping only the KV cache
+
+Started: 2026-06-11T07:37:22.948Z
+Ended: 2026-06-11T07:41:03.008Z
+Elapsed: 220.060s
+Exit code: 0
+
+[bench] loading MLX model models/gemma-4-26B-A4B-it-mlx-4bit
+[bench] warmup (vanilla) ...
+[bench] warmup (kakeya) ...
+[bench] L=512: vanilla (native make_prompt_cache) ...
+[bench] L=512: Kakeya sink+window ...
+[bench] L=512: vanilla 24.088 tok/s (ttft 1.4955s, KV 172.81 MB, peak 15.81 GB)
+[bench] L=512: kakeya  24.139 tok/s (ttft 1.5256s, KV 15.32 MB, peak 15.81 GB)
+[bench] L=512: kakeya vs vanilla -> decode 1.002x, KV 11.3x smaller
+[bench] L=2048: vanilla (native make_prompt_cache) ...
+[bench] L=2048: Kakeya sink+window ...
+[bench] L=2048: vanilla 23.869 tok/s (ttft 7.987s, KV 256.90 MB, peak 16.53 GB)
+[bench] L=2048: kakeya  24.709 tok/s (ttft 5.8703s, KV 15.32 MB, peak 16.53 GB)
+[bench] L=2048: kakeya vs vanilla -> decode 1.035x, KV 16.8x smaller
+[bench] L=8192: vanilla (native make_prompt_cache) ...
+[bench] L=8192: Kakeya sink+window ...
+[bench] L=8192: vanilla 21.892 tok/s (ttft 27.1335s, KV 382.73 MB, peak 17.20 GB)
+[bench] L=8192: kakeya  24.975 tok/s (ttft 22.8643s, KV 15.32 MB, peak 16.57 GB)
+[bench] L=8192: kakeya vs vanilla -> decode 1.141x, KV 25.0x smaller
+[bench] L=16384: vanilla (native make_prompt_cache) ...
+[bench] L=16384: Kakeya sink+window ...
+[bench] L=16384: vanilla 20.77 tok/s (ttft 63.6804s, KV 550.50 MB, peak 17.91 GB)
+[bench] L=16384: kakeya  24.381 tok/s (ttft 48.4043s, KV 15.32 MB, peak 16.57 GB)
+[bench] L=16384: kakeya vs vanilla -> decode 1.174x, KV 35.9x smaller
+
+[bench] wrote results/platform-tests/bench_gemma4_26b_mac_kakeya_v2.json

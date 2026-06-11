@@ -1,0 +1,112 @@
+{
+  "kind": "mlx_kakeya_deployment_benchmark",
+  "config": {
+    "model_id": "models/gemma-4-26B-A4B-it-mlx-4bit",
+    "context_lengths": [
+      512,
+      2048,
+      8192,
+      16384
+    ],
+    "gen_tokens": 64,
+    "sink_size": 4,
+    "window_size": 64
+  },
+  "env": {
+    "mlx_version": "0.31.2"
+  },
+  "results": [
+    {
+      "context_length": 512,
+      "vanilla": {
+        "ttft_s": 1.4955,
+        "decode_s": 2.6155,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 24.088,
+        "kv_bytes": 172810240,
+        "peak_memory_bytes": 15807003884
+      },
+      "kakeya": {
+        "ttft_s": 1.5256,
+        "decode_s": 2.6099,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 24.139,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 15806291088
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 1.002,
+        "kv_bytes_ratio_x": 11.3
+      }
+    },
+    {
+      "context_length": 2048,
+      "vanilla": {
+        "ttft_s": 7.987,
+        "decode_s": 2.6394,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 23.869,
+        "kv_bytes": 256901120,
+        "peak_memory_bytes": 16527986243
+      },
+      "kakeya": {
+        "ttft_s": 5.8703,
+        "decode_s": 2.5496,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 24.709,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 16528002590
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 1.035,
+        "kv_bytes_ratio_x": 16.8
+      }
+    },
+    {
+      "context_length": 8192,
+      "vanilla": {
+        "ttft_s": 27.1335,
+        "decode_s": 2.8778,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 21.892,
+        "kv_bytes": 382730240,
+        "peak_memory_bytes": 17196805730
+      },
+      "kakeya": {
+        "ttft_s": 22.8643,
+        "decode_s": 2.5225,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 24.975,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 16570101278
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 1.141,
+        "kv_bytes_ratio_x": 25.0
+      }
+    },
+    {
+      "context_length": 16384,
+      "vanilla": {
+        "ttft_s": 63.6804,
+        "decode_s": 3.0332,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 20.77,
+        "kv_bytes": 550502400,
+        "peak_memory_bytes": 17911298120
+      },
+      "kakeya": {
+        "ttft_s": 48.4043,
+        "decode_s": 2.584,
+        "decode_tokens": 63,
+        "decode_tokens_per_s": 24.381,
+        "kv_bytes": 15319040,
+        "peak_memory_bytes": 16570117662
+      },
+      "kakeya_vs_vanilla": {
+        "decode_speedup_x": 1.174,
+        "kv_bytes_ratio_x": 35.9
+      }
+    }
+  ]
+}
