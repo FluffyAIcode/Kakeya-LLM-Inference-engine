@@ -107,52 +107,60 @@ def restored_specdecode(
     adapter, drafter, provider, embed_fn, lm_head_fn,
     prompt, gen_tokens, block_size, device, eos_ids,
 ) -> Dict[str, Any]:
-    """DFlash drafts a block; the *restored* verifier verifies it in one
-    re-forward, greedily accepting the matching prefix. The restored
-    verifier is the source of truth (output == greedy restored decode)."""
-    committed = list(prompt)
+    """DFlash drafts a block; the **incremental** (Gap-A) restored verifier
+    verifies the block in one O(L) incremental forward, greedily accepting
+    the matching prefix. The restored verifier is the source of truth
+    (output == greedy restored decode). Reports a per-component time
+    breakdown (aux / draft / verify) to expose the bottleneck."""
+    assert adapter._incremental, "restored_specdecode needs incremental=True (Gap-A)"
+    adapter.prefill(prompt)              # builds the restored KV cache once
     generated: List[int] = []
     accepts: List[int] = []
-    verifier_fwds = 0
-    drafter_fwds = 0
+    t_aux = t_draft = t_verify = 0.0
     torch.cuda.synchronize(device)
     t0 = time.perf_counter()
     while len(generated) < gen_tokens:
         L = min(block_size, gen_tokens - len(generated))
-        # DFlash drafts using the verifier's aux hidden (EAGLE) + bonus.
-        aux_ctx, bonus = provider.aux_hidden_context(committed)
-        verifier_fwds += 1  # aux/prefill forward
+        # DFlash drafts using the *clean* verifier aux hidden (EAGLE) + bonus.
+        ta = time.perf_counter()
+        aux_ctx, bonus = provider.aux_hidden_context(adapter._committed)
+        torch.cuda.synchronize(device); t_aux += time.perf_counter() - ta
+        td = time.perf_counter()
         drafts = drafter.draft_block(aux_ctx, bonus, embed_fn, lm_head_fn, block_size=L)
-        drafter_fwds += 1
+        torch.cuda.synchronize(device); t_draft += time.perf_counter() - td
         candidate = [bonus] + drafts[: L - 1] if L > 1 else [bonus]
-        # Verify with the RESTORED verifier (bounded-KV): one re-forward over
-        # committed+candidate gives per-position logits.
-        logits = adapter._restored_logits(committed + candidate)  # [C+len, V]
-        verifier_fwds += 1
-        C = len(committed)
+        # Verify with the INCREMENTAL restored verifier (O(L)).
+        tv = time.perf_counter()
+        prev = adapter.next_token_logits
+        block_logits = adapter.forward_block(candidate)  # [len(candidate), V]
         accepted = 0
         for i in range(len(candidate)):
-            pred = int(logits[C - 1 + i].argmax().item())
-            if pred == candidate[i]:
+            if int(prev.argmax().item()) == candidate[i]:
                 accepted += 1
+                prev = block_logits[i]
             else:
                 break
-        correction = int(logits[C - 1 + accepted].argmax().item())
+        correction = int(prev.argmax().item())
+        adapter.commit_or_truncate(forwarded=len(candidate), accepted=accepted)
+        adapter.append_token(correction)   # commit correction; updates next_token_logits
+        torch.cuda.synchronize(device); t_verify += time.perf_counter() - tv
         commit = candidate[:accepted] + [correction]
-        commit = commit[: gen_tokens - len(generated)]
-        committed += commit
         generated += commit
-        accepts.append(accepted)  # drafter tokens accepted (bonus counts as draft[0])
+        accepts.append(accepted)
         if any(t in eos_ids for t in commit):
             break
     torch.cuda.synchronize(device)
     dt = time.perf_counter() - t0
+    generated = generated[:gen_tokens]
     return {
         "tokens": generated,
         "decode_s": dt,
         "decode_tokens_per_s": round(len(generated) / dt, 3) if dt > 0 else None,
-        "verifier_forwards": verifier_fwds,
-        "drafter_forwards": drafter_fwds,
+        "time_breakdown_s": {
+            "aux_clean_forward": round(t_aux, 3),
+            "drafter": round(t_draft, 3),
+            "incremental_verify": round(t_verify, 3),
+        },
         "blocks": len(accepts),
         "mean_accept_len": round(sum(accepts) / len(accepts), 2) if accepts else 0.0,
         "decode_tokens": len(generated),
@@ -162,7 +170,7 @@ def restored_specdecode(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verifier-id", default="google/gemma-4-26B-A4B-it")
-    ap.add_argument("--drafter-id", default="models/dflash-kakeya-baseline")
+    ap.add_argument("--drafter-id", default="z-lab/gemma-4-26B-A4B-it-DFlash")
     ap.add_argument("--f-theta-dir", default="results/research/f_theta_v5_s5_sliding")
     ap.add_argument("--haystack-lines", type=int, default=60)
     ap.add_argument("--n-samples", type=int, default=3)
@@ -231,6 +239,7 @@ def main() -> int:
         restored, apply_rotary_pos_emb=apply_rotary_pos_emb,
         eager_attention_forward=eager_attention_forward,
         all_attention_functions=ALL_ATTENTION_FUNCTIONS, device="cuda",
+        incremental=True,   # Gap-A: O(L)/block incremental verify
     )
     cfg = drafter.cfg
     embed_fn, lm_head_fn = _build_embed_lm_head(verifier, cfg.hidden_size, cfg.final_logit_softcapping)
