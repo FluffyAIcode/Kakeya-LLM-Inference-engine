@@ -62,13 +62,16 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--haystack-max-lines", type=int, default=322)
     ap.add_argument("--sink-size", type=int, default=4)
     ap.add_argument("--window-size", type=int, default=64)
-    ap.add_argument("--max-new-tokens", type=int, default=12)
-    ap.add_argument("--free-generation", action="store_true",
-                    help="Autoregressive free generation (1 restored forward "
-                         "per token, O(T) each). Default is teacher-forced "
-                         "recall (a single restored forward per sample over "
-                         "[prompt + needle-code]), which is O(T)/sample and "
-                         "the usable path on memory-constrained Macs.")
+    ap.add_argument("--max-new-tokens", type=int, default=16)
+    ap.add_argument("--teacher-forced", action="store_true",
+                    help="DIAGNOSTIC ONLY (under-measures retrieval): single "
+                         "restored forward per sample, check argmax at the "
+                         "needle-code span. Note this misses the model's "
+                         "preamble so it reads ~0 even for the oracle — use "
+                         "the default free-generation for a real recall "
+                         "number. Free-gen oracle uses mlx's fast native "
+                         "incremental cache; the restored cross path does a "
+                         "full forward per token (slow on M4 — see notes).")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--drafter-device", default="mps",
                     help="torch device for the DFlash drafter + f_θ (mps|cpu)")
@@ -303,19 +306,16 @@ def main() -> int:
                   file=sys.stderr)
         return decoded, lats, toks
 
-    def eval_free_gen(cross: bool) -> Tuple[List[str], List[float], List[int]]:
+    def eval_free_gen_cross() -> Tuple[List[str], List[float], List[int]]:
+        """Restored free generation: 1 restored full forward per token
+        (amortized restoration). Correct recall metric; slow on M4."""
         decoded, lats, toks = [], [], []
         for i, pid in enumerate(sample_ids):
-            rk = rv = tsrc = None
-            if cross:
-                rk, rv, tsrc = build_restoration(pid)
+            rk, rv, tsrc = build_restoration(pid)
             cur = list(pid); gen: List[int] = []
             t0 = time.perf_counter()
             for _ in range(args.max_new_tokens):
-                if cross:
-                    last = restored_forward(cur, rk, rv, tsrc, return_all=False)
-                else:
-                    out = mlx_model(mx.array([cur])); mx.eval(out); last = out[0, -1]
+                last = restored_forward(cur, rk, rv, tsrc, return_all=False)
                 nxt = int(mx.argmax(last).item()); gen.append(nxt)
                 if eos_id is not None and nxt == eos_id:
                     break
@@ -323,6 +323,27 @@ def main() -> int:
             lats.append(time.perf_counter() - t0)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
             print(f"[mac]   sample {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
+                  file=sys.stderr)
+        return decoded, lats, toks
+
+    def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
+        """Oracle free generation using mlx's NATIVE incremental KV cache
+        (fast + correct reference; confirms the metric/dataset)."""
+        decoded, lats, toks = [], [], []
+        make_cache = getattr(mlx_model, "make_cache", None)
+        for i, pid in enumerate(sample_ids):
+            cache = make_cache() if make_cache is not None else None
+            t0 = time.perf_counter()
+            out = mlx_model(mx.array([pid]), cache=cache); mx.eval(out)
+            tok = int(mx.argmax(out[0, -1]).item()); gen = [tok]
+            for _ in range(args.max_new_tokens - 1):
+                if eos_id is not None and tok == eos_id:
+                    break
+                out = mlx_model(mx.array([[tok]]), cache=cache); mx.eval(out)
+                tok = int(mx.argmax(out[0, -1]).item()); gen.append(tok)
+            lats.append(time.perf_counter() - t0)
+            decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            print(f"[mac]   oracle {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
                   file=sys.stderr)
         return decoded, lats, toks
 
@@ -335,24 +356,24 @@ def main() -> int:
 
     label = "identity" if args.identity_restore else (
         "s5" if args.s5_exact_full_attn else "f_theta_all")
-    eval_mode = "free_gen" if args.free_generation else "teacher_forced"
+    eval_mode = "teacher_forced" if args.teacher_forced else "free_gen"
     print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
           file=sys.stderr, flush=True)
-    if args.free_generation:
-        cross_dec, cross_lat, cross_tok = eval_free_gen(cross=True)
-    else:
+    if args.teacher_forced:
         cross_dec, cross_lat, cross_tok = eval_teacher_forced(cross_logits_all)
+    else:
+        cross_dec, cross_lat, cross_tok = eval_free_gen_cross()
     cross_res = aggregate_recall("k3_cross_model_mac", samples, cross_dec, cross_lat, cross_tok)
     print(f"[mac] cross-model recall = {cross_res.recall:.3f} "
           f"({cross_res.samples_correct}/{cross_res.samples_total})", file=sys.stderr)
 
     oracle_res = None
     if not args.skip_oracle:
-        print("[mac] running oracle (full MLX forward)", file=sys.stderr, flush=True)
-        if args.free_generation:
-            o_dec, o_lat, o_tok = eval_free_gen(cross=False)
-        else:
+        print("[mac] running oracle", file=sys.stderr, flush=True)
+        if args.teacher_forced:
             o_dec, o_lat, o_tok = eval_teacher_forced(oracle_logits_all)
+        else:
+            o_dec, o_lat, o_tok = eval_free_gen_oracle()  # fast native incremental
         oracle_res = aggregate_recall("oracle_mac", samples, o_dec, o_lat, o_tok)
         print(f"[mac] oracle recall = {oracle_res.recall:.3f}", file=sys.stderr)
 
@@ -385,7 +406,7 @@ def main() -> int:
     cross_tps = _tps(cross_lat, cross_tok)
     cross_tps["eval_mode"] = eval_mode
     cross_tps["restored_forwards_per_sample"] = (
-        args.max_new_tokens if args.free_generation else 1)
+        1 if args.teacher_forced else args.max_new_tokens)
     print(f"[mac] cross-model throughput ({eval_mode}): "
           f"{cross_tps['tokens_per_second']} tok/s "
           f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s, "
@@ -407,7 +428,7 @@ def main() -> int:
             "max_new_tokens": args.max_new_tokens,
             "seed": args.seed,
             "eval_mode": eval_mode,
-            "free_generation": bool(args.free_generation),
+            "teacher_forced": bool(args.teacher_forced),
             "s5_exact_full_attn": bool(args.s5_exact_full_attn),
             "identity_restore": bool(args.identity_restore),
             "compress_full_attn": bool(args.compress_full_attn),
