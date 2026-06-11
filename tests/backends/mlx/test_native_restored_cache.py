@@ -196,3 +196,38 @@ def test_native_decode_delegates(monkeypatch):
     out = nrc.native_restored_decode(_Model(_TextModel(2)), ["C"], [0.0, 1.0, 0.0],
                                      max_tokens=8)
     assert out == [1]                            # argmax of first_logits
+
+
+def _install_mlx_genstream(monkeypatch, stream, prompt_cache):
+    mx = _install_mlx(monkeypatch, prompt_cache=prompt_cache)
+    gen_mod = sys.modules["mlx_lm.generate"]
+    seen = {}
+
+    def _gen_step(prompt, model, *, prompt_cache=None, max_tokens=256, **k):
+        seen["prompt"] = prompt
+        seen["kwargs"] = k
+        for i, t in enumerate(stream):
+            if i >= max_tokens:
+                break
+            yield t, 0.0
+    gen_mod.generate_step = _gen_step
+    return seen
+
+
+def test_native_generate_end_to_end_and_eos(monkeypatch):
+    cache_layers = [_KVCacheLayer()]
+    seen = _install_mlx_genstream(monkeypatch, [5, 6, 99, 7], cache_layers)
+    out, cache = nrc.native_generate(
+        _Model(_TextModel(1)), [1, 2, 3], max_tokens=16, eos_ids=[99],
+        prefill_step_size=128, kv_bits=8)
+    assert out == [5, 6, 99]                     # stops at EOS (included)
+    assert cache is cache_layers
+    assert seen["prompt"] == [1, 2, 3]           # whole prompt handed to generate_step
+    assert seen["kwargs"]["prefill_step_size"] == 128
+    assert seen["kwargs"]["kv_bits"] == 8
+
+
+def test_native_generate_rejects_empty(monkeypatch):
+    _install_mlx(monkeypatch)
+    with pytest.raises(ValueError):
+        nrc.native_generate(_Model(_TextModel(1)), [], max_tokens=4)

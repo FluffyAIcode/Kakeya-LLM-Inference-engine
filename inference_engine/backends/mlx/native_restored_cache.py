@@ -156,7 +156,50 @@ def native_restored_decode(
     max_tokens: int,
     eos_ids: Sequence[int] = (),
 ) -> List[int]:
-    """Decode over a native cache via mlx_lm ``generate_step`` (async-pipelined,
-    O(L)/token). Thin alias of the validated incremental decoder."""
+    """Decode over a *pre-built* native cache via mlx_lm ``generate_step``
+    (async-pipelined, O(L)/token). Thin alias of the validated incremental
+    decoder. Used by the quantized path (prefill → quantize full-attn → decode)."""
     return restored_incremental_generate(
         mlx_model, cache, first_logits, max_tokens=max_tokens, eos_ids=eos_ids)
+
+
+def native_generate(
+    mlx_model: Any,
+    prompt_ids: Sequence[int],
+    *,
+    max_tokens: int,
+    eos_ids: Sequence[int] = (),
+    prefill_step_size: int = 512,
+    kv_bits: Optional[int] = None,
+    kv_group_size: int = 64,
+) -> Tuple[List[int], Any]:
+    """Pure-native end-to-end path: hand the **whole prompt** to mlx_lm's own
+    ``generate_step`` (chunked prefill + async-pipelined decode + optional
+    ``kv_bits`` quantization) over a native prompt cache. This is mlx_lm's
+    validated loop verbatim — it cannot OOM on prefill (chunked) and is the
+    safest collapse-fix path. Returns ``(tokens, cache)``.
+
+    Recall rides S5's exact full-attention K/V (native `KVCache`); sliding stays
+    bounded (`RotatingKVCache`). ``kv_bits`` (if set) quantizes every trimmable
+    layer natively once prefilled (extra memory savings).
+    """
+    import mlx.core as mx  # type: ignore
+    from mlx_lm.generate import generate_step  # type: ignore
+    from mlx_lm.models.cache import make_prompt_cache  # type: ignore
+
+    ids = [int(t) for t in prompt_ids]
+    if not ids:
+        raise ValueError("prompt_ids must be non-empty")
+    eos = set(int(t) for t in eos_ids)
+    cache = make_prompt_cache(mlx_model)
+    out: List[int] = []
+    for tok, _ in generate_step(
+        mx.array(ids), mlx_model, prompt_cache=cache, max_tokens=max_tokens,
+        prefill_step_size=prefill_step_size, kv_bits=kv_bits,
+        kv_group_size=kv_group_size,
+    ):
+        t = int(tok)
+        out.append(t)
+        if t in eos:
+            break
+    return out, cache

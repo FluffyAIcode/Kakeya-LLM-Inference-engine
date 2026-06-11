@@ -141,7 +141,7 @@ def main() -> int:
     )
     from inference_engine.backends.mlx.native_restored_cache import (
         build_native_prefill_cache, quantize_full_attn_layers,
-        native_restored_decode, cache_resident_bytes,
+        native_restored_decode, native_generate, cache_resident_bytes,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from scripts.research.k3_dflash_mlx_bridge import (
@@ -446,16 +446,23 @@ def main() -> int:
         f_theta/drafter/patch/bridge in the loop."""
         decoded, lats, toks = [], [], []
         resident_mb = []
+        eos_list = [eos_id] if eos_id is not None else []
         for i, pid in enumerate(sample_ids):
             t0 = time.perf_counter()
-            cache, first = build_native_prefill_cache(
-                mlx_model, pid, prefill_step_size=args.prefill_step_size)
             if args.quantize_full_attn_bits > 0:
+                # selective S5: chunked prefill -> quantize ONLY full-attn -> decode
+                cache, first = build_native_prefill_cache(
+                    mlx_model, pid, prefill_step_size=args.prefill_step_size)
                 cache = quantize_full_attn_layers(
                     cache, full_attn_idx, bits=args.quantize_full_attn_bits)
-            gen = native_restored_decode(
-                mlx_model, cache, first, max_tokens=args.max_new_tokens,
-                eos_ids=([eos_id] if eos_id is not None else ()))
+                gen = native_restored_decode(
+                    mlx_model, cache, first, max_tokens=args.max_new_tokens,
+                    eos_ids=eos_list)
+            else:
+                # pure mlx_lm generate_step end-to-end (safest, chunked prefill)
+                gen, cache = native_generate(
+                    mlx_model, pid, max_tokens=args.max_new_tokens,
+                    eos_ids=eos_list, prefill_step_size=args.prefill_step_size)
             lats.append(time.perf_counter() - t0)
             resident_mb.append(round(cache_resident_bytes(cache) / 1e6, 2))
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
