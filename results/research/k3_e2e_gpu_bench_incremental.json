@@ -2,7 +2,7 @@
   "kind": "k3_e2e_gpu_bench",
   "config": {
     "verifier_id": "google/gemma-4-26B-A4B-it",
-    "drafter_id": "models/dflash-kakeya-baseline",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
     "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
     "sink_size": 4,
     "window_size": 64,
@@ -31,16 +31,16 @@
         "max": 1238
       },
       "ar": {
-        "decode_tokens_per_s": 21.121,
-        "prefill_s_mean": 0.1707,
+        "decode_tokens_per_s": 17.454,
+        "prefill_s_mean": 0.2179,
         "kv_bytes_final": 282501120,
         "peak_mem_bytes": 54761089024,
         "recall": 1.0,
         "decode_tokens": 48
       },
       "restored": {
-        "decode_tokens_per_s": 21.68,
-        "prefill_s_mean": 0.4515,
+        "decode_tokens_per_s": 21.705,
+        "prefill_s_mean": 0.4646,
         "resident_kv_bytes": 16711680,
         "resident_window_tokens": 68,
         "effective_context_tokens": 1254,
@@ -53,7 +53,7 @@
         "ar_kv_mb": 282.5,
         "restored_resident_kv_mb": 16.71,
         "context_compression_x": 18.4,
-        "throughput_ratio_restored_over_ar": 1.026
+        "throughput_ratio_restored_over_ar": 1.244
       }
     },
     {
@@ -63,7 +63,7 @@
         "max": 3238
       },
       "ar": {
-        "decode_tokens_per_s": 21.943,
+        "decode_tokens_per_s": 21.206,
         "prefill_s_mean": 0.238,
         "kv_bytes_final": 733061120,
         "peak_mem_bytes": 58049087488,
@@ -71,8 +71,8 @@
         "decode_tokens": 48
       },
       "restored": {
-        "decode_tokens_per_s": 20.98,
-        "prefill_s_mean": 0.7624,
+        "decode_tokens_per_s": 21.63,
+        "prefill_s_mean": 0.7713,
         "resident_kv_bytes": 16711680,
         "resident_window_tokens": 68,
         "effective_context_tokens": 3254,
@@ -85,7 +85,7 @@
         "ar_kv_mb": 733.06,
         "restored_resident_kv_mb": 16.71,
         "context_compression_x": 47.9,
-        "throughput_ratio_restored_over_ar": 0.956
+        "throughput_ratio_restored_over_ar": 1.02
       }
     }
   ]

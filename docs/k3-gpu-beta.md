@@ -76,6 +76,21 @@ PYTHONPATH=.:sdks/python python scripts/start_grpc_runtime_server.py \
   --f-theta-dir results/research/f_theta_v5_s5_sliding --sink 4 --window 64
 ```
 
+## Canonical proposer
+
+The proposer/drafter is **`z-lab/gemma-4-26B-A4B-it-DFlash`** (the official
+checkpoint, with the Gap-B embed-scale fix) — used uniformly for both drafting
+and as the f_θ restoration K/V source across all entry points. The earlier
+`models/dflash-kakeya-baseline` was alignment-trained against a buggy
+(`×sqrt(hidden)`-scaled) embed pipeline and is not the beta drafter.
+
+f_θ v5 was trained against the kakeya-baseline drafter, so its **sliding-layer**
+restoration is technically off for z-lab K/V — but this is **harmless for
+recall**: recall is carried by the S5 exact full-attention layers, and the
+sliding-layer restored K/V are window-masked during decode. Both incremental
+decode and fused spec-decode measure **recall 1.0** with z-lab. (If pure
+sliding-layer restoration is ever needed, retrain f_θ on z-lab K/V.)
+
 ## Notes / scope
 
 * Drafting conditions on the restored verifier hidden for committed decode tokens
