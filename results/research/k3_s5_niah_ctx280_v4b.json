@@ -1,0 +1,349 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v4b_fresh_hybrid",
+    "f_theta_config": {
+      "drafter_num_layers": 5,
+      "drafter_num_kv_heads": 8,
+      "drafter_head_dim": 128,
+      "verifier_num_layers": 30,
+      "verifier_num_kv_heads": 8,
+      "verifier_head_dim": 256,
+      "rank": 768,
+      "verifier_layer_kv_heads": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2,
+        8,
+        8,
+        8,
+        8,
+        8,
+        2
+      ],
+      "verifier_layer_head_dims": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512,
+        256,
+        256,
+        256,
+        256,
+        256,
+        512
+      ]
+    },
+    "n_samples": 10,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "max_new_tokens": 24,
+    "seed": 42,
+    "skip_oracle": false,
+    "identity_restore": false,
+    "s5_exact_full_attn": true,
+    "s5_exact_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "prompt_token_lens": [
+      6417,
+      5418,
+      6177,
+      4857,
+      6078,
+      5298,
+      5358,
+      5198,
+      5497,
+      5057
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 27.283239149395378,
+      "median_latency_s": 26.6922971814638,
+      "per_sample_decoded": [
+        "The secret code is BETA-1409.\nthought\nThe secret code is BETA-1",
+        "The secret code is **DELTA-3286**.\nthought\nThe secret code is **DELTA",
+        "The secret code is BETA-7912.",
+        "The secret code is **BETA-4582**.\nthought\nThe secret code is **",
+        "The secret code is KAPPA-1434.\nthought\nThe secret code is KAPPA",
+        "The secret code is PINE-9928.\nthought\nThe secret code is PINE",
+        "The secret code is THETA-5557.\nthought\nThe secret code is THETA",
+        "The secret code is **PINE-7924**.\nthought\nThe secret code is **",
+        "The secret code is **GAMMA-4527**.\nthought\nThe secret code is **GAMMA",
+        "BETA-7224\nthought\nBETA-7224"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        15,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        0.6434404414499331,
+        0.8747554736456215,
+        0.686778007678562,
+        1.0406105031926975,
+        0.7505387230661207,
+        0.9050305389795371,
+        0.8933173540360834,
+        0.9372392356620551,
+        0.8617929431105361,
+        0.984635767483979
+      ],
+      "mean_throughput_tokens_per_sec": 0.8578138988305126,
+      "median_throughput_tokens_per_sec": 0.8840364138408524,
+      "min_throughput_tokens_per_sec": 0.6434404414499331,
+      "max_throughput_tokens_per_sec": 1.0406105031926975
+    },
+    "oracle": {
+      "name": "oracle",
+      "samples_total": 10,
+      "samples_correct": 10,
+      "recall": 1.0,
+      "mean_latency_s": 11.518795565795154,
+      "median_latency_s": 11.5701638009632,
+      "per_sample_decoded": [
+        "BETA-1409\n\nthought\nBETA-1409\n",
+        "The secret code is DELTA-3286.thought\nThe secret code is DELTA-",
+        "BETA-7912\nDESCRIBE THE PROCESS OF CREATING A CUSTOMIZED LEARNING PATH FOR",
+        "BETA-4582\n\nThe secret code is BETA-4582.",
+        "KAPPA-1434\n\n\n\n",
+        "PINE-9928\n\n\n",
+        "THETA-5557\n\nThe secret code is THETA-5557",
+        "PINE-7924\n\nthought\nPINE-7924\n",
+        "GAMMA-4527\nDESCRIBE THE PROCESS OF CREATING A CUSTOMIZED LEARNING PATH FOR",
+        "BETA-7224\n\nThe secret code is BETA-7224"
+      ],
+      "per_sample_correct": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        24,
+        24,
+        24,
+        24,
+        15,
+        13,
+        24,
+        24,
+        24,
+        24
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.4695448763525356,
+        1.9862464457106155,
+        1.5677651753169861,
+        2.356162436075314,
+        1.7102381277088805,
+        2.0540986877745913,
+        2.0225585336395846,
+        2.1287599680475906,
+        1.9472104969174977,
+        2.240135803560332
+      ],
+      "mean_throughput_tokens_per_sec": 1.9482720551103927,
+      "median_throughput_tokens_per_sec": 2.0044024896751003,
+      "min_throughput_tokens_per_sec": 1.4695448763525356,
+      "max_throughput_tokens_per_sec": 2.356162436075314
+    }
+  },
+  "attention_window": {
+    "per_config": {
+      "k3_cross_model": {
+        "config": "v04_dlm_restored",
+        "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)",
+        "samples_total": 10,
+        "effective_keys_at_last_query_mean": 5535.5,
+        "effective_keys_at_last_query_min": 4857,
+        "effective_keys_at_last_query_max": 6417,
+        "effective_keys_at_last_query_median": 5388.0,
+        "effective_attention_fraction_mean": 1.0,
+        "effective_attention_fraction_min": 1.0,
+        "effective_attention_fraction_max": 1.0,
+        "effective_attention_fraction_median": 1.0,
+        "per_sample": [
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6417,
+            "effective_keys_at_last_query": 6417,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5418,
+            "effective_keys_at_last_query": 5418,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6177,
+            "effective_keys_at_last_query": 6177,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 4857,
+            "effective_keys_at_last_query": 4857,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 6078,
+            "effective_keys_at_last_query": 6078,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5298,
+            "effective_keys_at_last_query": 5298,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5358,
+            "effective_keys_at_last_query": 5358,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5198,
+            "effective_keys_at_last_query": 5198,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5497,
+            "effective_keys_at_last_query": 5497,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          },
+          {
+            "config": "v04_dlm_restored",
+            "seq_len": 5057,
+            "effective_keys_at_last_query": 5057,
+            "effective_attention_fraction": 1.0,
+            "structural_constraint": "causal_with_dlm_reconstruction (local_cache=sink=4+window=64)"
+          }
+        ]
+      }
+    }
+  },
+  "memory": {
+    "k3_cross_model": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52882815488,
+      "current_reserved_bytes": 76279709696,
+      "peak_allocated_bytes": 69932629504,
+      "peak_reserved_bytes": 76279709696
+    },
+    "oracle": {
+      "device_kind": "cuda",
+      "device_name": "NVIDIA H200",
+      "device_total_bytes": 150109880320,
+      "current_allocated_bytes": 52882815488,
+      "current_reserved_bytes": 66527952896,
+      "peak_allocated_bytes": 63584878080,
+      "peak_reserved_bytes": 66527952896
+    }
+  },
+  "gate": {
+    "architectural_correctness": true,
+    "recall_cross_model": 1.0,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 0.0,
+    "recall_delta_within_5pp": true
+  }
+}
