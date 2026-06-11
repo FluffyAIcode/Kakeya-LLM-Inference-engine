@@ -55,6 +55,7 @@ from kv_cache_proposer.verifier import VerifierStats
 
 from inference_engine.v04.cross_model_dlm_verifier import (
     CrossModelDLMRestoredVerifier,
+    get_verifier_decoder,
     resolve_text_config,
 )
 
@@ -74,12 +75,23 @@ class CrossModelRestoredSinkWindowVerifier:
         eager_attention_forward: Callable,
         all_attention_functions: Optional[Any] = None,
         device: str = "cpu",
+        incremental: bool = False,
     ) -> None:
         self._restored = restored
         self._apply_rotary_pos_emb = apply_rotary_pos_emb
         self._eager_attention_forward = eager_attention_forward
         self._all_attention_functions = all_attention_functions
         self._device = torch.device(device)
+        # Incremental decode mode (Gap-A throughput optimization): capture the
+        # restored K/V into a persistent KV cache at prefill, then decode the
+        # new tokens with the verifier's NATIVE incremental forward (O(L)/block)
+        # instead of re-running the O(T) restored forward each step. Recall is
+        # carried by the full-attention (S5) layers whose captured K/V are the
+        # verifier's own at every position (== native AR for those layers).
+        self._incremental = bool(incremental)
+        self._past = None            # transformers Cache holding restored K/V
+        self._past_len = 0           # number of positions in the cache
+        self._num_layers_cache = None  # resolved lazily (incremental path only)
 
         self.sink_size = restored.sink_size
         self.window_size = restored.window_size
@@ -181,6 +193,59 @@ class CrossModelRestoredSinkWindowVerifier:
         self.cache_logical_size = 0
         self.next_global_position = 0
         self.next_token_logits = None
+        self._past = None
+        self._past_len = 0
+
+    # ------------------------------------------------------------------ #
+    # Incremental-decode helpers (Gap-A throughput path)
+    # ------------------------------------------------------------------ #
+    @torch.no_grad()
+    def _build_restored_cache(self, prompt_ids):
+        """Run the restored forward over the prompt ONCE, capturing the
+        per-layer post-norm/RoPE/injection K/V into a transformers
+        ``DynamicCache``. Returns (cache, last_logits)."""
+        from transformers.cache_utils import DynamicCache
+        if self._num_layers_cache is None:
+            self._num_layers_cache = len(
+                get_verifier_decoder(self._restored.verifier_model).layers)
+        input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=self._device)
+        capture: list = [None] * self._num_layers_cache
+        out = self._restored.forward(
+            input_ids,
+            apply_rotary_pos_emb=self._apply_rotary_pos_emb,
+            eager_attention_forward=self._eager_attention_forward,
+            all_attention_functions=self._all_attention_functions,
+            capture_kv=capture,
+        )
+        logits = (out.logits if hasattr(out, "logits") else out)[0]
+        if any(c is None for c in capture):
+            raise RuntimeError(
+                "Incremental prefill requires an evicted-position restored "
+                "forward (prompt must exceed sink+window); some layers were "
+                "not captured. Use a longer prompt or incremental=False."
+            )
+        cache = DynamicCache()
+        for li, (k, v) in enumerate(capture):
+            cache.update(k, v, li)
+        return cache, logits
+
+    @torch.no_grad()
+    def _native_forward(self, tokens):
+        """Native incremental verifier forward over ``tokens`` against the
+        persistent restored cache. Appends tokens' K/V to the cache.
+        Returns ``[len(tokens), V]`` logits."""
+        L = len(tokens)
+        ids = torch.tensor([tokens], dtype=torch.long, device=self._device)
+        pos = torch.arange(self._past_len, self._past_len + L, device=self._device)
+        out = self._restored.verifier_model(
+            input_ids=ids,
+            position_ids=pos.unsqueeze(0),
+            cache_position=pos,
+            past_key_values=self._past,
+            use_cache=True,
+        )
+        self._past = out.past_key_values
+        return out.logits[0]
 
     @torch.no_grad()
     def prefill(self, prompt_ids: List[int]) -> None:
@@ -188,7 +253,11 @@ class CrossModelRestoredSinkWindowVerifier:
             raise ValueError("prompt_ids must be non-empty")
         self.reset()
         self._committed = list(prompt_ids)
-        logits = self._restored_logits(self._committed)  # [L, V]
+        if self._incremental:
+            self._past, logits = self._build_restored_cache(self._committed)
+            self._past_len = len(self._committed)
+        else:
+            logits = self._restored_logits(self._committed)  # [L, V]
         self.next_token_logits = logits[-1].clone()
         self._sync_bounded_state()
         self.stats.forward_calls += 1
@@ -203,21 +272,35 @@ class CrossModelRestoredSinkWindowVerifier:
         if not tokens:
             raise ValueError("tokens must be non-empty")
         self._pending = list(tokens)
-        seq = self._committed + self._pending
-        logits = self._restored_logits(seq)  # [len(seq), V]
-        start = len(self._committed)
-        block = logits[start : start + len(tokens)].clone()  # [L, V]
+        if self._incremental:
+            block = self._native_forward(self._pending).clone()  # [L, V]
+        else:
+            seq = self._committed + self._pending
+            logits = self._restored_logits(seq)  # [len(seq), V]
+            start = len(self._committed)
+            block = logits[start : start + len(tokens)].clone()  # [L, V]
         # Provisional resident size mirrors SinkWindowVerifier (un-trimmed
         # until commit_or_truncate); _sync_bounded_state re-bounds on commit.
         self.cache_logical_size = len(self._committed) + len(tokens)
         self.stats.forward_calls += 1
         self.stats.tokens_consumed += len(tokens)
-        self._record_peak_activation(logits)
+        self._record_peak_activation(block)
         return block
 
     def commit_or_truncate(self, forwarded: int, accepted: int) -> None:
         if accepted < 0 or accepted > forwarded:
             raise ValueError("accepted must satisfy 0 <= accepted <= forwarded")
+        if self._incremental and self._past is not None:
+            # forward_block appended `forwarded` tokens' K/V to the cache;
+            # drop the rejected tail so the cache reflects only committed.
+            drop = forwarded - accepted
+            if drop > 0:
+                keep = self._past_len + forwarded - drop  # == _past_len + accepted
+                for layer in self._past.layers:
+                    if getattr(layer, "keys", None) is not None:
+                        layer.keys = layer.keys[:, :, :keep, :].contiguous()
+                        layer.values = layer.values[:, :, :keep, :].contiguous()
+            self._past_len += accepted
         if accepted:
             self._committed.extend(self._pending[:accepted])
         self._pending = []

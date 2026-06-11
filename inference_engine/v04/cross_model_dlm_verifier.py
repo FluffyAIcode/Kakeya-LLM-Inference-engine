@@ -309,6 +309,7 @@ class CrossModelDLMRestoredVerifier:
         apply_rotary_pos_emb: Callable,
         eager_attention_forward: Callable,
         all_attention_functions: Optional[Any] = None,
+        capture_kv: Optional[list] = None,
     ):
         """Run a verifier forward with f_θ-mediated K/V Restoration.
 
@@ -372,6 +373,7 @@ class CrossModelDLMRestoredVerifier:
                     apply_rotary_pos_emb=apply_rotary_pos_emb,
                     eager_attention_forward=eager_attention_forward,
                     all_attention_functions=all_attention_functions,
+                    capture_kv=capture_kv,
                 )
             return self.verifier_model(input_ids=input_ids, use_cache=False)
         finally:
@@ -387,6 +389,7 @@ class CrossModelDLMRestoredVerifier:
         apply_rotary_pos_emb: Callable,
         eager_attention_forward: Callable,
         all_attention_functions: Optional[Any] = None,
+        capture_kv: Optional[list] = None,
     ) -> Callable:
         """Build a patched attention forward that injects K/V at evicted
         positions from `verifier_k_at_layer` / `verifier_v_at_layer`
@@ -462,6 +465,14 @@ class CrossModelDLMRestoredVerifier:
                     evicted_positions=evicted_positions,
                     k_norm=attn_module.k_norm,
                     position_embeddings=(cos, sin),
+                )
+
+            # Capture the post-norm/RoPE/injection K/V (exactly what an HF
+            # KV cache holds) so an incremental decoder can reuse them
+            # instead of re-running this O(T) restored forward each step.
+            if capture_kv is not None:
+                capture_kv[layer_idx] = (
+                    key_states.detach(), value_states.detach(),
                 )
 
             # Standard attention path

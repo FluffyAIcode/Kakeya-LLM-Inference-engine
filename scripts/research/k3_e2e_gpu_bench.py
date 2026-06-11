@@ -176,6 +176,10 @@ def main() -> int:
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--incremental", action="store_true",
+                    help="Use the incremental-decode restored path (capture "
+                         "restored K/V at prefill, then native O(L)/block "
+                         "decode) instead of the O(T) re-forward per step.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -231,7 +235,9 @@ def main() -> int:
         eager_attention_forward=eager_attention_forward,
         all_attention_functions=ALL_ATTENTION_FUNCTIONS,
         device="cuda",
+        incremental=args.incremental,
     )
+    print(f"[e2e] restored adapter incremental={args.incremental}", file=sys.stderr)
 
     v_cfg = resolve_text_config(verifier.config)
     verifier_dims = {

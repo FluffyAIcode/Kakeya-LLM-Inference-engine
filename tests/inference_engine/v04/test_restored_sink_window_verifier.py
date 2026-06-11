@@ -369,6 +369,139 @@ def test_record_peak_activation_keeps_max():
 
 
 # --------------------------------------------------------------------------- #
+# Incremental-decode path (Gap-A throughput) — exercised with a fake model
+# that uses a real transformers DynamicCache so the cache bookkeeping
+# (build / append / truncate / position tracking) is covered on CPU.
+# --------------------------------------------------------------------------- #
+class _FakeIncVerifierModel(nn.Module):
+    def __init__(self, n_layers, V):
+        super().__init__()
+        self.config = _Cfg()
+        self.lin = nn.Linear(2, 2, bias=False)
+        self.model = SimpleNamespace(layers=[object() for _ in range(n_layers)])
+        self._n = n_layers
+        self._V = V
+
+    def forward(self, input_ids=None, position_ids=None, cache_position=None,
+                past_key_values=None, use_cache=False, **kw):
+        seq = input_ids[0].tolist()
+        L = len(seq)
+        logits = torch.full((1, L, self._V), -10.0)
+        for t, tk in enumerate(seq):
+            logits[0, t, (int(tk) + 1) % self._V] = 10.0
+        if past_key_values is not None:
+            for i in range(self._n):
+                past_key_values.update(
+                    torch.zeros(1, 2, L, 4), torch.zeros(1, 2, L, 4), i)
+        return SimpleNamespace(logits=logits, past_key_values=past_key_values)
+
+
+class _FakeRestoredInc:
+    def __init__(self, n_layers=3, V=16, sink=2, window=4, incomplete=False):
+        self.sink_size = sink
+        self.window_size = window
+        self.verifier_model = _FakeIncVerifierModel(n_layers, V)
+        self.drafter = _Param()
+        self.f_theta = _Param()
+        self._n = n_layers
+        self._V = V
+        self._incomplete = incomplete
+
+    def forward(self, input_ids, *, apply_rotary_pos_emb=None,
+                eager_attention_forward=None, all_attention_functions=None,
+                capture_kv=None):
+        seq = input_ids[0].tolist()
+        T = len(seq)
+        logits = torch.full((1, T, self._V), -10.0)
+        for t, tk in enumerate(seq):
+            logits[0, t, (int(tk) + 1) % self._V] = 10.0
+        if capture_kv is not None:
+            for i in range(self._n):
+                if self._incomplete and i == self._n - 1:
+                    continue  # leave a None to trigger the guard
+                capture_kv[i] = (torch.zeros(1, 2, T, 4), torch.zeros(1, 2, T, 4))
+        return SimpleNamespace(logits=logits)
+
+
+def _make_inc_adapter(**kw):
+    restored = _FakeRestoredInc(**kw)
+    return CrossModelRestoredSinkWindowVerifier(
+        restored, apply_rotary_pos_emb=None, eager_attention_forward=None,
+        all_attention_functions=None, incremental=True), restored
+
+
+def test_incremental_prefill_builds_cache():
+    a, _ = _make_inc_adapter(sink=2, window=4)
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])  # T=8 > budget 6 → eviction → capture
+    assert a._past is not None
+    assert a._past_len == 8
+    assert len(a._past.layers) == 3
+    assert int(a.next_token_logits.argmax()) == (8 + 1) % V
+
+
+def test_incremental_capture_incomplete_raises():
+    a, _ = _make_inc_adapter(incomplete=True)
+    with pytest.raises(RuntimeError, match="not captured"):
+        a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+
+
+def test_incremental_forward_block_native_and_commit_accept_all():
+    a, _ = _make_inc_adapter(sink=2, window=4)
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+    blk = a.forward_block([9, 1])
+    assert int(blk[0].argmax()) == (9 + 1) % V
+    assert int(blk[1].argmax()) == (1 + 1) % V
+    assert a._past.layers[0].keys.shape[2] == 8 + 2  # appended
+    a.commit_or_truncate(forwarded=2, accepted=2)
+    assert a._past_len == 10
+    assert a._committed[-2:] == [9, 1]
+
+
+def test_incremental_commit_truncates_rejected_tail():
+    a, _ = _make_inc_adapter(sink=2, window=4)
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+    a.forward_block([9, 1])  # cache → 10
+    a.commit_or_truncate(forwarded=2, accepted=1)  # drop 1
+    assert a._past_len == 9
+    assert a._past.layers[0].keys.shape[2] == 9
+    assert a._committed[-1] == 9
+
+
+def test_incremental_append_token_advances():
+    a, _ = _make_inc_adapter(sink=2, window=4)
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+    nt = a.append_token(5)
+    assert a._past_len == 9
+    assert int(nt.argmax()) == (5 + 1) % V
+
+
+def test_incremental_reset_clears_past():
+    a, _ = _make_inc_adapter()
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+    a.reset()
+    assert a._past is None and a._past_len == 0
+
+
+def test_incremental_prefill_twice_reuses_num_layers():
+    a, _ = _make_inc_adapter(sink=2, window=4)
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+    n1 = a._num_layers_cache
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])  # _num_layers_cache already set
+    assert a._num_layers_cache == n1 == 3
+
+
+def test_incremental_commit_skips_empty_layer():
+    a, _ = _make_inc_adapter(sink=2, window=4)
+    a.prefill([1, 2, 3, 4, 5, 6, 7, 8])
+    a.forward_block([9, 1])
+    # Defensive: a layer with keys=None must be skipped during truncation.
+    a._past.layers.append(SimpleNamespace(keys=None, values=None))
+    a.commit_or_truncate(forwarded=2, accepted=1)
+    assert a._past_len == 9
+    assert a._past.layers[0].keys.shape[2] == 9
+
+
+# --------------------------------------------------------------------------- #
 # End-to-end SpeculativeDecoder integration (Gap 1 + factory)
 # --------------------------------------------------------------------------- #
 def _greedy_reference(prompt, n):

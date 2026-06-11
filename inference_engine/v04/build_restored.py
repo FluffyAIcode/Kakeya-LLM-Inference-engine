@@ -62,6 +62,7 @@ def load_restored_verifier(
     s5_exact_full_attn: bool = True,
     device: str = "cpu",
     dtype: Optional[Any] = None,
+    incremental: bool = True,
 ) -> CrossModelRestoredSinkWindowVerifier:  # pragma: no cover - heavy model loader
     """Load Gemma 4 verifier + DFlash drafter + f_θ and build the restored
     sink+window verifier adapter.
@@ -120,4 +121,5 @@ def load_restored_verifier(
         eager_attention_forward=eager_attention_forward,
         all_attention_functions=ALL_ATTENTION_FUNCTIONS,
         device=device,
+        incremental=incremental,
     )
