@@ -204,8 +204,10 @@ def _apply_rope(
 
 # Query-chunk size for the drafter's non-causal attention. Bounds peak
 # attention memory to O(q_chunk × (C+T)); tune down on tight-memory hosts
-# (e.g. 24 GB Mac at long context). 0/None ⇒ no chunking (single SDPA call).
-_ATTN_Q_CHUNK = 1024
+# (e.g. 24 GB Mac at long context). 0 ⇒ no chunking (single SDPA call).
+# Override at runtime with KAKEYA_DFLASH_ATTN_QCHUNK (e.g. 256 on a 24 GB Mac).
+import os as _os
+_ATTN_Q_CHUNK = int(_os.environ.get("KAKEYA_DFLASH_ATTN_QCHUNK", "1024") or "1024")
 
 
 def _chunked_sdpa(
