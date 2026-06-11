@@ -1,0 +1,49 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --compress-full-attn --n-samples 10 --haystack-min-lines 238 --haystack-max-lines 322 --sink-size 4 --window-size 64 --max-new-tokens 24 --output results/research/k3_s5_kl_niah_ctx280_mac.json
+
+Started: 2026-06-11T03:56:31.618Z
+Ended: 2026-06-11T03:56:48.132Z
+Elapsed: 16.514s
+Exit code: 1
+
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on mps
+[mac] KakeyaLattice compression ON for full-attn layers (D4 Q38); bits/token/head=3232.0
+[mac] 10 samples, prompt len min=4859 max=6419
+[mac] running restored cross-model verifier (s5)
+Traceback (most recent call last):
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_integrated_niah_eval_mac.py", line 389, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_integrated_niah_eval_mac.py", line 290, in main
+    cross_dec, cross_lat, cross_tok = greedy(restored_next_logits)
+                                      ~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_integrated_niah_eval_mac.py", line 275, in greedy
+    nxt = step_fn(cur)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_integrated_niah_eval_mac.py", line 209, in restored_next_logits
+    d_k, d_v = capture_drafter_kv(ids)
+               ~~~~~~~~~~~~~~~~~~^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/scripts/research/k3_integrated_niah_eval_mac.py", line 190, in capture_drafter_kv
+    h = layer(h, qpos, ctx_k=None, ctx_v=None)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/inference_engine/v04/dflash_drafter.py", line 302, in forward
+    h = h + self.self_attn(
+            ~~~~~~~~~~~~~~^
+        self.input_layernorm(h), query_positions, ctx_k, ctx_v,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/inference_engine/v04/dflash_drafter.py", line 276, in forward
+    attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: MPS backend out of memory (MPS allocated: 8.12 GiB, other allocations: 14.31 GiB, max allowed: 30.19 GiB). Tried to allocate 4.91 GiB on shared pool. Use PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 to disable upper limit for memory allocations (may cause system failure).
