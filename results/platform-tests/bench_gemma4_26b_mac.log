@@ -1,0 +1,26 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/bench_mlx_kakeya_deployment.py --model-id models/gemma-4-26B-A4B-it-mlx-4bit --context-lengths 512,2048,8192 --gen-tokens 64 --sink-size 4 --window-size 64 --output results/platform-tests/bench_gemma4_26b_mac.json
+
+Commit under test:
+2b6851c Mac deployment bench: default to gemma-4-26B-A4B-it-mlx-4bit; measure REAL native incremental-decode tok/s.
+
+Started: 2026-06-11T07:01:22.167Z
+Ended: 2026-06-11T07:03:04.279Z
+Elapsed: 102.111s
+Exit code: 0
+
+[bench] loading MLX model models/gemma-4-26B-A4B-it-mlx-4bit
+[bench] L=512: Kakeya sink+window ...
+[bench] L=512: kakeya path failed: make_sink_window_cache() takes 1 positional argument but 3 were given
+[bench] L=512: vanilla full-KV ...
+[bench] L=512: vanilla 14.201 tok/s (prefill 9.1962s, KV 129.54 MB, peak 16.02 GB)
+[bench] L=2048: Kakeya sink+window ...
+[bench] L=2048: kakeya path failed: make_sink_window_cache() takes 1 positional argument but 3 were given
+[bench] L=2048: vanilla full-KV ...
+[bench] L=2048: vanilla 10.557 tok/s (prefill 7.6443s, KV 475.57 MB, peak 17.32 GB)
+[bench] L=8192: Kakeya sink+window ...
+[bench] L=8192: kakeya path failed: make_sink_window_cache() takes 1 positional argument but 3 were given
+[bench] L=8192: vanilla full-KV ...
+[bench] L=8192: vanilla 3.043 tok/s (prefill 45.3409s, KV 1859.69 MB, peak 22.53 GB)
+
+[bench] wrote results/platform-tests/bench_gemma4_26b_mac.json
