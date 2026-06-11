@@ -19,7 +19,7 @@ Run on the Mac mini (Apple Silicon, ~24 GB):
 
     PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py \\
         --verifier-path models/gemma-4-26B-A4B-it-mlx-4bit \\
-        --drafter-id    models/dflash-kakeya-baseline \\
+        --drafter-id    z-lab/gemma-4-26B-A4B-it-DFlash \\
         --f-theta-dir   results/research/f_theta_v5_s5_sliding \\
         --s5-exact-full-attn \\
         --n-samples 10 --haystack-min-lines 238 --haystack-max-lines 322 \\
@@ -55,7 +55,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verifier-path", default="models/gemma-4-26B-A4B-it-mlx-4bit")
-    ap.add_argument("--drafter-id", default="models/dflash-kakeya-baseline")
+    ap.add_argument("--drafter-id", default="z-lab/gemma-4-26B-A4B-it-DFlash")
     ap.add_argument("--f-theta-dir", required=True)
     ap.add_argument("--n-samples", type=int, default=10)
     ap.add_argument("--haystack-min-lines", type=int, default=238)

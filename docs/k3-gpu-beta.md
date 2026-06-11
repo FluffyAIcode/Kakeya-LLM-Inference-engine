@@ -91,6 +91,13 @@ sliding-layer restored K/V are window-masked during decode. Both incremental
 decode and fused spec-decode measure **recall 1.0** with z-lab. (If pure
 sliding-layer restoration is ever needed, retrain f_θ on z-lab K/V.)
 
+All **inference/eval** entry points default to z-lab (`k3_e2e_gpu_bench`,
+`k3_specdecode_gpu_bench`, `k3_integrated_niah_eval`(+`_mac`),
+`k3_dflash_specdecode_eval`(+`_mac`); the gRPC server takes an explicit
+`--drafter-id`). The **f_θ training** script (`k3_f_theta_train.py`) and its
+orchestration `.sh` keep `models/dflash-kakeya-baseline` because that is how the
+shipped v5 checkpoint was historically trained.
+
 ## Notes / scope
 
 * Drafting conditions on the restored verifier hidden for committed decode tokens

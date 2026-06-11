@@ -48,7 +48,7 @@ Usage (vast.ai H200 / H100):
   HF_TOKEN=hf_xxx PYTHONPATH=.:sdks/python python3 \\
       scripts/research/k3_integrated_niah_eval.py \\
       --verifier-id google/gemma-4-26B-A4B-it \\
-      --drafter-id models/dflash-kakeya-baseline \\
+      --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \\
       --f-theta-dir results/research/f_theta_v1 \\
       --n-samples 10 --haystack-min-lines 60 --haystack-max-lines 80 \\
       --sink-size 4 --window-size 64 \\
@@ -91,7 +91,7 @@ from inference_engine.v04 import (
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verifier-id", default="google/gemma-4-26B-A4B-it")
-    ap.add_argument("--drafter-id", default="models/dflash-kakeya-baseline")
+    ap.add_argument("--drafter-id", default="z-lab/gemma-4-26B-A4B-it-DFlash")
     ap.add_argument("--f-theta-dir", required=True,
                     help="Directory containing f_theta_config.json + f_theta_weights.pt")
     ap.add_argument("--n-samples", type=int, default=10)
