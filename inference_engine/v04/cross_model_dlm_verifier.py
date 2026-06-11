@@ -112,6 +112,24 @@ def get_verifier_decoder(model: Any) -> Any:
     )
 
 
+def full_attention_layer_indices(model: Any) -> List[int]:
+    """Return indices of the verifier's full-attention (global) layers.
+
+    Gemma 4 interleaves sliding-attention layers (head_dim 256) with a few
+    full-attention layers (head_dim = global_head_dim 512). The full-attention
+    layers are the only ones that attend globally, so they are the
+    recall-critical layers for long-context retrieval. Detected as the layers
+    whose ``self_attn.head_dim`` is the maximum across layers; if all layers
+    share one head_dim (no interleaving), returns an empty list.
+    """
+    layers = get_verifier_decoder(model).layers
+    head_dims = [int(l.self_attn.head_dim) for l in layers]
+    max_hd = max(head_dims)
+    if len(set(head_dims)) == 1:
+        return []
+    return [i for i, hd in enumerate(head_dims) if hd == max_hd]
+
+
 @dataclasses.dataclass
 class CrossModelLayerMapping:
     """How drafter K/V layers project to verifier K/V layers under f_θ.
@@ -172,6 +190,7 @@ class CrossModelDLMRestoredVerifier:
         f_theta: FThetaProjection,
         sink_size: int = 4,
         window_size: int = 64,
+        exact_layer_indices: Optional[Sequence[int]] = None,
     ) -> None:
         if sink_size < 0 or window_size < 0:
             raise ValueError("sink_size and window_size must be non-negative")
@@ -180,6 +199,13 @@ class CrossModelDLMRestoredVerifier:
         self.f_theta = f_theta
         self.sink_size = sink_size
         self.window_size = window_size
+        # S5: layers whose evicted-position K/V are kept EXACT (the verifier's
+        # own true K/V) instead of f_θ-restored. Used for the full-attention
+        # layers — the recall-critical ones that f_θ cannot reconstruct.
+        # In a bounded-memory engine these layers' K/V would be stored
+        # (optionally KakeyaLattice-compressed); here they simply remain
+        # unpatched so the verifier uses its own K/V at all positions.
+        self.exact_layer_indices = set(exact_layer_indices or ())
         self._validate_dimensions()
 
     # -----------------------------------------------------------------
@@ -317,10 +343,15 @@ class CrossModelDLMRestoredVerifier:
         # Patch verifier attention forwards to inject K/V at evicted
         # positions. Restore originals after the forward.
         layers = get_verifier_decoder(self.verifier_model).layers
-        originals: List[Callable] = []
+        originals: List[Optional[Callable]] = []
         try:
             for layer_idx, layer in enumerate(layers):
                 attn = layer.self_attn
+                # S5: leave exact layers unpatched so they use the verifier's
+                # own (exact) K/V at evicted positions.
+                if layer_idx in self.exact_layer_indices:
+                    originals.append(None)
+                    continue
                 originals.append(attn.forward)
                 attn.forward = self._make_patched_forward(
                     attn,
@@ -335,7 +366,8 @@ class CrossModelDLMRestoredVerifier:
             return self.verifier_model(input_ids=input_ids, use_cache=False)
         finally:
             for layer_idx, layer in enumerate(layers):
-                layer.self_attn.forward = originals[layer_idx]
+                if originals[layer_idx] is not None:
+                    layer.self_attn.forward = originals[layer_idx]
 
     def _make_patched_forward(
         self, attn_module: nn.Module, *,

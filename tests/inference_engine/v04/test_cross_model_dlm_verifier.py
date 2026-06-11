@@ -85,6 +85,21 @@ class _SyntheticVerifierAttention(nn.Module):
         self.sliding_window = None
         self.config = _SyntheticVerifierConfig()
 
+    def forward(self, hidden_states, position_embeddings, attention_mask=None, **kw):
+        # Exact (unpatched) path: verifier's own K/V, Gemma 4-style.
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+        cos, sin = position_embeddings
+        q = _gemma4_style_rope(
+            self.q_norm(self.q_proj(hidden_states).view(hidden_shape)),
+            cos, sin, 2).transpose(1, 2)
+        k = _gemma4_style_rope(
+            self.k_norm(self.k_proj(hidden_states).view(hidden_shape)),
+            cos, sin, 2).transpose(1, 2)
+        v = self.v_norm(self.v_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        o, _ = _synthetic_eager(self, q, k, v, attention_mask, scaling=self.scaling)
+        return self.o_proj(o.reshape(*input_shape, -1)), None
+
 
 class _SyntheticVerifierLayer(nn.Module):
     def __init__(self) -> None:
@@ -318,6 +333,41 @@ class TestPatchedForwardRestore:
             eager_attention_forward=_synthetic_eager,
         )
         assert out.logits.shape == (B, T, 64)
+
+
+class TestS5ExactLayers:
+    """S5: exact_layer_indices layers are left unpatched (use the verifier's
+    own K/V) and originals are restored after the forward."""
+
+    def test_full_attention_layer_indices_uniform_returns_empty(self):
+        from inference_engine.v04.cross_model_dlm_verifier import (
+            full_attention_layer_indices,
+        )
+        verifier = _SyntheticVerifier()  # all layers head_dim 8 (uniform)
+        assert full_attention_layer_indices(verifier) == []
+
+    def test_exact_layer_skipped_and_restored(self):
+        f_theta = FThetaProjection(_tiny_f_theta_config())
+        drafter = DFlashDrafter(_tiny_drafter_config())
+        verifier = _SyntheticVerifier()
+        verifier.embed_tokens = torch.nn.Embedding(64, 16)
+        verifier.get_input_embeddings = lambda: verifier.embed_tokens
+        v = CrossModelDLMRestoredVerifier(
+            verifier_model=verifier, drafter=drafter, f_theta=f_theta,
+            sink_size=1, window_size=2, exact_layer_indices=[1],
+        )
+        layers = verifier.model.layers
+        orig_fwds = [l.self_attn.forward for l in layers]
+        ids = torch.randint(0, 64, (1, 6), dtype=torch.long)
+        out = v.forward(
+            ids,
+            apply_rotary_pos_emb=_gemma4_style_rope,
+            eager_attention_forward=_synthetic_eager,
+        )
+        assert out.logits.shape == (1, 6, 64)
+        # All attn forwards restored to their originals after the call
+        for l, of in zip(layers, orig_fwds):
+            assert l.self_attn.forward == of
 
 
 class TestExports:

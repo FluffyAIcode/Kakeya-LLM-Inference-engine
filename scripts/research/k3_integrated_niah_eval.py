@@ -116,6 +116,16 @@ def parse_args() -> argparse.Namespace:
              "f_θ accurate enough?'.",
     )
     ap.add_argument(
+        "--s5-exact-full-attn", action="store_true",
+        help="S5: keep the verifier's full-attention (global, head_dim 512) "
+             "layers' K/V EXACT at evicted positions (not f_θ-restored). "
+             "Only the sliding layers go through f_θ. The full-attention "
+             "layers are the recall-critical ones f_θ cannot reconstruct; "
+             "for long context (needle outside the sliding window) recall "
+             "flows only through them, so exact K/V there should restore "
+             "recall. Memory cost: store those ~5 layers' KV (~9% of full).",
+    )
+    ap.add_argument(
         "--mix-alpha-sweep", default="",
         help="S6 fidelity→recall diagnostic. Comma-separated alphas in "
              "[0,1]. At each alpha, evicted-position K/V = alpha*true + "
@@ -174,12 +184,21 @@ def main() -> int:
     )
 
     # ---------- Cross-model wrapper ----------
+    exact_layers = None
+    if args.s5_exact_full_attn:
+        from inference_engine.v04.cross_model_dlm_verifier import (
+            full_attention_layer_indices,
+        )
+        exact_layers = full_attention_layer_indices(verifier)
+        print(f"[k3-integrated] S5: keeping full-attention layers exact: "
+              f"{exact_layers}", file=sys.stderr)
     cross_verifier = CrossModelDLMRestoredVerifier(
         verifier_model=verifier,
         drafter=drafter,
         f_theta=f_theta,
         sink_size=args.sink_size,
         window_size=args.window_size,
+        exact_layer_indices=exact_layers,
     )
     print(f"[k3-integrated] cross-model verifier ready "
           f"(sink={args.sink_size}, window={args.window_size})",
@@ -441,6 +460,8 @@ def main() -> int:
             "seed": args.seed,
             "skip_oracle": bool(args.skip_oracle),
             "identity_restore": bool(args.identity_restore),
+            "s5_exact_full_attn": bool(args.s5_exact_full_attn),
+            "s5_exact_layers": exact_layers,
             "prompt_token_lens": seq_lens,
         },
         "results": {
