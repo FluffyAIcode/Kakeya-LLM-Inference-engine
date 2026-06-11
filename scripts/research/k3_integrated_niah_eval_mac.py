@@ -71,6 +71,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--identity-restore", action="store_true",
                     help="Restore ALL evicted K/V with the verifier's own "
                          "true K/V (machinery check; should match oracle).")
+    ap.add_argument("--compress-full-attn", action="store_true",
+                    help="KakeyaLattice-compress the exact full-attention "
+                         "layers' K/V (lossy round-trip) to shrink the O(T) "
+                         "linear term. Reports the compression ratio + recall "
+                         "under compression.")
+    ap.add_argument("--kl-lattice", default="D4", choices=["D4", "E8"])
+    ap.add_argument("--kl-q-range", type=int, default=38)
     ap.add_argument("--skip-oracle", action="store_true")
     ap.add_argument("--output", default=None)
     return ap.parse_args()
@@ -91,7 +98,9 @@ def main() -> int:
     from inference_engine.backends.mlx.cross_model_dlm_verifier import (
         resolve_mlx_text_model, mlx_full_attention_layer_indices,
         kv_source_layer_map, capture_own_kv, restored_logits,
+        per_layer_kv_geometry, kv_memory_report,
     )
+    from inference_engine.v04.kv_compressor import make_default_compressor
     from scripts.research.k3_dflash_mlx_bridge import (
         mx_to_torch, torch_to_mx,
     )
@@ -121,6 +130,40 @@ def main() -> int:
         args.f_theta_dir, dtype=torch.float32, device=dev,
     )
     fcfg = f_theta.config
+
+    # ---------- Optional KakeyaLattice compression of full-attn layers ----------
+    geom = per_layer_kv_geometry(text_model)
+    compressors: Dict[int, Any] = {}
+    kl_bits_per_head: Optional[float] = None
+    if args.compress_full_attn:
+        for li in full_attn_idx:
+            n_kv, hd, _ = geom[li]
+            comp = make_default_compressor(
+                head_dim=hd, device=torch.device("cpu"),
+                prefer_kakeya=True, lattice=args.kl_lattice, q_range=args.kl_q_range,
+            )
+            compressors[li] = comp
+            codec = getattr(comp, "_codec", None)
+            if codec is not None and kl_bits_per_head is None:
+                kl_bits_per_head = float(getattr(codec, "bits_per_token_per_head", 0)) or None
+        print(f"[mac] KakeyaLattice compression ON for full-attn layers "
+              f"({args.kl_lattice} Q{args.kl_q_range}); "
+              f"bits/token/head={kl_bits_per_head}", file=sys.stderr)
+
+    def _compress_roundtrip(li: int, k_mx: Any, v_mx: Any):
+        """Lossy KakeyaLattice round-trip of a full-attn layer's pre-norm K/V.
+        mx [B,T,n_kv,hd] → torch [B,n_kv,T,hd] (positions=-2) → codec → back."""
+        comp = compressors[li]
+        kt = mx_to_torch(k_mx, dtype=torch.float32, device="cpu").transpose(1, 2).contiguous()
+        vt = mx_to_torch(v_mx, dtype=torch.float32, device="cpu").transpose(1, 2).contiguous()
+        T = kt.shape[-2]
+        pos = torch.arange(T)
+        comp.compress(kt, vt, pos)
+        kh, vh = comp.decompress(pos)
+        comp.evict(pos)  # keep state bounded between tokens
+        kh = kh.transpose(1, 2).contiguous()   # [B,T,n_kv,hd]
+        vh = vh.transpose(1, 2).contiguous()
+        return torch_to_mx(kh), torch_to_mx(vh)
 
     # ---------- Drafter K/V capture (Mac): MLX embed → torch → drafter layers ----------
     def capture_drafter_kv(ids: List[int]):
@@ -182,6 +225,8 @@ def main() -> int:
                 continue  # only inject at source (has_kv) layers
             if li in exact_set and own is not None and li in own:
                 k_mx, v_mx = own[li]
+                if li in compressors:
+                    k_mx, v_mx = _compress_roundtrip(li, k_mx, v_mx)
                 rk[li] = k_mx
                 rv[li] = v_mx
             else:
@@ -254,6 +299,36 @@ def main() -> int:
         oracle_res = aggregate_recall("oracle_mac", samples, o_dec, o_lat, o_tok)
         print(f"[mac] oracle recall = {oracle_res.recall:.3f}", file=sys.stderr)
 
+    # ---------- KV-memory accounting (bounded S5 engine) ----------
+    T_max = max(seq_lens)
+    exact_for_mem = full_attn_idx  # S5: full-attn layers kept exact / compressed
+    mem_s5 = kv_memory_report(
+        text_model, sink_size=args.sink_size, window_size=args.window_size,
+        seq_len=T_max, exact_layer_indices=exact_for_mem,
+        compress_full_bits_per_token_per_head=(
+            kl_bits_per_head if args.compress_full_attn else None),
+    )
+    # Baselines for the savings story:
+    mem_naive = kv_memory_report(   # all layers O(T), no bound, no compress
+        text_model, sink_size=T_max, window_size=0, seq_len=T_max,
+        exact_layer_indices=list(range(n_layers)))
+    print(f"[mac] KV resident @T={T_max}: S5={mem_s5['total_resident_mb']} MB "
+          f"(growth {mem_s5['per_token_growth_kb']} KB/tok); "
+          f"naive-full={mem_naive['total_resident_mb']} MB", file=sys.stderr)
+
+    # ---------- Throughput ----------
+    def _tps(lats, toks):
+        tot_t = sum(lats)
+        tot_n = sum(toks)
+        return {
+            "tokens": tot_n, "wall_seconds": round(tot_t, 3),
+            "tokens_per_second": round(tot_n / tot_t, 4) if tot_t > 0 else None,
+            "mean_latency_per_sample_s": round(tot_t / max(len(lats), 1), 3),
+        }
+    cross_tps = _tps(cross_lat, cross_tok)
+    print(f"[mac] cross-model throughput: {cross_tps['tokens_per_second']} tok/s "
+          f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s)", file=sys.stderr)
+
     delta = (abs(cross_res.recall - oracle_res.recall) if oracle_res else None)
     report = {
         "schema_version": 1,
@@ -271,6 +346,10 @@ def main() -> int:
             "seed": args.seed,
             "s5_exact_full_attn": bool(args.s5_exact_full_attn),
             "identity_restore": bool(args.identity_restore),
+            "compress_full_attn": bool(args.compress_full_attn),
+            "kl_lattice": args.kl_lattice if args.compress_full_attn else None,
+            "kl_q_range": args.kl_q_range if args.compress_full_attn else None,
+            "kl_bits_per_token_per_head": kl_bits_per_head,
             "full_attention_layers": full_attn_idx,
             "prompt_token_lens": seq_lens,
         },
@@ -284,6 +363,17 @@ def main() -> int:
             "recall_delta_vs_oracle_pp": (delta * 100 if delta is not None else None),
             "recall_delta_within_5pp": (delta is not None and delta <= 0.05),
         },
+        "memory": {
+            "s5": mem_s5,
+            "naive_full_kv": {
+                "total_resident_mb": mem_naive["total_resident_mb"],
+                "per_token_growth_kb": mem_naive["per_token_growth_kb"],
+            },
+            "savings_vs_naive_pct": round(
+                100 * (1 - mem_s5["total_resident_bytes"]
+                       / max(mem_naive["total_resident_bytes"], 1)), 1),
+        },
+        "throughput": {"k3_cross_model": cross_tps},
     }
     out_path = Path(args.output) if args.output else Path(
         f"results/research/k3_integrated_niah_mac_{int(time.time())}.json")

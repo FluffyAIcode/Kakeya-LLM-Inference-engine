@@ -94,6 +94,96 @@ def mlx_full_attention_layer_indices(text_model: Any) -> List[int]:
     return [i for i, t in enumerate(types) if t == "full_attention"]
 
 
+def per_layer_kv_geometry(text_model: Any) -> List[Tuple[int, int, str]]:
+    """Return ``[(n_kv_heads, head_dim, layer_type)]`` per layer."""
+    out: List[Tuple[int, int, str]] = []
+    for layer in text_model.layers:
+        a = layer.self_attn
+        out.append((
+            int(getattr(a, "n_kv_heads", 0)),
+            int(getattr(a, "head_dim", 0)),
+            str(getattr(a, "layer_type", "")),
+        ))
+    return out
+
+
+def kv_memory_report(
+    text_model: Any,
+    *,
+    sink_size: int,
+    window_size: int,
+    seq_len: int,
+    kv_dtype_bytes: int = 2,
+    exact_layer_indices: Optional[Sequence[int]] = None,
+    compress_full_bits_per_token_per_head: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Analytical resident-KV-cache accounting for the Kakeya S5 engine.
+
+    Models a *bounded* production engine (not the eval's full re-forward):
+
+      * sliding layers   → resident = sink + window positions
+      * exact full layers→ resident = ``seq_len`` positions (S5 keeps them
+        exact). If ``compress_full_bits_per_token_per_head`` is given
+        (KakeyaLattice), the per-token byte cost uses the compressed
+        bits/head instead of ``head_dim * kv_dtype_bytes``.
+
+    Returns per-layer-type bytes, total, and the per-token growth slope
+    (the asymptotic linear term, dominated by the exact full layers).
+    All quantities are pure arithmetic — unit-tested on Linux.
+    """
+    geom = per_layer_kv_geometry(text_model)
+    exact = set(exact_layer_indices or [])
+    resident_window = sink_size + window_size
+
+    def kv_bytes_per_token(n_kv: int, hd: int, compressed: bool) -> int:
+        # K + V (two tensors). attention_k_eq_v sharing is ignored here
+        # (conservative: count both K and V).
+        if compressed and compress_full_bits_per_token_per_head is not None:
+            per_head_bytes = compress_full_bits_per_token_per_head / 8.0
+            return int(round(2 * n_kv * per_head_bytes))
+        return 2 * n_kv * hd * kv_dtype_bytes
+
+    sliding_total = 0
+    full_total = 0
+    full_slope = 0          # bytes/token contributed by O(T) exact layers
+    sliding_slope = 0       # bytes/token for sliding (0 once bounded)
+    per_layer = []
+    for i, (n_kv, hd, lt) in enumerate(geom):
+        is_exact = i in exact
+        bpt = kv_bytes_per_token(n_kv, hd, compressed=is_exact)
+        if is_exact:
+            positions = seq_len
+            full_total += positions * bpt
+            full_slope += bpt
+        else:
+            positions = min(resident_window, seq_len)
+            sliding_total += positions * bpt
+            sliding_slope += bpt if seq_len <= resident_window else 0
+        per_layer.append({
+            "layer": i, "layer_type": lt, "n_kv_heads": n_kv,
+            "head_dim": hd, "exact": is_exact,
+            "resident_positions": positions,
+            "bytes_per_token": bpt,
+            "resident_bytes": positions * bpt,
+        })
+
+    total = sliding_total + full_total
+    return {
+        "seq_len": seq_len,
+        "kv_dtype_bytes": kv_dtype_bytes,
+        "sink_window": resident_window,
+        "exact_layer_indices": sorted(exact),
+        "compress_full_bits_per_token_per_head": compress_full_bits_per_token_per_head,
+        "sliding_resident_bytes": sliding_total,
+        "full_resident_bytes": full_total,
+        "total_resident_bytes": total,
+        "total_resident_mb": round(total / 1e6, 2),
+        "per_token_growth_bytes": full_slope + sliding_slope,
+        "per_token_growth_kb": round((full_slope + sliding_slope) / 1024, 2),
+        "per_layer": per_layer,
+    }
+
+
 def kv_source_layer_map(text_model: Any) -> List[int]:
     """Map layer index → the layer index that actually computes its K/V.
 

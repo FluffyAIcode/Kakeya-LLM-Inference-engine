@@ -108,3 +108,55 @@ def test_resolve_raises_without_text_model():
         pass
     with pytest.raises(AttributeError):
         cmv.resolve_mlx_text_model(Bad())
+
+
+def _gemma4_geom_model():
+    """Mock with n_kv_heads/head_dim per layer (8/256 sliding, 2/512 full)."""
+    full = {5, 11, 17, 23, 29}
+    layers = []
+    for i in range(30):
+        if i in full:
+            layers.append(_Layer(_AttnGeom(2, 512, "full_attention", i)))
+        else:
+            layers.append(_Layer(_AttnGeom(8, 256, "sliding_attention", i)))
+    return _TextModel(layers, list(range(30)))
+
+
+class _AttnGeom(_Attn):
+    def __init__(self, n_kv, head_dim, layer_type, layer_idx):
+        super().__init__(head_dim, layer_type, True, layer_idx)
+        self.n_kv_heads = n_kv
+
+
+def test_kv_memory_report_s5_vs_naive():
+    tm = _gemma4_geom_model()
+    full = [5, 11, 17, 23, 29]
+    s5 = cmv.kv_memory_report(
+        tm, sink_size=4, window_size=64, seq_len=5500, exact_layer_indices=full)
+    naive = cmv.kv_memory_report(
+        tm, sink_size=5500, window_size=0, seq_len=5500,
+        exact_layer_indices=list(range(30)))
+    # S5 dramatically smaller than naive full-KV; growth = 5 full layers only.
+    assert s5["total_resident_bytes"] < naive["total_resident_bytes"] / 5
+    # per-token growth = 5 full layers * (2 * 2 kv * 512 * 2 bytes) = 20480 B
+    assert s5["per_token_growth_bytes"] == 5 * (2 * 2 * 512 * 2)
+
+
+def test_kv_memory_report_compression_shrinks_slope():
+    tm = _gemma4_geom_model()
+    full = [5, 11, 17, 23, 29]
+    exact = cmv.kv_memory_report(
+        tm, sink_size=4, window_size=64, seq_len=5500, exact_layer_indices=full)
+    comp = cmv.kv_memory_report(
+        tm, sink_size=4, window_size=64, seq_len=5500, exact_layer_indices=full,
+        compress_full_bits_per_token_per_head=3232.0)
+    # KakeyaLattice (~2.5x) shrinks the full-layer term + the linear slope.
+    assert comp["total_resident_bytes"] < exact["total_resident_bytes"]
+    assert comp["per_token_growth_bytes"] < exact["per_token_growth_bytes"]
+
+
+def test_per_layer_kv_geometry():
+    tm = _gemma4_geom_model()
+    geom = cmv.per_layer_kv_geometry(tm)
+    assert geom[0] == (8, 256, "sliding_attention")
+    assert geom[5] == (2, 512, "full_attention")
