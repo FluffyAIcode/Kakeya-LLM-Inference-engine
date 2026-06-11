@@ -185,6 +185,34 @@ def main() -> int:
         ids = ([bos] if bos is not None else []) + [filler_tok] * (L - (1 if bos is not None else 0))
         return ids[:L] if len(ids) >= L else ids + [filler_tok] * (L - len(ids))
 
+    def make_vanilla_cache():
+        return make_prompt_cache(model)
+
+    def make_kakeya_cache():
+        return make_sink_window_cache(
+            model, sink_size=args.sink_size, window_size=args.window_size)
+
+    # Warm up MLX kernel compilation for BOTH cache paths before timing.
+    # MLX compiles graphs lazily on first use; without this, whichever path
+    # runs first absorbs the (large, one-off) compile cost and looks slower.
+    # The 1-token decode graph compiled here is shared across all context
+    # lengths, so decode tok/s is measured fairly for both caches.
+    warm_prompt = make_prompt(64)
+    for label, mk in (("vanilla", make_vanilla_cache), ("kakeya", make_kakeya_cache)):
+        if (label == "vanilla" and args.skip_vanilla) or (
+            label == "kakeya" and args.skip_kakeya):
+            continue
+        print(f"[bench] warmup ({label}) ...", file=sys.stderr, flush=True)
+        try:
+            wc = mk()
+            for _ in generate_step(mx.array(warm_prompt), model,
+                                   max_tokens=8, prompt_cache=wc):
+                pass
+            wc = None
+            mx.clear_cache()
+        except Exception as e:
+            print(f"[bench] warmup ({label}) failed: {e}", file=sys.stderr)
+
     rows: List[Dict[str, Any]] = []
     for L in ctx_lengths:
         prompt_ids = make_prompt(L)
@@ -193,7 +221,7 @@ def main() -> int:
             print(f"[bench] L={L}: vanilla (native make_prompt_cache) ...",
                   file=sys.stderr, flush=True)
             try:
-                vcache = make_prompt_cache(model)
+                vcache = make_vanilla_cache()
                 row["vanilla"] = _run(
                     mx, generate_step, model, prompt_ids, args.gen_tokens, vcache)
             except Exception as e:  # OOM or unsupported → record and continue
@@ -208,8 +236,7 @@ def main() -> int:
         if not args.skip_kakeya:
             print(f"[bench] L={L}: Kakeya sink+window ...", file=sys.stderr, flush=True)
             try:
-                kcache = make_sink_window_cache(
-                    model, sink_size=args.sink_size, window_size=args.window_size)
+                kcache = make_kakeya_cache()
                 row["kakeya"] = _run(
                     mx, generate_step, model, prompt_ids, args.gen_tokens, kcache)
             except Exception as e:
