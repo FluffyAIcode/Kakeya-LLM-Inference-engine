@@ -86,6 +86,11 @@ def parse_args() -> argparse.Namespace:
                          "layers' K/V (lossy round-trip) to shrink the O(T) "
                          "linear term. Reports the compression ratio + recall "
                          "under compression.")
+    ap.add_argument("--s5-f-theta-restored-full-attn", action="store_true",
+                    help="Optimization experiment: in S5 mode, build full-attn "
+                         "restored K/V from proposer K/V via f_theta instead "
+                         "of running an extra verifier prompt forward to "
+                         "capture exact full-attn K/V.")
     ap.add_argument("--kl-lattice", default="D4", choices=["D4", "E8"])
     ap.add_argument("--kl-q-range", type=int, default=38)
     ap.add_argument("--skip-oracle", action="store_true")
@@ -230,6 +235,28 @@ def main() -> int:
         evicted = compute_evicted_positions(
             len(prompt_ids), args.sink_size, args.window_size,
         )
+        if (
+            args.s5_exact_full_attn
+            and args.s5_f_theta_restored_full_attn
+            and not args.identity_restore
+            and evicted
+        ):
+            d_k, d_v = capture_drafter_kv(prompt_ids)
+            with torch.no_grad():
+                vk, vv = f_theta.forward_kv_pack(d_k, d_v)
+            rk: Dict[int, Any] = {}
+            rv: Dict[int, Any] = {}
+            start, end = int(evicted[0]), int(evicted[-1]) + 1
+            for li in full_attn_idx:
+                k_mx = torch_to_mx(vk[li][:, start:end]).astype(mx.bfloat16)
+                v_mx = torch_to_mx(vv[li][:, start:end]).astype(mx.bfloat16)
+                if li in compressors:
+                    k_mx, v_mx = _compress_roundtrip(li, k_mx, v_mx)
+                rk[li], rv[li] = _pre_norm_slice_to_cache_bank(
+                    li, k_mx, v_mx, offset=start,
+                )
+            return rk, rv, len(prompt_ids)
+
         if args.s5_exact_full_attn and not args.identity_restore and evicted:
             own = capture_own_kv_cache_slice_detached(
                 mlx_model,
@@ -316,6 +343,17 @@ def main() -> int:
         k = attn.rope(k, offset=start)
         v = attn.v_norm(v).transpose(0, 2, 1, 3)
         return k, v
+
+    def _pre_norm_slice_to_cache_bank(
+        layer_idx: int, k_mx: Any, v_mx: Any, *, offset: int,
+    ) -> Tuple[Any, Any]:
+        """Convert a pre-norm restored slice to MLX cache-layout K/V."""
+        layer = text_model.layers[layer_idx]
+        attn = layer.self_attn
+        k = attn.k_norm(k_mx).transpose(0, 2, 1, 3)
+        k = attn.rope(k, offset=int(offset))
+        v = attn.v_norm(v_mx).transpose(0, 2, 1, 3)
+        return mx.stop_gradient(k), mx.stop_gradient(v)
 
     def attach_restored_banks(cache, rk, rv, prompt_len: int) -> None:
         evicted = compute_evicted_positions(
@@ -512,7 +550,9 @@ def main() -> int:
         out = mlx_model(mx.array([full_ids])); mx.eval(out); return out[0]
 
     label = "identity" if args.identity_restore else (
-        "s5" if args.s5_exact_full_attn else "f_theta_all")
+        "s5_f_theta_full_attn" if (
+            args.s5_exact_full_attn and args.s5_f_theta_restored_full_attn
+        ) else "s5" if args.s5_exact_full_attn else "f_theta_all")
     eval_mode = "teacher_forced" if args.teacher_forced else "free_gen"
     print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
           file=sys.stderr, flush=True)
@@ -593,6 +633,8 @@ def main() -> int:
             "eval_mode": eval_mode,
             "teacher_forced": bool(args.teacher_forced),
             "s5_exact_full_attn": bool(args.s5_exact_full_attn),
+            "s5_f_theta_restored_full_attn": bool(
+                args.s5_f_theta_restored_full_attn),
             "identity_restore": bool(args.identity_restore),
             "compress_full_attn": bool(args.compress_full_attn),
             "kl_lattice": args.kl_lattice if args.compress_full_attn else None,
