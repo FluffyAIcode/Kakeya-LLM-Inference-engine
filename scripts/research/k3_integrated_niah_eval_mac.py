@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import importlib
 import json
 import math
 import sys
@@ -178,7 +179,13 @@ def main() -> int:
         comp.evict(pos)  # keep state bounded between tokens
         kh = kh.transpose(1, 2).contiguous()   # [B,T,n_kv,hd]
         vh = vh.transpose(1, 2).contiguous()
-        return torch_to_mx(kh), torch_to_mx(vh)
+        # KL operates in fp32 on CPU, but the verifier cache hot path is MLX
+        # bf16/quantized. Keep the restored bank in the verifier's K/V dtype
+        # so concatenating it into the decode cache does not promote full-attn
+        # layers to fp32 and fall off the native MLX fast path.
+        k_out = torch_to_mx(kh).astype(k_mx.dtype)
+        v_out = torch_to_mx(vh).astype(v_mx.dtype)
+        return k_out, v_out
 
     # ---------- Drafter K/V capture (Mac): MLX embed → torch → drafter layers ----------
     def capture_drafter_kv(ids: List[int]):
@@ -322,6 +329,32 @@ def main() -> int:
             elif hasattr(c, "set_restored_bank"):
                 c.set_restored_bank(kb, vb)
 
+    generation_stream = importlib.import_module(
+        "mlx_lm.generate"
+    ).generate_step.__globals__["generation_stream"]
+
+    def greedy_decode_pipelined(first_token: int, cache) -> List[int]:
+        """Greedy decode using mlx_lm.generate_step's async scheduling pattern."""
+        gen = [int(first_token)]
+        tok = mx.array([int(first_token)])
+
+        def _step(input_tokens):
+            with mx.stream(generation_stream):
+                logits = mlx_model(input_tokens[None], cache=cache)[:, -1, :]
+                y = mx.argmax(logits, axis=-1)
+            mx.async_eval(y)
+            return y
+
+        while len(gen) < args.max_new_tokens:
+            if eos_id is not None and gen[-1] == eos_id:
+                break
+            next_tok = _step(tok)
+            mx.eval(next_tok)
+            tok_id = int(next_tok.item())
+            gen.append(tok_id)
+            tok = next_tok
+        return gen
+
     # ---------- Dataset ----------
     samples: List[NIAHSample] = make_niah_dataset(
         n_samples=args.n_samples,
@@ -419,15 +452,7 @@ def main() -> int:
                 continue
             cur.append(nxt)
             t_decode0 = time.perf_counter()
-            for _ in range(args.max_new_tokens):
-                if len(gen) >= args.max_new_tokens:
-                    break
-                out = mlx_model(mx.array([[nxt]]), cache=cache)
-                mx.eval(out)
-                nxt = int(mx.argmax(out[0, -1]).item()); gen.append(nxt)
-                if eos_id is not None and nxt == eos_id:
-                    break
-                cur.append(nxt)
+            gen = greedy_decode_pipelined(nxt, cache)
             decode_s = time.perf_counter() - t_decode0
             lats.append(time.perf_counter() - t0)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
