@@ -360,3 +360,96 @@ def restored_logits(
         logits = mlx_model(ids)            # full Model.__call__ → tied embed + softcap
         mx.eval(logits)
     return logits[0] if return_all else logits[0, -1]
+
+
+# ---------------------------------------------------------------------------
+# Incremental decode (MLX port of CUDA Gap-A) — kills the per-token re-forward
+# throughput collapse. See docs/mlx-port-lessons.md.
+# ---------------------------------------------------------------------------
+
+
+def restored_prefill_cache(
+    mlx_model: Any,
+    input_ids: Sequence[int],
+    *,
+    restored_k_per_layer: Dict[int, Any],
+    restored_v_per_layer: Dict[int, Any],
+    evicted_positions: Sequence[int],
+):
+    """Prefill ONCE with restoration, capturing the restored K/V into a
+    persistent mlx_lm prompt cache; return ``(cache, last_logits)``.
+
+    Same injection as :func:`restored_logits`, but run **with a cache** so the
+    patched attention's ``cache.update_and_fetch`` stores the post-injection
+    K/V (full-attention/S5 layers → exact own K/V; sliding → f_θ-restored,
+    window-bounded by the model's native RotatingKVCache). After this the
+    verifier can decode new tokens incrementally over the cache — O(L)/step —
+    instead of re-forwarding the whole sequence each token.
+
+    Returns the model's native hybrid cache (full `KVCache` for global layers,
+    `RotatingKVCache(sliding_window)` for sliding layers) populated to the
+    prompt, plus the last-row logits (``mx [V]``) predicting the first token.
+    """
+    import mlx.core as mx  # type: ignore
+    from mlx_lm.models.cache import make_prompt_cache  # type: ignore
+
+    text_model = resolve_mlx_text_model(mlx_model)
+    T = len(list(input_ids))
+    evicted = set(int(p) for p in evicted_positions if 0 <= int(p) < T)
+    evicted_mask = mx.array([p in evicted for p in range(T)])
+
+    cache = make_prompt_cache(mlx_model)
+    with _patched_attention_class(text_model):
+        for idx, layer in enumerate(text_model.layers):
+            attn = layer.self_attn
+            if not bool(getattr(attn, "has_kv", True)):
+                continue  # sharers inherit injected K/V via shared_kv
+            rk = restored_k_per_layer.get(idx)
+            rv = restored_v_per_layer.get(idx)
+            if rk is None:
+                continue
+            attn._kakeya_inject = {
+                "mode": "inject",
+                "evicted_mask": evicted_mask,
+                "restored_k": rk,
+                "restored_v": rv,
+            }
+        ids = mx.array([list(input_ids)])
+        logits = mlx_model(ids, cache=cache)
+        mx.eval(logits)
+    # Context manager restored the original Attention.__call__ → subsequent
+    # decode steps run NATIVE incremental attention over this cache.
+    return cache, logits[0, -1]
+
+
+def restored_incremental_generate(
+    mlx_model: Any,
+    cache: Any,
+    first_logits: Any,
+    *,
+    max_tokens: int,
+    eos_ids: Sequence[int] = (),
+) -> List[int]:
+    """Greedy-decode up to ``max_tokens`` tokens over a restored prefill cache
+    using mlx_lm's native ``generate_step`` (chunked + async-pipelined) — the
+    throughput-critical incremental loop. Recall is carried by the cache's
+    full-attention (S5) layers.
+    """
+    import mlx.core as mx  # type: ignore
+    from mlx_lm.generate import generate_step  # type: ignore
+
+    eos = set(int(t) for t in eos_ids)
+    nxt = int(mx.argmax(first_logits).item())
+    out: List[int] = [nxt]
+    if nxt in eos or max_tokens <= 1:
+        return out
+    # generate_step with a 1-token prompt + prefilled cache skips re-prefill
+    # (its chunked-prefill loop needs >1 prompt token) and decodes incrementally.
+    for tok, _ in generate_step(
+        mx.array([nxt]), mlx_model, prompt_cache=cache, max_tokens=max_tokens - 1,
+    ):
+        t = int(tok)
+        out.append(t)
+        if t in eos:
+            break
+    return out

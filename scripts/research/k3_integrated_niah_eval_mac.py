@@ -63,6 +63,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--sink-size", type=int, default=4)
     ap.add_argument("--window-size", type=int, default=64)
     ap.add_argument("--max-new-tokens", type=int, default=16)
+    ap.add_argument("--incremental", action="store_true",
+                    help="Use the INCREMENTAL restored decode (MLX Gap-A): "
+                         "prefill captures restored K/V into a persistent cache, "
+                         "decode via mlx_lm generate_step (O(L)/token). Fixes the "
+                         "per-token re-forward throughput collapse. Free-gen only.")
     ap.add_argument("--teacher-forced", action="store_true",
                     help="DIAGNOSTIC ONLY (under-measures retrieval): single "
                          "restored forward per sample, check argmax at the "
@@ -108,6 +113,7 @@ def main() -> int:
         resolve_mlx_text_model, mlx_full_attention_layer_indices,
         kv_source_layer_map, capture_own_kv, restored_logits,
         per_layer_kv_geometry, kv_memory_report,
+        restored_prefill_cache, restored_incremental_generate,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from scripts.research.k3_dflash_mlx_bridge import (
@@ -326,6 +332,37 @@ def main() -> int:
                   file=sys.stderr)
         return decoded, lats, toks
 
+    def eval_free_gen_cross_incremental() -> Tuple[List[str], List[float], List[int]]:
+        """INCREMENTAL restored free generation (MLX port of CUDA Gap-A):
+        prefill ONCE capturing restored K/V into a persistent cache, then
+        decode with mlx_lm's native incremental step (O(L)/token). Fixes the
+        per-token re-forward throughput collapse. Recall via S5 full-attn."""
+        decoded, lats, toks = [], [], []
+        for i, pid in enumerate(sample_ids):
+            rk, rv, tsrc = build_restoration(pid)
+            T = len(pid)
+            evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
+            t0 = time.perf_counter()
+            if not evicted:
+                cache = (getattr(mlx_model, "make_cache", lambda: None)())
+                out = mlx_model(mx.array([pid]), cache=cache); mx.eval(out)
+                first = out[0, -1]
+            else:
+                cache, first = restored_prefill_cache(
+                    mlx_model, pid,
+                    restored_k_per_layer=_pad(rk, tsrc, T),
+                    restored_v_per_layer=_pad(rv, tsrc, T),
+                    evicted_positions=evicted)
+            gen = restored_incremental_generate(
+                mlx_model, cache, first,
+                max_tokens=args.max_new_tokens,
+                eos_ids=([eos_id] if eos_id is not None else ()))
+            lats.append(time.perf_counter() - t0)
+            decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            print(f"[mac]   incr {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
+                  file=sys.stderr)
+        return decoded, lats, toks
+
     def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
         """Oracle free generation using mlx's NATIVE incremental KV cache
         (fast + correct reference; confirms the metric/dataset)."""
@@ -356,11 +393,14 @@ def main() -> int:
 
     label = "identity" if args.identity_restore else (
         "s5" if args.s5_exact_full_attn else "f_theta_all")
-    eval_mode = "teacher_forced" if args.teacher_forced else "free_gen"
+    eval_mode = ("teacher_forced" if args.teacher_forced
+                 else "free_gen_incremental" if args.incremental else "free_gen")
     print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
           file=sys.stderr, flush=True)
     if args.teacher_forced:
         cross_dec, cross_lat, cross_tok = eval_teacher_forced(cross_logits_all)
+    elif args.incremental:
+        cross_dec, cross_lat, cross_tok = eval_free_gen_cross_incremental()
     else:
         cross_dec, cross_lat, cross_tok = eval_free_gen_cross()
     cross_res = aggregate_recall("k3_cross_model_mac", samples, cross_dec, cross_lat, cross_tok)

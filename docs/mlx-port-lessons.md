@@ -50,11 +50,24 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
 
 ## MLX port plan (ordered; each gates the next)
 
-1. **Incremental decode (kills the collapse).** Add an MLX analog of
-   `CrossModelRestoredSinkWindowVerifier(incremental=True)`: prefill → capture
-   restored K/V into `SinkWindowKVCache` (full-attn = own/exact; sliding = f_θ or
-   window-masked) → decode via `generate_step(prompt_cache=…)`. **Gate: decode
-   tok/s ≈ native mlx_lm AR; recall 1.0** (carried by S5).
+1. **Incremental decode (kills the collapse). [IMPLEMENTED — needs Mac validation]**
+   `backends/mlx/cross_model_dlm_verifier.py`: `restored_prefill_cache` (prefill
+   once with injection **into the model's native hybrid cache** → full-attn/global
+   layers store exact own K/V, sliding store f_θ-restored + window-bounded) +
+   `restored_incremental_generate` (decode via `mlx_lm.generate_step` over that
+   cache, O(L)/token, async-pipelined). Wired into the Mac harness via
+   `--incremental`:
+   ```bash
+   PYTHONPATH=.:sdks/python python scripts/research/k3_integrated_niah_eval_mac.py \
+     --verifier-path models/gemma-4-26B-A4B-it-mlx-4bit \
+     --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \
+     --f-theta-dir results/research/f_theta_v5_s5_sliding \
+     --s5-exact-full-attn --incremental --n-samples 5 --max-new-tokens 32
+   ```
+   **Gate: decode tok/s ≫ the per-token re-forward (toward native mlx_lm AR);
+   recall == oracle (1.0)** (carried by S5). Mechanism mirrors CUDA Gap-A: the
+   existing MLX dispatch already calls `cache.update_and_fetch`, so prefill *with*
+   a cache populates it; decode then runs native incremental attention.
 2. **Drop the extra build forward.** Capture full-attn own K/V at prefill; do not
    re-run a clean verifier forward per request beyond prefill. **Gate:
    `build_restoration` from ~12s → ~prefill cost.**
