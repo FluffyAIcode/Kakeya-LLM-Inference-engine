@@ -184,9 +184,21 @@ def main() -> int:
                     default=None,
                     help="Which prompt set to use. 'code' = HumanEval-style "
                          "(the z-lab reference regime). Overrides --held-out.")
+    ap.add_argument("--humaneval-jsonl", default=None,
+                    help="Path to the canonical HumanEval .jsonl (each line a "
+                         "problem with a 'prompt' field). Uses the first "
+                         "--n-prompts problems' prompts. This is the exact "
+                         "z-lab reference regime (~0.447 / 7.7).")
+    ap.add_argument("--raw-completion", action="store_true",
+                    help="Feed the raw prompt tokens (no chat template) — the "
+                         "native HumanEval code-completion setup.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
-    if args.prompt_set == "code":
+    if args.humaneval_jsonl:
+        with open(args.humaneval_jsonl) as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        prompts = [r["prompt"] for r in rows[: args.n_prompts]]
+    elif args.prompt_set == "code":
         prompts = CODE_PROMPTS
     elif args.prompt_set == "held-out" or args.held_out:
         prompts = HELD_OUT_PROMPTS
@@ -229,14 +241,19 @@ def main() -> int:
 
     for pi in range(min(args.n_prompts, len(prompts))):
         prompt = prompts[pi]
-        msgs = [{"role": "user", "content": prompt}]
-        enc = tok.apply_chat_template(
-            msgs, add_generation_prompt=True, tokenize=True, return_tensors="pt",
-        )
-        # transformers 5.x may return a Tensor or a BatchEncoding/dict.
-        if hasattr(enc, "keys"):
-            enc = enc["input_ids"]
-        ids = enc[0].tolist()
+        if args.raw_completion:
+            # Native HumanEval code-completion: feed the raw prompt tokens
+            # (no chat template); the verifier continues the function body.
+            ids = tok(prompt, return_tensors="pt").input_ids[0].tolist()
+        else:
+            msgs = [{"role": "user", "content": prompt}]
+            enc = tok.apply_chat_template(
+                msgs, add_generation_prompt=True, tokenize=True, return_tensors="pt",
+            )
+            # transformers 5.x may return a Tensor or a BatchEncoding/dict.
+            if hasattr(enc, "keys"):
+                enc = enc["input_ids"]
+            ids = enc[0].tolist()
         committed = list(ids)
         generated: List[int] = []
         blk_accepts = []
