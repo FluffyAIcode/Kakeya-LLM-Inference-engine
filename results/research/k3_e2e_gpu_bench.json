@@ -1,0 +1,92 @@
+{
+  "kind": "k3_e2e_gpu_bench",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "models/dflash-kakeya-baseline",
+    "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+    "sink_size": 4,
+    "window_size": 64,
+    "gen_tokens": 16,
+    "n_samples": 3,
+    "haystack_lines": [
+      60,
+      160
+    ]
+  },
+  "verifier_dims": {
+    "num_hidden_layers": 30,
+    "num_key_value_heads": 8,
+    "head_dim": 256,
+    "sliding_window": 1024
+  },
+  "env": {
+    "gpu": "NVIDIA H200",
+    "torch": "2.11.0+cu128"
+  },
+  "results": [
+    {
+      "haystack_lines": 60,
+      "prompt_tokens": {
+        "min": 1238,
+        "max": 1238
+      },
+      "ar": {
+        "decode_tokens_per_s": 21.514,
+        "prefill_s_mean": 0.1802,
+        "kv_bytes_final": 282501120,
+        "peak_mem_bytes": 54761089024,
+        "recall": 1.0,
+        "decode_tokens": 48
+      },
+      "restored": {
+        "decode_tokens_per_s": 2.259,
+        "prefill_s_mean": 0.4505,
+        "resident_kv_bytes": 16711680,
+        "resident_window_tokens": 68,
+        "effective_context_tokens": 1254,
+        "peak_mem_bytes": 55049542656,
+        "recall": 1.0,
+        "decode_tokens": 48
+      },
+      "comparison": {
+        "kv_memory_saving_x": 16.9,
+        "ar_kv_mb": 282.5,
+        "restored_resident_kv_mb": 16.71,
+        "context_compression_x": 18.4,
+        "throughput_ratio_restored_over_ar": 0.105
+      }
+    },
+    {
+      "haystack_lines": 160,
+      "prompt_tokens": {
+        "min": 3238,
+        "max": 3238
+      },
+      "ar": {
+        "decode_tokens_per_s": 21.92,
+        "prefill_s_mean": 0.2378,
+        "kv_bytes_final": 733061120,
+        "peak_mem_bytes": 57768487424,
+        "recall": 1.0,
+        "decode_tokens": 48
+      },
+      "restored": {
+        "decode_tokens_per_s": 1.273,
+        "prefill_s_mean": 0.7683,
+        "resident_kv_bytes": 16711680,
+        "resident_window_tokens": 68,
+        "effective_context_tokens": 3254,
+        "peak_mem_bytes": 58487434240,
+        "recall": 1.0,
+        "decode_tokens": 48
+      },
+      "comparison": {
+        "kv_memory_saving_x": 43.9,
+        "ar_kv_mb": 733.06,
+        "restored_resident_kv_mb": 16.71,
+        "context_compression_x": 47.9,
+        "throughput_ratio_restored_over_ar": 0.058
+      }
+    }
+  ]
+}
