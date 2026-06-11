@@ -273,6 +273,10 @@ def main() -> int:
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--skip-unfused", action="store_true",
+                    help="Skip the un-fused restored spec-decode baseline "
+                         "(already characterized; removes GPU contention for a "
+                         "clean fused-vs-AR steady-state measurement).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -390,11 +394,16 @@ def main() -> int:
         g_pt, t_pt, _ = restored_pertoken(adapter, prompt, args.max_new_tokens, device)
         pt_tps.append(len(g_pt) / t_pt)
         pt_hits += int(recall(g_pt, ans))
-        sd = restored_specdecode(
-            adapter, drafter, provider, embed_fn, lm_head_fn,
-            prompt, args.max_new_tokens, args.block_size, device, eos_ids)
+        if args.skip_unfused:
+            sd = {"decode_tokens_per_s": None, "mean_accept_len": 0.0,
+                  "time_breakdown_s": {"aux_clean_forward": 0.0, "drafter": 0.0,
+                                       "incremental_verify": 0.0}, "tokens": []}
+        else:
+            sd = restored_specdecode(
+                adapter, drafter, provider, embed_fn, lm_head_fn,
+                prompt, args.max_new_tokens, args.block_size, device, eos_ids)
+            sd_hits += int(recall(sd["tokens"], ans))
         sd_rows.append(sd)
-        sd_hits += int(recall(sd["tokens"], ans))
         fu = restored_specdecode_fused(
             adapter, drafter, verifier, aux_layer_ids, embed_fn, lm_head_fn,
             prompt, args.max_new_tokens, args.block_size, device, eos_ids)
@@ -421,13 +430,10 @@ def main() -> int:
         "restored_pertoken": {
             "decode_tokens_per_s_mean": round(sum(pt_tps) / n, 3), "recall": round(pt_hits / n, 3)},
         "restored_specdecode": {
-            "decode_tokens_per_s_mean": round(
-                sum(r["decode_tokens_per_s"] for r in sd_rows) / n, 3),
+            "skipped": bool(args.skip_unfused),
+            "decode_tokens_per_s_mean": (None if args.skip_unfused else round(
+                sum(r["decode_tokens_per_s"] for r in sd_rows) / n, 3)),
             "mean_accept_len": round(sum(r["mean_accept_len"] for r in sd_rows) / n, 2),
-            "time_breakdown_s_mean": {
-                k: round(sum(r["time_breakdown_s"][k] for r in sd_rows) / n, 3)
-                for k in ("aux_clean_forward", "drafter", "incremental_verify")
-            },
             "recall": round(sd_hits / n, 3),
             "per_sample": sd_rows,
         },
