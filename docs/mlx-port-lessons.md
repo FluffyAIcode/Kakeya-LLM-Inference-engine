@@ -111,11 +111,14 @@ materialization / lazy-eval sync / cross-runtime bridging, **not** the attention
 kernel. `inference_engine/backends/mlx/native_restored_cache.py` makes the whole
 cache lifecycle native:
 
-- **`build_native_prefill_cache`** — one *native* prefill
-  (`model(prompt, cache=make_prompt_cache(...))`) fills the model's own native
-  cache with **exact own K/V** per layer: full-attention `KVCache` (unbounded →
-  carries the needle, **S5 recall for free**), sliding `RotatingKVCache`
-  (**bounded natively**). No patch, no second forward, no Python reconstruction.
+- **`build_native_prefill_cache`** — native prefill into the model's own cache,
+  processing the prompt in **chunks of `prefill_step_size`** (mirrors
+  `generate_step`). **This chunking is mandatory on Apple Silicon**: a single
+  full-prompt forward materializes an O(T_q×T_k) attention and OOMs on long NIAH
+  prompts (that bug made the first Step-0 unusable). After it the cache holds
+  **exact own K/V** per layer: full-attention `KVCache` (unbounded → carries the
+  needle, **S5 recall for free**), sliding `RotatingKVCache` (**bounded
+  natively**). No patch, no second forward, no Python reconstruction.
 - **`set_kv_cache_state` / `inject_restored_into_native_cache`** — write K/V
   straight into the native layout via the cache's own `.state` setter.
 - **`quantize_full_attn_layers`** — full-attn `KVCache` → native

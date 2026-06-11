@@ -85,6 +85,9 @@ def parse_args() -> argparse.Namespace:
                     help="If >0, convert full-attn KVCache -> native QuantizedKVCache "
                          "at this bit-width (real resident-memory reduction). "
                          "Used with --native-cache.")
+    ap.add_argument("--prefill-step-size", type=int, default=512,
+                    help="Chunk size for native prefill (--native-cache); bounds "
+                         "peak attention memory on Apple Silicon.")
     ap.add_argument("--teacher-forced", action="store_true",
                     help="DIAGNOSTIC ONLY (under-measures retrieval): single "
                          "restored forward per sample, check argmax at the "
@@ -445,7 +448,8 @@ def main() -> int:
         resident_mb = []
         for i, pid in enumerate(sample_ids):
             t0 = time.perf_counter()
-            cache, first, _ = build_native_prefill_cache(mlx_model, pid)
+            cache, first = build_native_prefill_cache(
+                mlx_model, pid, prefill_step_size=args.prefill_step_size)
             if args.quantize_full_attn_bits > 0:
                 cache = quantize_full_attn_layers(
                     cache, full_attn_idx, bits=args.quantize_full_attn_bits)

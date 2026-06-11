@@ -53,11 +53,11 @@ class _Model:
         self.model = tm
         self._row = row
         self.last_cache = "UNSET"
+        self.chunk_lens = []                      # query-lengths seen per forward
 
     def __call__(self, ids, cache=None):
-        for l in self.model.layers:               # drive layers (aux tap)
-            l(None)
         self.last_cache = cache
+        self.chunk_lens.append(len(ids[0]))
         return _Logits(self._row)
 
 
@@ -144,30 +144,24 @@ def test_inject_restored_respects_layer_indices():
 # --------------------------------------------------------------------------- #
 # build_native_prefill_cache
 # --------------------------------------------------------------------------- #
-def test_native_prefill_no_aux_no_patch(monkeypatch):
-    _install_mlx(monkeypatch, prompt_cache=["A", "B", "C"])
-    model = _Model(_TextModel(3), row="LASTROW")
-    layer_cls = type(model.model.layers[0])
-    orig = layer_cls.__call__
-    cache, last, aux = nrc.build_native_prefill_cache(model, [1, 2, 3])
-    assert cache == ["A", "B", "C"]              # native make_prompt_cache
-    assert model.last_cache == ["A", "B", "C"]   # threaded into the forward
-    assert last == "LASTROW"
-    assert aux is None
-    assert layer_cls.__call__ is orig            # no patch left (none installed)
+def test_native_prefill_chunks_the_prompt(monkeypatch):
+    cache_layers = [_KVCacheLayer(), _KVCacheLayer()]
+    _install_mlx(monkeypatch, prompt_cache=cache_layers)
+    model = _Model(_TextModel(2), row="LASTROW")
+    cache, last = nrc.build_native_prefill_cache(
+        model, [1, 2, 3, 4, 5], prefill_step_size=2)
+    # 5 tokens, step 2 -> chunked forwards of [2, 2, 1] (no single full forward).
+    assert model.chunk_lens == [2, 2, 1]
+    assert cache is cache_layers                 # native make_prompt_cache
+    assert last == "LASTROW"                     # logits[0,-1] from final chunk
 
 
-def test_native_prefill_with_aux_tap(monkeypatch):
-    _install_mlx(monkeypatch)
-    tm = _TextModel(4)
-    model = _Model(tm, row="R")
-    cache, last, aux = nrc.build_native_prefill_cache(
-        model, [1, 2], aux_layer_ids=[1, 3], embed_scale=10.0)
-    # hs = [embeds(=10.0), out0, out1, out2, out3]; hs[1]=out0, hs[3]=out2.
-    assert aux == [_Out(0), _Out(2)]
-    assert last == "R"
-    for l in tm.layers:                          # tap cleaned up
-        assert not hasattr(l, "_aux_record")
+def test_native_prefill_single_chunk_when_step_large(monkeypatch):
+    cache_layers = [_KVCacheLayer()]
+    _install_mlx(monkeypatch, prompt_cache=cache_layers)
+    model = _Model(_TextModel(1), row="R")
+    nrc.build_native_prefill_cache(model, [1, 2, 3], prefill_step_size=512)
+    assert model.chunk_lens == [3]
 
 
 def test_native_prefill_rejects_empty_prompt(monkeypatch):

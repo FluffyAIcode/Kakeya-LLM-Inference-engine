@@ -41,12 +41,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from inference_engine.backends.mlx.cross_model_dlm_verifier import (
-    resolve_mlx_text_model,
     restored_incremental_generate,
-)
-from inference_engine.backends.mlx.fused_specdecode import (
-    _patched_decoder_layers,
-    _build_aux,
 )
 
 
@@ -86,39 +81,37 @@ def build_native_prefill_cache(
     mlx_model: Any,
     prompt_ids: Sequence[int],
     *,
-    aux_layer_ids: Sequence[int] = (),
-    embed_scale: float = 1.0,
-) -> Tuple[Any, Any, Optional[List[Any]]]:
-    """Single native prefill that populates the model's native prompt cache with
-    the **exact own K/V** for every layer. Returns ``(cache, last_logits, aux)``.
+    prefill_step_size: int = 512,
+) -> Tuple[Any, Any]:
+    """Native prefill into the model's own prompt cache, processing the prompt in
+    **chunks of ``prefill_step_size``** (mirrors ``mlx_lm.generate_step``'s
+    chunked prefill, lines ~430-443). Returns ``(cache, last_logits)``.
 
-    ``aux`` is ``None`` unless ``aux_layer_ids`` is given, in which case the
-    prompt aux hidden are tapped from the *same* forward (a one-shot decoder-layer
-    tap, materialized once — not a per-token patch).
+    Chunking is essential on Apple Silicon: a single full-prompt forward
+    materializes an O(T_query × T_key) attention and OOMs on long NIAH prompts
+    (the failure that made the naive Step-0 unusable). After this the cache holds
+    the **exact own K/V** for every layer (full-attention `KVCache` → S5 recall;
+    sliding `RotatingKVCache` → bounded), and decode runs via `generate_step`.
     """
     import mlx.core as mx  # type: ignore
     from mlx_lm.models.cache import make_prompt_cache  # type: ignore
 
-    if not prompt_ids:
+    ids_list = [int(t) for t in prompt_ids]
+    if not ids_list:
         raise ValueError("prompt_ids must be non-empty")
-    text_model = resolve_mlx_text_model(mlx_model)
+    step = max(int(prefill_step_size), 1)
     cache = make_prompt_cache(mlx_model)
-    ids = mx.array([list(prompt_ids)])
 
-    if aux_layer_ids:
-        sink: Dict[int, Any] = {}
-        with _patched_decoder_layers(text_model):
-            for layer in text_model.layers:
-                layer._aux_record = sink
-            logits = mlx_model(ids, cache=cache)
-            aux = _build_aux(text_model, ids, sink, embed_scale, aux_layer_ids)
-            mx.eval(logits)
-            mx.eval(aux)
-    else:
-        logits = mlx_model(ids, cache=cache)
-        mx.eval(logits)
-        aux = None
-    return cache, logits[0, -1], aux
+    n = len(ids_list)
+    pos = 0
+    logits = None
+    while pos < n:
+        chunk = ids_list[pos:pos + step]
+        logits = mlx_model(mx.array([chunk]), cache=cache)
+        mx.eval([c.state for c in cache])   # materialize per chunk (bound peak)
+        pos += len(chunk)
+    mx.eval(logits)
+    return cache, logits[0, -1]
 
 
 # --------------------------------------------------------------------------- #
