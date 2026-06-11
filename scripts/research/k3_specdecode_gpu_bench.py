@@ -372,13 +372,17 @@ def main() -> int:
     print("[sd] warmup ...", file=sys.stderr, flush=True)
     _wp = ids_list[0][0].tolist()
     try:
-        ar_incremental(verifier, ids_list[0], 4, device)
-        restored_pertoken(adapter, _wp, 4, device)
-        restored_specdecode(adapter, drafter, provider, embed_fn, lm_head_fn,
-                            _wp, 8, args.block_size, device, eos_ids)
-        restored_specdecode_fused(adapter, drafter, verifier, aux_layer_ids,
-                                  embed_fn, lm_head_fn, _wp, 8, args.block_size,
-                                  device, eos_ids)
+        # Warm with the FULL gen length so the caching allocator pre-sizes
+        # every context-growth shape the timed samples will hit (otherwise the
+        # first sample eats first-time cudaMalloc for the long-context drafter
+        # attention buffers). Two passes to settle clocks/autotuning.
+        for _ in range(2):
+            ar_incremental(verifier, ids_list[0], args.max_new_tokens, device)
+            restored_pertoken(adapter, _wp, args.max_new_tokens, device)
+            restored_specdecode_fused(adapter, drafter, verifier, aux_layer_ids,
+                                      embed_fn, lm_head_fn, _wp,
+                                      args.max_new_tokens, args.block_size,
+                                      device, eos_ids)
     except Exception as e:
         print(f"[sd] warmup note: {e}", file=sys.stderr)
 
