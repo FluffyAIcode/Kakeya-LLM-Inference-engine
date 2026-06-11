@@ -88,6 +88,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--kl-lattice", default="D4", choices=["D4", "E8"])
     ap.add_argument("--kl-q-range", type=int, default=38)
     ap.add_argument("--skip-oracle", action="store_true")
+    ap.add_argument("--chat-template", action="store_true",
+                    help="Diagnostic mode: wrap NIAH completion prompts in "
+                         "the model chat template. Default is raw completion "
+                         "prompt because NIAH already ends with 'Answer:'.")
     ap.add_argument("--output", default=None)
     return ap.parse_args()
 
@@ -98,6 +102,7 @@ def main() -> int:
     import mlx.core as mx  # type: ignore
     import mlx_lm  # type: ignore
     import torch
+    from mlx_lm.models.cache import KVCache  # type: ignore
 
     from inference_engine.v04 import (
         DFlashDrafter, FThetaProjection, NIAHSample,
@@ -301,11 +306,21 @@ def main() -> int:
             return
         for li, k_mx in rk.items():
             c = cache[li]
-            if not hasattr(c, "set_restored_bank"):
-                continue
             v_mx = rv[li]
             kb, vb = _post_rope_restored_bank(li, k_mx, v_mx, evicted)
-            c.set_restored_bank(kb, vb)
+            if li in full_attn_idx and getattr(c, "keys", None) is not None:
+                # Full-attention layers are the long-context recall carriers in
+                # S5. Hand them back to MLX's native KVCache so decode appends
+                # into a preallocated buffer instead of re-concatenating the
+                # restored bank on every generated token.
+                full_cache = KVCache()
+                full_cache.state = (
+                    mx.concatenate([kb, c.keys], axis=2),
+                    mx.concatenate([vb, c.values], axis=2),
+                )
+                cache[li] = full_cache
+            elif hasattr(c, "set_restored_bank"):
+                c.set_restored_bank(kb, vb)
 
     # ---------- Dataset ----------
     samples: List[NIAHSample] = make_niah_dataset(
@@ -316,6 +331,11 @@ def main() -> int:
     )
 
     def encode(prompt_text: str) -> List[int]:
+        if not args.chat_template:
+            ids = tokenizer.encode(prompt_text)
+            if hasattr(ids, "tolist"):
+                ids = ids.tolist()
+            return list(ids)
         msgs = [{"role": "user", "content": prompt_text}]
         ids = tokenizer.apply_chat_template(msgs, add_generation_prompt=True)
         if hasattr(ids, "tolist"):
@@ -528,6 +548,7 @@ def main() -> int:
             "haystack_max_lines": args.haystack_max_lines,
             "max_new_tokens": args.max_new_tokens,
             "seed": args.seed,
+            "chat_template": bool(args.chat_template),
             "eval_mode": eval_mode,
             "teacher_forced": bool(args.teacher_forced),
             "s5_exact_full_attn": bool(args.s5_exact_full_attn),

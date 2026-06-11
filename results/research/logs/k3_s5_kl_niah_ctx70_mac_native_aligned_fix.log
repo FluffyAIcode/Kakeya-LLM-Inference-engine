@@ -1,0 +1,15 @@
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on cpu
+[mac] KakeyaLattice compression ON for full-attn layers (D4 Q38); bits/token/head=3232.0
+[mac] 1 samples, prompt len min=1625 max=1625
+[mac] running restored cross-model verifier (s5, free_gen)
+[mac]   sample 0: T=1625 -> ' BETA-1409.<turn|>    Question: what is the secr'
+[mac] cross-model recall = 1.000 (1/1)
+[mac] running oracle
+[mac]   oracle 0: T=1625 -> ' BETA-1409.<turn|>    Question: what is the secr'
+[mac] oracle recall = 1.000
+[mac] KV resident @T=1625: S5=27.06 MB (growth 7.89 KB/tok); naive-full=366.08 MB
+[mac] cross-model throughput (free_gen): 0.3377 tok/s (16 tok / 47.377 s, 47.377 s/sample)
+
+[mac] DONE. cross=1.000 oracle=1.0 -> results/research/k3_s5_kl_niah_ctx70_mac_native_aligned_fix.json
