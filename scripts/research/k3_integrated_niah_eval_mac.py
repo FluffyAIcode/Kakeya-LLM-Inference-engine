@@ -62,7 +62,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--haystack-max-lines", type=int, default=322)
     ap.add_argument("--sink-size", type=int, default=4)
     ap.add_argument("--window-size", type=int, default=64)
-    ap.add_argument("--max-new-tokens", type=int, default=24)
+    ap.add_argument("--max-new-tokens", type=int, default=12)
+    ap.add_argument("--free-generation", action="store_true",
+                    help="Autoregressive free generation (1 restored forward "
+                         "per token, O(T) each). Default is teacher-forced "
+                         "recall (a single restored forward per sample over "
+                         "[prompt + needle-code]), which is O(T)/sample and "
+                         "the usable path on memory-constrained Macs.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--drafter-device", default="mps",
                     help="torch device for the DFlash drafter + f_θ (mps|cpu)")
@@ -196,53 +202,54 @@ def main() -> int:
         d_v = [v_cap[i].view(1, -1, dh, ddim) for i in range(len(layers))]
         return d_k, d_v
 
-    # ---------- Restored next-token logits ----------
-    def restored_next_logits(ids: List[int]) -> int:
-        T = len(ids)
-        evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
-        if not evicted:
-            out = mlx_model(mx.array([ids]))
-            mx.eval(out)
-            return int(mx.argmax(out[0, -1]).item())
+    # ---------- Per-sample restoration (amortized: captured ONCE over the
+    # prompt, reused for all decode steps). The evicted positions are the
+    # fixed prompt mid-context; with <= window generated tokens nothing else
+    # is evicted, so the prompt's restored K/V cover every injected slot.
+    exact_set = set(range(n_layers)) if args.identity_restore else set(full_attn_idx)
 
-        # f_θ projection of drafter K/V → per-verifier-layer K/V (torch)
-        d_k, d_v = capture_drafter_kv(ids)
+    def build_restoration(prompt_ids: List[int]):
+        d_k, d_v = capture_drafter_kv(prompt_ids)
         with torch.no_grad():
-            vk, vv = f_theta.forward_kv_pack(d_k, d_v)  # 30× [1,T,kv_i,hd_i]
-
-        # S5 / identity: capture verifier's own true K/V (mx) when needed
+            vk, vv = f_theta.forward_kv_pack(d_k, d_v)
         own = None
-        if args.s5_exact_full_attn or args.identity_restore:
-            own = capture_own_kv(mlx_model, ids)  # {src_idx: (k,v)} mx pre-norm
-
-        exact_set = set(range(n_layers)) if args.identity_restore else set(full_attn_idx)
-
+        if exact_set:
+            own = capture_own_kv(mlx_model, prompt_ids)
         rk: Dict[int, Any] = {}
         rv: Dict[int, Any] = {}
         for li in range(n_layers):
-            src = src_map[li]
-            if src != li:
-                continue  # only inject at source (has_kv) layers
+            if src_map[li] != li:
+                continue
             if li in exact_set and own is not None and li in own:
                 k_mx, v_mx = own[li]
                 if li in compressors:
                     k_mx, v_mx = _compress_roundtrip(li, k_mx, v_mx)
-                rk[li] = k_mx
-                rv[li] = v_mx
+                rk[li], rv[li] = k_mx, v_mx
             else:
-                rk[li] = torch_to_mx(vk[li])   # [1,T,kv_i,hd_i] pre-norm
-                rv[li] = torch_to_mx(vv[li])
-        last = restored_logits(
-            mlx_model, ids,
-            restored_k_per_layer=rk, restored_v_per_layer=rv,
-            evicted_positions=evicted,
-        )
-        return int(mx.argmax(last).item())
+                rk[li], rv[li] = torch_to_mx(vk[li]), torch_to_mx(vv[li])
+        return rk, rv, len(prompt_ids)
 
-    def oracle_next_logits(ids: List[int]) -> int:
-        out = mlx_model(mx.array([ids]))
-        mx.eval(out)
-        return int(mx.argmax(out[0, -1]).item())
+    def _pad(rdict, t_src, t_dst):
+        if t_dst <= t_src:
+            return rdict
+        out = {}
+        for li, a in rdict.items():
+            pad = mx.zeros((a.shape[0], t_dst - t_src, a.shape[2], a.shape[3]), dtype=a.dtype)
+            out[li] = mx.concatenate([a, pad], axis=1)
+        return out
+
+    def restored_forward(ids: List[int], rk, rv, t_src, *, return_all: bool):
+        T = len(ids)
+        evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
+        if not evicted:
+            out = mlx_model(mx.array([ids])); mx.eval(out)
+            return out[0] if return_all else out[0, -1]
+        return restored_logits(
+            mlx_model, ids,
+            restored_k_per_layer=_pad(rk, t_src, T),
+            restored_v_per_layer=_pad(rv, t_src, T),
+            evicted_positions=evicted, return_all=return_all,
+        )
 
     # ---------- Dataset ----------
     samples: List[NIAHSample] = make_niah_dataset(
@@ -259,35 +266,82 @@ def main() -> int:
             ids = ids.tolist()
         return list(ids)
 
+    def encode_answer(answer_text: str) -> List[int]:
+        try:
+            aid = tokenizer.encode(answer_text, add_special_tokens=False)
+        except TypeError:
+            aid = list(tokenizer.encode(answer_text))
+            bos = getattr(tokenizer, "bos_token_id", None)
+            if aid and bos is not None and aid[0] == bos:
+                aid = aid[1:]
+        return list(aid)
+
     sample_ids = [encode(s.prompt_text) for s in samples]
+    answer_ids = [encode_answer(s.answer_text) for s in samples]
     seq_lens = [len(t) for t in sample_ids]
     eos_id = getattr(tokenizer, "eos_token_id", None)
     print(f"[mac] {len(samples)} samples, prompt len "
           f"min={min(seq_lens)} max={max(seq_lens)}", file=sys.stderr)
 
-    def greedy(step_fn) -> Tuple[List[str], List[float], List[int]]:
+    def eval_teacher_forced(logits_all_fn) -> Tuple[List[str], List[float], List[int]]:
+        """One restored forward per sample over [prompt + needle-code]; check
+        the argmax at the answer span reproduces the code (substring predicate
+        — same as CUDA). O(T) per sample, no autoregressive loop."""
         decoded, lats, toks = [], [], []
-        for i, base in enumerate(sample_ids):
-            cur = list(base)
-            gen: List[int] = []
+        for i, pid in enumerate(sample_ids):
+            aid = answer_ids[i] or [eos_id or 0]
+            full = pid + aid
+            t0 = time.perf_counter()
+            logits_all = logits_all_fn(pid, full)  # [T_full, V]
+            Tp = len(pid)
+            preds = [int(mx.argmax(logits_all[Tp - 1 + j]).item())
+                     for j in range(len(aid))]
+            lats.append(time.perf_counter() - t0)
+            decoded.append(tokenizer.decode(preds))
+            toks.append(len(aid))
+            print(f"[mac]   sample {i}: T={seq_lens[i]} pred[:48]={decoded[-1][:48]!r}",
+                  file=sys.stderr)
+        return decoded, lats, toks
+
+    def eval_free_gen(cross: bool) -> Tuple[List[str], List[float], List[int]]:
+        decoded, lats, toks = [], [], []
+        for i, pid in enumerate(sample_ids):
+            rk = rv = tsrc = None
+            if cross:
+                rk, rv, tsrc = build_restoration(pid)
+            cur = list(pid); gen: List[int] = []
             t0 = time.perf_counter()
             for _ in range(args.max_new_tokens):
-                nxt = step_fn(cur)
-                gen.append(nxt)
+                if cross:
+                    last = restored_forward(cur, rk, rv, tsrc, return_all=False)
+                else:
+                    out = mlx_model(mx.array([cur])); mx.eval(out); last = out[0, -1]
+                nxt = int(mx.argmax(last).item()); gen.append(nxt)
                 if eos_id is not None and nxt == eos_id:
                     break
                 cur.append(nxt)
             lats.append(time.perf_counter() - t0)
-            decoded.append(tokenizer.decode(gen))
-            toks.append(len(gen))
+            decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
             print(f"[mac]   sample {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
                   file=sys.stderr)
         return decoded, lats, toks
 
+    def cross_logits_all(prompt_ids, full_ids):
+        rk, rv, tsrc = build_restoration(prompt_ids)
+        return restored_forward(full_ids, rk, rv, tsrc, return_all=True)
+
+    def oracle_logits_all(prompt_ids, full_ids):
+        out = mlx_model(mx.array([full_ids])); mx.eval(out); return out[0]
+
     label = "identity" if args.identity_restore else (
         "s5" if args.s5_exact_full_attn else "f_theta_all")
-    print(f"[mac] running restored cross-model verifier ({label})", file=sys.stderr, flush=True)
-    cross_dec, cross_lat, cross_tok = greedy(restored_next_logits)
+    eval_mode = "free_gen" if args.free_generation else "teacher_forced"
+    print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
+          file=sys.stderr, flush=True)
+    if args.free_generation:
+        cross_dec, cross_lat, cross_tok = eval_free_gen(cross=True)
+    else:
+        cross_dec, cross_lat, cross_tok = eval_teacher_forced(cross_logits_all)
     cross_res = aggregate_recall("k3_cross_model_mac", samples, cross_dec, cross_lat, cross_tok)
     print(f"[mac] cross-model recall = {cross_res.recall:.3f} "
           f"({cross_res.samples_correct}/{cross_res.samples_total})", file=sys.stderr)
@@ -295,7 +349,10 @@ def main() -> int:
     oracle_res = None
     if not args.skip_oracle:
         print("[mac] running oracle (full MLX forward)", file=sys.stderr, flush=True)
-        o_dec, o_lat, o_tok = greedy(oracle_next_logits)
+        if args.free_generation:
+            o_dec, o_lat, o_tok = eval_free_gen(cross=False)
+        else:
+            o_dec, o_lat, o_tok = eval_teacher_forced(oracle_logits_all)
         oracle_res = aggregate_recall("oracle_mac", samples, o_dec, o_lat, o_tok)
         print(f"[mac] oracle recall = {oracle_res.recall:.3f}", file=sys.stderr)
 
@@ -326,8 +383,13 @@ def main() -> int:
             "mean_latency_per_sample_s": round(tot_t / max(len(lats), 1), 3),
         }
     cross_tps = _tps(cross_lat, cross_tok)
-    print(f"[mac] cross-model throughput: {cross_tps['tokens_per_second']} tok/s "
-          f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s)", file=sys.stderr)
+    cross_tps["eval_mode"] = eval_mode
+    cross_tps["restored_forwards_per_sample"] = (
+        args.max_new_tokens if args.free_generation else 1)
+    print(f"[mac] cross-model throughput ({eval_mode}): "
+          f"{cross_tps['tokens_per_second']} tok/s "
+          f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s, "
+          f"{cross_tps['mean_latency_per_sample_s']} s/sample)", file=sys.stderr)
 
     delta = (abs(cross_res.recall - oracle_res.recall) if oracle_res else None)
     report = {
@@ -344,6 +406,8 @@ def main() -> int:
             "haystack_max_lines": args.haystack_max_lines,
             "max_new_tokens": args.max_new_tokens,
             "seed": args.seed,
+            "eval_mode": eval_mode,
+            "free_generation": bool(args.free_generation),
             "s5_exact_full_attn": bool(args.s5_exact_full_attn),
             "identity_restore": bool(args.identity_restore),
             "compress_full_attn": bool(args.compress_full_attn),

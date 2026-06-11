@@ -322,10 +322,14 @@ def restored_logits(
     restored_k_per_layer: Dict[int, Any],   # source_layer_idx -> mx [B,T,n_kv,hd] pre-norm
     restored_v_per_layer: Dict[int, Any],
     evicted_positions: Sequence[int],
+    return_all: bool = False,
 ) -> Any:
-    """Run the verifier with evicted-position K/V restoration; return last-row
-    logits (mx.array [V]). Injects only at ``has_kv`` source layers (sharers
-    inherit via ``shared_kv``).
+    """Run the verifier with evicted-position K/V restoration.
+
+    Returns the last-row logits (mx.array ``[V]``) by default, or all-position
+    logits (``[T, V]``) when ``return_all=True`` (used by the teacher-forced
+    single-forward recall eval). Injects only at ``has_kv`` source layers
+    (sharers inherit via ``shared_kv``).
     """
     import mlx.core as mx  # type: ignore
 
@@ -355,4 +359,4 @@ def restored_logits(
         ids = mx.array([list(input_ids)])
         logits = mlx_model(ids)            # full Model.__call__ → tied embed + softcap
         mx.eval(logits)
-    return logits[0, -1]
+    return logits[0] if return_all else logits[0, -1]
