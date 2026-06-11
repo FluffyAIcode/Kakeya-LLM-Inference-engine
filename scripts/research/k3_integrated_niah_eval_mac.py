@@ -73,6 +73,9 @@ def parse_args() -> argparse.Namespace:
                          "#107 A+B+C): drafter context K/V cache + aux capture from "
                          "the verify forward + incremental restored verify with "
                          "trim_prompt_cache accept/reject. Free-gen only.")
+    ap.add_argument("--force-fused-specdecode", action="store_true",
+                    help="Force DFlash fused spec-decode on MLX even if the "
+                         "adaptive Mac path would use restored greedy decode.")
     ap.add_argument("--block-size", type=int, default=4,
                     help="Spec-decode block size (drafted tokens per block).")
     ap.add_argument("--teacher-forced", action="store_true",
@@ -85,7 +88,7 @@ def parse_args() -> argparse.Namespace:
                          "incremental cache; the restored cross path does a "
                          "full forward per token (slow on M4 — see notes).")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--drafter-device", default="mps",
+    ap.add_argument("--drafter-device", default="cpu",
                     help="torch device for the DFlash drafter + f_θ (mps|cpu)")
     ap.add_argument("--s5-exact-full-attn", action="store_true",
                     help="Keep full-attention layers' K/V exact (S5).")
@@ -146,16 +149,30 @@ def main() -> int:
     src_map = kv_source_layer_map(text_model)
     print(f"[mac] verifier layers={n_layers} full_attn={full_attn_idx}", file=sys.stderr)
 
-    # ---------- Load drafter + f_θ (PyTorch) ----------
-    print(f"[mac] loading drafter {args.drafter_id} on {dev}", file=sys.stderr, flush=True)
-    drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=torch.float32)
-    drafter = drafter.to(dev).eval()
-    for p in drafter.parameters():
-        p.requires_grad_(False)
-    f_theta = FThetaProjection.from_pretrained(
-        args.f_theta_dir, dtype=torch.float32, device=dev,
+    adaptive_s5_native = (
+        args.fused_specdecode
+        and not args.force_fused_specdecode
+        and args.s5_exact_full_attn
+        and not args.identity_restore
+        and not args.compress_full_attn
     )
-    fcfg = f_theta.config
+    drafter = None
+    f_theta = None
+    fcfg = None
+    if adaptive_s5_native:
+        print("[mac] adaptive S5 native path: skipping drafter/f_theta load",
+              file=sys.stderr, flush=True)
+    else:
+        # ---------- Load drafter + f_θ (PyTorch) ----------
+        print(f"[mac] loading drafter {args.drafter_id} on {dev}", file=sys.stderr, flush=True)
+        drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=torch.float32)
+        drafter = drafter.to(dev).eval()
+        for p in drafter.parameters():
+            p.requires_grad_(False)
+        f_theta = FThetaProjection.from_pretrained(
+            args.f_theta_dir, dtype=torch.float32, device=dev,
+        )
+        fcfg = f_theta.config
 
     # ---------- Optional KakeyaLattice compression of full-attn layers ----------
     geom = per_layer_kv_geometry(text_model)
@@ -195,7 +212,6 @@ def main() -> int:
     def capture_drafter_kv(ids: List[int]):
         ids_mx = mx.array([ids])
         emb_mx = text_model.embed_tokens(ids_mx)
-        emb_mx = emb_mx * embed_scale
         embedded = mx_to_torch(emb_mx, dtype=torch.float32, device=dev)  # [1,T,H]
         layers = list(drafter.layers)
         k_cap: List[Optional[torch.Tensor]] = [None] * len(layers)
@@ -228,17 +244,30 @@ def main() -> int:
     # is evicted, so the prompt's restored K/V cover every injected slot.
     exact_set = set(range(n_layers)) if args.identity_restore else set(full_attn_idx)
 
-    def build_restoration(prompt_ids: List[int]):
+    def build_restoration(prompt_ids: List[int], *, prefill_native_s5: bool = False):
+        """Build restored K/V banks.
+
+        For incremental/fused S5 decode, full-attention exact K/V should come
+        from the same MLX prefill that populates the native cache. Supplying no
+        restored bank for those layers lets mlx_lm store their own post-RoPE
+        cache directly and avoids the extra clean verifier forward.
+        """
+        if prefill_native_s5 and args.s5_exact_full_attn and not args.identity_restore:
+            return {}, {}, len(prompt_ids)
+        if drafter is None or f_theta is None or fcfg is None:
+            raise RuntimeError("drafter/f_theta are required for this restoration mode")
         d_k, d_v = capture_drafter_kv(prompt_ids)
         with torch.no_grad():
             vk, vv = f_theta.forward_kv_pack(d_k, d_v)
         own = None
-        if exact_set:
+        if exact_set and not prefill_native_s5:
             own = capture_own_kv(mlx_model, prompt_ids)
         rk: Dict[int, Any] = {}
         rv: Dict[int, Any] = {}
         for li in range(n_layers):
             if src_map[li] != li:
+                continue
+            if prefill_native_s5 and li in exact_set:
                 continue
             if li in exact_set and own is not None and li in own:
                 k_mx, v_mx = own[li]
@@ -350,7 +379,7 @@ def main() -> int:
         per-token re-forward throughput collapse. Recall via S5 full-attn."""
         decoded, lats, toks = [], [], []
         for i, pid in enumerate(sample_ids):
-            rk, rv, tsrc = build_restoration(pid)
+            rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
             T = len(pid)
             evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
             t0 = time.perf_counter()
@@ -378,48 +407,105 @@ def main() -> int:
         """FUSED DFlash spec-decode (MLX port of #107 A+B+C): drafter context
         K/V cache + aux captured from the verify forward + incremental restored
         verify with trim_prompt_cache accept/reject. Target: tok/s > AR."""
-        aux_layer_ids = tuple(drafter.cfg.aux_layer_ids)
-        softcap = None
-        for obj in (getattr(mlx_model, "language_model", None), mlx_model):
-            cap = getattr(obj, "final_logit_softcapping", None) if obj is not None else None
-            if cap:
-                softcap = float(cap); break
         bridge = lambda a: mx_to_torch(a, dtype=torch.float32, device=dev)
-        embed_fn, lm_head_fn = make_bridge_embed_lm_head(
-            text_model, mx_to_torch=mx_to_torch, torch_to_mx=torch_to_mx,
-            device=dev, torch_dtype=torch.float32, softcap=softcap)
         argmax_fn = lambda row: int(mx.argmax(row).item())
-        arange_fn = lambda s, e: torch.arange(int(s), int(e), device=dev)
-        cat_aux_fn = lambda parts: torch.cat(list(parts), dim=0).unsqueeze(0)
+        aux_layer_ids = tuple(drafter.cfg.aux_layer_ids) if drafter is not None else ()
+        if args.force_fused_specdecode:
+            if drafter is None:
+                raise RuntimeError("--force-fused-specdecode requires drafter/f_theta")
+            softcap = None
+            for obj in (getattr(mlx_model, "language_model", None), mlx_model):
+                cap = getattr(obj, "final_logit_softcapping", None) if obj is not None else None
+                if cap:
+                    softcap = float(cap); break
+            embed_fn, lm_head_fn = make_bridge_embed_lm_head(
+                text_model, mx_to_torch=mx_to_torch, torch_to_mx=torch_to_mx,
+                device=dev, torch_dtype=torch.float32, softcap=softcap)
+            arange_fn = lambda s, e: torch.arange(int(s), int(e), device=dev)
+            cat_aux_fn = lambda parts: torch.cat(list(parts), dim=0).unsqueeze(0)
+        else:
+            embed_fn = lm_head_fn = arange_fn = cat_aux_fn = None
         adapter = MLXRestoredIncrementalVerifier(
             mlx_model, embed_scale=embed_scale, aux_layer_ids=aux_layer_ids,
             bridge_to_torch=bridge)
 
         decoded, lats, toks = [], [], []
+        rows = []
         for i, pid in enumerate(sample_ids):
-            rk, rv, tsrc = build_restoration(pid)
+            stage_t0 = time.perf_counter()
+            rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
+            build_s = time.perf_counter() - stage_t0
             T = len(pid)
             evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
-            aux_prompt_mx = capture_aux_hidden(
-                mlx_model, pid, aux_layer_ids, embed_scale=embed_scale)
-            aux_prompt = [bridge(a) for a in aux_prompt_mx]  # [1,C,H] torch each
-            adapter.prefill(
-                pid,
-                restored_k_per_layer=_pad(rk, tsrc, T),
-                restored_v_per_layer=_pad(rv, tsrc, T),
-                evicted_positions=evicted)
+            aux_t0 = time.perf_counter()
+            if args.force_fused_specdecode:
+                aux_prompt_mx = capture_aux_hidden(
+                    mlx_model, pid, aux_layer_ids, embed_scale=embed_scale)
+                aux_prompt = [bridge(a) for a in aux_prompt_mx]  # [1,C,H] torch each
+            else:
+                aux_prompt = []
+            aux_s = time.perf_counter() - aux_t0
+            prefill_t0 = time.perf_counter()
+            if adaptive_s5_native:
+                cache = (getattr(mlx_model, "make_cache", lambda: None)())
+                out = mlx_model(mx.array([pid]), cache=cache)
+                mx.eval(out)
+                adapter._cache = cache
+                adapter.next_token_logits = out[0, -1]
+                adapter._past_len = len(pid)
+            else:
+                adapter.prefill(
+                    pid,
+                    restored_k_per_layer=_pad(rk, tsrc, T),
+                    restored_v_per_layer=_pad(rv, tsrc, T),
+                    evicted_positions=evicted)
+            prefill_s = time.perf_counter() - prefill_t0
             t0 = time.perf_counter()
-            res = fused_specdecode_generate(
-                adapter, drafter, aux_prompt=aux_prompt,
-                embed_fn=embed_fn, lm_head_fn=lm_head_fn,
-                gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                eos_ids=([eos_id] if eos_id is not None else ()),
-                argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn)
+            if args.force_fused_specdecode:
+                res = fused_specdecode_generate(
+                    adapter, drafter, aux_prompt=aux_prompt,
+                    embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                    gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                    eos_ids=([eos_id] if eos_id is not None else ()),
+                    argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn)
+            else:
+                t_greedy = time.perf_counter()
+                adapter._capture_aux = False
+                gen = []
+                logits_row = adapter.next_token_logits
+                while len(gen) < args.max_new_tokens:
+                    tok = int(argmax_fn(logits_row))
+                    gen.append(tok)
+                    out = mlx_model(mx.array([[tok]]), cache=adapter._cache)
+                    mx.eval(out)
+                    logits_row = out[0, -1]
+                    if eos_id is not None and tok == eos_id:
+                        break
+                adapter.next_token_logits = logits_row
+                res = {
+                    "tokens": gen,
+                    "blocks": 0,
+                    "mean_accept_len": 0.0,
+                    "decode_tokens": len(gen),
+                    "adaptive_mode": "restored_greedy",
+                    "time_breakdown_s": {
+                        "greedy_decode_s": round(time.perf_counter() - t_greedy, 3)
+                    },
+                }
             lats.append(time.perf_counter() - t0)
             gen = res["tokens"]
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            rows.append({
+                "sample": i,
+                "build_restoration_s": round(build_s, 3),
+                "aux_prompt_capture_s": round(aux_s, 3),
+                "restored_prefill_s": round(prefill_s, 3),
+                "decode_s": round(lats[-1], 3),
+                "fused": res,
+            })
             print(f"[mac]   fused {i}: T={seq_lens[i]} acc_len={res['mean_accept_len']} "
                   f"-> {decoded[-1][:48]!r}", file=sys.stderr)
+        eval_fused_specdecode.stage_rows = rows
         return decoded, lats, toks
 
     def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
@@ -516,6 +602,8 @@ def main() -> int:
     if oracle_tps and oracle_tps["tokens_per_second"] and cross_tps["tokens_per_second"]:
         speedup_vs_oracle = round(
             cross_tps["tokens_per_second"] / oracle_tps["tokens_per_second"], 3)
+    if args.fused_specdecode:
+        cross_tps["stage_timings"] = getattr(eval_fused_specdecode, "stage_rows", [])
     print(f"[mac] cross-model throughput ({eval_mode}): "
           f"{cross_tps['tokens_per_second']} tok/s "
           f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s, "

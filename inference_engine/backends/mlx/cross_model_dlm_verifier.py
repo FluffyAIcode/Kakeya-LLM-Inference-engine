@@ -399,26 +399,34 @@ def restored_prefill_cache(
     evicted_mask = mx.array([p in evicted for p in range(T)])
 
     cache = make_prompt_cache(mlx_model)
-    with _patched_attention_class(text_model):
+    touched = []
+    try:
         for idx, layer in enumerate(text_model.layers):
             attn = layer.self_attn
-            if not bool(getattr(attn, "has_kv", True)):
-                continue  # sharers inherit injected K/V via shared_kv
+            if idx >= len(cache) or not bool(getattr(attn, "has_kv", True)):
+                continue  # sharers inherit K/V via shared_kv
             rk = restored_k_per_layer.get(idx)
             rv = restored_v_per_layer.get(idx)
             if rk is None:
                 continue
-            attn._kakeya_inject = {
-                "mode": "inject",
-                "evicted_mask": evicted_mask,
-                "restored_k": rk,
-                "restored_v": rv,
-            }
+            c = cache[idx]
+            c.kakeya_evicted_mask = evicted_mask
+            c.kakeya_restored_pre_keys = rk
+            c.kakeya_restored_pre_values = rv
+            touched.append(c)
         ids = mx.array([list(input_ids)])
         logits = mlx_model(ids, cache=cache)
         mx.eval(logits)
-    # Context manager restored the original Attention.__call__ → subsequent
-    # decode steps run NATIVE incremental attention over this cache.
+    finally:
+        for c in touched:
+            for name in (
+                "kakeya_evicted_mask",
+                "kakeya_restored_pre_keys",
+                "kakeya_restored_pre_values",
+            ):
+                if hasattr(c, name):
+                    delattr(c, name)
+    # Subsequent decode steps run native incremental attention over this cache.
     return cache, logits[0, -1]
 
 
