@@ -27,6 +27,7 @@ prefill/verify/commit/truncate sequencing) is unit-tested on Linux with fakes.
 from __future__ import annotations
 
 import contextlib
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from inference_engine.backends.mlx.cross_model_dlm_verifier import (
@@ -41,13 +42,25 @@ from inference_engine.backends.mlx.cross_model_dlm_verifier import (
 # --------------------------------------------------------------------------- #
 @contextlib.contextmanager
 def _patched_decoder_layers(text_model: Any):
-    """Temporarily wrap the Gemma-4 ``DecoderLayer.__call__`` so that, when a
-    layer carries an ``_aux_record`` dict, its output hidden (the residual
-    stream after the layer) is stored at ``_aux_record[layer_idx]``. Restores
-    the original ``__call__`` and clears ``_aux_record`` on exit.
+    """Enable aux hidden capture on Gemma-4 decoder layers.
+
+    Patched local MLX-LM exposes a lightweight in-layer tap via
+    ``_kakeya_aux_sink``. Use that when available so every verify forward stays
+    on the normal ``DecoderLayer.__call__`` implementation. Fall back to the old
+    class-level wrapper for unpatched MLX-LM installs.
     """
     if not text_model.layers:
         yield
+        return
+    if bool(getattr(text_model.layers[0], "_kakeya_native_aux_tap", False)):
+        try:
+            yield
+        finally:
+            for layer in text_model.layers:
+                if hasattr(layer, "_kakeya_aux_sink"):
+                    delattr(layer, "_kakeya_aux_sink")
+                if hasattr(layer, "_aux_record"):
+                    delattr(layer, "_aux_record")
         return
     layer_cls = type(text_model.layers[0])
     orig_call = layer_cls.__call__
@@ -101,6 +114,7 @@ def capture_aux_hidden(
     sink: Dict[int, Any] = {}
     with _patched_decoder_layers(text_model):
         for layer in text_model.layers:
+            layer._kakeya_aux_sink = sink
             layer._aux_record = sink
         ids = mx.array([list(input_ids)])
         _ = mlx_model(ids)
@@ -183,6 +197,7 @@ class MLXRestoredIncrementalVerifier:
             sink: Dict[int, Any] = {}
             with _patched_decoder_layers(self.text_model):
                 for layer in self.text_model.layers:
+                    layer._kakeya_aux_sink = sink
                     layer._aux_record = sink
                 logits = self.mlx_model(ids, cache=self._cache)
                 aux = _build_aux(self.text_model, ids, sink,
@@ -280,21 +295,35 @@ def fused_specdecode_generate(
     n_aux = len(aux_prompt)
     eos = set(int(t) for t in eos_ids)
     C = adapter._past_len
+    t_ctx = time.perf_counter()
     ctx_kv = drafter.make_context_kv(list(aux_prompt), arange_fn(0, C))
+    timing = {
+        "ctx_kv_build_s": time.perf_counter() - t_ctx,
+        "draft_s": 0.0,
+        "verify_s": 0.0,
+        "append_s": 0.0,
+        "extend_s": 0.0,
+        "fallback_greedy_s": 0.0,
+    }
     adapter._capture_aux = True
 
     generated: List[int] = []
     accepts: List[int] = []
+    fallback_to_greedy = False
     while len(generated) < gen_tokens:
         L = min(block_size, gen_tokens - len(generated))
         cstart = adapter._past_len
         bonus = int(argmax_fn(adapter.next_token_logits))
+        t_draft = time.perf_counter()
         drafts = drafter.draft_block_cached(
             ctx_kv, bonus, embed_fn, lm_head_fn,
             block_size=max(L - 1, 1), context_len=cstart)
+        timing["draft_s"] += time.perf_counter() - t_draft
         candidate = [bonus] + list(drafts[: max(L - 1, 0)])
         prev = adapter.next_token_logits
+        t_verify = time.perf_counter()
         block_logits = adapter.forward_block(candidate)
+        timing["verify_s"] += time.perf_counter() - t_verify
         cand_aux = adapter._last_aux
         accepted = 0
         for i in range(len(candidate)):
@@ -303,22 +332,56 @@ def fused_specdecode_generate(
                 prev = block_logits[i]
             else:
                 break
-        correction = int(argmax_fn(prev))
         adapter.commit_or_truncate(forwarded=len(candidate), accepted=accepted)
-        adapter.append_token(correction)
-        corr_aux = adapter._last_aux
-        new_positions = arange_fn(cstart, cstart + accepted + 1)
-        new_aux = [
-            cat_aux_fn([cand_aux[li][:accepted], corr_aux[li][:1]])
-            for li in range(n_aux)
-        ]
-        ctx_kv = drafter.extend_context_kv(
-            ctx_kv, drafter.make_context_kv(new_aux, new_positions))
-        commit = candidate[:accepted] + [correction]
+        if accepted == len(candidate):
+            # The verifier cache already contains the whole accepted block.
+            # Reuse the last block logit as the next-token distribution instead
+            # of paying an extra correction-token forward.
+            adapter.next_token_logits = block_logits[-1]
+            new_positions = arange_fn(cstart, cstart + accepted)
+            t_extend = time.perf_counter()
+            new_aux = [cand_aux[li][:accepted].unsqueeze(0) for li in range(n_aux)]
+            ctx_kv = drafter.extend_context_kv(
+                ctx_kv, drafter.make_context_kv(new_aux, new_positions))
+            timing["extend_s"] += time.perf_counter() - t_extend
+            commit = candidate
+        else:
+            correction = int(argmax_fn(prev))
+            t_append = time.perf_counter()
+            adapter.append_token(correction)
+            timing["append_s"] += time.perf_counter() - t_append
+            corr_aux = adapter._last_aux
+            new_positions = arange_fn(cstart, cstart + accepted + 1)
+            t_extend = time.perf_counter()
+            new_aux = [
+                cat_aux_fn([cand_aux[li][:accepted], corr_aux[li][:1]])
+                for li in range(n_aux)
+            ]
+            ctx_kv = drafter.extend_context_kv(
+                ctx_kv, drafter.make_context_kv(new_aux, new_positions))
+            timing["extend_s"] += time.perf_counter() - t_extend
+            commit = candidate[:accepted] + [correction]
         generated += commit
         accepts.append(accepted)
         if any(t in eos for t in commit):
             break
+        if len(accepts) >= 2 and (sum(accepts) / len(accepts)) < 1.5:
+            fallback_to_greedy = True
+            break
+
+    if fallback_to_greedy and len(generated) < gen_tokens:
+        # Low acceptance makes speculative control flow slower than AR. Finish
+        # on the restored verifier cache with plain greedy decode and no aux
+        # capture/bridge.
+        adapter._capture_aux = False
+        t_fb = time.perf_counter()
+        while len(generated) < gen_tokens:
+            tok = int(argmax_fn(adapter.next_token_logits))
+            adapter.append_token(tok)
+            generated.append(tok)
+            if tok in eos:
+                break
+        timing["fallback_greedy_s"] += time.perf_counter() - t_fb
 
     adapter._capture_aux = False
     generated = generated[:gen_tokens]
@@ -328,4 +391,5 @@ def fused_specdecode_generate(
         "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
                             if accepts else 0.0),
         "decode_tokens": len(generated),
+        "time_breakdown_s": {k: round(v, 3) for k, v in timing.items()},
     }
