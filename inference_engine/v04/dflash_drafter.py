@@ -202,6 +202,37 @@ def _apply_rope(
     return (x * cos) + (_rotate_half(x) * sin)
 
 
+# Query-chunk size for the drafter's non-causal attention. Bounds peak
+# attention memory to O(q_chunk × (C+T)); tune down on tight-memory hosts
+# (e.g. 24 GB Mac at long context). 0/None ⇒ no chunking (single SDPA call).
+_ATTN_Q_CHUNK = 1024
+
+
+def _chunked_sdpa(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+    *, scale: float, q_chunk: Optional[int] = None,
+) -> torch.Tensor:
+    """Non-causal SDPA computed in query-dimension chunks.
+
+    ``q`` is ``[B, nh, T, hd]``; ``k``/``v`` ``[B, nh, C+T, hd]``. Returns
+    ``[B, nh, T, hd]``. Chunking the query dim keeps the (possibly
+    materialised) score tensor at ``[B, nh, q_chunk, C+T]`` so long-context
+    attention does not OOM on hosts/kernels without a flash path (MPS).
+    """
+    T = q.shape[-2]
+    if not q_chunk or q_chunk <= 0 or T <= q_chunk:
+        return F.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, is_causal=False, scale=scale,
+        )
+    outs = []
+    for start in range(0, T, q_chunk):
+        qc = q[:, :, start:start + q_chunk, :]
+        outs.append(F.scaled_dot_product_attention(
+            qc, k, v, attn_mask=None, is_causal=False, scale=scale,
+        ))
+    return torch.cat(outs, dim=2)
+
+
 class _DFlashAttention(nn.Module):
     """DFlash draft attention (faithful to vLLM ``DFlashQwen3Attention``).
 
@@ -272,14 +303,12 @@ class _DFlashAttention(nn.Module):
         k = k.repeat_interleave(rep, dim=1)
         v = v.repeat_interleave(rep, dim=1)
         # Non-causal (queries see all context + all query positions), no mask.
-        # Use memory-efficient SDPA instead of materialising the full
-        # [B, nh, T, C+T] fp32 score matrix — that materialisation OOMs at
-        # long context (e.g. ~5 GB at T≈6k, nh=32 on a 24 GB Mac). SDPA's
-        # flash / mem-efficient kernels keep attention memory O(T) and are
-        # numerically equivalent to the stable-softmax reference.
-        out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, is_causal=False, scale=self.scale,
-        )  # [B, nh, T, hd]
+        # Use SDPA, and **chunk over the query dimension** so peak attention
+        # memory stays O(chunk × (C+T)) instead of O(T × (C+T)). The full
+        # materialisation OOMs at long context (≈5 GB at T≈6k, nh=32) — and
+        # MPS's SDPA has no flash kernel for this shape, so it materialises
+        # too; query-chunking bounds it on every device/kernel.
+        out = _chunked_sdpa(q, k, v, scale=self.scale, q_chunk=_ATTN_Q_CHUNK)
         out = out.transpose(1, 2).contiguous().view(B, T, self.nh * self.hd)
         return self.o_proj(out)
 
