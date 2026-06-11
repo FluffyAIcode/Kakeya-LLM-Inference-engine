@@ -167,6 +167,100 @@ def restored_specdecode(
     }
 
 
+@torch.no_grad()
+def restored_specdecode_fused(
+    adapter, drafter, verifier, aux_layer_ids, embed_fn, lm_head_fn,
+    prompt, gen_tokens, block_size, device, eos_ids,
+) -> Dict[str, Any]:
+    """FUSED spec-decode engine (A+B+C): per-block O(L).
+
+    * C (Gap-A): incremental restored verify (adapter, O(L)).
+    * B: drafter context K/V cache — built once from the prompt's clean aux,
+      then EXTENDED incrementally with each newly-committed token's aux
+      (no O(C) recompute per block).
+    * A: the newly-committed tokens' aux hidden are captured from the verify
+      forward itself (restored hidden) — no separate per-block clean-aux O(C)
+      forward.
+    """
+    n_aux = len(aux_layer_ids)
+    C = len(prompt)
+    # --- one-time prefill: clean prompt aux -> drafter context K/V cache (B) ---
+    t_prefill = time.perf_counter()
+    ids = torch.tensor([prompt], dtype=torch.long, device=device)
+    out = verifier(input_ids=ids, use_cache=False, output_hidden_states=True)
+    aux_prompt = [out.hidden_states[a] for a in aux_layer_ids]  # each [1, C, hidden]
+    ctx_kv = drafter.make_context_kv(aux_prompt, torch.arange(C, device=device))
+    adapter.prefill(prompt)                 # restored KV cache (C) + next_token_logits
+    adapter._capture_aux = True
+    torch.cuda.synchronize(device)
+    t_prefill = time.perf_counter() - t_prefill
+
+    generated: List[int] = []
+    accepts: List[int] = []
+    t_draft = t_verify = t_extend = 0.0
+    torch.cuda.synchronize(device)
+    t0 = time.perf_counter()
+    while len(generated) < gen_tokens:
+        L = min(block_size, gen_tokens - len(generated))
+        cstart = adapter._past_len           # committed length at block start
+        bonus = int(adapter.next_token_logits.argmax().item())
+        td = time.perf_counter()
+        drafts = drafter.draft_block_cached(
+            ctx_kv, bonus, embed_fn, lm_head_fn,
+            block_size=max(L - 1, 1), context_len=cstart)
+        torch.cuda.synchronize(device); t_draft += time.perf_counter() - td
+        candidate = [bonus] + drafts[: L - 1]
+        tv = time.perf_counter()
+        prev = adapter.next_token_logits
+        block_logits = adapter.forward_block(candidate)     # O(L) verify + aux capture
+        cand_aux = adapter._last_aux                        # [n_aux][len(candidate), hidden]
+        accepted = 0
+        for i in range(len(candidate)):
+            if int(prev.argmax().item()) == candidate[i]:
+                accepted += 1
+                prev = block_logits[i]
+            else:
+                break
+        correction = int(prev.argmax().item())
+        adapter.commit_or_truncate(forwarded=len(candidate), accepted=accepted)
+        adapter.append_token(correction)                    # commit correction + aux capture
+        corr_aux = adapter._last_aux                        # [n_aux][1, hidden]
+        torch.cuda.synchronize(device); t_verify += time.perf_counter() - tv
+        # --- extend drafter context K/V with the newly-committed tokens (B) ---
+        te = time.perf_counter()
+        new_positions = torch.arange(cstart, cstart + accepted + 1, device=device)
+        new_aux = [
+            torch.cat([cand_aux[li][:accepted], corr_aux[li][:1]], dim=0).unsqueeze(0)
+            for li in range(n_aux)
+        ]                                                    # each [1, accepted+1, hidden]
+        ctx_kv = drafter.extend_context_kv(
+            ctx_kv, drafter.make_context_kv(new_aux, new_positions))
+        torch.cuda.synchronize(device); t_extend += time.perf_counter() - te
+        commit = candidate[:accepted] + [correction]
+        generated += commit
+        accepts.append(accepted)
+        if any(t in eos_ids for t in commit):
+            break
+    torch.cuda.synchronize(device)
+    dt = time.perf_counter() - t0
+    adapter._capture_aux = False
+    generated = generated[:gen_tokens]
+    return {
+        "tokens": generated,
+        "decode_s": dt,
+        "prefill_s": round(t_prefill, 3),
+        "decode_tokens_per_s": round(len(generated) / dt, 3) if dt > 0 else None,
+        "time_breakdown_s": {
+            "drafter_cached": round(t_draft, 3),
+            "incremental_verify": round(t_verify, 3),
+            "ctx_kv_extend": round(t_extend, 3),
+        },
+        "blocks": len(accepts),
+        "mean_accept_len": round(sum(accepts) / len(accepts), 2) if accepts else 0.0,
+        "decode_tokens": len(generated),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verifier-id", default="google/gemma-4-26B-A4B-it")
@@ -264,10 +358,12 @@ def main() -> int:
     def recall(tokens, ans):
         return ans in tok.decode(tokens, skip_special_tokens=True)
 
+    aux_layer_ids = drafter.cfg.aux_layer_ids
     ar_tps: List[float] = []
     pt_tps: List[float] = []
     sd_rows: List[Dict[str, Any]] = []
-    ar_hits = pt_hits = sd_hits = 0
+    fu_rows: List[Dict[str, Any]] = []
+    ar_hits = pt_hits = sd_hits = fu_hits = 0
     for i, ids in enumerate(ids_list):
         ans = samples[i].answer_text
         prompt = ids[0].tolist()
@@ -282,14 +378,20 @@ def main() -> int:
             prompt, args.max_new_tokens, args.block_size, device, eos_ids)
         sd_rows.append(sd)
         sd_hits += int(recall(sd["tokens"], ans))
-        tb = sd["time_breakdown_s"]
-        print(f"[sd] sample {i}: AR={ar_tps[-1]:.2f} tok/s | restored-pertoken="
-              f"{pt_tps[-1]:.2f} tok/s | restored-specdecode={sd['decode_tokens_per_s']} tok/s "
-              f"(accept_len={sd['mean_accept_len']}, blocks={sd['blocks']}, "
-              f"aux={tb['aux_clean_forward']}s draft={tb['drafter']}s verify={tb['incremental_verify']}s) "
-              f"| recall ar/pt/sd="
-              f"{recall(g_ar, ans)}/{recall(g_pt, ans)}/{recall(sd['tokens'], ans)}",
-              file=sys.stderr, flush=True)
+        fu = restored_specdecode_fused(
+            adapter, drafter, verifier, aux_layer_ids, embed_fn, lm_head_fn,
+            prompt, args.max_new_tokens, args.block_size, device, eos_ids)
+        fu_rows.append(fu)
+        fu_hits += int(recall(fu["tokens"], ans))
+        print(f"[sd] sample {i}: AR={ar_tps[-1]:.2f} | pertoken(GapA)={pt_tps[-1]:.2f} | "
+              f"specdecode(unfused)={sd['decode_tokens_per_s']} | "
+              f"FUSED={fu['decode_tokens_per_s']} tok/s "
+              f"(accept_len={fu['mean_accept_len']}, blocks={fu['blocks']}, "
+              f"draft={fu['time_breakdown_s']['drafter_cached']}s "
+              f"verify={fu['time_breakdown_s']['incremental_verify']}s "
+              f"ext={fu['time_breakdown_s']['ctx_kv_extend']}s) | recall ar/pt/sd/fused="
+              f"{recall(g_ar, ans)}/{recall(g_pt, ans)}/{recall(sd['tokens'], ans)}/"
+              f"{recall(fu['tokens'], ans)}", file=sys.stderr, flush=True)
 
     n = len(ids_list)
     report = {
@@ -312,22 +414,35 @@ def main() -> int:
             "recall": round(sd_hits / n, 3),
             "per_sample": sd_rows,
         },
+        "restored_specdecode_fused": {
+            "decode_tokens_per_s_mean": round(
+                sum(r["decode_tokens_per_s"] for r in fu_rows) / n, 3),
+            "mean_accept_len": round(sum(r["mean_accept_len"] for r in fu_rows) / n, 2),
+            "time_breakdown_s_mean": {
+                k: round(sum(r["time_breakdown_s"][k] for r in fu_rows) / n, 3)
+                for k in ("drafter_cached", "incremental_verify", "ctx_kv_extend")
+            },
+            "recall": round(fu_hits / n, 3),
+            "per_sample": fu_rows,
+        },
     }
-    sd_tps = report["restored_specdecode"]["decode_tokens_per_s_mean"]
+    ar_mean = report["ar_incremental"]["decode_tokens_per_s_mean"]
     pt_mean = report["restored_pertoken"]["decode_tokens_per_s_mean"]
-    report["restored_specdecode"]["speedup_over_pertoken_x"] = (
-        round(sd_tps / pt_mean, 2) if pt_mean else None)
+    sd_tps = report["restored_specdecode"]["decode_tokens_per_s_mean"]
+    fu_tps = report["restored_specdecode_fused"]["decode_tokens_per_s_mean"]
+    report["restored_specdecode_fused"]["speedup_over_ar_x"] = (
+        round(fu_tps / ar_mean, 2) if ar_mean else None)
     out_path = Path(args.output) if args.output else Path(
         f"results/research/k3_specdecode_gpu_bench_{int(time.time())}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2))
-    print(f"\n[sd] AR={report['ar_incremental']['decode_tokens_per_s_mean']} | "
-          f"restored-pertoken={pt_mean} | restored-specdecode={sd_tps} tok/s "
-          f"(accept_len={report['restored_specdecode']['mean_accept_len']}, "
-          f"spec-vs-pertoken {report['restored_specdecode']['speedup_over_pertoken_x']}x) | "
-          f"recall ar/pt/sd={report['ar_incremental']['recall']}/"
-          f"{report['restored_pertoken']['recall']}/{report['restored_specdecode']['recall']}",
-          file=sys.stderr)
+    print(f"\n[sd] AR={ar_mean} | pertoken(GapA)={pt_mean} | "
+          f"specdecode(unfused)={sd_tps} | FUSED={fu_tps} tok/s "
+          f"(fused/AR {report['restored_specdecode_fused']['speedup_over_ar_x']}x, "
+          f"accept_len={report['restored_specdecode_fused']['mean_accept_len']}) | "
+          f"recall ar/pt/sd/fused={report['ar_incremental']['recall']}/"
+          f"{report['restored_pertoken']['recall']}/{report['restored_specdecode']['recall']}/"
+          f"{report['restored_specdecode_fused']['recall']}", file=sys.stderr)
     print(f"[sd] wrote {out_path}", file=sys.stderr)
     return 0
 

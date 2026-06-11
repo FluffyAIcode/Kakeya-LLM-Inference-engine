@@ -97,6 +97,63 @@ class _SyntheticAuxProvider(AuxHiddenProvider):
 # ---------------------------------------------------------------------------
 
 
+class TestDraftBlockCached:
+    """Fused-engine fast path: draft_block_cached (precomputed context K/V)
+    must equal draft_block (recomputes context K/V each call)."""
+
+    def test_cached_matches_draft_block(self):
+        cfg = _tiny_cfg()
+        torch.manual_seed(0)
+        drafter = DFlashDrafter(cfg).to(torch.float32).eval()
+        embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
+        provider = _SyntheticAuxProvider(cfg)
+        committed = [1, 2, 3, 4, 5]
+        aux, bonus = provider.aux_hidden_context(committed)
+        C = len(committed)
+        L = 4
+        std = drafter.draft_block(aux, bonus, embed_fn, lm_head_fn, block_size=L)
+        ctx_kv = drafter.make_context_kv(aux, torch.arange(C))
+        cached = drafter.draft_block_cached(
+            ctx_kv, bonus, embed_fn, lm_head_fn, block_size=L, context_len=C)
+        assert std == cached
+
+    def test_extend_context_kv_concatenates(self):
+        cfg = _tiny_cfg()
+        torch.manual_seed(0)
+        drafter = DFlashDrafter(cfg).to(torch.float32).eval()
+        provider = _SyntheticAuxProvider(cfg)
+        aux, _ = provider.aux_hidden_context([1, 2, 3])
+        ck = drafter.make_context_kv(aux, torch.arange(3))
+        new_aux = [a[:, :2] for a in aux]   # 2 "new" positions
+        nk = drafter.make_context_kv(new_aux, torch.arange(3, 5))
+        ext = drafter.extend_context_kv(ck, nk)
+        assert len(ext) == cfg.num_hidden_layers
+        assert ext[0][0].shape[2] == 5     # 3 + 2 along seq axis
+        assert ext[0][1].shape[2] == 5
+
+    def test_incremental_extend_matches_full_context(self):
+        """Building ctx_kv incrementally (prompt + extend) equals building it
+        in one shot — so draft_block_cached drafts identically."""
+        cfg = _tiny_cfg()
+        torch.manual_seed(0)
+        drafter = DFlashDrafter(cfg).to(torch.float32).eval()
+        embed_fn, lm_head_fn = _synthetic_verifier_heads(cfg)
+        provider = _SyntheticAuxProvider(cfg)
+        full = [1, 2, 3, 4, 5, 6]
+        aux_full, bonus = provider.aux_hidden_context(full)
+        C = len(full)
+        full_kv = drafter.make_context_kv(aux_full, torch.arange(C))
+        # incremental: first 4, then extend by 2 (same aux slices)
+        ck = drafter.make_context_kv([a[:, :4] for a in aux_full], torch.arange(4))
+        ck = drafter.extend_context_kv(
+            ck, drafter.make_context_kv([a[:, 4:6] for a in aux_full], torch.arange(4, 6)))
+        d_full = drafter.draft_block_cached(
+            full_kv, bonus, embed_fn, lm_head_fn, block_size=4, context_len=C)
+        d_inc = drafter.draft_block_cached(
+            ck, bonus, embed_fn, lm_head_fn, block_size=4, context_len=C)
+        assert d_full == d_inc
+
+
 class TestDFlashConfig:
     def test_parses_core_fields(self):
         cfg = _tiny_cfg()

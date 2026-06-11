@@ -92,6 +92,15 @@ class CrossModelRestoredSinkWindowVerifier:
         self._past = None            # transformers Cache holding restored K/V
         self._past_len = 0           # number of positions in the cache
         self._num_layers_cache = None  # resolved lazily (incremental path only)
+        # Fused-engine (component A): optionally capture the verifier's aux-layer
+        # hidden states DURING the incremental verify forward, so the DFlash
+        # drafter's context can be extended incrementally instead of via a
+        # separate O(C) clean-aux forward each block. Gated off by default so
+        # the plain Gap-A decode path pays no overhead.
+        drafter_cfg = getattr(getattr(restored, "drafter", None), "cfg", None)
+        self._aux_layer_ids = tuple(getattr(drafter_cfg, "aux_layer_ids", ()) or ())
+        self._capture_aux = False
+        self._last_aux = None        # list[Tensor [L, hidden]] from the last verify
 
         self.sink_size = restored.sink_size
         self.window_size = restored.window_size
@@ -237,14 +246,19 @@ class CrossModelRestoredSinkWindowVerifier:
         L = len(tokens)
         ids = torch.tensor([tokens], dtype=torch.long, device=self._device)
         pos = torch.arange(self._past_len, self._past_len + L, device=self._device)
+        want_aux = self._capture_aux and bool(self._aux_layer_ids)
         out = self._restored.verifier_model(
             input_ids=ids,
             position_ids=pos.unsqueeze(0),
             cache_position=pos,
             past_key_values=self._past,
             use_cache=True,
+            output_hidden_states=want_aux,
         )
         self._past = out.past_key_values
+        if want_aux:
+            hs = out.hidden_states  # tuple; hs[a] = [B, L, hidden]
+            self._last_aux = [hs[a][0].detach() for a in self._aux_layer_ids]
         return out.logits[0]
 
     @torch.no_grad()
