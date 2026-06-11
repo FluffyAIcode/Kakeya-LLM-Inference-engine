@@ -75,6 +75,16 @@ def parse_args() -> argparse.Namespace:
                          "trim_prompt_cache accept/reject. Free-gen only.")
     ap.add_argument("--block-size", type=int, default=4,
                     help="Spec-decode block size (drafted tokens per block).")
+    ap.add_argument("--native-cache", action="store_true",
+                    help="NATIVE restored-cache primitive: one native prefill "
+                         "populates the native cache with exact own K/V (S5 recall "
+                         "via full-attn; sliding bounded by RotatingKVCache); decode "
+                         "via generate_step. No f_theta/drafter/patch/bridge in the "
+                         "loop -> the systemic collapse fix. Free-gen only.")
+    ap.add_argument("--quantize-full-attn-bits", type=int, default=0,
+                    help="If >0, convert full-attn KVCache -> native QuantizedKVCache "
+                         "at this bit-width (real resident-memory reduction). "
+                         "Used with --native-cache.")
     ap.add_argument("--teacher-forced", action="store_true",
                     help="DIAGNOSTIC ONLY (under-measures retrieval): single "
                          "restored forward per sample, check argmax at the "
@@ -125,6 +135,10 @@ def main() -> int:
     from inference_engine.backends.mlx.fused_specdecode import (
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
+    )
+    from inference_engine.backends.mlx.native_restored_cache import (
+        build_native_prefill_cache, quantize_full_attn_layers,
+        native_restored_decode, cache_resident_bytes,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from scripts.research.k3_dflash_mlx_bridge import (
@@ -422,6 +436,34 @@ def main() -> int:
                   f"-> {decoded[-1][:48]!r}", file=sys.stderr)
         return decoded, lats, toks
 
+    def eval_native_cache() -> Tuple[List[str], List[float], List[int]]:
+        """NATIVE restored-cache collapse fix: one native prefill -> native cache
+        (exact own K/V; full-attn carries S5 recall, sliding bounded), optional
+        native QuantizedKVCache on full-attn, decode via generate_step. No
+        f_theta/drafter/patch/bridge in the loop."""
+        decoded, lats, toks = [], [], []
+        resident_mb = []
+        for i, pid in enumerate(sample_ids):
+            t0 = time.perf_counter()
+            cache, first, _ = build_native_prefill_cache(mlx_model, pid)
+            if args.quantize_full_attn_bits > 0:
+                cache = quantize_full_attn_layers(
+                    cache, full_attn_idx, bits=args.quantize_full_attn_bits)
+            gen = native_restored_decode(
+                mlx_model, cache, first, max_tokens=args.max_new_tokens,
+                eos_ids=([eos_id] if eos_id is not None else ()))
+            lats.append(time.perf_counter() - t0)
+            resident_mb.append(round(cache_resident_bytes(cache) / 1e6, 2))
+            decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            print(f"[mac]   native {i}: T={seq_lens[i]} "
+                  f"residentKV={resident_mb[-1]}MB -> {decoded[-1][:48]!r}",
+                  file=sys.stderr)
+        if resident_mb:
+            print(f"[mac] native cache resident KV (live MLX nbytes): "
+                  f"mean={round(sum(resident_mb)/len(resident_mb),2)}MB "
+                  f"(qbits={args.quantize_full_attn_bits or 'off'})", file=sys.stderr)
+        return decoded, lats, toks
+
     def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
         """Oracle free generation using mlx's NATIVE incremental KV cache
         (fast + correct reference; confirms the metric/dataset)."""
@@ -453,12 +495,15 @@ def main() -> int:
     label = "identity" if args.identity_restore else (
         "s5" if args.s5_exact_full_attn else "f_theta_all")
     eval_mode = ("teacher_forced" if args.teacher_forced
+                 else "free_gen_native_cache" if args.native_cache
                  else "free_gen_fused_specdecode" if args.fused_specdecode
                  else "free_gen_incremental" if args.incremental else "free_gen")
     print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
           file=sys.stderr, flush=True)
     if args.teacher_forced:
         cross_dec, cross_lat, cross_tok = eval_teacher_forced(cross_logits_all)
+    elif args.native_cache:
+        cross_dec, cross_lat, cross_tok = eval_native_cache()
     elif args.fused_specdecode:
         cross_dec, cross_lat, cross_tok = eval_fused_specdecode()
     elif args.incremental:

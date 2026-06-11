@@ -36,8 +36,10 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
 # Let MLX use the unified-memory wired limit if the box is tight (optional).
 export MLX_METAL_MEMORY_LIMIT_RATIO="${MLX_METAL_MEMORY_LIMIT_RATIO:-0.0}"
 
+NATIVE_JSON="${OUT_DIR}/k3_mlx_native_${STAMP}.json"
 INCR_JSON="${OUT_DIR}/k3_mlx_incremental_${STAMP}.json"
 FUSED_JSON="${OUT_DIR}/k3_mlx_fused_${STAMP}.json"
+QBITS="${QUANTIZE_FULL_ATTN_BITS:-0}"
 
 common_args=(
   --verifier-path "${VERIFIER_PATH}"
@@ -51,6 +53,15 @@ common_args=(
   --haystack-min-lines "${HAYSTACK_MIN}"
   --haystack-max-lines "${HAYSTACK_MAX}"
 )
+
+echo "=========================================================="
+echo "[mlx-port] Step 0 (native primitive): native prefill cache + generate_step"
+echo "[mlx-port]   NO f_theta/drafter/patch/bridge in the loop (the collapse fix)."
+echo "[mlx-port]   quantize_full_attn_bits=${QBITS}"
+echo "=========================================================="
+python scripts/research/k3_integrated_niah_eval_mac.py \
+  "${common_args[@]}" --native-cache --quantize-full-attn-bits "${QBITS}" \
+  --output "${NATIVE_JSON}"
 
 echo "=========================================================="
 echo "[mlx-port] Step 1: incremental restored decode (native cache + generate_step)"
@@ -70,7 +81,7 @@ python scripts/research/k3_integrated_niah_eval_mac.py \
 echo "=========================================================="
 echo "[mlx-port] SUMMARY"
 echo "=========================================================="
-python - "${INCR_JSON}" "${FUSED_JSON}" <<'PY'
+python - "${NATIVE_JSON}" "${INCR_JSON}" "${FUSED_JSON}" <<'PY'
 import json, sys
 def show(tag, path, want):
     d = json.load(open(path))
@@ -91,9 +102,11 @@ def show(tag, path, want):
     print(f"  GATE  : recall {'PASS' if ok_recall else 'FAIL'}  | "
           f"speed {'PASS' if ok_speed else 'FAIL'} (need >= {want}x AR)")
     return ok_recall and ok_speed
-s1 = show("Step 1 incremental", sys.argv[1], 0.85)   # ~= AR (collapse fixed)
-s2 = show("Step 2 fused",       sys.argv[2], 1.00)   # > AR
+s0 = show("Step 0 native-cache", sys.argv[1], 0.85)  # ~= AR (collapse fixed natively)
+s1 = show("Step 1 incremental",  sys.argv[2], 0.85)  # ~= AR (collapse fixed)
+s2 = show("Step 2 fused",        sys.argv[3], 1.00)  # > AR
 print("\n[mlx-port] OVERALL:",
-      "PASS" if (s1 and s2) else "see gates above")
-print(f"[mlx-port] JSON: {sys.argv[1]}\n[mlx-port] JSON: {sys.argv[2]}")
+      "PASS" if (s0 and s1 and s2) else "see gates above")
+for p in sys.argv[1:]:
+    print(f"[mlx-port] JSON: {p}")
 PY

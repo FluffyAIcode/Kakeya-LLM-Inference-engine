@@ -102,6 +102,45 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
    **Gate: tok/s > AR; recall == oracle (1.0).** Reference (#107 H200): fused
    1.27× AR, recall 1.0.
 
+## Native cache primitive (the systemic collapse fix)
+
+The first port made *decode* native (`generate_step`) but still produced the
+restored cache via a prefill attention-patch + a separate `capture_own_kv`
+forward + an MLX↔PyTorch/MPS f_θ bridge — so end-to-end cost piled up in prefill
+materialization / lazy-eval sync / cross-runtime bridging, **not** the attention
+kernel. `inference_engine/backends/mlx/native_restored_cache.py` makes the whole
+cache lifecycle native:
+
+- **`build_native_prefill_cache`** — one *native* prefill
+  (`model(prompt, cache=make_prompt_cache(...))`) fills the model's own native
+  cache with **exact own K/V** per layer: full-attention `KVCache` (unbounded →
+  carries the needle, **S5 recall for free**), sliding `RotatingKVCache`
+  (**bounded natively**). No patch, no second forward, no Python reconstruction.
+- **`set_kv_cache_state` / `inject_restored_into_native_cache`** — write K/V
+  straight into the native layout via the cache's own `.state` setter.
+- **`quantize_full_attn_layers`** — full-attn `KVCache` → native
+  `QuantizedKVCache` for *real* resident-memory reduction (native quantized
+  decode); sliding already bounded. `cache_resident_bytes` reports the live
+  `nbytes`.
+- Decode / trim / append stay on the native prompt cache.
+
+Because recall rides S5's exact full-attention K/V (which the native prefill
+produces for free), **this path needs no f_θ and no drafter in the loop → no
+bridge, no per-token patch** — which is exactly why it fixes the collapse. Run:
+```bash
+PYTHONPATH=.:sdks/python python scripts/research/k3_integrated_niah_eval_mac.py \
+  --verifier-path models/gemma-4-26B-A4B-it-mlx-4bit \
+  --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \
+  --f-theta-dir results/research/f_theta_v5_s5_sliding \
+  --s5-exact-full-attn --native-cache --quantize-full-attn-bits 8 \
+  --n-samples 5 --max-new-tokens 32
+```
+**Gate: tok/s ≈ native AR (no collapse); recall == oracle (1.0); resident KV
+bounded (sliding) + quantized (full-attn).** Still pending for fused **>**AR: a
+single-runtime DFlash drafter (port drafter + f_θ to MLX) to remove the
+MLX↔MPS bridge — the only structural Mac gap vs CUDA. A truly native aux *tap*
+(vs the one-shot prefill decoder-layer patch) needs a model-forward variant.
+
 ## Validation gates (match #107 evidence)
 
 - Recall **1.0** vs oracle (S5).
