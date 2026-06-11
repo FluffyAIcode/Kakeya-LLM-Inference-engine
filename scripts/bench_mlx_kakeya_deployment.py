@@ -48,10 +48,13 @@ from typing import Any, Dict, List, Tuple
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model-id", default="mlx-community/Qwen3-1.7B-4bit",
-                    help="MLX (mlx-community 4-bit) model id or local path.")
-    ap.add_argument("--context-lengths", default="1024,4096,16384",
+    ap.add_argument("--model-id", default="models/gemma-4-26B-A4B-it-mlx-4bit",
+                    help="MLX 4-bit model id or local path (default: the "
+                         "Gemma 4 26B-A4B 4-bit verifier).")
+    ap.add_argument("--context-lengths", default="512,2048,8192",
                     help="Comma-separated prompt token lengths to sweep.")
+    ap.add_argument("--skip-kakeya", action="store_true",
+                    help="Skip the sink+window path (measure vanilla only).")
     ap.add_argument("--gen-tokens", type=int, default=64)
     ap.add_argument("--sink-size", type=int, default=4)
     ap.add_argument("--window-size", type=int, default=64)
@@ -152,10 +155,15 @@ def main() -> int:
     for L in ctx_lengths:
         prompt_ids = make_prompt(L)
         row: Dict[str, Any] = {"context_length": L}
-        print(f"[bench] L={L}: Kakeya sink+window ...", file=sys.stderr, flush=True)
-        kcache = make_sink_window_cache(model, args.sink_size, args.window_size)
-        row["kakeya"] = _decode(
-            mx, model, kcache, prompt_ids, args.gen_tokens, total_kv_bytes)
+        if not args.skip_kakeya:
+            print(f"[bench] L={L}: Kakeya sink+window ...", file=sys.stderr, flush=True)
+            try:
+                kcache = make_sink_window_cache(model, args.sink_size, args.window_size)
+                row["kakeya"] = _decode(
+                    mx, model, kcache, prompt_ids, args.gen_tokens, total_kv_bytes)
+            except Exception as e:
+                row["kakeya"] = {"error": f"{type(e).__name__}: {e}"}
+                print(f"[bench] L={L}: kakeya path failed: {e}", file=sys.stderr)
 
         if not args.skip_vanilla:
             print(f"[bench] L={L}: vanilla full-KV ...", file=sys.stderr, flush=True)
@@ -167,23 +175,24 @@ def main() -> int:
             except Exception as e:  # OOM or unsupported → record and continue
                 row["vanilla"] = {"error": f"{type(e).__name__}: {e}"}
 
-        k = row["kakeya"]; v = row.get("vanilla", {})
-        if isinstance(v, dict) and "decode_tokens_per_s" in v:
+        k = row.get("kakeya", {})
+        v = row.get("vanilla", {})
+        k_ok = isinstance(k, dict) and "decode_tokens_per_s" in k
+        v_ok = isinstance(v, dict) and "decode_tokens_per_s" in v
+        if k_ok and v_ok:
             sp = (k["decode_tokens_per_s"] or 0) / max(v["decode_tokens_per_s"] or 1e-9, 1e-9)
-            mem = v.get("kv_bytes", 0) / max(k.get("kv_bytes", 1), 1)
             row["kakeya_vs_vanilla"] = {
                 "decode_speedup_x": round(sp, 3),
-                "kv_bytes_ratio_x": round(mem, 1),
+                "kv_bytes_ratio_x": round(v.get("kv_bytes", 0) / max(k.get("kv_bytes", 1), 1), 1),
             }
+        if k_ok:
             print(f"[bench] L={L}: kakeya {k['decode_tokens_per_s']} tok/s "
-                  f"(KV {k['kv_bytes']/1e6:.2f} MB) | vanilla "
-                  f"{v['decode_tokens_per_s']} tok/s (KV {v['kv_bytes']/1e6:.2f} MB) "
-                  f"| {row['kakeya_vs_vanilla']['decode_speedup_x']}x faster, "
-                  f"{row['kakeya_vs_vanilla']['kv_bytes_ratio_x']}x less KV",
-                  file=sys.stderr)
-        else:
-            print(f"[bench] L={L}: kakeya {k['decode_tokens_per_s']} tok/s "
-                  f"(KV {k['kv_bytes']/1e6:.2f} MB)", file=sys.stderr)
+                  f"(prefill {k['prefill_s']}s, KV {k['kv_bytes']/1e6:.2f} MB, "
+                  f"peak {k['peak_memory_bytes']/1e9:.2f} GB)", file=sys.stderr)
+        if v_ok:
+            print(f"[bench] L={L}: vanilla {v['decode_tokens_per_s']} tok/s "
+                  f"(prefill {v['prefill_s']}s, KV {v['kv_bytes']/1e6:.2f} MB, "
+                  f"peak {v['peak_memory_bytes']/1e9:.2f} GB)", file=sys.stderr)
         rows.append(row)
 
     report = {
