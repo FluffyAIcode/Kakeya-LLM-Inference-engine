@@ -271,10 +271,15 @@ class _DFlashAttention(nn.Module):
         rep = self.nh // self.nkv
         k = k.repeat_interleave(rep, dim=1)
         v = v.repeat_interleave(rep, dim=1)
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,nh,T,C+T]
-        # Non-causal: queries see all context + all query positions.
-        attn = torch.softmax(scores.float(), dim=-1).to(q.dtype)
-        out = torch.matmul(attn, v)  # [B, nh, T, hd]
+        # Non-causal (queries see all context + all query positions), no mask.
+        # Use memory-efficient SDPA instead of materialising the full
+        # [B, nh, T, C+T] fp32 score matrix — that materialisation OOMs at
+        # long context (e.g. ~5 GB at T≈6k, nh=32 on a 24 GB Mac). SDPA's
+        # flash / mem-efficient kernels keep attention memory O(T) and are
+        # numerically equivalent to the stable-softmax reference.
+        out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, is_causal=False, scale=self.scale,
+        )  # [B, nh, T, hd]
         out = out.transpose(1, 2).contiguous().view(B, T, self.nh * self.hd)
         return self.o_proj(out)
 
