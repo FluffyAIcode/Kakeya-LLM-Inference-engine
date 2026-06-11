@@ -84,6 +84,7 @@ LR_SCHEDULE="${LR_SCHEDULE:-cosine}"
 WARMUP_STEPS="${WARMUP_STEPS:-500}"
 LOSS_TYPE="${LOSS_TYPE:-attn_distill_hybrid}"
 INIT_FROM="${INIT_FROM:-}"           # optional warm-start checkpoint dir
+S5_EXACT_FULL_ATTN="${S5_EXACT_FULL_ATTN:-0}"  # 1 = exclude full-attn layers from loss (S5)
 LAMBDA_K_DIR="${LAMBDA_K_DIR:-1.0}"
 LAMBDA_V_DIR="${LAMBDA_V_DIR:-1.0}"
 LAMBDA_K_MAG="${LAMBDA_K_MAG:-0.1}"
@@ -188,6 +189,9 @@ if [[ -n "$RANK" ]]; then
 fi
 if [[ -n "$INIT_FROM" ]]; then
     extra_flags+=(--init-from "$INIT_FROM")
+fi
+if [[ "$S5_EXACT_FULL_ATTN" == "1" ]]; then
+    extra_flags+=(--s5-exact-full-attn)
 fi
 if [[ "$LOSS_TYPE" == "attn_distill_hybrid" ]]; then
     extra_flags+=(--lambda-k-dir "$LAMBDA_K_DIR")

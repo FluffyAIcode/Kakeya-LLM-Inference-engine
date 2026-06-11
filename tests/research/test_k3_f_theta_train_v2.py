@@ -297,6 +297,24 @@ class TestAttentionDistillationLoss:
         assert "mse_O_mean" in diag
         assert "abs_O_target_mean" in diag
 
+    def test_s5_skip_layer_indices_excludes_layers(self):
+        """S5 mode: skip_layer_indices excludes those layers from the loss
+        (loss differs and is averaged over the remaining layers)."""
+        f_theta, layers, seq = self._build_synthetic()
+        full = _mod._attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+        )
+        skipped = _mod._attention_distillation_loss(
+            f_theta, seq, layers,
+            apply_rotary_pos_emb=_identity_rotary_pos_emb,
+            device=torch.device("cpu"),
+            skip_layer_indices=[0],
+        )
+        # Excluding a layer changes the (per-used-layer averaged) loss.
+        assert abs(float(full) - float(skipped)) > 1e-9
+
     def test_loss_is_differentiable_through_f_theta(self):
         f_theta, layers, seq = self._build_synthetic()
         loss = _mod._attention_distillation_loss(

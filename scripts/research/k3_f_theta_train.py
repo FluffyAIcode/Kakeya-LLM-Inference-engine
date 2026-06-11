@@ -613,6 +613,7 @@ def _attention_distillation_loss(
     lambda_v_dir: float = 1.0,
     lambda_k_mag: float = 0.1,
     lambda_v_mag: float = 0.1,
+    skip_layer_indices: Optional[Sequence[int]] = None,
 ) -> torch.Tensor:
     """Attention-output distillation loss (the v3 / one-shot principled loss).
 
@@ -695,6 +696,11 @@ def _attention_distillation_loss(
         idx = None
 
     n_layers = cfg.verifier_num_layers
+    # S5 mode: exclude exact (full-attention) layers from the loss — at
+    # inference those layers use exact K/V, so f_θ need not fit them, and
+    # the freed capacity focuses on the sliding layers it must restore.
+    skip_set = {i for i in (skip_layer_indices or ()) if 0 <= i < n_layers}
+    n_used = max(n_layers - len(skip_set), 1)
     loss = pred_k_per_layer[0].new_zeros(())
     diag = {
         "mse_O_total": 0.0, "abs_O_target": 0.0,
@@ -709,6 +715,8 @@ def _attention_distillation_loss(
         )
 
     for li in range(n_layers):
+        if li in skip_set:
+            continue
         layer = layers[li]
         attn = layer.self_attn
 
@@ -861,14 +869,14 @@ def _attention_distillation_loss(
         del K_pred_pre, K_pred_normed, V_pred_pre, V_pred_normed
 
     if diag_buf is not None:
-        diag_buf["mse_O_mean"] = diag["mse_O_total"] / max(n_layers, 1)
-        diag_buf["abs_O_target_mean"] = diag["abs_O_target"] / max(n_layers, 1)
+        diag_buf["mse_O_mean"] = diag["mse_O_total"] / n_used
+        diag_buf["abs_O_target_mean"] = diag["abs_O_target"] / n_used
         if hybrid:
-            diag_buf["k_dir_mean"] = diag["k_dir_total"] / max(n_layers, 1)
-            diag_buf["v_dir_mean"] = diag["v_dir_total"] / max(n_layers, 1)
-            diag_buf["k_mag_mean"] = diag["k_mag_total"] / max(n_layers, 1)
-            diag_buf["v_mag_mean"] = diag["v_mag_total"] / max(n_layers, 1)
-    return loss / max(n_layers, 1)
+            diag_buf["k_dir_mean"] = diag["k_dir_total"] / n_used
+            diag_buf["v_dir_mean"] = diag["v_dir_total"] / n_used
+            diag_buf["k_mag_mean"] = diag["k_mag_total"] / n_used
+            diag_buf["v_mag_mean"] = diag["v_mag_total"] / n_used
+    return loss / n_used
 
 
 def _per_vector_cosine_mag_loss(
@@ -926,6 +934,7 @@ def _f_theta_loss(
     layers: Optional[Sequence[torch.nn.Module]] = None,
     apply_rotary_pos_emb: Optional[Any] = None,
     device: Optional[torch.device] = None,
+    skip_layer_indices: Optional[Sequence[int]] = None,
 ) -> torch.Tensor:
     """Compute the configured loss for one sequence (subsampled positions).
 
@@ -957,6 +966,7 @@ def _f_theta_loss(
             ),
             seed=seed, diag_buf=diag_buf,
             hybrid=(loss_type == "attn_distill_hybrid"),
+            skip_layer_indices=skip_layer_indices,
         )
 
     if seq.verifier_k is None or seq.verifier_v is None:
@@ -1248,6 +1258,14 @@ def main() -> int:
         help="Hybrid loss weight on V magnitude.",
     )
     ap.add_argument(
+        "--s5-exact-full-attn", action="store_true",
+        help="S5 mode: exclude the verifier's full-attention (global, max "
+             "head_dim) layers from the f_θ loss. At inference those layers "
+             "use exact K/V (--s5-exact-full-attn in the eval), so f_θ only "
+             "needs to restore the sliding layers; this focuses capacity on "
+             "them. Pairs with the S5 integrated-NIAH eval.",
+    )
+    ap.add_argument(
         "--init-from", default=None,
         help="Optional path to existing f_θ checkpoint dir to warm-start from "
              "(e.g. --init-from results/research/f_theta_v3_attn_distill). "
@@ -1344,6 +1362,14 @@ def main() -> int:
           file=sys.stderr)
     print(f"[f_theta-train] verifier per-layer head dims: {layer_head_dims}",
           file=sys.stderr)
+    # S5 mode: full-attention (global) layers = those with the max head_dim.
+    s5_skip_layers = None
+    if args.s5_exact_full_attn and len(set(layer_head_dims)) > 1:
+        _max_hd = max(layer_head_dims)
+        s5_skip_layers = [i for i, hd in enumerate(layer_head_dims) if hd == _max_hd]
+        print(f"[f_theta-train] S5 mode: excluding full-attention layers "
+              f"{s5_skip_layers} from f_θ loss (kept exact at inference)",
+              file=sys.stderr)
     print(f"[f_theta-train] f_θ config: {f_cfg}", file=sys.stderr)
 
     f_theta = FThetaProjection(f_cfg).to(device, dtype=torch.float32)
@@ -1490,6 +1516,7 @@ def main() -> int:
             layers=(v_layers if args.loss_type in ("attn_distill", "attn_distill_hybrid") else None),
             apply_rotary_pos_emb=apply_rotary_pos_emb,
             device=device,
+            skip_layer_indices=s5_skip_layers,
         )
         if initial_loss is None:
             initial_loss = float(loss.item())
