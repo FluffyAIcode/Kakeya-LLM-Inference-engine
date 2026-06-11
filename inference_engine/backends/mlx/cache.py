@@ -100,6 +100,8 @@ class SinkWindowKVCache(_BaseCache):
         self.window_size = window_size
         self.keys: Optional["mx.array"] = None
         self.values: Optional["mx.array"] = None
+        self.restored_keys: Optional["mx.array"] = None
+        self.restored_values: Optional["mx.array"] = None
         self.offset: int = 0
 
     # ------------------------------------------------------------------ #
@@ -126,27 +128,33 @@ class SinkWindowKVCache(_BaseCache):
             )
 
         if self.keys is None:
-            full_k, full_v = keys, values
+            local_k, local_v = keys, values
         else:
-            full_k = mx.concatenate([self.keys, keys], axis=2)
-            full_v = mx.concatenate([self.values, values], axis=2)
+            local_k = mx.concatenate([self.keys, keys], axis=2)
+            local_v = mx.concatenate([self.values, values], axis=2)
+
+        if self.restored_keys is not None:
+            full_k = mx.concatenate([self.restored_keys, local_k], axis=2)
+            full_v = mx.concatenate([self.restored_values, local_v], axis=2)
+        else:
+            full_k, full_v = local_k, local_v
 
         # Advance the global counter — this is what RoPE on the NEXT
         # forward will use as `cache.offset`.
         self.offset += L
 
         budget = self.sink_size + self.window_size
-        if int(full_k.shape[2]) > budget:
+        if int(local_k.shape[2]) > budget:
             # Persistent (next-step) state: keep the sink + sliding window.
-            sink_k = full_k[:, :, : self.sink_size, :]
-            sink_v = full_v[:, :, : self.sink_size, :]
-            tail_k = full_k[:, :, -self.window_size :, :]
-            tail_v = full_v[:, :, -self.window_size :, :]
+            sink_k = local_k[:, :, : self.sink_size, :]
+            sink_v = local_v[:, :, : self.sink_size, :]
+            tail_k = local_k[:, :, -self.window_size :, :]
+            tail_v = local_v[:, :, -self.window_size :, :]
             self.keys = mx.concatenate([sink_k, tail_k], axis=2)
             self.values = mx.concatenate([sink_v, tail_v], axis=2)
         else:
-            self.keys = full_k
-            self.values = full_v
+            self.keys = local_k
+            self.values = local_v
 
         # Returned tensors are the *full* concatenation for this step's
         # attention. They may exceed budget by L_new during prefill; the
@@ -167,6 +175,8 @@ class SinkWindowKVCache(_BaseCache):
         ``update_and_fetch``.
         """
         pre_len = 0 if self.keys is None else int(self.keys.shape[2])
+        if self.restored_keys is not None:
+            pre_len += int(self.restored_keys.shape[2])
         # Delegate to mlx_lm's helper, supplying our pre-update buffer
         # length as the ``offset`` argument (the helper builds a
         # standard causal mask of shape [N, offset+N]).
@@ -206,9 +216,27 @@ class SinkWindowKVCache(_BaseCache):
 
     @property
     def nbytes(self) -> int:
-        if self.keys is None:
-            return 0
-        return self.keys.nbytes + self.values.nbytes
+        total = 0
+        if self.keys is not None:
+            total += self.keys.nbytes + self.values.nbytes
+        if self.restored_keys is not None:
+            total += self.restored_keys.nbytes + self.restored_values.nbytes
+        return total
+
+    def set_restored_bank(self, keys: "mx.array", values: "mx.array") -> None:
+        """Attach post-RoPE restored K/V used only during decode.
+
+        ``keys`` and ``values`` must already be in cache layout
+        ``[B, n_kv_heads, T_restored, head_dim]``. The bank is prepended
+        transiently in ``update_and_fetch`` but is not part of the local
+        sink/window buffer that gets trimmed on every step.
+        """
+        if keys.ndim != 4 or values.ndim != 4:
+            raise RuntimeError("restored K/V bank must be 4-D")
+        if int(keys.shape[2]) != int(values.shape[2]):
+            raise RuntimeError("restored K/V bank seq dimensions differ")
+        self.restored_keys = keys
+        self.restored_values = values
 
     # ---- state / meta_state for save_prompt_cache compatibility ------- #
 

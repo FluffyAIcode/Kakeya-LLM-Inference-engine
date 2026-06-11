@@ -109,6 +109,7 @@ def main() -> int:
         kv_source_layer_map, capture_own_kv, restored_logits,
         per_layer_kv_geometry, kv_memory_report,
     )
+    from inference_engine.backends.mlx.cache import make_sink_window_cache
     from inference_engine.v04.kv_compressor import make_default_compressor
     from scripts.research.k3_dflash_mlx_bridge import (
         mx_to_torch, torch_to_mx,
@@ -212,12 +213,30 @@ def main() -> int:
     exact_set = set(range(n_layers)) if args.identity_restore else set(full_attn_idx)
 
     def build_restoration(prompt_ids: List[int]):
-        d_k, d_v = capture_drafter_kv(prompt_ids)
-        with torch.no_grad():
-            vk, vv = f_theta.forward_kv_pack(d_k, d_v)
         own = None
         if exact_set:
             own = capture_own_kv(mlx_model, prompt_ids)
+
+        # S5 on Gemma 4: sliding-attention layers are local by design; adding
+        # restored mid-context K/V to them only makes every decode step attend
+        # over a long bank that the sliding mask would otherwise exclude. The
+        # recall-critical long-range path is the full-attention layers, so the
+        # product fast path restores only those exact layers.
+        if args.s5_exact_full_attn and not args.identity_restore:
+            rk: Dict[int, Any] = {}
+            rv: Dict[int, Any] = {}
+            for li in full_attn_idx:
+                if own is None or li not in own:
+                    continue
+                k_mx, v_mx = own[li]
+                if li in compressors:
+                    k_mx, v_mx = _compress_roundtrip(li, k_mx, v_mx)
+                rk[li], rv[li] = k_mx, v_mx
+            return rk, rv, len(prompt_ids)
+
+        d_k, d_v = capture_drafter_kv(prompt_ids)
+        with torch.no_grad():
+            vk, vv = f_theta.forward_kv_pack(d_k, d_v)
         rk: Dict[int, Any] = {}
         rv: Dict[int, Any] = {}
         for li in range(n_layers):
@@ -253,6 +272,40 @@ def main() -> int:
             restored_v_per_layer=_pad(rv, t_src, T),
             evicted_positions=evicted, return_all=return_all,
         )
+
+    def _post_rope_restored_bank(
+        layer_idx: int, k_mx: Any, v_mx: Any, evicted: Sequence[int],
+    ) -> Tuple[Any, Any]:
+        """Convert restored pre-norm K/V into MLX cache-layout K/V.
+
+        ``restored_logits`` injects pre-norm K/V during a full forward. The
+        incremental path needs the equivalent post-norm/post-RoPE tensors in
+        cache layout ``[B, n_kv, T_restored, head_dim]`` so decode can reuse
+        MLX's native cache hot path instead of full re-forwarding the prompt.
+        """
+        layer = text_model.layers[layer_idx]
+        attn = layer.self_attn
+        start, end = int(evicted[0]), int(evicted[-1]) + 1
+        k = k_mx[:, start:end, :, :]
+        v = v_mx[:, start:end, :, :]
+        k = attn.k_norm(k).transpose(0, 2, 1, 3)
+        k = attn.rope(k, offset=start)
+        v = attn.v_norm(v).transpose(0, 2, 1, 3)
+        return k, v
+
+    def attach_restored_banks(cache, rk, rv, prompt_len: int) -> None:
+        evicted = compute_evicted_positions(
+            prompt_len, args.sink_size, args.window_size,
+        )
+        if not evicted:
+            return
+        for li, k_mx in rk.items():
+            c = cache[li]
+            if not hasattr(c, "set_restored_bank"):
+                continue
+            v_mx = rv[li]
+            kb, vb = _post_rope_restored_bank(li, k_mx, v_mx, evicted)
+            c.set_restored_bank(kb, vb)
 
     # ---------- Dataset ----------
     samples: List[NIAHSample] = make_niah_dataset(
@@ -307,23 +360,66 @@ def main() -> int:
         return decoded, lats, toks
 
     def eval_free_gen_cross() -> Tuple[List[str], List[float], List[int]]:
-        """Restored free generation: 1 restored full forward per token
-        (amortized restoration). Correct recall metric; slow on M4."""
+        """Restored free generation on MLX's incremental cache hot path.
+
+        The expensive cross-model restoration is built once over the prompt.
+        Generation then uses ``make_sink_window_cache`` plus a decode-only
+        restored K/V bank for evicted prompt positions, avoiding the previous
+        full re-forward of the entire prompt on every generated token.
+        """
         decoded, lats, toks = [], [], []
+        stage_rows = []
         for i, pid in enumerate(sample_ids):
+            t_build0 = time.perf_counter()
             rk, rv, tsrc = build_restoration(pid)
+            build_s = time.perf_counter() - t_build0
+            cache = make_sink_window_cache(
+                mlx_model, sink_size=args.sink_size, window_size=args.window_size,
+            )
             cur = list(pid); gen: List[int] = []
             t0 = time.perf_counter()
+            t_prefill0 = time.perf_counter()
+            out = mlx_model(mx.array([cur]), cache=cache)
+            mx.eval(out)
+            attach_restored_banks(cache, rk, rv, tsrc)
+            prefill_attach_s = time.perf_counter() - t_prefill0
+            nxt = int(mx.argmax(out[0, -1]).item())
+            gen.append(nxt)
+            if eos_id is not None and nxt == eos_id:
+                lats.append(time.perf_counter() - t0)
+                decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+                stage_rows.append({
+                    "sample": i,
+                    "build_restoration_s": round(build_s, 3),
+                    "prefill_attach_s": round(prefill_attach_s, 3),
+                    "decode_s": 0.0,
+                })
+                print(f"[mac]   sample {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
+                      file=sys.stderr)
+                continue
+            cur.append(nxt)
+            t_decode0 = time.perf_counter()
             for _ in range(args.max_new_tokens):
-                last = restored_forward(cur, rk, rv, tsrc, return_all=False)
-                nxt = int(mx.argmax(last).item()); gen.append(nxt)
+                if len(gen) >= args.max_new_tokens:
+                    break
+                out = mlx_model(mx.array([[nxt]]), cache=cache)
+                mx.eval(out)
+                nxt = int(mx.argmax(out[0, -1]).item()); gen.append(nxt)
                 if eos_id is not None and nxt == eos_id:
                     break
                 cur.append(nxt)
+            decode_s = time.perf_counter() - t_decode0
             lats.append(time.perf_counter() - t0)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            stage_rows.append({
+                "sample": i,
+                "build_restoration_s": round(build_s, 3),
+                "prefill_attach_s": round(prefill_attach_s, 3),
+                "decode_s": round(decode_s, 3),
+            })
             print(f"[mac]   sample {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
                   file=sys.stderr)
+        eval_free_gen_cross.stage_rows = stage_rows
         return decoded, lats, toks
 
     def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
@@ -406,7 +502,12 @@ def main() -> int:
     cross_tps = _tps(cross_lat, cross_tok)
     cross_tps["eval_mode"] = eval_mode
     cross_tps["restored_forwards_per_sample"] = (
-        1 if args.teacher_forced else args.max_new_tokens)
+        1 if args.teacher_forced else 1)
+    cross_tps["incremental_decode"] = (not args.teacher_forced)
+    cross_tps["stage_timings"] = (
+        getattr(eval_free_gen_cross, "stage_rows", [])
+        if not args.teacher_forced else []
+    )
     print(f"[mac] cross-model throughput ({eval_mode}): "
           f"{cross_tps['tokens_per_second']} tok/s "
           f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s, "

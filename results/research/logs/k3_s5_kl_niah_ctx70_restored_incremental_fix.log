@@ -1,0 +1,28 @@
+Command:
+source "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine/.venv-mac/bin/activate" && PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --compress-full-attn --drafter-device cpu --n-samples 1 --haystack-min-lines 60 --haystack-max-lines 81 --max-new-tokens 16 --skip-oracle --output results/research/k3_s5_kl_niah_ctx70_mac_restored_incremental_fix.json
+
+Patch under test:
+* SinkWindowKVCache can prepend a decode-only restored K/V bank while keeping
+  local sink/window state bounded.
+* The Mac S5 free-generation path uses incremental MLX decode instead of a
+  full verifier re-forward per generated token.
+* S5 restores only Gemma 4 full-attention layers; sliding layers remain local
+  sink/window because their attention is local by design.
+
+Started: 2026-06-11T08:00:51.753Z
+Ended: 2026-06-11T08:02:26.358Z
+Elapsed: 94.605s
+Exit code: 0
+
+[mac] loading MLX verifier models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter models/dflash-kakeya-baseline on cpu
+[mac] KakeyaLattice compression ON for full-attn layers (D4 Q38); bits/token/head=3232.0
+[mac] 1 samples, prompt len min=1639 max=1639
+[mac] running restored cross-model verifier (s5, free_gen)
+[mac]   sample 0: T=1639 -> '<|channel>thought\nThe user wants to know the "se'
+[mac] cross-model recall = 0.000 (0/1)
+[mac] KV resident @T=1639: S5=27.17 MB (growth 7.89 KB/tok); naive-full=369.23 MB
+[mac] cross-model throughput (free_gen): 0.2982 tok/s (16 tok / 53.655 s, 53.655 s/sample)
+
+[mac] DONE. cross=0.000 oracle=skipped -> results/research/k3_s5_kl_niah_ctx70_mac_restored_incremental_fix.json
