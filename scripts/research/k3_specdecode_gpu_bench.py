@@ -282,10 +282,12 @@ def main() -> int:
             prompt, args.max_new_tokens, args.block_size, device, eos_ids)
         sd_rows.append(sd)
         sd_hits += int(recall(sd["tokens"], ans))
+        tb = sd["time_breakdown_s"]
         print(f"[sd] sample {i}: AR={ar_tps[-1]:.2f} tok/s | restored-pertoken="
               f"{pt_tps[-1]:.2f} tok/s | restored-specdecode={sd['decode_tokens_per_s']} tok/s "
-              f"(mean_accept={sd['mean_accept_len']}, blocks={sd['blocks']}, "
-              f"vfwds={sd['verifier_forwards']}) | recall ar/pt/sd="
+              f"(accept_len={sd['mean_accept_len']}, blocks={sd['blocks']}, "
+              f"aux={tb['aux_clean_forward']}s draft={tb['drafter']}s verify={tb['incremental_verify']}s) "
+              f"| recall ar/pt/sd="
               f"{recall(g_ar, ans)}/{recall(g_pt, ans)}/{recall(sd['tokens'], ans)}",
               file=sys.stderr, flush=True)
 
