@@ -70,10 +70,37 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
    a cache populates it; decode then runs native incremental attention.
 2. **Drop the extra build forward.** Capture full-attn own K/V at prefill; do not
    re-run a clean verifier forward per request beyond prefill. **Gate:
-   `build_restoration` from ~12s → ~prefill cost.**
+   `build_restoration` from ~12s → ~prefill cost.** *(Still pending: the Mac
+   harness `build_restoration` keeps the clean capture forward; the fused path
+   does add one clean aux-capture forward at prefill — fold these together when
+   optimizing.)*
 3. **Gap-B drafter embed fix** (no `×sqrt`) on the MLX/Bridge drafting path.
-   **Gate: acceptance toward reference on code prompts.**
-4. **Fused spec-decode** (A+B+C incremental caches). **Gate: tok/s > AR.**
+   **[IMPLEMENTED]** `fused_specdecode.make_bridge_embed_lm_head` builds the
+   drafting `embed_fn` as a **plain shared-embedding lookup (no `×sqrt(hidden)`)**;
+   `lm_head_fn` = tied-embed + `final_logit_softcapping`.
+4. **Fused spec-decode** (A+B+C incremental caches). **[IMPLEMENTED — needs Mac
+   validation]** `inference_engine/backends/mlx/fused_specdecode.py`:
+   - **A** `capture_aux_hidden` + `MLXRestoredIncrementalVerifier.forward_block`
+     (patch the Gemma-4 `DecoderLayer.__call__` to record aux-layer outputs —
+     there is no `output_hidden_states` on MLX) capture the verify forward's aux
+     hidden, bridged to torch.
+   - **B** reuses the PyTorch drafter's `make_context_kv` / `extend_context_kv` /
+     `draft_block_cached` (drafter context K/V cache).
+   - **C** `MLXRestoredIncrementalVerifier` (prefill = Gap-A restored cache;
+     `commit_or_truncate` rolls back rejected tokens via **`mlx_lm`'s native
+     `trim_prompt_cache`** — the same primitive mlx_lm's own spec-decode uses).
+   - `fused_specdecode_generate` is the per-block O(L) accept/reject loop.
+   Wired into the Mac harness via `--fused-specdecode --block-size N`:
+   ```bash
+   PYTHONPATH=.:sdks/python python scripts/research/k3_integrated_niah_eval_mac.py \
+     --verifier-path models/gemma-4-26B-A4B-it-mlx-4bit \
+     --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \
+     --f-theta-dir results/research/f_theta_v5_s5_sliding \
+     --s5-exact-full-attn --fused-specdecode --block-size 4 \
+     --n-samples 5 --max-new-tokens 32
+   ```
+   **Gate: tok/s > AR; recall == oracle (1.0).** Reference (#107 H200): fused
+   1.27× AR, recall 1.0.
 
 ## Validation gates (match #107 evidence)
 

@@ -68,6 +68,13 @@ def parse_args() -> argparse.Namespace:
                          "prefill captures restored K/V into a persistent cache, "
                          "decode via mlx_lm generate_step (O(L)/token). Fixes the "
                          "per-token re-forward throughput collapse. Free-gen only.")
+    ap.add_argument("--fused-specdecode", action="store_true",
+                    help="Use the FUSED DFlash spec-decode engine (MLX port of "
+                         "#107 A+B+C): drafter context K/V cache + aux capture from "
+                         "the verify forward + incremental restored verify with "
+                         "trim_prompt_cache accept/reject. Free-gen only.")
+    ap.add_argument("--block-size", type=int, default=4,
+                    help="Spec-decode block size (drafted tokens per block).")
     ap.add_argument("--teacher-forced", action="store_true",
                     help="DIAGNOSTIC ONLY (under-measures retrieval): single "
                          "restored forward per sample, check argmax at the "
@@ -114,6 +121,10 @@ def main() -> int:
         kv_source_layer_map, capture_own_kv, restored_logits,
         per_layer_kv_geometry, kv_memory_report,
         restored_prefill_cache, restored_incremental_generate,
+    )
+    from inference_engine.backends.mlx.fused_specdecode import (
+        MLXRestoredIncrementalVerifier, capture_aux_hidden,
+        make_bridge_embed_lm_head, fused_specdecode_generate,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from scripts.research.k3_dflash_mlx_bridge import (
@@ -363,6 +374,54 @@ def main() -> int:
                   file=sys.stderr)
         return decoded, lats, toks
 
+    def eval_fused_specdecode() -> Tuple[List[str], List[float], List[int]]:
+        """FUSED DFlash spec-decode (MLX port of #107 A+B+C): drafter context
+        K/V cache + aux captured from the verify forward + incremental restored
+        verify with trim_prompt_cache accept/reject. Target: tok/s > AR."""
+        aux_layer_ids = tuple(drafter.cfg.aux_layer_ids)
+        softcap = None
+        for obj in (getattr(mlx_model, "language_model", None), mlx_model):
+            cap = getattr(obj, "final_logit_softcapping", None) if obj is not None else None
+            if cap:
+                softcap = float(cap); break
+        bridge = lambda a: mx_to_torch(a, dtype=torch.float32, device=dev)
+        embed_fn, lm_head_fn = make_bridge_embed_lm_head(
+            text_model, mx_to_torch=mx_to_torch, torch_to_mx=torch_to_mx,
+            device=dev, torch_dtype=torch.float32, softcap=softcap)
+        argmax_fn = lambda row: int(mx.argmax(row).item())
+        arange_fn = lambda s, e: torch.arange(int(s), int(e), device=dev)
+        cat_aux_fn = lambda parts: torch.cat(list(parts), dim=0).unsqueeze(0)
+        adapter = MLXRestoredIncrementalVerifier(
+            mlx_model, embed_scale=embed_scale, aux_layer_ids=aux_layer_ids,
+            bridge_to_torch=bridge)
+
+        decoded, lats, toks = [], [], []
+        for i, pid in enumerate(sample_ids):
+            rk, rv, tsrc = build_restoration(pid)
+            T = len(pid)
+            evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
+            aux_prompt_mx = capture_aux_hidden(
+                mlx_model, pid, aux_layer_ids, embed_scale=embed_scale)
+            aux_prompt = [bridge(a) for a in aux_prompt_mx]  # [1,C,H] torch each
+            adapter.prefill(
+                pid,
+                restored_k_per_layer=_pad(rk, tsrc, T),
+                restored_v_per_layer=_pad(rv, tsrc, T),
+                evicted_positions=evicted)
+            t0 = time.perf_counter()
+            res = fused_specdecode_generate(
+                adapter, drafter, aux_prompt=aux_prompt,
+                embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                eos_ids=([eos_id] if eos_id is not None else ()),
+                argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn)
+            lats.append(time.perf_counter() - t0)
+            gen = res["tokens"]
+            decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            print(f"[mac]   fused {i}: T={seq_lens[i]} acc_len={res['mean_accept_len']} "
+                  f"-> {decoded[-1][:48]!r}", file=sys.stderr)
+        return decoded, lats, toks
+
     def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
         """Oracle free generation using mlx's NATIVE incremental KV cache
         (fast + correct reference; confirms the metric/dataset)."""
@@ -394,11 +453,14 @@ def main() -> int:
     label = "identity" if args.identity_restore else (
         "s5" if args.s5_exact_full_attn else "f_theta_all")
     eval_mode = ("teacher_forced" if args.teacher_forced
+                 else "free_gen_fused_specdecode" if args.fused_specdecode
                  else "free_gen_incremental" if args.incremental else "free_gen")
     print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
           file=sys.stderr, flush=True)
     if args.teacher_forced:
         cross_dec, cross_lat, cross_tok = eval_teacher_forced(cross_logits_all)
+    elif args.fused_specdecode:
+        cross_dec, cross_lat, cross_tok = eval_fused_specdecode()
     elif args.incremental:
         cross_dec, cross_lat, cross_tok = eval_free_gen_cross_incremental()
     else:
