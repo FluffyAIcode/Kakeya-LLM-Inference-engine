@@ -91,14 +91,17 @@ class VerifierAuxProvider(AuxHiddenProvider):
         return aux, bonus
 
 
-def _build_embed_lm_head(model, hidden_size, softcap):
+def _build_embed_lm_head(model, hidden_size, softcap, embed_scale=None):
     emb = model.get_input_embeddings()
     head = model.get_output_embeddings()
-    scale = math.sqrt(hidden_size)
+    # Reference DFlashQwen3Model.forward embeds with a PLAIN lookup
+    # (``self.embed_tokens(input_ids)``) — no Gemma ``×sqrt(hidden)``
+    # normalizer (that scale is applied inside the Gemma model body, not in
+    # the shared embed the Qwen3 drafter consumes). Default to no scale to
+    # match the reference; ``embed_scale`` overrides for A/B testing.
+    scale = 1.0 if embed_scale is None else float(embed_scale)
 
     def embed_fn(ids: torch.Tensor) -> torch.Tensor:
-        # Gemma scales token embeddings by sqrt(hidden) (PR #41703: DFlash
-        # draft path applies the target embedding normalization).
         return emb(ids).float() * scale
 
     def lm_head_fn(h: torch.Tensor) -> torch.Tensor:
@@ -156,6 +159,11 @@ def main() -> int:
     ap.add_argument("--drafter-state", default=None,
                     help="optional .pt state_dict to load over the drafter "
                          "(e.g. an alignment-trained checkpoint).")
+    ap.add_argument("--embed-scale", type=float, default=None,
+                    help="Scale applied to the shared embedding fed to the "
+                         "drafter. Default None = 1.0 (reference, no Gemma "
+                         "sqrt(hidden) normalizer). Pass e.g. 53.06 to A/B the "
+                         "old (incorrect) sqrt(2816) scaling.")
     ap.add_argument("--held-out", action="store_true",
                     help="evaluate on HELD_OUT_PROMPTS (disjoint from the "
                          "alignment trainer's prompts) for honest generalization.")
@@ -183,7 +191,8 @@ def main() -> int:
     cfg = drafter.cfg
     hidden = cfg.hidden_size
     softcap = cfg.final_logit_softcapping
-    embed_fn, lm_head_fn = _build_embed_lm_head(verifier, hidden, softcap)
+    embed_fn, lm_head_fn = _build_embed_lm_head(
+        verifier, hidden, softcap, embed_scale=args.embed_scale)
     provider = VerifierAuxProvider(verifier, cfg.aux_layer_ids, device)
     proposer = DFlashProposer(drafter, provider, embed_fn, lm_head_fn)
 
