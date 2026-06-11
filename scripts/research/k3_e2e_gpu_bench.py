@@ -19,7 +19,7 @@ Run on a CUDA host (e.g. H200) inside the transformers-5.x venv::
     HF_HOME=/workspace/.hf_home PYTHONPATH=.:sdks/python \
       .venv-k3/bin/python scripts/research/k3_e2e_gpu_bench.py \
         --verifier-id google/gemma-4-26B-A4B-it \
-        --drafter-id models/dflash-kakeya-baseline \
+        --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \
         --f-theta-dir results/research/f_theta_v5_s5_sliding \
         --haystack-lines 60,160 --n-samples 3 --gen-tokens 16 \
         --output results/research/k3_e2e_gpu_bench.json
@@ -167,7 +167,7 @@ def run_restored(adapter, ids_list, samples, gen_tokens, tokenizer, device) -> D
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verifier-id", default="google/gemma-4-26B-A4B-it")
-    ap.add_argument("--drafter-id", default="models/dflash-kakeya-baseline")
+    ap.add_argument("--drafter-id", default="z-lab/gemma-4-26B-A4B-it-DFlash")
     ap.add_argument("--f-theta-dir", default="results/research/f_theta_v5_s5_sliding")
     ap.add_argument("--haystack-lines", default="60,160",
                     help="Comma-separated haystack line counts (context rungs).")
