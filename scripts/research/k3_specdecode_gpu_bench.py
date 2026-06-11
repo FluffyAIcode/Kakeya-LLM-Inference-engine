@@ -359,6 +359,23 @@ def main() -> int:
         return ans in tok.decode(tokens, skip_special_tokens=True)
 
     aux_layer_ids = drafter.cfg.aux_layer_ids
+
+    # Warm up CUDA kernels for every measured path on the first prompt (a few
+    # tokens, discarded) so the timed samples reflect steady state, not the
+    # one-off kernel-compile cost (which otherwise inflates the first sample).
+    print("[sd] warmup ...", file=sys.stderr, flush=True)
+    _wp = ids_list[0][0].tolist()
+    try:
+        ar_incremental(verifier, ids_list[0], 4, device)
+        restored_pertoken(adapter, _wp, 4, device)
+        restored_specdecode(adapter, drafter, provider, embed_fn, lm_head_fn,
+                            _wp, 8, args.block_size, device, eos_ids)
+        restored_specdecode_fused(adapter, drafter, verifier, aux_layer_ids,
+                                  embed_fn, lm_head_fn, _wp, 8, args.block_size,
+                                  device, eos_ids)
+    except Exception as e:
+        print(f"[sd] warmup note: {e}", file=sys.stderr)
+
     ar_tps: List[float] = []
     pt_tps: List[float] = []
     sd_rows: List[Dict[str, Any]] = []
