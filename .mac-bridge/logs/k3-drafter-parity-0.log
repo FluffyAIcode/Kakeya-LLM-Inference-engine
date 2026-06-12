@@ -1,0 +1,8 @@
+[parity] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[parity] loading torch drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[parity] loading MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[parity] sample 0: agreement so far 29/32
+[parity] sample 1: agreement so far 60/64
+[parity] sample 2: agreement so far 91/96
+[parity] agreement=0.9479 (91/96) min=1.0 -> results/research/k3_mlx_drafter_parity.json
+[parity] FAIL: all-MLX drafter does not match the torch reference; throughput claims are blocked.
