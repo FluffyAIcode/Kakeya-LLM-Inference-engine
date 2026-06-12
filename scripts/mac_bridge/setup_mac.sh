@@ -56,13 +56,38 @@ ok "python3 ${PYVER}"
 [ -f "scripts/mac_bridge/run_preset.py" ] || die "run from the repo root"
 ok "repo root: $(pwd)"
 
-step "2/6 Python dependencies"
+step "2/6 Python dependencies (into the runner's python3)"
+# The Actions runner executes jobs with the host's plain `python3`
+# (see integration.yaml's install step) — NOT the .venv-mac that
+# scripts/setup_mac.sh builds for interactive dev. Install into the
+# same interpreter the bridge workflow will use.
 if python3 -c 'import mlx.core, mlx_lm, torch, pytest' 2>/dev/null; then
     ok "mlx / mlx_lm / torch / pytest importable"
 else
-    warn "installing via scripts/setup_mac.sh (first run takes a few minutes)"
-    bash scripts/setup_mac.sh
+    warn "installing project deps into $(command -v python3) (first run takes a few minutes)"
+    python3 -m pip install --upgrade pip --quiet
+    python3 -m pip install --quiet -r requirements.txt
+    python3 -m pip install --quiet 'mlx>=0.20' 'mlx-lm>=0.18' \
+        pytest pytest-asyncio pytest-timeout
+    python3 -c 'import mlx.core, mlx_lm, torch, pytest' \
+        || die "deps still not importable after install"
+    ok "deps installed"
 fi
+# Version sanity for the K3 path: transformers >= 5.0 is required by
+# Gemma 4 / DFlash / current mlx-lm (requirements.txt dropped the <5
+# pin; scripts/setup_mac.sh used to enforce it and broke setups with
+# transformers 5.x — fixed alongside this script).
+python3 - <<'PY'
+import sys
+from importlib.metadata import version
+from packaging.version import Version
+v = Version(version("transformers"))
+if v < Version("4.45"):
+    sys.exit(f"transformers {v} < 4.45 floor; pip install -U transformers")
+print(f"   transformers {v} (K3 path wants >= 5.0: "
+      f"{'OK' if v >= Version('5.0') else 'WARN — k3-* presets may fail'})")
+PY
+ok "dependency versions consistent with requirements.txt"
 
 step "3/6 GitHub Actions runner (${RUNNER_DIR})"
 if [ -f "${RUNNER_DIR}/.runner" ]; then
