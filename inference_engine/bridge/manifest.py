@@ -197,6 +197,27 @@ PRESETS: Dict[str, Preset] = {
             },
         ),
         Preset(
+            name="k3-kv-quant-eval",
+            description="Rate-distortion shoot-out on the full-attn K/V: "
+                        "mlx-native affine 8/4-bit vs KakeyaLattice D4/E8, "
+                        "with real recall per arm. Decides whether an MLX "
+                        "port of the KL codec is justified.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_kv_quant_eval.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--n-samples", "{n_samples}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--output", "results/research/k3_kv_quant_eval.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "n_samples": ("int:n_samples", "5"),
+                "max_new_tokens": ("int:max_new_tokens", "32"),
+            },
+        ),
+        Preset(
             name="k3-evidence-gate",
             description="Re-validate committed K3 Mac reports on-device.",
             command_templates=(

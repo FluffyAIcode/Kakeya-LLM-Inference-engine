@@ -59,6 +59,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "k3-drafter-parity",
         "k3-drafter-parity-fp32",
         "k3-evidence-gate",
+        "k3-kv-quant-eval",
         "k3-native-baseline",
         "k3-step1-incremental",
         "k3-step2-fused",
