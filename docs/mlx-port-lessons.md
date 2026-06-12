@@ -112,6 +112,28 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
   `results/research/k3_e2e_gpu_bench_incremental.json`,
   `k3_specdecode_fused_stable.json`.)
 
+## Step-2 rescue status (2026-06-12, all-MLX drafter)
+
+The hybrid fused engine's 0.028× was the per-block mx↔torch bridge +
+float32 CPU-torch drafter. The all-MLX drafter
+(`inference_engine/backends/mlx/dflash_drafter.py`) eliminates both:
+
+- **Parity** (bridge presets `k3-drafter-parity[-fp32]`): fp32-vs-fp32
+  = **100 %** token match (96/96) — the port is numerically faithful;
+  bf16 shipping dtype = 94.8 % (near-tie argmax flips,
+  correctness-contained by the verifier).
+- **Fused evidence** (`k3-step2-fused-allmlx`, n5/gen64/ctx280,
+  gate-clean): decode-only **11.0 tok/s = 0.476× AR** at block 4
+  (block 8: 0.40×) — a **17× improvement** over the hybrid path's
+  0.635 tok/s, recall 5/5, accept_len 1.9–3.2.
+- **Remaining gap to >AR**: Metal AR decode is 43 ms/token
+  (`generate_step`, async-pipelined); the fused loop pays ~6 python
+  sync points per block (~300 ms/block for ~2.5 accepted tokens).
+  Next levers, in order: lazy/async block evaluation (single
+  `mx.async_eval` per block), fusing draft+verify into one graph,
+  trimming the correction-token `append` forward. Until then Step 1
+  remains the shipping Mac path.
+
 ## Do-not-repeat (anti-patterns)
 
 - ❌ Re-forwarding the full sequence per generated token (the current collapse).
