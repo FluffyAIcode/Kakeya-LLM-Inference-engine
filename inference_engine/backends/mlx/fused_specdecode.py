@@ -156,6 +156,7 @@ class MLXRestoredIncrementalVerifier:
         self._last_aux: Optional[List[Any]] = None
         self._last_aux_mx: Optional[List[Any]] = None
         self._capture_aux = False
+        self._block_snapshot: Optional[List[Dict[str, Any]]] = None
 
     def reset(self) -> None:
         self._cache = None
@@ -163,6 +164,7 @@ class MLXRestoredIncrementalVerifier:
         self.next_token_logits = None
         self._last_aux = None
         self._last_aux_mx = None
+        self._block_snapshot = None
 
     def prefill(
         self,
@@ -223,6 +225,24 @@ class MLXRestoredIncrementalVerifier:
         bridge = self._bridge or (lambda a: a)
         return [bridge(a[start:end]) for a in self._last_aux_mx]
 
+    def rollback_block(self) -> None:
+        """O(1) full rollback of the last ``forward_block_lazy`` call.
+
+        ``trim_prompt_cache`` is NOT a valid rollback on Gemma-4's hybrid
+        cache once the sliding-window RotatingKVCache has wrapped
+        (seq >> 512): rejected draft K/V linger in the ring and poison
+        subsequent logits (observed live as stream divergence vs greedy +
+        acceptance collapse; retroactively explains iterC's 23-token
+        sample and the eager loop's silent post-answer divergence). MLX
+        arrays are immutable, so a snapshot is just attribute references;
+        restore rebinds them.
+        """
+        if self._block_snapshot is None:
+            raise RuntimeError("no block snapshot to roll back to")
+        for c, snap in zip(self._cache, self._block_snapshot):
+            for attr, val in snap.items():
+                setattr(c, attr, val)
+
     def forward_block_lazy(self, ids_mx: Any) -> Any:
         """LAZY incremental verify: ``ids_mx`` is an mx ``[1, L]`` (typically
         the in-graph concatenation of the carried bonus + lazy draft ids —
@@ -232,6 +252,14 @@ class MLXRestoredIncrementalVerifier:
         extension."""
         if self._cache is None:
             raise RuntimeError("verifier not prefilled")
+        # Reference snapshot of every per-layer cache state (immutable mx
+        # arrays → O(layers) attribute refs) for rollback_block().
+        self._block_snapshot = [
+            {attr: getattr(c, attr)
+             for attr in ("keys", "values", "offset", "_idx")
+             if hasattr(c, attr)}
+            for c in self._cache
+        ]
         want_aux = self._capture_aux and bool(self.aux_layer_ids)
         if want_aux:
             sink: Dict[int, Any] = {}
@@ -352,68 +380,93 @@ def fused_specdecode_generate_mlx(
     timing = {
         "ctx_kv_build_s": time.perf_counter() - t_ctx,
         "build_s": 0.0,   # lazy graph construction (python-side)
-        "eval_s": 0.0,    # the per-block single sync (Metal compute)
+        "eval_s": 0.0,    # per-block syncs (Metal compute)
         "extend_s": 0.0,
     }
     adapter._capture_aux = True
 
     generated: List[int] = []
     accepts: List[int] = []
-    next_logits = adapter.next_token_logits  # mx [V], may be lazy
+    # Rollback-carry state: rejected blocks roll the WHOLE forward back
+    # (rollback_block — see its docstring for why trim is unsound on the
+    # wrapped sliding ring) and carry the stream-committed-but-not-cached
+    # tokens (`tail`) into the next candidate, where they are guaranteed
+    # re-accepted and their K/V + aux recomputed correctly.
+    tail: List[int] = []
+    tail_logits = adapter.next_token_logits   # row predicting position S
+    ctx_len = C                               # drafter context coverage
     try:
         while len(generated) < gen_tokens:
             L = min(block_size, gen_tokens - len(generated))
-            cstart = adapter._past_len
+            base_fwd = adapter._past_len      # cache offset at forward start
+            S = base_fwd + len(tail)          # committed stream length
             t_build = time.perf_counter()
-            bonus_id = mx.argmax(next_logits)            # lazy scalar
+            bonus_id = mx.argmax(tail_logits)            # lazy scalar
             n_draft = max(L - 1, 0)
             if n_draft:
                 drafts = drafter.draft_block_ids(
                     ctx_kv, bonus_id, embed_fn, lm_head_fn,
-                    n_masks=n_draft, context_len=cstart)
-                candidate = mx.concatenate([bonus_id[None], drafts])  # [L]
+                    n_masks=n_draft, context_len=S)
+                check_ids = mx.concatenate([bonus_id[None], drafts])  # [L]
                 # Two-phase evaluation: materialise the drafter graph
                 # BEFORE building the 26B verify graph. A single fused
                 # drafter+verifier graph proved pathological on Metal
-                # (command-buffer blowups: 143 s evals + stream
-                # divergence in the first live run); two small syncs per
-                # block are stable and still ~3× fewer than the eager
-                # loop's 6+L.
-                mx.eval(candidate)
+                # (command-buffer blowups: 143 s evals in the first live
+                # run); two small syncs per block are stable and still
+                # ~3× fewer than the eager loop's 6+L.
+                mx.eval(check_ids)
             else:
-                candidate = bonus_id[None]
-            block_logits = adapter.forward_block_lazy(candidate[None])  # [L, V]
-            # In-graph greedy acceptance: row i of pred_rows predicts
-            # candidate[i]; leading-match count via cumprod.
+                check_ids = bonus_id[None]
+            if tail:
+                cand_full = mx.concatenate(
+                    [mx.array(tail, dtype=check_ids.dtype), check_ids])
+            else:
+                cand_full = check_ids
+            k = len(tail)
+            block_logits = adapter.forward_block_lazy(cand_full[None])  # [k+L, V]
+            # In-graph greedy acceptance over the CHECK region only
+            # (the carried tail is already stream-committed): row i of
+            # pred_rows predicts check_ids[i]; leading-match via cumprod.
             pred_rows = mx.concatenate(
-                [next_logits[None], block_logits[:-1]], axis=0)  # [L, V]
-            matches = (mx.argmax(pred_rows, axis=-1) == candidate)
+                [tail_logits[None], block_logits[k:k + L - 1]], axis=0)
+            matches = (mx.argmax(pred_rows, axis=-1) == check_ids)
             accepted_mx = mx.sum(mx.cumprod(matches.astype(mx.int32)))
-            # Logits predicting position cstart+accepted (the carried
-            # bonus/correction source for the next block).
-            rows = mx.concatenate([next_logits[None], block_logits], axis=0)
+            rows = mx.concatenate(
+                [tail_logits[None], block_logits[k:]], axis=0)  # [L+1, V]
             next_row = mx.take(rows, accepted_mx[None], axis=0)[0]   # [V]
             timing["build_s"] += time.perf_counter() - t_build
-            # ---- the block's single host sync ----
             t_eval = time.perf_counter()
-            mx.eval(accepted_mx, candidate)
+            mx.eval(accepted_mx, check_ids)
             timing["eval_s"] += time.perf_counter() - t_eval
             accepted = int(accepted_mx.item())
-            cand = [int(x) for x in candidate.tolist()]
-            adapter.commit_or_truncate(forwarded=L, accepted=accepted)
-            commit = cand[:accepted]
+            check = [int(x) for x in check_ids.tolist()]
+            commit = check[:accepted]
             generated += commit
             accepts.append(accepted)
-            next_logits = next_row
+            tail_logits = next_row
             adapter.next_token_logits = next_row
-            if accepted and adapter._last_aux_mx is not None:
+            aux_rows = adapter._last_aux_mx   # rows for positions base_fwd..base_fwd+k+L
+            if accepted == L:
+                # Whole forward (tail + check region) is now valid cache.
+                adapter._past_len = base_fwd + k + L
+                tail = []
+            else:
+                adapter.rollback_block()      # cache back to base_fwd
+                tail = tail + commit          # re-verified next block
+            S_new = adapter._past_len + len(tail)
+            # Extend the drafter context with aux rows for newly committed
+            # positions (ctx_len..S_new). Accepted rows are correct even
+            # after rollback: causal attention means rejected positions
+            # only sit AFTER them in the forward.
+            lo, hi = ctx_len - base_fwd, S_new - base_fwd
+            if hi > lo and aux_rows is not None:
                 t_extend = time.perf_counter()
-                new_aux = [a[0:accepted][None] for a in adapter._last_aux_mx]
+                new_aux = [a[lo:hi][None] for a in aux_rows]
                 ctx_kv = drafter.extend_context_kv(
                     ctx_kv,
-                    drafter.make_context_kv(
-                        new_aux, mx.arange(cstart, cstart + accepted)))
+                    drafter.make_context_kv(new_aux, mx.arange(ctx_len, S_new)))
                 mx.async_eval([t for kv in ctx_kv for t in kv])
+                ctx_len = S_new
                 timing["extend_s"] += time.perf_counter() - t_extend
             if any(t in eos for t in commit):
                 break
@@ -426,7 +479,7 @@ def fused_specdecode_generate_mlx(
         "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
                             if accepts else 0.0),
         "decode_tokens": len(generated),
-        "loop": "mlx_single_sync_v2",
+        "loop": "mlx_rollback_carry_v3",
         "time_breakdown_s": {k: round(v, 3) for k, v in timing.items()},
     }
 
