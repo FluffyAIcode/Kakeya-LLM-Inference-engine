@@ -145,6 +145,12 @@ branches execute an allowlisted preset (see
 the request branch. Full protocol + security model:
 `docs/design/mac-bridge-cloud-agent-access.md`.
 
+**One-click setup**: on the Mac, from the repo root —
+`bash scripts/mac_bridge/setup_mac.sh` (add
+`--runner-token <TOKEN> --repo-url <URL>` on a fresh machine to install
+and register the Actions runner too). The script is idempotent and ends
+with a bridge self-test.
+
 Operator setup beyond the standard runner install:
 
 1. **Model locations** (used by the `k3-*` harness presets) are read

@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 from inference_engine.bridge.manifest import (
+    BRANCH_PREFIX,
     MANIFEST_PATH,
     ManifestError,
     PRESETS,
@@ -72,9 +73,22 @@ def main() -> int:
                     help="Workload ref to run against (default: HEAD).")
     ap.add_argument("--requested-by", default="cloud-agent")
     ap.add_argument("--remote", default="origin")
+    ap.add_argument("--branch-prefix", default=BRANCH_PREFIX,
+                    help="Request-branch prefix. The workflow also accepts "
+                         "'AgentMemory/mac-bridge-' so Cursor cloud agents "
+                         "can request runs within their branch-naming "
+                         "policy.")
+    ap.add_argument("--branch-suffix", default="",
+                    help="Optional branch suffix (e.g. a cloud agent's "
+                         "mandated '-<id>' suffix).")
     ap.add_argument("--no-push", action="store_true",
                     help="Build the request branch locally but do not push "
                          "(inspection / dry runs).")
+    ap.add_argument("--keep-branch", action="store_true",
+                    help="Stay on the request branch after pushing. Default "
+                         "is to return to the original branch so one-click "
+                         "callers (kakeya_mac.py run) leave the worktree "
+                         "where it was.")
     args = ap.parse_args()
 
     params = {}
@@ -99,10 +113,12 @@ def main() -> int:
     except ManifestError as exc:
         print(f"[mac-bridge] invalid request: {exc}", file=sys.stderr)
         return 2
-    branch = request.branch_name
+    branch = (f"{args.branch_prefix}{request.preset.name}-"
+              f"{request.nonce}{args.branch_suffix}")
 
     start_point = args.ref if args.ref != "HEAD" else "HEAD"
     repo_root = Path(_git("rev-parse", "--show-toplevel", capture=True))
+    original_branch = _git("rev-parse", "--abbrev-ref", "HEAD", capture=True)
 
     # Snapshot bridge files from the CLIENT checkout before switching:
     # the workload ref may predate the bridge.
@@ -138,6 +154,10 @@ def main() -> int:
                   "will pick it up. Poll with:\n"
                   f"  python3 scripts/mac_bridge/fetch_results.py --branch {branch}",
                   file=sys.stderr)
+            if not args.keep_branch and original_branch != "HEAD":
+                _git("checkout", "-q", original_branch)
+                print(f"[mac-bridge] returned to {original_branch}",
+                      file=sys.stderr)
     except Exception:
         # Leave the workspace on the request branch for inspection, but
         # surface the failure loudly.

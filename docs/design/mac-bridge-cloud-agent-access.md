@@ -208,21 +208,65 @@ plane; LAN = data plane.** This is the same hybrid conclusion as ADR
 4. mTLS + node identity (already queued for v0.5 GA) becomes a
    prerequisite for M3 leaving the tailnet's closed world.
 
-## 5. Operating the bridge (cheat sheet)
+## 5. One-click install & run
+
+### Mac mini side — one command
 
 ```bash
-# From a cloud agent (or any clone with push rights):
-python3 scripts/mac_bridge/request_run.py --preset mlx-env-probe
-python3 scripts/mac_bridge/request_run.py --preset k3-step2-fused \
-    --ref AgentMemory/v04-mlx-port-incremental-decode-2815 \
-    --param n_samples=5 --param max_new_tokens=64 --param block_size=4
-python3 scripts/mac_bridge/request_run.py --preset pytest-path \
-    --param path=tests/backends/mlx/test_fused_specdecode.py
+# On the Mac, from the repo root.
+# Existing kakeya-mac-m4 host (runner already registered):
+bash scripts/mac_bridge/setup_mac.sh
 
-# Poll + fetch results (read-only gh + git):
-python3 scripts/mac_bridge/fetch_results.py --branch mac-bridge/<name>
+# Fresh Mac (also installs + registers the Actions runner; token from
+# GitHub → Settings → Actions → Runners → New self-hosted runner):
+bash scripts/mac_bridge/setup_mac.sh \
+    --runner-token <TOKEN> --repo-url https://github.com/<owner>/<repo>
+
+# Optionally prepare M2 interactive SSH too:
+bash scripts/mac_bridge/setup_mac.sh --with-tailscale
 ```
 
-On the Mac runner, machine-local configuration lives in the runner env
-(see `docs/ops/mac-m4-runner-setup.md` §bridge): `KAKEYA_MAC_VERIFIER_PATH`,
-`KAKEYA_MAC_DRAFTER_ID`, `KAKEYA_MAC_FTHETA_DIR`.
+The script is idempotent and ends with a bridge self-test; a green exit
+means the next `mac-bridge/**` push executes. What it covers: host
+shape (arm64 + Python ≥3.12), Python deps (`scripts/setup_mac.sh`),
+Actions runner install/registration with the
+`[self-hosted, macOS, ARM64, kakeya-mac-m4]` labels, model-location
+checks for the `k3-*` presets (with repo-variable instructions when
+paths differ), HF-cache pre-warm check, and executor dry-run.
+
+### Cloud agent side — zero install, two commands
+
+The bridge client is stdlib-only: a fresh cloud agent needs **no
+configuration** beyond what it already has (repo checkout, git push,
+read-only `gh`). Optional: `TAILSCALE_AUTHKEY` in Cursor Dashboard →
+Cloud Agents → Secrets enables M2 interactive SSH later.
+
+```bash
+# 0. Sanity-check this environment (push rights, gh, bridge files):
+PYTHONPATH=.:sdks/python python3 scripts/mac_bridge/kakeya_mac.py doctor
+
+# 1. Run on the Mac and wait for results:
+PYTHONPATH=.:sdks/python python3 scripts/mac_bridge/kakeya_mac.py run \
+    --preset mlx-env-probe --wait 600
+
+# Evidence reruns for PR #109 (hardened-harness ref):
+PYTHONPATH=.:sdks/python python3 scripts/mac_bridge/kakeya_mac.py run \
+    --preset k3-step2-fused --ref origin/AgentMemory/v04-mlx-port-incremental-decode-2815 \
+    --param n_samples=5 --param max_new_tokens=64 --param block_size=4 --wait 7200
+
+# 2. Check any request later:
+PYTHONPATH=.:sdks/python python3 scripts/mac_bridge/kakeya_mac.py status \
+    --branch <request-branch> --wait 0
+```
+
+`kakeya_mac.py run` auto-detects cloud-agent branch policy: on an
+`AgentMemory/<name>-<suffix>` checkout it creates the request as
+`AgentMemory/mac-bridge-<preset>-<nonce>-<suffix>` (the workflow accepts
+both namespaces), so agents never leave their allowed branch template.
+After pushing, the client returns the worktree to the original branch.
+
+Lower-level pieces (`request_run.py`, `fetch_results.py`,
+`run_preset.py`) remain directly usable; machine-local configuration on
+the runner lives in env / repo Actions variables
+(`KAKEYA_MAC_VERIFIER_PATH`, `KAKEYA_MAC_DRAFTER_ID`,
+`KAKEYA_MAC_FTHETA_DIR` — see `docs/ops/mac-m4-runner-setup.md`).

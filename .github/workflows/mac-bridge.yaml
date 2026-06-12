@@ -28,7 +28,13 @@ name: Mac bridge
 on:
   push:
     branches:
+      # Canonical request namespace.
       - "mac-bridge/**"
+      # Cursor cloud agents are typically constrained to an
+      # AgentMemory/<name>[-suffix] branch template; this pattern lets
+      # them participate without violating their naming policy
+      # (request_run.py --branch-prefix/--branch-suffix).
+      - "AgentMemory/mac-bridge-*"
 
 concurrency:
   # One Mac: queue bridge runs globally, never cancel a running one
