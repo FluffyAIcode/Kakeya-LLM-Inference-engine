@@ -1,0 +1,353 @@
+{
+  "kind": "k3_mlx_drafter_parity",
+  "schema_version": 1,
+  "config": {
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "n_samples": 3,
+    "n_blocks": 4,
+    "block_size": 8,
+    "haystack_min_lines": 20,
+    "haystack_max_lines": 40,
+    "seed": 1234,
+    "min_agreement": 1.0,
+    "mlx_dtype": "fp32",
+    "output": "results/research/k3_mlx_drafter_parity_fp32.json"
+  },
+  "agreement": 1.0,
+  "agreed_tokens": 96,
+  "total_tokens": 96,
+  "samples": [
+    {
+      "sample": 0,
+      "context_len": 719,
+      "blocks": [
+        {
+          "bonus": 100,
+          "mlx_tokens": [
+            107,
+            236829,
+            2430,
+            236761,
+            818,
+            496,
+            496,
+            1440
+          ],
+          "torch_tokens": [
+            107,
+            236829,
+            2430,
+            236761,
+            818,
+            496,
+            496,
+            1440
+          ],
+          "matches": 8,
+          "mlx_draft_s": 1.8934,
+          "torch_draft_s": 2.2291
+        },
+        {
+          "bonus": 496,
+          "mlx_tokens": [
+            496,
+            236771,
+            529,
+            563,
+            496,
+            496,
+            496,
+            236771
+          ],
+          "torch_tokens": [
+            496,
+            236771,
+            529,
+            563,
+            496,
+            496,
+            496,
+            236771
+          ],
+          "matches": 8,
+          "mlx_draft_s": 1.9799,
+          "torch_draft_s": 0.6689
+        },
+        {
+          "bonus": 496,
+          "mlx_tokens": [
+            496,
+            236771,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "torch_tokens": [
+            496,
+            236771,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "matches": 8,
+          "mlx_draft_s": 9.6135,
+          "torch_draft_s": 6.5274
+        },
+        {
+          "bonus": 236771,
+          "mlx_tokens": [
+            496,
+            496,
+            496,
+            496,
+            236771,
+            496,
+            496,
+            496
+          ],
+          "torch_tokens": [
+            496,
+            496,
+            496,
+            496,
+            236771,
+            496,
+            496,
+            496
+          ],
+          "matches": 8,
+          "mlx_draft_s": 8.6765,
+          "torch_draft_s": 5.6674
+        }
+      ]
+    },
+    {
+      "sample": 1,
+      "context_len": 799,
+      "blocks": [
+        {
+          "bonus": 100,
+          "mlx_tokens": [
+            107,
+            236787,
+            2430,
+            236829,
+            107,
+            496,
+            496,
+            496
+          ],
+          "torch_tokens": [
+            107,
+            236787,
+            2430,
+            236829,
+            107,
+            496,
+            496,
+            496
+          ],
+          "matches": 8,
+          "mlx_draft_s": 7.6286,
+          "torch_draft_s": 6.9098
+        },
+        {
+          "bonus": 496,
+          "mlx_tokens": [
+            496,
+            518,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "torch_tokens": [
+            496,
+            518,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "matches": 8,
+          "mlx_draft_s": 4.5101,
+          "torch_draft_s": 1.3249
+        },
+        {
+          "bonus": 496,
+          "mlx_tokens": [
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "torch_tokens": [
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "matches": 8,
+          "mlx_draft_s": 9.0842,
+          "torch_draft_s": 0.9993
+        },
+        {
+          "bonus": 496,
+          "mlx_tokens": [
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "torch_tokens": [
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496,
+            496
+          ],
+          "matches": 8,
+          "mlx_draft_s": 8.5517,
+          "torch_draft_s": 5.8034
+        }
+      ]
+    },
+    {
+      "sample": 2,
+      "context_len": 660,
+      "blocks": [
+        {
+          "bonus": 100,
+          "mlx_tokens": [
+            107,
+            236829,
+            236829,
+            139,
+            818,
+            496,
+            496,
+            1440
+          ],
+          "torch_tokens": [
+            107,
+            236829,
+            236829,
+            139,
+            818,
+            496,
+            496,
+            1440
+          ],
+          "matches": 8,
+          "mlx_draft_s": 9.0744,
+          "torch_draft_s": 7.0622
+        },
+        {
+          "bonus": 496,
+          "mlx_tokens": [
+            236771,
+            236771,
+            236771,
+            623,
+            623,
+            236771,
+            236771,
+            236771
+          ],
+          "torch_tokens": [
+            236771,
+            236771,
+            236771,
+            623,
+            623,
+            236771,
+            236771,
+            236771
+          ],
+          "matches": 8,
+          "mlx_draft_s": 6.1637,
+          "torch_draft_s": 0.7564
+        },
+        {
+          "bonus": 236771,
+          "mlx_tokens": [
+            236771,
+            236787,
+            623,
+            236771,
+            236771,
+            236771,
+            236771,
+            236771
+          ],
+          "torch_tokens": [
+            236771,
+            236787,
+            623,
+            236771,
+            236771,
+            236771,
+            236771,
+            236771
+          ],
+          "matches": 8,
+          "mlx_draft_s": 8.5696,
+          "torch_draft_s": 0.6782
+        },
+        {
+          "bonus": 236787,
+          "mlx_tokens": [
+            623,
+            236771,
+            236771,
+            236771,
+            236771,
+            236787,
+            623,
+            236771
+          ],
+          "torch_tokens": [
+            623,
+            236771,
+            236771,
+            236771,
+            236771,
+            236787,
+            623,
+            236771
+          ],
+          "matches": 8,
+          "mlx_draft_s": 7.1993,
+          "torch_draft_s": 1.0429
+        }
+      ]
+    }
+  ],
+  "passed": true
+}
