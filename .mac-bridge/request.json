@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "k3-drafter-parity-fp32",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "cursor-cloud-agent-b876",
+  "nonce": "1781270691-b89254"
+}
