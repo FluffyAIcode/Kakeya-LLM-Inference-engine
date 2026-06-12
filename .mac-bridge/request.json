@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "preset": "k3-kv-quant-eval",
+  "params": {
+    "n_samples": "5",
+    "max_new_tokens": "32"
+  },
+  "ref": "HEAD",
+  "requested_by": "cursor-cloud-agent-b876",
+  "nonce": "1781274708-a9e917"
+}
