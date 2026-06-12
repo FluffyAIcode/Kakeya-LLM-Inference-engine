@@ -372,6 +372,14 @@ def fused_specdecode_generate_mlx(
                     ctx_kv, bonus_id, embed_fn, lm_head_fn,
                     n_masks=n_draft, context_len=cstart)
                 candidate = mx.concatenate([bonus_id[None], drafts])  # [L]
+                # Two-phase evaluation: materialise the drafter graph
+                # BEFORE building the 26B verify graph. A single fused
+                # drafter+verifier graph proved pathological on Metal
+                # (command-buffer blowups: 143 s evals + stream
+                # divergence in the first live run); two small syncs per
+                # block are stable and still ~3× fewer than the eager
+                # loop's 6+L.
+                mx.eval(candidate)
             else:
                 candidate = bonus_id[None]
             block_logits = adapter.forward_block_lazy(candidate[None])  # [L, V]
