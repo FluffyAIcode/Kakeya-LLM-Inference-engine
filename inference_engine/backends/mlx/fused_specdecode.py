@@ -353,7 +353,10 @@ def fused_specdecode_generate(
                 new_positions = arange_fn(cstart, cstart + accepted)
                 t_extend = time.perf_counter()
                 cand_aux = adapter.last_aux_torch_slice(0, accepted)
-                new_aux = [cand_aux[li].unsqueeze(0) for li in range(n_aux)]
+                # cat_aux_fn of a single part == unsqueeze(0) in the torch
+                # path; routing through it keeps this loop runtime-agnostic
+                # (the all-MLX drafter path injects an mx-based cat_aux_fn).
+                new_aux = [cat_aux_fn([cand_aux[li]]) for li in range(n_aux)]
                 ctx_kv = drafter.extend_context_kv(
                     ctx_kv, drafter.make_context_kv(new_aux, new_positions))
                 timing["extend_s"] += time.perf_counter() - t_extend

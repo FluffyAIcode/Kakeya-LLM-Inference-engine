@@ -63,8 +63,10 @@ class Preset:
     validate_reports: bool = False
 
 
-def _harness_preset(name: str, description: str, mode_flag: str) -> Preset:
-    """The three hardened-harness presets share everything but the mode."""
+def _harness_preset(
+    name: str, description: str, mode_flag: str, *extra_flags: str,
+) -> Preset:
+    """The hardened-harness presets share everything but the mode flags."""
     return Preset(
         name=name,
         description=description,
@@ -74,7 +76,7 @@ def _harness_preset(name: str, description: str, mode_flag: str) -> Preset:
                 "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
                 "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
                 "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
-                "--s5-exact-full-attn", mode_flag,
+                "--s5-exact-full-attn", mode_flag, *extra_flags,
                 # Evidence runs decode the full budget: without this the
                 # Gemma-4 <turn|> stop caps decode at ~8 tokens and the
                 # report fails the SPEEDUP_DECODE_TOKENS gate rule.
@@ -143,6 +145,34 @@ PRESETS: Dict[str, Preset] = {
             "k3-native-baseline",
             "Labelled native-AR baseline run (cannot claim recall/speedup).",
             "--native-baseline-bypass",
+        ),
+        _harness_preset(
+            "k3-step2-fused-allmlx",
+            "Step-2 rescue evidence: fused engine with the ALL-MLX drafter "
+            "(zero per-block bridge crossings).",
+            "--fused-specdecode",
+            "--all-mlx-drafter",
+        ),
+        Preset(
+            name="k3-drafter-parity",
+            description="All-MLX vs torch DFlash drafter token parity "
+                        "(blocks throughput claims until it passes).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_mlx_drafter_parity.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--n-samples", "{n_samples}",
+                    "--block-size", "{block_size}",
+                    "--output",
+                    "results/research/k3_mlx_drafter_parity.json",
+                ),
+            ),
+            timeout_minutes=60,
+            params={
+                "n_samples": ("int:n_samples", "3"),
+                "block_size": ("int:block_size", "8"),
+            },
         ),
         Preset(
             name="k3-evidence-gate",

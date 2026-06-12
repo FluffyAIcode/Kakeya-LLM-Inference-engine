@@ -56,10 +56,12 @@ def _manifest(**overrides):
 def test_allowlist_contains_exactly_the_documented_presets():
     assert sorted(PRESETS) == [
         "integration-tests",
+        "k3-drafter-parity",
         "k3-evidence-gate",
         "k3-native-baseline",
         "k3-step1-incremental",
         "k3-step2-fused",
+        "k3-step2-fused-allmlx",
         "mlx-backend-tests",
         "mlx-env-probe",
         "pytest-path",
@@ -77,7 +79,25 @@ def test_harness_presets_validate_reports_others_do_not():
     gated = {name for name, p in PRESETS.items() if p.validate_reports}
     assert gated == {
         "k3-step1-incremental", "k3-step2-fused", "k3-native-baseline",
+        "k3-step2-fused-allmlx",
     }
+
+
+def test_allmlx_preset_carries_both_mode_flags():
+    request = parse_manifest(_manifest(preset="k3-step2-fused-allmlx"))
+    (argv,) = build_commands(request, HARNESS_ENV)
+    assert "--fused-specdecode" in argv
+    assert "--all-mlx-drafter" in argv
+    assert "--ignore-turn-stop" in argv
+
+
+def test_drafter_parity_preset_resolves():
+    request = parse_manifest(_manifest(
+        preset="k3-drafter-parity", params={"block_size": "8"}))
+    (argv,) = build_commands(request, HARNESS_ENV)
+    assert argv[1].endswith("k3_mlx_drafter_parity.py")
+    assert HARNESS_ENV["KAKEYA_MAC_DRAFTER_ID"] in argv
+    assert argv[argv.index("--block-size") + 1] == "8"
 
 
 # ---------------------------------------------------------------------------
