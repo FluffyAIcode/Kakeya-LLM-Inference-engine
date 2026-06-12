@@ -74,8 +74,18 @@ def parse_args() -> argparse.Namespace:
                          "the verify forward + incremental restored verify with "
                          "trim_prompt_cache accept/reject. Free-gen only.")
     ap.add_argument("--force-fused-specdecode", action="store_true",
-                    help="Force DFlash fused spec-decode on MLX even if the "
-                         "adaptive Mac path would use restored greedy decode.")
+                    help="Deprecated alias: --fused-specdecode now ALWAYS runs "
+                         "the fused engine (evidence-gate constraint; the "
+                         "silent greedy fallback that produced blocks=0 "
+                         "reports labelled fused is no longer reachable).")
+    ap.add_argument("--native-baseline-bypass", action="store_true",
+                    help="Run the verifier on its NATIVE cache (no restoration, "
+                         "no drafter/f_theta) and label the run as "
+                         "system_under_test=native_ar_baseline. This is the "
+                         "only way to run the former 'adaptive S5 native' "
+                         "path; it can no longer occupy the cross-model slot "
+                         "or claim recall/speedup (k3_report_gate rules "
+                         "BASELINE_AS_SUT / SPEEDUP_SELF_COMPARISON).")
     ap.add_argument("--direct-answer-prompt", action=argparse.BooleanOptionalAction,
                     default=True,
                     help="For NIAH free generation, add a strict instruction to "
@@ -95,6 +105,10 @@ def parse_args() -> argparse.Namespace:
                     help="With chat-template direct-answer prompts, append "
                          "Gemma4's content channel marker before generation so "
                          "short smokes do not spend tokens on the thought channel.")
+    ap.add_argument("--ignore-turn-stop", action="store_true",
+                    help="Do not include Gemma4 <turn|> as a stop token. "
+                         "Useful for throughput evidence runs that require "
+                         "decode median >= 32 tokens.")
     ap.add_argument("--block-size", type=int, default=4,
                     help="Spec-decode block size (drafted tokens per block).")
     ap.add_argument("--teacher-forced", action="store_true",
@@ -109,6 +123,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--drafter-device", default="cpu",
                     help="torch device for the DFlash drafter + f_θ (mps|cpu)")
+    ap.add_argument("--torch-cpu-threads", type=int, default=0,
+                    help="Override torch CPU intra-op threads for drafter/f_theta "
+                         "(0 keeps torch default).")
     ap.add_argument("--s5-exact-full-attn", action="store_true",
                     help="Keep full-attention layers' K/V exact (S5).")
     ap.add_argument("--identity-restore", action="store_true",
@@ -157,11 +174,21 @@ def main() -> int:
         make_bridge_embed_lm_head, fused_specdecode_generate,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
+    from inference_engine.bench.k3_report_gate import (
+        CLAIM_ORACLE_DECODE_LOOP, MIN_MEDIAN_DECODE_TOKENS, MIN_PERF_SAMPLES,
+        MAX_PREFILL_SPREAD, NATIVE_BASELINE_LABEL,
+        decode_only_block, prefill_spread, summarize_violations,
+        validate_report,
+    )
     from scripts.research.k3_dflash_mlx_bridge import (
         mx_to_torch, torch_to_mx,
     )
 
     torch.manual_seed(args.seed)
+    if int(args.torch_cpu_threads or 0) > 0:
+        torch.set_num_threads(int(args.torch_cpu_threads))
+        print(f"[mac] torch CPU threads={torch.get_num_threads()}",
+              file=sys.stderr, flush=True)
     dev = torch.device(args.drafter_device if (
         args.drafter_device == "cpu" or torch.backends.mps.is_available()
     ) else "cpu")
@@ -176,18 +203,30 @@ def main() -> int:
     src_map = kv_source_layer_map(text_model)
     print(f"[mac] verifier layers={n_layers} full_attn={full_attn_idx}", file=sys.stderr)
 
-    adaptive_s5_native = (
-        args.fused_specdecode
-        and not args.force_fused_specdecode
-        and args.s5_exact_full_attn
-        and not args.identity_restore
-        and not args.compress_full_attn
-    )
+    # Evidence-gate path resolution (k3_report_gate):
+    #   * --fused-specdecode ALWAYS executes the fused engine. The former
+    #     implicit "adaptive S5 native" bypass silently replaced the system
+    #     under test with the native baseline while keeping the fused label
+    #     (committed reports showed blocks=0 on every sample).
+    #   * The native baseline is still runnable — but only explicitly, and
+    #     it is labelled as a baseline in the report.
+    if args.native_baseline_bypass and args.force_fused_specdecode:
+        raise SystemExit(
+            "--native-baseline-bypass and --force-fused-specdecode are "
+            "mutually exclusive: a run is either the native baseline or "
+            "the fused system under test.")
+    if args.native_baseline_bypass:
+        args.fused_specdecode = True  # route through the cache-based loop
+    elif args.fused_specdecode or args.force_fused_specdecode:
+        args.fused_specdecode = True
+        args.force_fused_specdecode = True
+    adaptive_s5_native = args.native_baseline_bypass
     drafter = None
     f_theta = None
     fcfg = None
     if adaptive_s5_native:
-        print("[mac] adaptive S5 native path: skipping drafter/f_theta load",
+        print("[mac] native baseline bypass: skipping drafter/f_theta load; "
+              "report will be labelled system_under_test=native_ar_baseline",
               file=sys.stderr, flush=True)
     else:
         # ---------- Load drafter + f_θ (PyTorch) ----------
@@ -397,7 +436,7 @@ def main() -> int:
         eot_ids = tokenizer.encode("<turn|>")
     if hasattr(eot_ids, "tolist"):
         eot_ids = eot_ids.tolist()
-    if len(eot_ids) == 1:
+    if (not args.ignore_turn_stop) and len(eot_ids) == 1:
         end_ids.add(int(eot_ids[0]))
     print(f"[mac] {len(samples)} samples, prompt len "
           f"min={min(seq_lens)} max={max(seq_lens)}", file=sys.stderr)
@@ -460,8 +499,12 @@ def main() -> int:
         """Restored free generation: 1 restored full forward per token
         (amortized restoration). Correct recall metric; slow on M4."""
         decoded, lats, toks = [], [], []
+        rows = []
         for i, pid in enumerate(sample_ids):
+            e2e_t0 = time.perf_counter()
+            build_t0 = time.perf_counter()
             rk, rv, tsrc = build_restoration(pid)
+            build_s = time.perf_counter() - build_t0
             cur = list(pid); gen: List[int] = []
             t0 = time.perf_counter()
             for _ in range(args.max_new_tokens):
@@ -470,10 +513,21 @@ def main() -> int:
                 if nxt in end_ids:
                     break
                 cur.append(nxt)
-            lats.append(time.perf_counter() - t0)
+            decode_s = time.perf_counter() - t0
+            e2e_s = time.perf_counter() - e2e_t0
+            lats.append(e2e_s)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            rows.append({
+                "sample": i,
+                "build_restoration_s": round(build_s, 3),
+                "decode_s": round(decode_s, 3),
+                "e2e_s": round(e2e_s, 3),
+                "restoration_active": True,
+                "decode_loop": "full_reforward_per_token",
+            })
             print(f"[mac]   sample {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
                   file=sys.stderr)
+        eval_free_gen_cross.stage_rows = rows
         return decoded, lats, toks
 
     def eval_free_gen_cross_incremental() -> Tuple[List[str], List[float], List[int]]:
@@ -482,11 +536,15 @@ def main() -> int:
         decode with mlx_lm's native incremental step (O(L)/token). Fixes the
         per-token re-forward throughput collapse. Recall via S5 full-attn."""
         decoded, lats, toks = [], [], []
+        rows = []
         for i, pid in enumerate(sample_ids):
+            e2e_t0 = time.perf_counter()
+            build_t0 = time.perf_counter()
             rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
+            build_s = time.perf_counter() - build_t0
             T = len(pid)
             evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
-            t0 = time.perf_counter()
+            prefill_t0 = time.perf_counter()
             if not evicted:
                 cache, first = native_prefill(pid)
             else:
@@ -496,14 +554,29 @@ def main() -> int:
                     restored_v_per_layer=_pad(rv, tsrc, T),
                     evicted_positions=evicted,
                     prefill_chunk_size=args.prefill_chunk_size)
+            prefill_s = time.perf_counter() - prefill_t0
+            decode_t0 = time.perf_counter()
             gen = restored_incremental_generate(
                 mlx_model, cache, first,
                 max_tokens=args.max_new_tokens,
                 eos_ids=end_ids)
-            lats.append(time.perf_counter() - t0)
+            decode_s = time.perf_counter() - decode_t0
+            e2e_s = time.perf_counter() - e2e_t0
+            lats.append(e2e_s)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
-            print(f"[mac]   incr {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
-                  file=sys.stderr)
+            rows.append({
+                "sample": i,
+                "build_restoration_s": round(build_s, 3),
+                "prefill_s": round(prefill_s, 3),
+                "decode_s": round(decode_s, 3),
+                "e2e_s": round(e2e_s, 3),
+                "restoration_active": True,
+                "decode_loop": "generate_step",
+            })
+            print(f"[mac]   incr {i}: T={seq_lens[i]} "
+                  f"prefill={prefill_s:.1f}s decode={decode_s:.1f}s "
+                  f"-> {decoded[-1][:48]!r}", file=sys.stderr)
+        eval_free_gen_cross_incremental.stage_rows = rows
         return decoded, lats, toks
 
     def eval_fused_specdecode() -> Tuple[List[str], List[float], List[int]]:
@@ -573,7 +646,8 @@ def main() -> int:
                     embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                     gen_tokens=args.max_new_tokens, block_size=args.block_size,
                     eos_ids=end_ids,
-                    argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn)
+                    argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn,
+                    allow_greedy_fallback=False)
             else:
                 t_greedy = time.perf_counter()
                 adapter._capture_aux = False
@@ -593,7 +667,7 @@ def main() -> int:
                     "blocks": 0,
                     "mean_accept_len": 0.0,
                     "decode_tokens": len(gen),
-                    "adaptive_mode": "restored_greedy",
+                    "adaptive_mode": "native_ar_baseline",
                     "time_breakdown_s": {
                         "greedy_decode_s": round(time.perf_counter() - t_greedy, 3)
                     },
@@ -607,9 +681,12 @@ def main() -> int:
                 "sample": i,
                 "build_restoration_s": round(build_s, 3),
                 "aux_prompt_capture_s": round(aux_s, 3),
-                "restored_prefill_s": round(prefill_s, 3),
+                "prefill_s": round(prefill_s, 3),
                 "decode_s": round(decode_s, 3),
                 "e2e_s": round(e2e_s, 3),
+                "restoration_active": not adaptive_s5_native,
+                "decode_loop": ("fused_specdecode" if args.force_fused_specdecode
+                                else "per_token_eval"),
                 "fused": res,
             })
             print(f"[mac]   fused {i}: T={seq_lens[i]} acc_len={res['mean_accept_len']} "
@@ -618,8 +695,16 @@ def main() -> int:
         return decoded, lats, toks
 
     def eval_free_gen_oracle() -> Tuple[List[str], List[float], List[int]]:
-        """Oracle free generation using mlx's NATIVE incremental KV cache
-        (fast + correct reference; confirms the metric/dataset)."""
+        """Oracle free generation using mlx's NATIVE incremental KV cache.
+
+        Decodes via ``restored_incremental_generate`` (mlx_lm
+        ``generate_step``: chunked + async-pipelined) — the SAME decode
+        primitive as the cross incremental path. The previous hand-rolled
+        per-token ``mx.eval`` loop is the documented MLX anti-pattern
+        (docs/mlx-port-lessons.md) and depressed the baseline; the gate
+        rule SPEEDUP_ORACLE_LOOP rejects headline speedups measured
+        against it.
+        """
         decoded, lats, toks = [], [], []
         rows = []
         for i, pid in enumerate(sample_ids):
@@ -628,12 +713,10 @@ def main() -> int:
             cache, logits = native_prefill(pid)
             prefill_s = time.perf_counter() - prefill_t0
             decode_t0 = time.perf_counter()
-            tok = int(mx.argmax(logits).item()); gen = [tok]
-            for _ in range(args.max_new_tokens - 1):
-                if tok in end_ids:
-                    break
-                out = mlx_model(mx.array([[tok]]), cache=cache); mx.eval(out)
-                tok = int(mx.argmax(out[0, -1]).item()); gen.append(tok)
+            gen = restored_incremental_generate(
+                mlx_model, cache, logits,
+                max_tokens=args.max_new_tokens,
+                eos_ids=end_ids)
             decode_s = time.perf_counter() - decode_t0
             e2e_s = time.perf_counter() - e2e_t0
             lats.append(e2e_s)
@@ -643,6 +726,7 @@ def main() -> int:
                 "prefill_s": round(prefill_s, 3),
                 "decode_s": round(decode_s, 3),
                 "e2e_s": round(e2e_s, 3),
+                "decode_loop": "generate_step",
             })
             print(f"[mac]   oracle {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
                   file=sys.stderr)
@@ -659,6 +743,7 @@ def main() -> int:
     label = "identity" if args.identity_restore else (
         "s5" if args.s5_exact_full_attn else "f_theta_all")
     eval_mode = ("teacher_forced" if args.teacher_forced
+                 else "native_ar_baseline" if adaptive_s5_native
                  else "free_gen_fused_specdecode" if args.fused_specdecode
                  else "free_gen_incremental" if args.incremental else "free_gen")
     warmup_decode()
@@ -666,14 +751,28 @@ def main() -> int:
           file=sys.stderr, flush=True)
     if args.teacher_forced:
         cross_dec, cross_lat, cross_tok = eval_teacher_forced(cross_logits_all)
+        # Diagnostic mode: one restored forward per sample; synthesize the
+        # per-sample path-identity rows the evidence gate requires.
+        cross_rows = [
+            {"sample": i, "restoration_active": True,
+             "decode_loop": "teacher_forced_single_forward"}
+            for i in range(len(sample_ids))
+        ]
     elif args.fused_specdecode:
         cross_dec, cross_lat, cross_tok = eval_fused_specdecode()
+        cross_rows = getattr(eval_fused_specdecode, "stage_rows", [])
     elif args.incremental:
         cross_dec, cross_lat, cross_tok = eval_free_gen_cross_incremental()
+        cross_rows = getattr(eval_free_gen_cross_incremental, "stage_rows", [])
     else:
         cross_dec, cross_lat, cross_tok = eval_free_gen_cross()
-    cross_res = aggregate_recall("k3_cross_model_mac", samples, cross_dec, cross_lat, cross_tok)
-    print(f"[mac] cross-model recall = {cross_res.recall:.3f} "
+        cross_rows = getattr(eval_free_gen_cross, "stage_rows", [])
+    sut_label = (NATIVE_BASELINE_LABEL if adaptive_s5_native
+                 else "restored_cross_model")
+    cross_name = ("native_ar_baseline_mac" if adaptive_s5_native
+                  else "k3_cross_model_mac")
+    cross_res = aggregate_recall(cross_name, samples, cross_dec, cross_lat, cross_tok)
+    print(f"[mac] {sut_label} recall = {cross_res.recall:.3f} "
           f"({cross_res.samples_correct}/{cross_res.samples_total})", file=sys.stderr)
 
     oracle_res = None
@@ -719,26 +818,90 @@ def main() -> int:
     cross_tps["eval_mode"] = eval_mode
     cross_tps["restored_forwards_per_sample"] = (
         1 if args.teacher_forced else args.max_new_tokens)
+    cross_tps["stage_timings"] = cross_rows
+    oracle_rows = getattr(eval_free_gen_oracle, "stage_rows", [])
     oracle_tps = _tps(o_lat, o_tok) if (o_lat and o_tok) else None
     if oracle_tps:
         oracle_tps["timing_scope"] = "e2e_prefill_plus_decode"
-        oracle_tps["stage_timings"] = getattr(eval_free_gen_oracle, "stage_rows", [])
+        oracle_tps["stage_timings"] = oracle_rows
+        if oracle_rows and not args.teacher_forced:
+            oracle_tps["decode_loop"] = "generate_step"
+
+    # ---------- Headline speedup: emitted ONLY when admissible ----------
+    # (k3_report_gate SPEEDUP_* rules; the harness withholds the number
+    # rather than publish a claim its own gate would reject.)
+    import statistics as _stats
+    decode_only = decode_only_block(cross_rows, cross_tok, oracle_rows, o_tok)
+    speedup_withheld: List[str] = []
+    if adaptive_s5_native:
+        speedup_withheld.append(
+            "native_baseline_self_comparison: cross arm IS the oracle computation")
+    if oracle_tps is None:
+        speedup_withheld.append("no_oracle_arm")
+    else:
+        if len(cross_rows) < MIN_PERF_SAMPLES or len(oracle_rows) < MIN_PERF_SAMPLES:
+            speedup_withheld.append(
+                f"n_samples<{MIN_PERF_SAMPLES} (cross={len(cross_rows)}, "
+                f"oracle={len(oracle_rows)})")
+        tok_medians = [
+            _stats.median(t) for t in (cross_tok, o_tok) if t
+        ]
+        if len(tok_medians) < 2 or min(tok_medians) < MIN_MEDIAN_DECODE_TOKENS:
+            speedup_withheld.append(
+                f"median_decode_tokens<{MIN_MEDIAN_DECODE_TOKENS} "
+                f"(prefill-dominated wall time)")
+        if decode_only is None:
+            speedup_withheld.append("decode_only_medians_unavailable")
+        if oracle_tps.get("decode_loop") != CLAIM_ORACLE_DECODE_LOOP:
+            speedup_withheld.append(
+                f"oracle_decode_loop!={CLAIM_ORACLE_DECODE_LOOP}")
+        for arm_name, arm_rows in (("cross", cross_rows), ("oracle", oracle_rows)):
+            spread = prefill_spread(arm_rows)
+            if spread is not None and spread > MAX_PREFILL_SPREAD:
+                speedup_withheld.append(
+                    f"{arm_name}_prefill_spread {spread:.2f}x > "
+                    f"{MAX_PREFILL_SPREAD}x (e2e ratio would be noise)")
     speedup_vs_oracle = None
-    if oracle_tps and oracle_tps["tokens_per_second"] and cross_tps["tokens_per_second"]:
+    if not speedup_withheld and oracle_tps and oracle_tps["tokens_per_second"] \
+            and cross_tps["tokens_per_second"]:
         speedup_vs_oracle = round(
             cross_tps["tokens_per_second"] / oracle_tps["tokens_per_second"], 3)
-    if args.fused_specdecode:
-        cross_tps["stage_timings"] = getattr(eval_fused_specdecode, "stage_rows", [])
+    if speedup_withheld:
+        print("[mac] speedup WITHHELD (evidence gate): "
+              + "; ".join(speedup_withheld), file=sys.stderr)
     print(f"[mac] cross-model throughput ({eval_mode}): "
           f"{cross_tps['tokens_per_second']} tok/s "
           f"({cross_tps['tokens']} tok / {cross_tps['wall_seconds']} s, "
           f"{cross_tps['mean_latency_per_sample_s']} s/sample)", file=sys.stderr)
 
-    delta = (abs(cross_res.recall - oracle_res.recall) if oracle_res else None)
+    # ---------- Measured (not analytical) accelerator memory ----------
+    def _mx_peak_mb() -> Optional[float]:
+        for holder in (mx, getattr(mx, "metal", None)):
+            fn = getattr(holder, "get_peak_memory", None) if holder is not None else None
+            if callable(fn):
+                try:
+                    return round(float(fn()) / 1e6, 1)
+                except Exception:
+                    return None
+        return None
+
+    # The analytical sink+window table only describes runs where every
+    # cross sample actually executed restoration with S5/identity exact
+    # layers (k3_report_gate MEMORY_CLAIM_MISMATCH).
+    restoration_all_active = bool(cross_rows) and all(
+        bool(r.get("restoration_active")) for r in cross_rows)
+    formula_matches_run = bool(
+        restoration_all_active
+        and (args.s5_exact_full_attn or args.identity_restore))
+
+    delta = (abs(cross_res.recall - oracle_res.recall)
+             if (oracle_res and not adaptive_s5_native) else None)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "k3_integrated_niah_acceptance_mac",
         "config": {
+            "native_baseline_bypass": bool(args.native_baseline_bypass),
+            "block_size": args.block_size,
             "verifier_path": args.verifier_path,
             "drafter_id": args.drafter_id,
             "f_theta_dir": args.f_theta_dir,
@@ -765,38 +928,66 @@ def main() -> int:
             "prompt_token_lens": seq_lens,
         },
         "results": {
-            "k3_cross_model": dataclasses.asdict(cross_res),
+            "k3_cross_model": {
+                **dataclasses.asdict(cross_res),
+                "system_under_test": sut_label,
+            },
             **({"oracle": dataclasses.asdict(oracle_res)} if oracle_res else {}),
         },
         "gate": {
-            "recall_cross_model": cross_res.recall,
+            # A native-baseline run may not claim cross-model recall
+            # (k3_report_gate BASELINE_RECALL_CLAIM): its recall is the
+            # oracle's recall by construction.
+            "recall_cross_model": (None if adaptive_s5_native else cross_res.recall),
+            "recall_native_baseline": (cross_res.recall if adaptive_s5_native else None),
             "recall_oracle": oracle_res.recall if oracle_res else None,
             "recall_delta_vs_oracle_pp": (delta * 100 if delta is not None else None),
             "recall_delta_within_5pp": (delta is not None and delta <= 0.05),
         },
         "memory": {
-            "s5": mem_s5,
+            "s5": {
+                **mem_s5,
+                "scope": "analytical_formula",
+                "formula_matches_run": formula_matches_run,
+            },
             "naive_full_kv": {
                 "total_resident_mb": mem_naive["total_resident_mb"],
                 "per_token_growth_kb": mem_naive["per_token_growth_kb"],
             },
-            "savings_vs_naive_pct": round(
+            # Savings only claimable when the formula describes the run.
+            "savings_vs_naive_pct": (round(
                 100 * (1 - mem_s5["total_resident_bytes"]
-                       / max(mem_naive["total_resident_bytes"], 1)), 1),
+                       / max(mem_naive["total_resident_bytes"], 1)), 1)
+                if formula_matches_run else None),
+            "measured_peak_mb": _mx_peak_mb(),
         },
         "throughput": {
             "k3_cross_model": cross_tps,
             **({"oracle_native_ar": oracle_tps} if oracle_tps else {}),
+            "decode_only": decode_only,
             "cross_model_speedup_vs_oracle_ar": speedup_vs_oracle,
+            "speedup_withheld_reasons": speedup_withheld or None,
         },
     }
+
+    # ---------- Evidence gate: the harness validates its own output ----------
+    violations = validate_report(report)
+    report["gate"]["evidence_violations"] = [
+        dataclasses.asdict(v) for v in violations
+    ]
     out_path = Path(args.output) if args.output else Path(
         f"results/research/k3_integrated_niah_mac_{int(time.time())}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2))
-    print(f"\n[mac] DONE. cross={cross_res.recall:.3f} "
+    print(f"\n[mac] DONE. {sut_label}={cross_res.recall:.3f} "
           f"oracle={oracle_res.recall if oracle_res else 'skipped'} "
           f"-> {out_path}", file=sys.stderr)
+    if violations:
+        print("[mac] EVIDENCE GATE FAILED — this report is NOT admissible "
+              "as evidence:\n" + summarize_violations(violations),
+              file=sys.stderr)
+        return 2
+    print("[mac] evidence gate: PASS", file=sys.stderr)
     return 0
 
 

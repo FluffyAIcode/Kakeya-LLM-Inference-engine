@@ -154,6 +154,7 @@ class MLXRestoredIncrementalVerifier:
         self._past_len = 0
         self.next_token_logits: Any = None
         self._last_aux: Optional[List[Any]] = None
+        self._last_aux_mx: Optional[List[Any]] = None
         self._capture_aux = False
 
     def reset(self) -> None:
@@ -161,6 +162,7 @@ class MLXRestoredIncrementalVerifier:
         self._past_len = 0
         self.next_token_logits = None
         self._last_aux = None
+        self._last_aux_mx = None
 
     def prefill(
         self,
@@ -185,8 +187,8 @@ class MLXRestoredIncrementalVerifier:
 
     def forward_block(self, tokens: Sequence[int]) -> Any:
         """Incremental verify of ``tokens`` against the restored cache. Returns
-        ``mx [len(tokens), V]`` logits; sets ``_last_aux`` (torch ``[L, hidden]``
-        per aux layer) when ``_capture_aux`` and ``aux_layer_ids`` are set."""
+        ``mx [len(tokens), V]`` logits; captures aux hidden states in MX first
+        and bridges to torch lazily via :meth:`last_aux_torch_slice`."""
         import mlx.core as mx  # type: ignore
 
         if self._cache is None:
@@ -196,7 +198,7 @@ class MLXRestoredIncrementalVerifier:
         ids = mx.array([list(tokens)])
         want_aux = self._capture_aux and bool(self.aux_layer_ids)
         if want_aux:
-            sink: Dict[int, Any] = {}
+            sink = {}
             with _patched_decoder_layers(self.text_model):
                 for layer in self.text_model.layers:
                     layer._kakeya_aux_sink = sink
@@ -204,15 +206,22 @@ class MLXRestoredIncrementalVerifier:
                 logits = self.mlx_model(ids, cache=self._cache)
                 aux = _build_aux(self.text_model, ids, sink,
                                  self.embed_scale, self.aux_layer_ids)
-                mx.eval(logits)
-                mx.eval(aux)
-            bridge = self._bridge or (lambda a: a)
-            self._last_aux = [bridge(a[0]) for a in aux]   # [L, hidden] each
+                mx.eval(logits, *aux)
+            self._last_aux_mx = [a[0] for a in aux]  # [L, hidden] each, mx
+            self._last_aux = None
         else:
             logits = self.mlx_model(ids, cache=self._cache)
             mx.eval(logits)
             self._last_aux = None
+            self._last_aux_mx = None
         return logits[0]
+
+    def last_aux_torch_slice(self, start: int = 0, end: Optional[int] = None) -> List[Any]:
+        """Bridge a token slice from the last captured aux hidden states."""
+        if self._last_aux_mx is None:
+            raise RuntimeError("aux hidden not captured for the last forward_block")
+        bridge = self._bridge or (lambda a: a)
+        return [bridge(a[start:end]) for a in self._last_aux_mx]
 
     def commit_or_truncate(self, *, forwarded: int, accepted: int) -> None:
         if accepted < 0 or accepted > forwarded:
@@ -284,6 +293,7 @@ def fused_specdecode_generate(
     argmax_fn: Callable[[Any], int],
     arange_fn: Callable[[int, int], Any],
     cat_aux_fn: Callable[[Sequence[Any]], Any],
+    allow_greedy_fallback: bool = True,
 ) -> Dict[str, Any]:
     """Run the fused engine. ``adapter`` must already be prefilled. Per block:
     draft from the cached drafter context (B), verify+capture-aux incrementally
@@ -312,80 +322,83 @@ def fused_specdecode_generate(
     generated: List[int] = []
     accepts: List[int] = []
     fallback_to_greedy = False
-    while len(generated) < gen_tokens:
-        L = min(block_size, gen_tokens - len(generated))
-        cstart = adapter._past_len
-        bonus = int(argmax_fn(adapter.next_token_logits))
-        t_draft = time.perf_counter()
-        drafts = drafter.draft_block_cached(
-            ctx_kv, bonus, embed_fn, lm_head_fn,
-            block_size=max(L - 1, 1), context_len=cstart)
-        timing["draft_s"] += time.perf_counter() - t_draft
-        candidate = [bonus] + list(drafts[: max(L - 1, 0)])
-        prev = adapter.next_token_logits
-        t_verify = time.perf_counter()
-        block_logits = adapter.forward_block(candidate)
-        timing["verify_s"] += time.perf_counter() - t_verify
-        cand_aux = adapter._last_aux
-        accepted = 0
-        for i in range(len(candidate)):
-            if int(argmax_fn(prev)) == candidate[i]:
-                accepted += 1
-                prev = block_logits[i]
-            else:
-                break
-        adapter.commit_or_truncate(forwarded=len(candidate), accepted=accepted)
-        if accepted == len(candidate):
-            # The verifier cache already contains the whole accepted block.
-            # Reuse the last block logit as the next-token distribution instead
-            # of paying an extra correction-token forward.
-            adapter.next_token_logits = block_logits[-1]
-            new_positions = arange_fn(cstart, cstart + accepted)
-            t_extend = time.perf_counter()
-            new_aux = [cand_aux[li][:accepted].unsqueeze(0) for li in range(n_aux)]
-            ctx_kv = drafter.extend_context_kv(
-                ctx_kv, drafter.make_context_kv(new_aux, new_positions))
-            timing["extend_s"] += time.perf_counter() - t_extend
-            commit = candidate
-        else:
-            correction = int(argmax_fn(prev))
-            t_append = time.perf_counter()
-            adapter.append_token(correction)
-            timing["append_s"] += time.perf_counter() - t_append
-            corr_aux = adapter._last_aux
-            new_positions = arange_fn(cstart, cstart + accepted + 1)
-            t_extend = time.perf_counter()
-            new_aux = [
-                cat_aux_fn([cand_aux[li][:accepted], corr_aux[li][:1]])
-                for li in range(n_aux)
-            ]
-            ctx_kv = drafter.extend_context_kv(
-                ctx_kv, drafter.make_context_kv(new_aux, new_positions))
-            timing["extend_s"] += time.perf_counter() - t_extend
-            commit = candidate[:accepted] + [correction]
-        generated += commit
-        accepts.append(accepted)
-        if any(t in eos for t in commit):
-            break
-        if len(accepts) >= 2 and (sum(accepts) / len(accepts)) < 1.5:
-            fallback_to_greedy = True
-            break
-
-    if fallback_to_greedy and len(generated) < gen_tokens:
-        # Low acceptance makes speculative control flow slower than AR. Finish
-        # on the restored verifier cache with plain greedy decode and no aux
-        # capture/bridge.
-        adapter._capture_aux = False
-        t_fb = time.perf_counter()
+    try:
         while len(generated) < gen_tokens:
-            tok = int(argmax_fn(adapter.next_token_logits))
-            adapter.append_token(tok)
-            generated.append(tok)
-            if tok in eos:
+            L = min(block_size, gen_tokens - len(generated))
+            cstart = adapter._past_len
+            bonus = int(argmax_fn(adapter.next_token_logits))
+            t_draft = time.perf_counter()
+            drafts = drafter.draft_block_cached(
+                ctx_kv, bonus, embed_fn, lm_head_fn,
+                block_size=max(L - 1, 1), context_len=cstart)
+            timing["draft_s"] += time.perf_counter() - t_draft
+            candidate = [bonus] + list(drafts[: max(L - 1, 0)])
+            prev = adapter.next_token_logits
+            t_verify = time.perf_counter()
+            block_logits = adapter.forward_block(candidate)
+            timing["verify_s"] += time.perf_counter() - t_verify
+            accepted = 0
+            for i in range(len(candidate)):
+                if int(argmax_fn(prev)) == candidate[i]:
+                    accepted += 1
+                    prev = block_logits[i]
+                else:
+                    break
+            adapter.commit_or_truncate(forwarded=len(candidate), accepted=accepted)
+            if accepted == len(candidate):
+                # The verifier cache already contains the whole accepted block.
+                # Reuse the last block logit as the next-token distribution instead
+                # of paying an extra correction-token forward.
+                adapter.next_token_logits = block_logits[-1]
+                new_positions = arange_fn(cstart, cstart + accepted)
+                t_extend = time.perf_counter()
+                cand_aux = adapter.last_aux_torch_slice(0, accepted)
+                new_aux = [cand_aux[li].unsqueeze(0) for li in range(n_aux)]
+                ctx_kv = drafter.extend_context_kv(
+                    ctx_kv, drafter.make_context_kv(new_aux, new_positions))
+                timing["extend_s"] += time.perf_counter() - t_extend
+                commit = candidate
+            else:
+                correction = int(argmax_fn(prev))
+                cand_aux = adapter.last_aux_torch_slice(0, accepted)
+                t_append = time.perf_counter()
+                adapter.append_token(correction)
+                timing["append_s"] += time.perf_counter() - t_append
+                corr_aux = adapter.last_aux_torch_slice(0, 1)
+                new_positions = arange_fn(cstart, cstart + accepted + 1)
+                t_extend = time.perf_counter()
+                new_aux = [
+                    cat_aux_fn([cand_aux[li], corr_aux[li]])
+                    for li in range(n_aux)
+                ]
+                ctx_kv = drafter.extend_context_kv(
+                    ctx_kv, drafter.make_context_kv(new_aux, new_positions))
+                timing["extend_s"] += time.perf_counter() - t_extend
+                commit = candidate[:accepted] + [correction]
+            generated += commit
+            accepts.append(accepted)
+            if any(t in eos for t in commit):
                 break
-        timing["fallback_greedy_s"] += time.perf_counter() - t_fb
+            if (allow_greedy_fallback and len(accepts) >= 2
+                    and (sum(accepts) / len(accepts)) < 1.5):
+                fallback_to_greedy = True
+                break
 
-    adapter._capture_aux = False
+        if allow_greedy_fallback and fallback_to_greedy and len(generated) < gen_tokens:
+            # Low acceptance makes speculative control flow slower than AR. Finish
+            # on the restored verifier cache with plain greedy decode and no aux
+            # capture/bridge.
+            adapter._capture_aux = False
+            t_fb = time.perf_counter()
+            while len(generated) < gen_tokens:
+                tok = int(argmax_fn(adapter.next_token_logits))
+                adapter.append_token(tok)
+                generated.append(tok)
+                if tok in eos:
+                    break
+            timing["fallback_greedy_s"] += time.perf_counter() - t_fb
+    finally:
+        adapter._capture_aux = False
     generated = generated[:gen_tokens]
     return {
         "tokens": generated,
