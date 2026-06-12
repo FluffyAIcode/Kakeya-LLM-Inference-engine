@@ -134,6 +134,43 @@ float32 CPU-torch drafter. The all-MLX drafter
   trimming the correction-token `append` forward. Until then Step 1
   remains the shipping Mac path.
 
+## Levers ①②③ implemented (2026-06-12) — and a correctness bug they exposed
+
+`fused_specdecode_generate_mlx` (v3, `mlx_rollback_carry_v3`) lands all
+three levers: lazy draft ids feeding the verify forward (②, two-phase
+eval after a fully fused drafter+26B graph hit Metal command-buffer
+pathology: 143 s block evals), in-graph cumprod acceptance + lazy
+next-row gather with ~2 host syncs/block (①), and the carried
+bonus/correction with **no** append forward (③).
+
+**The big find**: live block-4 runs diverged from the greedy stream
+(eos at token 22 vs Step-1's 64) while block-1 was byte-clean →
+isolated to the rejection path → **`trim_prompt_cache` is unsound on
+Gemma-4's hybrid cache once the sliding RotatingKVCache has wrapped**
+(seq >> 512): rejected draft K/V linger in the ring. This
+retroactively invalidates the acceptance/throughput numbers of every
+earlier trim-based fused run (the hybrid iterC run's 23-token sample,
+the eager all-MLX run's silent post-answer divergence). Fix: O(1)
+reference snapshot before each verify forward; on partial acceptance
+roll the whole forward back and carry the committed tokens into the
+next candidate (guaranteed re-accept; K/V + aux recomputed correctly).
+
+**Corrected picture (gate-clean, 64/64 tokens, recall 5/5)**:
+
+| mode | decode-only | note |
+|---|---|---|
+| Step-1 incremental (greedy) | **22.2 tok/s ≈ 1.0× AR** | shipping path |
+| fused block 1 (carried greedy, levers ①③) | 17.5 tok/s | loop overhead ≈ 2 syncs/block |
+| fused block 4 (v3, all levers) | 5.8 tok/s = 0.26× | TRUE accept ≈ 2.0/block |
+
+With the corrected (uncorrupted) acceptance ≈ 1.8–2.3 committed/block
+at block 4, the fused ceiling is `2.1×43ms / (verify(4)=120ms +
+draft≈20ms) ≈ 0.6–0.7×` — **engineering levers cannot reach AR parity;
+the binding constraint is drafter acceptance** (true per-draft accept
+~30–40 % vs the ~75 % parity would need). Next investment, if Step 2
+is pursued: DFlash↔Gemma-4 alignment fine-tuning, re-measured under
+the rollback-correct loop.
+
 ## KV-quant shoot-out (2026-06-12): affine wins, KL MLX port NOT justified
 
 `k3-kv-quant-eval` (ctx280, n=5, real recall per arm, identity control
