@@ -1,0 +1,18 @@
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading ALL-MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[mac] 2 samples, prompt len min=4911 max=5810
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[mac]   fused 0: T=5810 acc_len=1.0 -> 'BETA-1409<turn|><turn|>thought\n<channel|>The use'
+[mac]   fused 1: T=4911 acc_len=1.0 -> 'DELTA-3286<turn|><turn|>\nthought\n<channel|>The u'
+[mac] restored_cross_model recall = 1.000 (2/2)
+[mac] running oracle
+[mac]   oracle 0: T=5810 -> 'BETA-1409<turn|><turn|>thought\n<channel|>The use'
+[mac]   oracle 1: T=4911 -> 'DELTA-3286<turn|><turn|>\nthought\n<channel|>The u'
+[mac] oracle recall = 1.000
+[mac] KV resident @T=5810: S5=132.92 MB (growth 20.0 KB/tok); naive-full=1308.88 MB
+[mac] speedup WITHHELD (evidence gate): n_samples<5 (cross=2, oracle=2)
+[mac] cross-model throughput (free_gen_fused_specdecode): 1.5597 tok/s (128 tok / 82.065 s, 41.033 s/sample)
+
+[mac] DONE. restored_cross_model=1.000 oracle=1.0 -> results/research/k3_mac_bridge_k3_step2_fused_allmlx.json
+[mac] evidence gate: PASS

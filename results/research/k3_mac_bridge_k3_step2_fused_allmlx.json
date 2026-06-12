@@ -1,0 +1,664 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance_mac",
+  "config": {
+    "native_baseline_bypass": false,
+    "all_mlx_drafter": true,
+    "block_size": 1,
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+    "n_samples": 2,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "max_new_tokens": 64,
+    "prefill_chunk_size": 512,
+    "decode_warmup_tokens": 1,
+    "direct_answer_prompt": true,
+    "content_channel_prefill": true,
+    "seed": 42,
+    "eval_mode": "free_gen_fused_specdecode",
+    "teacher_forced": false,
+    "s5_exact_full_attn": true,
+    "identity_restore": false,
+    "compress_full_attn": false,
+    "kl_lattice": null,
+    "kl_q_range": null,
+    "kl_bits_per_token_per_head": null,
+    "full_attention_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "prompt_token_lens": [
+      5810,
+      4911
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model_mac",
+      "samples_total": 2,
+      "samples_correct": 2,
+      "recall": 1.0,
+      "mean_latency_s": 41.032618250581436,
+      "median_latency_s": 41.032618250581436,
+      "per_sample_decoded": [
+        "BETA-1409<turn|><turn|>thought\n<channel|>The user wants to find the secret code from the provided text.\n\n1.  **Analyze the input:** The input consists of many \"Note\" entries, most of which are filler.\n2.  **Scan for the secret code:** I need to",
+        "DELTA-3286<turn|><turn|>\nthought\n<channel|>The user provided a long list of \"Note\" entries, most of which are filler.\nAmong the filler, there is a specific line: \"IMPORTANT: the secret code is DELTA-3286.\"\nThe question asks: \"what is"
+      ],
+      "per_sample_correct": [
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        64,
+        64
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.4539155690178989,
+        1.6821665076824865
+      ],
+      "mean_throughput_tokens_per_sec": 1.5680410383501928,
+      "median_throughput_tokens_per_sec": 1.5680410383501928,
+      "min_throughput_tokens_per_sec": 1.4539155690178989,
+      "max_throughput_tokens_per_sec": 1.6821665076824865,
+      "system_under_test": "restored_cross_model"
+    },
+    "oracle": {
+      "name": "oracle_mac",
+      "samples_total": 2,
+      "samples_correct": 2,
+      "recall": 1.0,
+      "mean_latency_s": 44.349195916438475,
+      "median_latency_s": 44.349195916438475,
+      "per_sample_decoded": [
+        "BETA-1409<turn|><turn|>thought\n<channel|>The user wants to find the secret code from the provided text.\n\n1.  **Analyze the input:** The input consists of many \"Note\" entries, most of which are filler.\n2.  **Scan for the secret code:** I need to",
+        "DELTA-3286<turn|><turn|>\nthought\n<channel|>The user provided a long list of \"Note\" entries, most of which are filler.\nAmong the filler, there is a specific line: \"IMPORTANT: the secret code is DELTA-3286.\"\nThe question asks: \"what is"
+      ],
+      "per_sample_correct": [
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        64,
+        64
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.0164788217921759,
+        2.486794840142293
+      ],
+      "mean_throughput_tokens_per_sec": 1.7516368309672343,
+      "median_throughput_tokens_per_sec": 1.7516368309672343,
+      "min_throughput_tokens_per_sec": 1.0164788217921759,
+      "max_throughput_tokens_per_sec": 2.486794840142293
+    }
+  },
+  "gate": {
+    "recall_cross_model": 1.0,
+    "recall_native_baseline": null,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 0.0,
+    "recall_delta_within_5pp": true,
+    "evidence_violations": []
+  },
+  "memory": {
+    "s5": {
+      "seq_len": 5810,
+      "kv_dtype_bytes": 2,
+      "sink_window": 68,
+      "exact_layer_indices": [
+        5,
+        11,
+        17,
+        23,
+        29
+      ],
+      "compress_full_bits_per_token_per_head": null,
+      "sliding_resident_bytes": 13926400,
+      "full_resident_bytes": 118988800,
+      "total_resident_bytes": 132915200,
+      "total_resident_mb": 132.92,
+      "per_token_growth_bytes": 20480,
+      "per_token_growth_kb": 20.0,
+      "per_layer": [
+        {
+          "layer": 0,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 1,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 2,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 3,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 4,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 5,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 5810,
+          "bytes_per_token": 4096,
+          "resident_bytes": 23797760
+        },
+        {
+          "layer": 6,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 7,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 8,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 9,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 10,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 11,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 5810,
+          "bytes_per_token": 4096,
+          "resident_bytes": 23797760
+        },
+        {
+          "layer": 12,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 13,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 14,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 15,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 16,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 17,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 5810,
+          "bytes_per_token": 4096,
+          "resident_bytes": 23797760
+        },
+        {
+          "layer": 18,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 19,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 20,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 21,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 22,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 23,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 5810,
+          "bytes_per_token": 4096,
+          "resident_bytes": 23797760
+        },
+        {
+          "layer": 24,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 25,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 26,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 27,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 28,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 29,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 5810,
+          "bytes_per_token": 4096,
+          "resident_bytes": 23797760
+        }
+      ],
+      "scope": "analytical_formula",
+      "formula_matches_run": true
+    },
+    "naive_full_kv": {
+      "total_resident_mb": 1308.88,
+      "per_token_growth_kb": 220.0
+    },
+    "savings_vs_naive_pct": 89.8,
+    "measured_peak_mb": 18550.8
+  },
+  "throughput": {
+    "k3_cross_model": {
+      "tokens": 128,
+      "wall_seconds": 82.065,
+      "tokens_per_second": 1.5597,
+      "mean_latency_per_sample_s": 41.033,
+      "timing_scope": "e2e_prefill_plus_decode",
+      "eval_mode": "free_gen_fused_specdecode",
+      "restored_forwards_per_sample": 64,
+      "stage_timings": [
+        {
+          "sample": 0,
+          "build_restoration_s": 0.0,
+          "aux_prompt_capture_s": 19.43,
+          "prefill_s": 20.939,
+          "decode_s": 3.649,
+          "e2e_s": 44.019,
+          "restoration_active": true,
+          "decode_loop": "fused_specdecode",
+          "fused": {
+            "tokens": [
+              236799,
+              26742,
+              236772,
+              236770,
+              236812,
+              236771,
+              236819,
+              106,
+              106,
+              45518,
+              107,
+              101,
+              818,
+              2430,
+              8150,
+              531,
+              1586,
+              506,
+              6789,
+              3393,
+              699,
+              506,
+              3847,
+              1816,
+              236761,
+              108,
+              236770,
+              236761,
+              138,
+              1018,
+              115863,
+              506,
+              2744,
+              53121,
+              669,
+              2744,
+              10594,
+              529,
+              1551,
+              623,
+              10282,
+              236775,
+              16227,
+              236764,
+              1346,
+              529,
+              837,
+              659,
+              48600,
+              236761,
+              107,
+              236778,
+              236761,
+              138,
+              1018,
+              36401,
+              573,
+              506,
+              6789,
+              3393,
+              53121,
+              564,
+              1202,
+              531
+            ],
+            "blocks": 64,
+            "mean_accept_len": 1.0,
+            "decode_tokens": 64,
+            "loop": "mlx_single_sync_v2",
+            "time_breakdown_s": {
+              "ctx_kv_build_s": 0.301,
+              "build_s": 0.263,
+              "eval_s": 2.905,
+              "extend_s": 0.176
+            },
+            "drafter_runtime": "mlx"
+          }
+        },
+        {
+          "sample": 1,
+          "build_restoration_s": 0.0,
+          "aux_prompt_capture_s": 16.25,
+          "prefill_s": 18.135,
+          "decode_s": 3.661,
+          "e2e_s": 38.046,
+          "restoration_active": true,
+          "decode_loop": "fused_specdecode",
+          "fused": {
+            "tokens": [
+              216449,
+              236772,
+              236800,
+              236778,
+              236828,
+              236825,
+              106,
+              106,
+              107,
+              45518,
+              107,
+              101,
+              818,
+              2430,
+              3847,
+              496,
+              1440,
+              1694,
+              529,
+              623,
+              10282,
+              236775,
+              16227,
+              236764,
+              1346,
+              529,
+              837,
+              659,
+              48600,
+              236761,
+              107,
+              32496,
+              506,
+              48600,
+              236764,
+              993,
+              563,
+              496,
+              3530,
+              1757,
+              236787,
+              623,
+              146185,
+              236787,
+              506,
+              6789,
+              3393,
+              563,
+              27512,
+              8121,
+              236772,
+              236800,
+              236778,
+              236828,
+              236825,
+              1781,
+              107,
+              818,
+              2934,
+              19565,
+              236787,
+              623,
+              14070,
+              563
+            ],
+            "blocks": 64,
+            "mean_accept_len": 1.0,
+            "decode_tokens": 64,
+            "loop": "mlx_single_sync_v2",
+            "time_breakdown_s": {
+              "ctx_kv_build_s": 0.24,
+              "build_s": 0.252,
+              "eval_s": 3.008,
+              "extend_s": 0.159
+            },
+            "drafter_runtime": "mlx"
+          }
+        }
+      ]
+    },
+    "oracle_native_ar": {
+      "tokens": 128,
+      "wall_seconds": 88.698,
+      "tokens_per_second": 1.4431,
+      "mean_latency_per_sample_s": 44.349,
+      "timing_scope": "e2e_prefill_plus_decode",
+      "stage_timings": [
+        {
+          "sample": 0,
+          "prefill_s": 49.029,
+          "decode_s": 13.933,
+          "e2e_s": 62.962,
+          "decode_loop": "generate_step"
+        },
+        {
+          "sample": 1,
+          "prefill_s": 22.954,
+          "decode_s": 2.782,
+          "e2e_s": 25.736,
+          "decode_loop": "generate_step"
+        }
+      ],
+      "decode_loop": "generate_step"
+    },
+    "decode_only": {
+      "cross_median_tok_s": 17.5103,
+      "oracle_median_tok_s": 13.7992,
+      "speedup": 1.269
+    },
+    "cross_model_speedup_vs_oracle_ar": null,
+    "speedup_withheld_reasons": [
+      "n_samples<5 (cross=2, oracle=2)"
+    ]
+  }
+}
