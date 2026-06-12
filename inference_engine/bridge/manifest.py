@@ -75,6 +75,10 @@ def _harness_preset(name: str, description: str, mode_flag: str) -> Preset:
                 "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
                 "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
                 "--s5-exact-full-attn", mode_flag,
+                # Evidence runs decode the full budget: without this the
+                # Gemma-4 <turn|> stop caps decode at ~8 tokens and the
+                # report fails the SPEEDUP_DECODE_TOKENS gate rule.
+                "--ignore-turn-stop",
                 "--n-samples", "{n_samples}",
                 "--max-new-tokens", "{max_new_tokens}",
                 "--block-size", "{block_size}",

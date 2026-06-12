@@ -231,6 +231,7 @@ def test_harness_preset_resolves_env_and_params():
     assert argv[0:2] == ["python3", "scripts/research/k3_integrated_niah_eval_mac.py"]
     assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in argv
     assert "--fused-specdecode" in argv
+    assert "--ignore-turn-stop" in argv  # full decode budget (gate rule)
     assert argv[argv.index("--n-samples") + 1] == "7"
     assert argv[argv.index("--max-new-tokens") + 1] == "96"
     assert argv[argv.index("--block-size") + 1] == "8"
