@@ -169,6 +169,7 @@ class MLXRestoredIncrementalVerifier:
         restored_k_per_layer: Dict[int, Any],
         restored_v_per_layer: Dict[int, Any],
         evicted_positions: Sequence[int],
+        prefill_chunk_size: int = 0,
     ) -> None:
         if not prompt_ids:
             raise ValueError("prompt_ids must be non-empty")
@@ -178,6 +179,7 @@ class MLXRestoredIncrementalVerifier:
             restored_k_per_layer=restored_k_per_layer,
             restored_v_per_layer=restored_v_per_layer,
             evicted_positions=evicted_positions,
+            prefill_chunk_size=prefill_chunk_size,
         )
         self._past_len = len(prompt_ids)
 

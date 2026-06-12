@@ -375,6 +375,7 @@ def restored_prefill_cache(
     restored_k_per_layer: Dict[int, Any],
     restored_v_per_layer: Dict[int, Any],
     evicted_positions: Sequence[int],
+    prefill_chunk_size: int = 0,
 ):
     """Prefill ONCE with restoration, capturing the restored K/V into a
     persistent mlx_lm prompt cache; return ``(cache, last_logits)``.
@@ -396,11 +397,32 @@ def restored_prefill_cache(
     text_model = resolve_mlx_text_model(mlx_model)
     T = len(list(input_ids))
     evicted = set(int(p) for p in evicted_positions if 0 <= int(p) < T)
-    evicted_mask = mx.array([p in evicted for p in range(T)])
-
     cache = make_prompt_cache(mlx_model)
-    touched = []
-    try:
+
+    def _slice_restored(a, start: int, end: int):
+        if a is None:
+            return None
+        try:
+            return a[:, start:end, :, :]
+        except Exception:
+            # Linux fake tests use sentinel objects rather than tensors.
+            return a
+
+    def _clear(touched):
+        for obj in touched:
+            for name in (
+                "_kakeya_inject",
+                "kakeya_evicted_mask",
+                "kakeya_restored_pre_keys",
+                "kakeya_restored_pre_values",
+            ):
+                if hasattr(obj, name):
+                    delattr(obj, name)
+
+    def _attach_chunk(start: int, end: int):
+        evicted_mask = mx.array([p in evicted for p in range(start, end)])
+        touched = []
+        needs_attention_patch = False
         for idx, layer in enumerate(text_model.layers):
             attn = layer.self_attn
             if idx >= len(cache) or not bool(getattr(attn, "has_kv", True)):
@@ -410,22 +432,47 @@ def restored_prefill_cache(
             if rk is None:
                 continue
             c = cache[idx]
-            c.kakeya_evicted_mask = evicted_mask
-            c.kakeya_restored_pre_keys = rk
-            c.kakeya_restored_pre_values = rv
-            touched.append(c)
-        ids = mx.array([list(input_ids)])
+            try:
+                c.kakeya_evicted_mask = evicted_mask
+                c.kakeya_restored_pre_keys = _slice_restored(rk, start, end)
+                c.kakeya_restored_pre_values = _slice_restored(rv, start, end)
+                touched.append(c)
+            except Exception:
+                attn._kakeya_inject = {
+                    "mode": "inject",
+                    "evicted_mask": evicted_mask,
+                    "restored_k": _slice_restored(rk, start, end),
+                    "restored_v": _slice_restored(rv, start, end),
+                }
+                touched.append(attn)
+                needs_attention_patch = True
+        return touched, needs_attention_patch
+
+    ids_list = list(input_ids)
+    chunk = int(prefill_chunk_size or 0)
+    if chunk <= 0 or T <= chunk:
+        chunks = [(0, T)]
+    else:
+        chunks = [(s, min(s + chunk, T)) for s in range(0, T, chunk)]
+
+    logits = None
+    for start, end in chunks:
+        touched, needs_attention_patch = _attach_chunk(start, end)
+        try:
+            ids = mx.array([ids_list[start:end]])
+            if needs_attention_patch:
+                with _patched_attention_class(text_model):
+                    logits = mlx_model(ids, cache=cache)
+                    mx.eval(logits)
+            else:
+                logits = mlx_model(ids, cache=cache)
+                mx.eval(logits)
+        finally:
+            _clear(touched)
+    if logits is None:
+        ids = mx.array([ids_list])
         logits = mlx_model(ids, cache=cache)
         mx.eval(logits)
-    finally:
-        for c in touched:
-            for name in (
-                "kakeya_evicted_mask",
-                "kakeya_restored_pre_keys",
-                "kakeya_restored_pre_values",
-            ):
-                if hasattr(c, name):
-                    delattr(c, name)
     # Subsequent decode steps run native incremental attention over this cache.
     return cache, logits[0, -1]
 

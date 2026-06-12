@@ -7,7 +7,8 @@
 #
 # Each run also times the ORACLE = native mlx_lm AR (same model, no restoration),
 # so the JSON carries `throughput.cross_model_speedup_vs_oracle_ar` and
-# `gate.recall_delta_within_5pp` for a direct AR comparison.
+# `gate.recall_delta_within_5pp` for a direct AR comparison. The speed gate is
+# e2e over prefill+decode for both cross and oracle paths.
 #
 # Gates:
 #   Step 1: speedup_vs_oracle ≈ 1.0 (no longer collapsed) AND recall == oracle.
@@ -25,6 +26,8 @@ F_THETA_DIR="${F_THETA_DIR:-results/research/f_theta_v5_s5_sliding}"
 N_SAMPLES="${N_SAMPLES:-5}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-32}"
 BLOCK_SIZE="${BLOCK_SIZE:-4}"
+PREFILL_CHUNK_SIZE="${PREFILL_CHUNK_SIZE:-512}"
+DECODE_WARMUP_TOKENS="${DECODE_WARMUP_TOKENS:-1}"
 SINK_SIZE="${SINK_SIZE:-4}"
 WINDOW_SIZE="${WINDOW_SIZE:-64}"
 HAYSTACK_MIN="${HAYSTACK_MIN:-238}"
@@ -48,6 +51,8 @@ common_args=(
   --max-new-tokens "${MAX_NEW_TOKENS}"
   --sink-size "${SINK_SIZE}"
   --window-size "${WINDOW_SIZE}"
+  --prefill-chunk-size "${PREFILL_CHUNK_SIZE}"
+  --decode-warmup-tokens "${DECODE_WARMUP_TOKENS}"
   --haystack-min-lines "${HAYSTACK_MIN}"
   --haystack-max-lines "${HAYSTACK_MAX}"
 )
@@ -81,6 +86,7 @@ def show(tag, path, want):
     mem = d["memory"]
     print(f"\n[{tag}]  ({d['config']['eval_mode']})")
     print(f"  recall: cross={rc}  oracle={ro}  within_5pp={g['recall_delta_within_5pp']}")
+    print(f"  scope : cross={cm.get('timing_scope')}  oracle={ar.get('timing_scope')}")
     print(f"  tok/s : cross={cm.get('tokens_per_second')}  "
           f"oracle_AR={ar.get('tokens_per_second')}  speedup_vs_AR={spd}")
     print(f"  KV    : S5={mem['s5']['total_resident_mb']}MB  "

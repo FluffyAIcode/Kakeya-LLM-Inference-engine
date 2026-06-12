@@ -126,6 +126,10 @@ def parse_args() -> argparse.Namespace:
                     help="Run a tiny untimed native decode warmup before "
                          "cross/oracle measurements so MLX/Metal compilation "
                          "cost does not fall only on the first measured path.")
+    ap.add_argument("--prefill-chunk-size", type=int, default=512,
+                    help="Chunk MLX prompt prefill/forward calls to avoid the "
+                         "long-context one-shot forward OOM path. Set <=0 to "
+                         "use a single full prompt forward.")
     ap.add_argument("--output", default=None)
     return ap.parse_args()
 
@@ -398,14 +402,32 @@ def main() -> int:
     print(f"[mac] {len(samples)} samples, prompt len "
           f"min={min(seq_lens)} max={max(seq_lens)}", file=sys.stderr)
 
+    def native_prefill(input_ids: List[int]):
+        """Prefill the verifier cache on MLX's native path, optionally chunked."""
+        cache = (getattr(mlx_model, "make_cache", lambda: None)())
+        chunk = int(args.prefill_chunk_size)
+        if chunk <= 0 or len(input_ids) <= chunk:
+            out = mlx_model(mx.array([input_ids]), cache=cache)
+            mx.eval(out)
+            return cache, out[0, -1]
+
+        last = None
+        for start in range(0, len(input_ids), chunk):
+            part = input_ids[start:start + chunk]
+            if not part:
+                continue
+            last = mlx_model(mx.array([part]), cache=cache)
+            mx.eval(last)
+        if last is None:
+            last = mlx_model(mx.array([input_ids]), cache=cache)
+            mx.eval(last)
+        return cache, last[0, -1]
+
     def warmup_decode() -> None:
         """Warm MLX/Metal decode kernels before comparing cross vs oracle."""
         if args.decode_warmup_tokens <= 0 or not sample_ids:
             return
-        cache = (getattr(mlx_model, "make_cache", lambda: None)())
-        out = mlx_model(mx.array([sample_ids[0]]), cache=cache)
-        mx.eval(out)
-        logits = out[0, -1]
+        cache, logits = native_prefill(sample_ids[0])
         for _ in range(args.decode_warmup_tokens):
             tok = int(mx.argmax(logits).item())
             out = mlx_model(mx.array([[tok]]), cache=cache)
@@ -466,15 +488,14 @@ def main() -> int:
             evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
             t0 = time.perf_counter()
             if not evicted:
-                cache = (getattr(mlx_model, "make_cache", lambda: None)())
-                out = mlx_model(mx.array([pid]), cache=cache); mx.eval(out)
-                first = out[0, -1]
+                cache, first = native_prefill(pid)
             else:
                 cache, first = restored_prefill_cache(
                     mlx_model, pid,
                     restored_k_per_layer=_pad(rk, tsrc, T),
                     restored_v_per_layer=_pad(rv, tsrc, T),
-                    evicted_positions=evicted)
+                    evicted_positions=evicted,
+                    prefill_chunk_size=args.prefill_chunk_size)
             gen = restored_incremental_generate(
                 mlx_model, cache, first,
                 max_tokens=args.max_new_tokens,
@@ -514,9 +535,13 @@ def main() -> int:
         decoded, lats, toks = [], [], []
         rows = []
         for i, pid in enumerate(sample_ids):
-            stage_t0 = time.perf_counter()
-            rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
-            build_s = time.perf_counter() - stage_t0
+            e2e_t0 = time.perf_counter()
+            build_t0 = time.perf_counter()
+            if adaptive_s5_native:
+                rk, rv, tsrc = {}, {}, len(pid)
+            else:
+                rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
+            build_s = time.perf_counter() - build_t0
             T = len(pid)
             evicted = compute_evicted_positions(T, args.sink_size, args.window_size)
             aux_t0 = time.perf_counter()
@@ -529,18 +554,17 @@ def main() -> int:
             aux_s = time.perf_counter() - aux_t0
             prefill_t0 = time.perf_counter()
             if adaptive_s5_native:
-                cache = (getattr(mlx_model, "make_cache", lambda: None)())
-                out = mlx_model(mx.array([pid]), cache=cache)
-                mx.eval(out)
+                cache, first = native_prefill(pid)
                 adapter._cache = cache
-                adapter.next_token_logits = out[0, -1]
+                adapter.next_token_logits = first
                 adapter._past_len = len(pid)
             else:
                 adapter.prefill(
                     pid,
                     restored_k_per_layer=_pad(rk, tsrc, T),
                     restored_v_per_layer=_pad(rv, tsrc, T),
-                    evicted_positions=evicted)
+                    evicted_positions=evicted,
+                    prefill_chunk_size=args.prefill_chunk_size)
             prefill_s = time.perf_counter() - prefill_t0
             t0 = time.perf_counter()
             if args.force_fused_specdecode:
@@ -574,7 +598,9 @@ def main() -> int:
                         "greedy_decode_s": round(time.perf_counter() - t_greedy, 3)
                     },
                 }
-            lats.append(time.perf_counter() - t0)
+            decode_s = time.perf_counter() - t0
+            e2e_s = time.perf_counter() - e2e_t0
+            lats.append(e2e_s)
             gen = res["tokens"]
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
             rows.append({
@@ -582,7 +608,8 @@ def main() -> int:
                 "build_restoration_s": round(build_s, 3),
                 "aux_prompt_capture_s": round(aux_s, 3),
                 "restored_prefill_s": round(prefill_s, 3),
-                "decode_s": round(lats[-1], 3),
+                "decode_s": round(decode_s, 3),
+                "e2e_s": round(e2e_s, 3),
                 "fused": res,
             })
             print(f"[mac]   fused {i}: T={seq_lens[i]} acc_len={res['mean_accept_len']} "
@@ -594,21 +621,32 @@ def main() -> int:
         """Oracle free generation using mlx's NATIVE incremental KV cache
         (fast + correct reference; confirms the metric/dataset)."""
         decoded, lats, toks = [], [], []
-        make_cache = getattr(mlx_model, "make_cache", None)
+        rows = []
         for i, pid in enumerate(sample_ids):
-            cache = make_cache() if make_cache is not None else None
-            t0 = time.perf_counter()
-            out = mlx_model(mx.array([pid]), cache=cache); mx.eval(out)
-            tok = int(mx.argmax(out[0, -1]).item()); gen = [tok]
+            e2e_t0 = time.perf_counter()
+            prefill_t0 = time.perf_counter()
+            cache, logits = native_prefill(pid)
+            prefill_s = time.perf_counter() - prefill_t0
+            decode_t0 = time.perf_counter()
+            tok = int(mx.argmax(logits).item()); gen = [tok]
             for _ in range(args.max_new_tokens - 1):
                 if tok in end_ids:
                     break
                 out = mlx_model(mx.array([[tok]]), cache=cache); mx.eval(out)
                 tok = int(mx.argmax(out[0, -1]).item()); gen.append(tok)
-            lats.append(time.perf_counter() - t0)
+            decode_s = time.perf_counter() - decode_t0
+            e2e_s = time.perf_counter() - e2e_t0
+            lats.append(e2e_s)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
+            rows.append({
+                "sample": i,
+                "prefill_s": round(prefill_s, 3),
+                "decode_s": round(decode_s, 3),
+                "e2e_s": round(e2e_s, 3),
+            })
             print(f"[mac]   oracle {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
                   file=sys.stderr)
+        eval_free_gen_oracle.stage_rows = rows
         return decoded, lats, toks
 
     def cross_logits_all(prompt_ids, full_ids):
@@ -677,10 +715,14 @@ def main() -> int:
             "mean_latency_per_sample_s": round(tot_t / max(len(lats), 1), 3),
         }
     cross_tps = _tps(cross_lat, cross_tok)
+    cross_tps["timing_scope"] = "e2e_prefill_plus_decode"
     cross_tps["eval_mode"] = eval_mode
     cross_tps["restored_forwards_per_sample"] = (
         1 if args.teacher_forced else args.max_new_tokens)
     oracle_tps = _tps(o_lat, o_tok) if (o_lat and o_tok) else None
+    if oracle_tps:
+        oracle_tps["timing_scope"] = "e2e_prefill_plus_decode"
+        oracle_tps["stage_timings"] = getattr(eval_free_gen_oracle, "stage_rows", [])
     speedup_vs_oracle = None
     if oracle_tps and oracle_tps["tokens_per_second"] and cross_tps["tokens_per_second"]:
         speedup_vs_oracle = round(
@@ -706,6 +748,10 @@ def main() -> int:
             "haystack_min_lines": args.haystack_min_lines,
             "haystack_max_lines": args.haystack_max_lines,
             "max_new_tokens": args.max_new_tokens,
+            "prefill_chunk_size": args.prefill_chunk_size,
+            "decode_warmup_tokens": args.decode_warmup_tokens,
+            "direct_answer_prompt": bool(args.direct_answer_prompt),
+            "content_channel_prefill": bool(args.content_channel_prefill),
             "seed": args.seed,
             "eval_mode": eval_mode,
             "teacher_forced": bool(args.teacher_forced),
