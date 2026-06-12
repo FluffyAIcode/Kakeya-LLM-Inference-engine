@@ -1,0 +1,23 @@
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading ALL-MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[mac] 5 samples, prompt len min=4406 max=5810
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[mac]   fused 0: T=5810 acc_len=4.75 -> 'BETA-1409\nBETA-1409<turn|>\nthought\n<channel|>BET'
+[mac]   fused 1: T=4911 acc_len=3.4 -> 'DELTA-3286<turn|>\nthought\n<channel|>DELTA-3286\n3'
+[mac]   fused 2: T=5594 acc_len=2.095 -> 'BETA-7912\n```\n\nThe user-provided-\n:\n:\n:\n:\n:\n:\n:\n'
+[mac]   fused 3: T=4406 acc_len=1.207 -> 'BETA-4582.  \n  \n  \n  \n  \n  \n  \n  \n  \n  \n  \n  \n  '
+[mac]   fused 4: T=5505 acc_len=4.077 -> 'KAPPA-1434-1434\n\n-1434\n-1434\n-1434\n-144-1434\n-14'
+[mac] restored_cross_model recall = 1.000 (5/5)
+[mac] running oracle
+[mac]   oracle 0: T=5810 -> 'BETA-1409<turn|><turn|>thought\n<channel|>The use'
+[mac]   oracle 1: T=4911 -> 'DELTA-3286<turn|><turn|>\nthought\n<channel|>The u'
+[mac]   oracle 2: T=5594 -> 'BETA-7912<turn|><turn|>\nthought\n<channel|>The us'
+[mac]   oracle 3: T=4406 -> 'BETA-4582<turn|><turn|>thought\n<channel|>The use'
+[mac]   oracle 4: T=5505 -> 'KAPPA-1434<turn|><turn|>\nthought\n<channel|>The u'
+[mac] oracle recall = 1.000
+[mac] KV resident @T=5810: S5=132.92 MB (growth 20.0 KB/tok); naive-full=1308.88 MB
+[mac] cross-model throughput (free_gen_fused_specdecode): 1.2708 tok/s (320 tok / 251.81 s, 50.362 s/sample)
+
+[mac] DONE. restored_cross_model=1.000 oracle=1.0 -> results/research/k3_mac_bridge_k3_step2_fused_allmlx.json
+[mac] evidence gate: PASS
