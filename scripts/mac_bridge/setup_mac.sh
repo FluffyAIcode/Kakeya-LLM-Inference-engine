@@ -117,15 +117,20 @@ else
 fi
 
 step "4/6 Bridge model locations (k3-* presets)"
-VERIFIER="${KAKEYA_MAC_VERIFIER_PATH:-models/gemma-4-26B-A4B-it-mlx-4bit}"
+# Canonical stable location on the runner host: ~/kakeya-models/<name>
+# (symlinks are fine). Repo Actions variables override; repo-relative
+# paths are the last fallback.
+DEFAULT_VERIFIER="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+[ -d "$DEFAULT_VERIFIER" ] || DEFAULT_VERIFIER="models/gemma-4-26B-A4B-it-mlx-4bit"
+VERIFIER="${KAKEYA_MAC_VERIFIER_PATH:-$DEFAULT_VERIFIER}"
 FTHETA="${KAKEYA_MAC_FTHETA_DIR:-results/research/f_theta_v5_s5_sliding}"
 if [ -d "${VERIFIER}" ]; then
     ok "verifier: ${VERIFIER}"
 else
-    warn "verifier not at '${VERIFIER}'. The k3-* presets need it."
-    warn "Either place/link it there, or set the repo Actions variable"
-    warn "KAKEYA_MAC_VERIFIER_PATH to its absolute path"
-    warn "(GitHub: Settings -> Secrets and variables -> Actions -> Variables)."
+    warn "verifier not found. The k3-* presets need it. Easiest fix:"
+    warn "  mkdir -p ~/kakeya-models && ln -sfn <actual-model-dir> \\"
+    warn "      ~/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+    warn "(or set the repo Actions variable KAKEYA_MAC_VERIFIER_PATH)."
 fi
 if [ -d "${FTHETA}" ]; then
     ok "f_theta: ${FTHETA}"

@@ -66,13 +66,23 @@ jobs:
           PYTHONPATH: .:sdks/python
           # Machine-local model locations come from the runner env,
           # never from the manifest (docs/ops/mac-m4-runner-setup.md).
-          # Defaults match the current kakeya-mac-m4 layout; override
-          # in the runner service env when the layout changes.
-          KAKEYA_MAC_VERIFIER_PATH: ${{ vars.KAKEYA_MAC_VERIFIER_PATH || 'models/gemma-4-26B-A4B-it-mlx-4bit' }}
-          KAKEYA_MAC_DRAFTER_ID: ${{ vars.KAKEYA_MAC_DRAFTER_ID || 'z-lab/gemma-4-26B-A4B-it-DFlash' }}
-          KAKEYA_MAC_FTHETA_DIR: ${{ vars.KAKEYA_MAC_FTHETA_DIR || 'results/research/f_theta_v5_s5_sliding' }}
+          # Precedence: repo Actions variable > ~/kakeya-models/<name>
+          # (the documented stable symlink location on the runner) >
+          # repo-relative fallback. $HOME needs shell expansion, hence
+          # the export block instead of plain env defaults.
+          KAKEYA_MAC_VERIFIER_PATH_VAR: ${{ vars.KAKEYA_MAC_VERIFIER_PATH || '' }}
+          KAKEYA_MAC_DRAFTER_ID_VAR: ${{ vars.KAKEYA_MAC_DRAFTER_ID || '' }}
+          KAKEYA_MAC_FTHETA_DIR_VAR: ${{ vars.KAKEYA_MAC_FTHETA_DIR || '' }}
           HF_HUB_OFFLINE: "1"
         run: |
+          default_verifier="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+          if [ ! -d "$default_verifier" ]; then
+            default_verifier="models/gemma-4-26B-A4B-it-mlx-4bit"
+          fi
+          export KAKEYA_MAC_VERIFIER_PATH="${KAKEYA_MAC_VERIFIER_PATH_VAR:-$default_verifier}"
+          export KAKEYA_MAC_DRAFTER_ID="${KAKEYA_MAC_DRAFTER_ID_VAR:-z-lab/gemma-4-26B-A4B-it-DFlash}"
+          export KAKEYA_MAC_FTHETA_DIR="${KAKEYA_MAC_FTHETA_DIR_VAR:-results/research/f_theta_v5_s5_sliding}"
+          echo "verifier=$KAKEYA_MAC_VERIFIER_PATH"
           python3 scripts/mac_bridge/run_preset.py \
             --manifest .mac-bridge/request.json
 
