@@ -55,6 +55,13 @@ jobs:
         with:
           # Push results back to the request branch.
           persist-credentials: true
+          # k3-* presets load LFS-tracked checkpoints from the repo
+          # (e.g. results/research/f_theta_v5_s5_sliding/
+          # f_theta_weights.pt). Without lfs:true the workspace holds
+          # pointer files and torch.load fails with the cryptic
+          # "Unsupported operand 118" (ASCII 'v' = the first byte of
+          # an LFS pointer).
+          lfs: true
 
       - name: Show request
         run: |
