@@ -68,6 +68,30 @@ jobs:
           echo "=== .mac-bridge/request.json ==="
           cat .mac-bridge/request.json
 
+      - name: Materialize LFS objects (deterministic)
+        # checkout@v4's lfs:true proved insufficient on a reused
+        # self-hosted workspace: a previous non-LFS checkout left
+        # pointer-content files in the worktree, the blob is unchanged
+        # on the new branch, so git skips re-smudging and the stale
+        # pointer survives (observed live: torch.load failing with
+        # "Unsupported operand 118" = ASCII 'v' of an LFS pointer).
+        # `git lfs pull` force-materializes; the guard fails fast if
+        # any tracked LFS file is still a pointer.
+        run: |
+          git lfs install --local
+          git lfs pull
+          bad=""
+          while IFS= read -r f; do
+            if [ -f "$f" ] && head -c 40 "$f" | grep -q "git-lfs"; then
+              bad="$bad $f"
+            fi
+          done < <(git lfs ls-files -n)
+          if [ -n "$bad" ]; then
+            echo "::error::LFS pointers not materialized:$bad"
+            exit 1
+          fi
+          echo "all LFS objects materialized"
+
       - name: Run preset (allowlist-validated executor)
         env:
           PYTHONPATH: .:sdks/python
