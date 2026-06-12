@@ -112,6 +112,18 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
   `results/research/k3_e2e_gpu_bench_incremental.json`,
   `k3_specdecode_fused_stable.json`.)
 
+## Evidence gate (hard constraints)
+
+The failure modes above are no longer left to reviewer vigilance. The Mac
+harness self-validates its report and exits non-zero on violation, and the
+Linux CI job re-validates every committed K3 Mac report:
+
+- Rules + rationale: `inference_engine/bench/k3_report_gate.py`
+  (blocks=0 fused runs, baseline-as-SUT, prefill-noise speedups,
+  formula-only memory claims are all hard failures at schema ≥ 2).
+- CI walker: `scripts/validate_k3_reports.py` (schema-1 reports are
+  grandfathered as non-evidence).
+
 ## Do-not-repeat (anti-patterns)
 
 - ❌ Re-forwarding the full sequence per generated token (the current collapse).
