@@ -1,0 +1,142 @@
+name: Mac bridge
+
+# Git-bus executor for cloud-agent access to the self-hosted Apple
+# Silicon node (docs/design/mac-bridge-cloud-agent-access.md §2.1).
+#
+# Protocol: an agent pushes a branch `mac-bridge/<preset>-<nonce>`
+# containing the workload tree + a manifest at .mac-bridge/request.json
+# (created by scripts/mac_bridge/request_run.py). This workflow runs the
+# manifest's ALLOWLISTED preset on the kakeya-mac-m4 runner and pushes
+# logs + result JSONs back to the same branch, where the agent fetches
+# them with plain git (and read-only `gh run list`).
+#
+# Security (design doc §3):
+#   * Command surface = the preset allowlist in
+#     inference_engine/bridge/manifest.py — typed, bounded params; no
+#     manifest string ever reaches a shell. Validation is unit-tested
+#     at 100% coverage on the Linux gate.
+#   * Trigger surface = push permission on mac-bridge/** — the same
+#     population that can already execute code on this runner via the
+#     `needs-mac-m4` PR label (integration.yaml).
+#   * The single Mac is serialized via the concurrency group; every
+#     preset carries its own timeout inside the executor and the job
+#     has a hard cap below.
+#   * K3 acceptance reports produced by a run are validated by the
+#     PR #109 evidence gate ON the runner; a non-conforming report
+#     fails the bridge run itself.
+
+on:
+  push:
+    branches:
+      # Canonical request namespace.
+      - "mac-bridge/**"
+      # Cursor cloud agents are typically constrained to an
+      # AgentMemory/<name>[-suffix] branch template; this pattern lets
+      # them participate without violating their naming policy
+      # (request_run.py --branch-prefix/--branch-suffix).
+      - "AgentMemory/mac-bridge-*"
+
+concurrency:
+  # One Mac: queue bridge runs globally, never cancel a running one
+  # (results are expensive; the requester can cancel from the UI).
+  group: mac-bridge
+  cancel-in-progress: false
+
+permissions:
+  contents: write # commit logs/results back to the request branch
+
+jobs:
+  bridge:
+    name: run allowlisted preset on kakeya-mac-m4
+    runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Push results back to the request branch.
+          persist-credentials: true
+          # k3-* presets load LFS-tracked checkpoints from the repo
+          # (e.g. results/research/f_theta_v5_s5_sliding/
+          # f_theta_weights.pt). Without lfs:true the workspace holds
+          # pointer files and torch.load fails with the cryptic
+          # "Unsupported operand 118" (ASCII 'v' = the first byte of
+          # an LFS pointer).
+          lfs: true
+
+      - name: Show request
+        run: |
+          echo "=== .mac-bridge/request.json ==="
+          cat .mac-bridge/request.json
+
+      - name: Materialize LFS objects (deterministic)
+        # checkout@v4's lfs:true proved insufficient on a reused
+        # self-hosted workspace: a previous non-LFS checkout left
+        # pointer-content files in the worktree, the blob is unchanged
+        # on the new branch, so git skips re-smudging and the stale
+        # pointer survives (observed live: torch.load failing with
+        # "Unsupported operand 118" = ASCII 'v' of an LFS pointer).
+        # `git lfs pull` force-materializes; the guard fails fast if
+        # any tracked LFS file is still a pointer.
+        run: |
+          git lfs install --local
+          git lfs pull
+          bad=""
+          while IFS= read -r f; do
+            if [ -f "$f" ] && head -c 40 "$f" | grep -q "git-lfs"; then
+              bad="$bad $f"
+            fi
+          done < <(git lfs ls-files -n)
+          if [ -n "$bad" ]; then
+            echo "::error::LFS pointers not materialized:$bad"
+            exit 1
+          fi
+          echo "all LFS objects materialized"
+
+      - name: Run preset (allowlist-validated executor)
+        env:
+          PYTHONPATH: .:sdks/python
+          # Machine-local model locations come from the runner env,
+          # never from the manifest (docs/ops/mac-m4-runner-setup.md).
+          # Precedence: repo Actions variable > ~/kakeya-models/<name>
+          # (the documented stable symlink location on the runner) >
+          # repo-relative fallback. $HOME needs shell expansion, hence
+          # the export block instead of plain env defaults.
+          KAKEYA_MAC_VERIFIER_PATH_VAR: ${{ vars.KAKEYA_MAC_VERIFIER_PATH || '' }}
+          KAKEYA_MAC_DRAFTER_ID_VAR: ${{ vars.KAKEYA_MAC_DRAFTER_ID || '' }}
+          KAKEYA_MAC_FTHETA_DIR_VAR: ${{ vars.KAKEYA_MAC_FTHETA_DIR || '' }}
+          HF_HUB_OFFLINE: "1"
+        run: |
+          default_verifier="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+          if [ ! -d "$default_verifier" ]; then
+            default_verifier="models/gemma-4-26B-A4B-it-mlx-4bit"
+          fi
+          export KAKEYA_MAC_VERIFIER_PATH="${KAKEYA_MAC_VERIFIER_PATH_VAR:-$default_verifier}"
+          export KAKEYA_MAC_DRAFTER_ID="${KAKEYA_MAC_DRAFTER_ID_VAR:-z-lab/gemma-4-26B-A4B-it-DFlash}"
+          export KAKEYA_MAC_FTHETA_DIR="${KAKEYA_MAC_FTHETA_DIR_VAR:-results/research/f_theta_v5_s5_sliding}"
+          echo "verifier=$KAKEYA_MAC_VERIFIER_PATH"
+          python3 scripts/mac_bridge/run_preset.py \
+            --manifest .mac-bridge/request.json
+
+      - name: Commit results back to the request branch
+        if: always()
+        run: |
+          git config user.name "kakeya-mac-bridge"
+          git config user.email "mac-bridge@users.noreply.github.com"
+          git add -A .mac-bridge/logs results/research 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no result files to commit"
+          else
+            git commit -m "mac-bridge results: ${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload results as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-bridge-${{ github.run_id }}
+          path: |
+            .mac-bridge/logs/
+            results/research/k3_mac_bridge_*.json
+          if-no-files-found: warn
+          retention-days: 14

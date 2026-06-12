@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Set up a clean venv on macOS / Apple Silicon for this project.
 #
-# Why a venv: the proposer checkpoint requires transformers 4.x, which
-# conflicts with newer system installs (e.g. macOS 26 ships fine with
-# transformers 5.x for other tools). We never touch system Python.
+# Why a venv: isolates the project's pinned deps from system Python /
+# other tools. We never touch system Python.
+#
+# transformers versioning (mirrors the requirements.txt note): the K3
+# critical path (Gemma 4 verifier, DFlash drafter, current mlx-lm)
+# needs transformers >= 5.0; only the LEGACY Qwen3 MDLM dLM proposer
+# still requires 4.x. This script validates the K3-era floor and no
+# longer enforces a 4.x upper bound. If you need the legacy MDLM path,
+# create a dedicated venv with: pip install 'transformers>=4.45,<5.0'
 #
 # Idempotent: re-running upgrades the venv if needed and verifies all
 # required imports succeed. Any missing or wrong-version package raises a
@@ -37,9 +43,9 @@ ensure_xcode_clt() {
 
 pick_python() {
     # Prefer a 3.12 install (most stable for our deps). Fall back to
-    # 3.11 or 3.13. We refuse to use 3.14+ because the wheel ecosystem for
-    # transformers 4.x and dllm-hub's custom code is not yet validated
-    # there.
+    # 3.11 or 3.13. We refuse to use 3.14+ because the wheel ecosystem
+    # for our pinned deps and dllm-hub's custom code is not yet
+    # validated there.
     for cmd in python3.12 python3.11 python3.13; do
         if command -v "$cmd" >/dev/null 2>&1; then
             echo "$cmd"
@@ -183,7 +189,11 @@ from packaging.version import Version
 # distribution_name is the name pip uses; defaults to import_name when None.
 required = [
     ("torch",           None,                  "2.4",   "3.0"),
-    ("transformers",    None,                  "4.45",  "5.0"),  # hard-pin to 4.x
+    # No upper bound: K3 (Gemma 4 / DFlash / current mlx-lm) needs
+    # transformers >= 5.0; requirements.txt dropped the <5 pin. Only
+    # the legacy Qwen3 MDLM proposer needs 4.x — use a dedicated venv
+    # for that path (see requirements.txt note).
+    ("transformers",    None,                  "4.45",  None),
     ("mlx",             None,                  "0.20",  None),
     ("mlx_lm",          "mlx-lm",              "0.18",  None),
     ("huggingface_hub", None,                  "0.24",  None),

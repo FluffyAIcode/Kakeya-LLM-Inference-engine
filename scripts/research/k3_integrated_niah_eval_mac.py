@@ -105,6 +105,13 @@ def parse_args() -> argparse.Namespace:
                     help="With chat-template direct-answer prompts, append "
                          "Gemma4's content channel marker before generation so "
                          "short smokes do not spend tokens on the thought channel.")
+    ap.add_argument("--all-mlx-drafter", action="store_true",
+                    help="Step-2 rescue: run the DFlash drafter natively in "
+                         "MLX (inference_engine.backends.mlx.dflash_drafter) "
+                         "instead of PyTorch — zero mx<->torch bridge "
+                         "crossings per block. Requires --s5-exact-full-attn "
+                         "(the all-MLX path uses native-S5 injection; the "
+                         "f_theta sliding restoration path stays torch).")
     ap.add_argument("--ignore-turn-stop", action="store_true",
                     help="Do not include Gemma4 <turn|> as a stop token. "
                          "Useful for throughput evidence runs that require "
@@ -172,6 +179,7 @@ def main() -> int:
     from inference_engine.backends.mlx.fused_specdecode import (
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
+        fused_specdecode_generate_mlx,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -221,13 +229,29 @@ def main() -> int:
         args.fused_specdecode = True
         args.force_fused_specdecode = True
     adaptive_s5_native = args.native_baseline_bypass
+    if args.all_mlx_drafter and not args.s5_exact_full_attn:
+        raise SystemExit(
+            "--all-mlx-drafter requires --s5-exact-full-attn: the all-MLX "
+            "path uses native-S5 prefill injection; the f_theta sliding "
+            "restoration path is torch-only.")
     drafter = None
+    mlx_drafter = None
     f_theta = None
     fcfg = None
     if adaptive_s5_native:
         print("[mac] native baseline bypass: skipping drafter/f_theta load; "
               "report will be labelled system_under_test=native_ar_baseline",
               file=sys.stderr, flush=True)
+    elif args.all_mlx_drafter:
+        # ---------- Step-2 rescue: drafter native in MLX ----------
+        from inference_engine.backends.mlx.dflash_drafter import (
+            MLXDFlashDrafter,
+        )
+        print(f"[mac] loading ALL-MLX drafter {args.drafter_id}",
+              file=sys.stderr, flush=True)
+        mlx_drafter = MLXDFlashDrafter.from_pretrained(args.drafter_id)
+        # No torch drafter / f_theta: S5-native injection covers prefill
+        # restoration and the drafter never leaves the Metal stream.
     else:
         # ---------- Load drafter + f_θ (PyTorch) ----------
         print(f"[mac] loading drafter {args.drafter_id} on {dev}", file=sys.stderr, flush=True)
@@ -583,23 +607,40 @@ def main() -> int:
         """FUSED DFlash spec-decode (MLX port of #107 A+B+C): drafter context
         K/V cache + aux captured from the verify forward + incremental restored
         verify with trim_prompt_cache accept/reject. Target: tok/s > AR."""
-        bridge = lambda a: mx_to_torch(a, dtype=torch.float32, device=dev)
         argmax_fn = lambda row: int(mx.argmax(row).item())
-        aux_layer_ids = tuple(drafter.cfg.aux_layer_ids) if drafter is not None else ()
-        if args.force_fused_specdecode:
+        active_drafter = mlx_drafter if mlx_drafter is not None else drafter
+        aux_layer_ids = (tuple(active_drafter.cfg.aux_layer_ids)
+                         if active_drafter is not None else ())
+        softcap = None
+        for obj in (getattr(mlx_model, "language_model", None), mlx_model):
+            cap = getattr(obj, "final_logit_softcapping", None) if obj is not None else None
+            if cap:
+                softcap = float(cap); break
+        if mlx_drafter is not None:
+            # All-MLX path (Step-2 rescue): drafter, embed/lm_head, aux
+            # slices, positions, and concat all stay on the Metal stream —
+            # zero mx<->torch crossings per block.
+            from inference_engine.backends.mlx.dflash_drafter import (
+                make_native_embed_lm_head,
+            )
+            bridge = None  # identity: aux slices stay mx
+            embed_fn, lm_head_fn = make_native_embed_lm_head(
+                text_model, softcap=softcap)
+            arange_fn = lambda s, e: mx.arange(int(s), int(e))
+            cat_aux_fn = lambda parts: (
+                parts[0][None] if len(parts) == 1
+                else mx.concatenate(list(parts), axis=0)[None])
+        elif args.force_fused_specdecode:
             if drafter is None:
                 raise RuntimeError("--force-fused-specdecode requires drafter/f_theta")
-            softcap = None
-            for obj in (getattr(mlx_model, "language_model", None), mlx_model):
-                cap = getattr(obj, "final_logit_softcapping", None) if obj is not None else None
-                if cap:
-                    softcap = float(cap); break
+            bridge = lambda a: mx_to_torch(a, dtype=torch.float32, device=dev)
             embed_fn, lm_head_fn = make_bridge_embed_lm_head(
                 text_model, mx_to_torch=mx_to_torch, torch_to_mx=torch_to_mx,
                 device=dev, torch_dtype=torch.float32, softcap=softcap)
             arange_fn = lambda s, e: torch.arange(int(s), int(e), device=dev)
             cat_aux_fn = lambda parts: torch.cat(list(parts), dim=0).unsqueeze(0)
         else:
+            bridge = lambda a: mx_to_torch(a, dtype=torch.float32, device=dev)
             embed_fn = lm_head_fn = arange_fn = cat_aux_fn = None
         adapter = MLXRestoredIncrementalVerifier(
             mlx_model, embed_scale=embed_scale, aux_layer_ids=aux_layer_ids,
@@ -621,7 +662,10 @@ def main() -> int:
             if args.force_fused_specdecode:
                 aux_prompt_mx = capture_aux_hidden(
                     mlx_model, pid, aux_layer_ids, embed_scale=embed_scale)
-                aux_prompt = [bridge(a) for a in aux_prompt_mx]  # [1,C,H] torch each
+                if bridge is None:
+                    aux_prompt = aux_prompt_mx  # all-MLX: stay on Metal
+                else:
+                    aux_prompt = [bridge(a) for a in aux_prompt_mx]  # [1,C,H] torch
             else:
                 aux_prompt = []
             aux_s = time.perf_counter() - aux_t0
@@ -641,13 +685,22 @@ def main() -> int:
             prefill_s = time.perf_counter() - prefill_t0
             t0 = time.perf_counter()
             if args.force_fused_specdecode:
-                res = fused_specdecode_generate(
-                    adapter, drafter, aux_prompt=aux_prompt,
-                    embed_fn=embed_fn, lm_head_fn=lm_head_fn,
-                    gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                    eos_ids=end_ids,
-                    argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn,
-                    allow_greedy_fallback=False)
+                if mlx_drafter is not None:
+                    # Single-sync all-MLX loop (levers ①②③).
+                    res = fused_specdecode_generate_mlx(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens,
+                        block_size=args.block_size, eos_ids=end_ids)
+                else:
+                    res = fused_specdecode_generate(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=end_ids,
+                        argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn,
+                        allow_greedy_fallback=False)
+                res["drafter_runtime"] = "mlx" if mlx_drafter is not None else "torch"
             else:
                 t_greedy = time.perf_counter()
                 adapter._capture_aux = False
@@ -901,6 +954,7 @@ def main() -> int:
         "kind": "k3_integrated_niah_acceptance_mac",
         "config": {
             "native_baseline_bypass": bool(args.native_baseline_bypass),
+            "all_mlx_drafter": bool(args.all_mlx_drafter),
             "block_size": args.block_size,
             "verifier_path": args.verifier_path,
             "drafter_id": args.drafter_id,
