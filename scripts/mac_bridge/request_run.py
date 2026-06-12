@@ -120,6 +120,17 @@ def main() -> int:
     repo_root = Path(_git("rev-parse", "--show-toplevel", capture=True))
     original_branch = _git("rev-parse", "--abbrev-ref", "HEAD", capture=True)
 
+    # Refuse to build a request from a dirty tree: `git add -A` below
+    # would silently absorb unrelated uncommitted edits into the
+    # request branch and they would vanish from the original branch
+    # when we switch back (observed in live testing). The workload is
+    # always a committed state.
+    dirty = _git("status", "--porcelain", capture=True)
+    if dirty:
+        print("[mac-bridge] working tree is dirty; commit or stash first:\n"
+              + dirty, file=sys.stderr)
+        return 2
+
     # Snapshot bridge files from the CLIENT checkout before switching:
     # the workload ref may predate the bridge.
     overlay = {

@@ -53,8 +53,10 @@ def _branch_policy_args() -> list:
     if not match:
         return []
     suffix = match.group(1)
-    return ["--branch-prefix", "AgentMemory/mac-bridge-",
-            "--branch-suffix", suffix]
+    # `=`-joined so argparse never mistakes a leading-dash suffix
+    # (e.g. "-b876") for an option flag.
+    return ["--branch-prefix=AgentMemory/mac-bridge-",
+            f"--branch-suffix={suffix}"]
 
 
 def cmd_doctor(_args) -> int:
