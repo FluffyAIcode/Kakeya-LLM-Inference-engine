@@ -1,41 +1,28 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "k3-kv-quant-eval",
   "params": {
     "n_samples": "5",
-    "max_new_tokens": "64",
-    "block_size": "4"
+    "max_new_tokens": "32"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781274708-a9e917",
   "commands": [
     {
       "argv": [
         "python3",
-        "scripts/research/k3_integrated_niah_eval_mac.py",
+        "scripts/research/k3_kv_quant_eval.py",
         "--verifier-path",
         "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
-        "--drafter-id",
-        "z-lab/gemma-4-26B-A4B-it-DFlash",
-        "--f-theta-dir",
-        "results/research/f_theta_v5_s5_sliding",
-        "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
         "--n-samples",
         "5",
         "--max-new-tokens",
-        "64",
-        "--block-size",
-        "4",
-        "--prefill-chunk-size",
-        "512",
+        "32",
         "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "results/research/k3_kv_quant_eval.json"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 775.4,
+      "log": ".mac-bridge/logs/k3-kv-quant-eval-0.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }

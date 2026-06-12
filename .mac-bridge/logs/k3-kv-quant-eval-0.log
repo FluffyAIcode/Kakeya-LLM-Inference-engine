@@ -1,0 +1,40 @@
+[kvq] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[kvq] full-attn layers: [5, 11, 17, 23, 29]
+[kvq] 5 samples, prompt len 4406..5810
+[kvq] s0: T=5810 capture 31.2s
+[kvq] s0 identity: bits/val=16.00 rel_mse=0.00000 -> 'BETA-1409<turn|>'
+[kvq] s0 affine8: bits/val=8.50 rel_mse=0.00006 -> 'BETA-1409<turn|>'
+[kvq] s0 affine4: bits/val=4.50 rel_mse=0.01442 -> 'BETA-1409<turn|>'
+[kvq] s0 kl-d4: bits/val=6.31 rel_mse=0.00075 -> 'BETA-1409<turn|>'
+[kvq] s0 kl-e8: bits/val=6.44 rel_mse=0.00050 -> 'BETA-1409<turn|>'
+[kvq] s1: T=4911 capture 17.2s
+[kvq] s1 identity: bits/val=16.00 rel_mse=0.00000 -> 'DELTA-3286<turn|>'
+[kvq] s1 affine8: bits/val=8.50 rel_mse=0.00006 -> 'DELTA-3286<turn|>'
+[kvq] s1 affine4: bits/val=4.50 rel_mse=0.01428 -> 'DELTA-3286<turn|>'
+[kvq] s1 kl-d4: bits/val=6.31 rel_mse=0.00075 -> 'DELTA-3286<turn|>'
+[kvq] s1 kl-e8: bits/val=6.44 rel_mse=0.00050 -> 'DELTA-3286<turn|>'
+[kvq] s2: T=5594 capture 20.4s
+[kvq] s2 identity: bits/val=16.00 rel_mse=0.00000 -> 'BETA-7912<turn|>'
+[kvq] s2 affine8: bits/val=8.50 rel_mse=0.00006 -> 'BETA-7912<turn|>'
+[kvq] s2 affine4: bits/val=4.50 rel_mse=0.01451 -> 'BETA-7912<turn|>'
+[kvq] s2 kl-d4: bits/val=6.31 rel_mse=0.00075 -> 'BETA-7912<turn|>'
+[kvq] s2 kl-e8: bits/val=6.44 rel_mse=0.00050 -> 'BETA-7912<turn|>'
+[kvq] s3: T=4406 capture 15.0s
+[kvq] s3 identity: bits/val=16.00 rel_mse=0.00000 -> 'BETA-4582<turn|>'
+[kvq] s3 affine8: bits/val=8.50 rel_mse=0.00006 -> 'BETA-4582<turn|>'
+[kvq] s3 affine4: bits/val=4.50 rel_mse=0.01426 -> 'BETA-4582<turn|>'
+[kvq] s3 kl-d4: bits/val=6.31 rel_mse=0.00076 -> 'BETA-4582<turn|>'
+[kvq] s3 kl-e8: bits/val=6.44 rel_mse=0.00050 -> 'BETA-4582<turn|>'
+[kvq] s4: T=5505 capture 20.0s
+[kvq] s4 identity: bits/val=16.00 rel_mse=0.00000 -> 'KAPPA-1434<turn|>'
+[kvq] s4 affine8: bits/val=8.50 rel_mse=0.00006 -> 'KAPPA-1434<turn|>'
+[kvq] s4 affine4: bits/val=4.50 rel_mse=0.01472 -> 'KAPPA-1434<turn|>'
+[kvq] s4 kl-d4: bits/val=6.31 rel_mse=0.00075 -> 'KAPPA-1434<turn|>'
+[kvq] s4 kl-e8: bits/val=6.44 rel_mse=0.00050 -> 'KAPPA-1434<turn|>'
+[kvq] DONE -> results/research/k3_kv_quant_eval.json
+[kvq]   identity  bits= 16.00 rel_mse=0.00000 recall=1.00
+[kvq]   affine8   bits=  8.50 rel_mse=0.00006 recall=1.00
+[kvq]   affine4   bits=  4.50 rel_mse=0.01444 recall=1.00
+[kvq]   kl-d4     bits=  6.31 rel_mse=0.00075 recall=1.00
+[kvq]   kl-e8     bits=  6.44 rel_mse=0.00050 recall=1.00
+[kvq] verdict: {"kl-d4": {"bits_le_affine4": false, "rel_mse_better": true, "recall_ge_affine4": true, "mlx_port_justified": false}, "kl-e8": {"bits_le_affine4": false, "rel_mse_better": true, "recall_ge_affine4": true, "mlx_port_justified": false}}

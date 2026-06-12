@@ -1,0 +1,114 @@
+{
+  "kind": "k3_kv_quant_eval",
+  "schema_version": 1,
+  "config": {
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "n_samples": 5,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "sink_size": 4,
+    "window_size": 64,
+    "max_new_tokens": 32,
+    "prefill_chunk_size": 512,
+    "kl_q_range": 38,
+    "seed": 42,
+    "skip_oracle": false,
+    "output": "results/research/k3_kv_quant_eval.json"
+  },
+  "full_attention_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "prompt_token_lens": [
+    5810,
+    4911,
+    5594,
+    4406,
+    5505
+  ],
+  "oracle_recall": 1.0,
+  "results": {
+    "identity": {
+      "recall": 1.0,
+      "samples_correct": 5,
+      "bits_per_value_mean": 16.0,
+      "full_attn_rel_mse_mean": 0.0,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>",
+        "DELTA-3286<turn|>",
+        "BETA-7912<turn|>",
+        "BETA-4582<turn|>",
+        "KAPPA-1434<turn|>"
+      ]
+    },
+    "affine8": {
+      "recall": 1.0,
+      "samples_correct": 5,
+      "bits_per_value_mean": 8.5,
+      "full_attn_rel_mse_mean": 5.6e-05,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>",
+        "DELTA-3286<turn|>",
+        "BETA-7912<turn|>",
+        "BETA-4582<turn|>",
+        "KAPPA-1434<turn|>"
+      ]
+    },
+    "affine4": {
+      "recall": 1.0,
+      "samples_correct": 5,
+      "bits_per_value_mean": 4.5,
+      "full_attn_rel_mse_mean": 0.014438,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>",
+        "DELTA-3286<turn|>",
+        "BETA-7912<turn|>",
+        "BETA-4582<turn|>",
+        "KAPPA-1434<turn|>"
+      ]
+    },
+    "kl-d4": {
+      "recall": 1.0,
+      "samples_correct": 5,
+      "bits_per_value_mean": 6.312,
+      "full_attn_rel_mse_mean": 0.000753,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>",
+        "DELTA-3286<turn|>",
+        "BETA-7912<turn|>",
+        "BETA-4582<turn|>",
+        "KAPPA-1434<turn|>"
+      ]
+    },
+    "kl-e8": {
+      "recall": 1.0,
+      "samples_correct": 5,
+      "bits_per_value_mean": 6.438,
+      "full_attn_rel_mse_mean": 0.000499,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>",
+        "DELTA-3286<turn|>",
+        "BETA-7912<turn|>",
+        "BETA-4582<turn|>",
+        "KAPPA-1434<turn|>"
+      ]
+    }
+  },
+  "verdict": {
+    "kl-d4": {
+      "bits_le_affine4": false,
+      "rel_mse_better": true,
+      "recall_ge_affine4": true,
+      "mlx_port_justified": false
+    },
+    "kl-e8": {
+      "bits_le_affine4": false,
+      "rel_mse_better": true,
+      "recall_ge_affine4": true,
+      "mlx_port_justified": false
+    }
+  }
+}
