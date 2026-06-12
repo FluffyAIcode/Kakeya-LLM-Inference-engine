@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "preset": "k3-step2-fused-allmlx",
+  "params": {
+    "n_samples": "2",
+    "max_new_tokens": "64",
+    "block_size": "1"
+  },
+  "ref": "HEAD",
+  "requested_by": "cursor-cloud-agent-b876",
+  "nonce": "1781276929-f6b314"
+}
