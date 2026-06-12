@@ -223,6 +223,33 @@ class MLXRestoredIncrementalVerifier:
         bridge = self._bridge or (lambda a: a)
         return [bridge(a[start:end]) for a in self._last_aux_mx]
 
+    def forward_block_lazy(self, ids_mx: Any) -> Any:
+        """LAZY incremental verify: ``ids_mx`` is an mx ``[1, L]`` (typically
+        the in-graph concatenation of the carried bonus + lazy draft ids —
+        lever ② of the single-sync loop). Returns ``mx [L, V]`` logits with
+        NO evaluation; aux hidden (when ``_capture_aux``) stays lazy in
+        ``_last_aux_mx`` and is consumed lazily by the drafter-context
+        extension."""
+        if self._cache is None:
+            raise RuntimeError("verifier not prefilled")
+        want_aux = self._capture_aux and bool(self.aux_layer_ids)
+        if want_aux:
+            sink: Dict[int, Any] = {}
+            with _patched_decoder_layers(self.text_model):
+                for layer in self.text_model.layers:
+                    layer._kakeya_aux_sink = sink
+                    layer._aux_record = sink
+                logits = self.mlx_model(ids_mx, cache=self._cache)
+                aux = _build_aux(self.text_model, ids_mx, sink,
+                                 self.embed_scale, self.aux_layer_ids)
+            self._last_aux_mx = [a[0] for a in aux]  # [L, hidden] each, lazy
+            self._last_aux = None
+        else:
+            logits = self.mlx_model(ids_mx, cache=self._cache)
+            self._last_aux = None
+            self._last_aux_mx = None
+        return logits[0]
+
     def commit_or_truncate(self, *, forwarded: int, accepted: int) -> None:
         if accepted < 0 or accepted > forwarded:
             raise ValueError("accepted must satisfy 0 <= accepted <= forwarded")
@@ -275,6 +302,125 @@ def make_bridge_embed_lm_head(
         return mx_to_torch(out, dtype=torch_dtype, device=device)
 
     return embed_fn, lm_head_fn
+
+
+# --------------------------------------------------------------------------- #
+# Single-sync all-MLX fused loop (levers ① ② ③ of the Step-2 throughput plan;
+# docs/mlx-port-lessons.md "Step-2 rescue status").
+# --------------------------------------------------------------------------- #
+def fused_specdecode_generate_mlx(
+    adapter: "MLXRestoredIncrementalVerifier",
+    drafter: Any,
+    *,
+    aux_prompt: Sequence[Any],
+    embed_fn: Callable[[Any], Any],
+    lm_head_fn: Callable[[Any], Any],
+    gen_tokens: int,
+    block_size: int,
+    eos_ids: Sequence[int] = (),
+) -> Dict[str, Any]:
+    """All-MLX fused spec decode with ONE host sync per block.
+
+    * ② draft+verify single graph: the drafter's lazy draft ids
+      (:meth:`MLXDFlashDrafter.draft_block_ids`) are concatenated with the
+      carried bonus in-graph and fed straight into the verifier forward —
+      no draft token ever crosses to python before verification.
+    * ① in-graph acceptance: the leading-match count is
+      ``sum(cumprod(argmax(pred_rows) == candidate))``; the next-position
+      logits row is gathered with the lazy count (``mx.take``). The block's
+      single ``mx.eval`` materialises exactly three things: the accept
+      count, the candidate ids, and nothing else. Drafter-context
+      extensions are pushed with ``mx.async_eval`` so Metal works while
+      python does bookkeeping.
+    * ③ carried correction: on rejection there is NO correction forward.
+      ``next_token_logits`` is set to the gathered next-position row, so
+      the verifier's own argmax (the correction) becomes the next block's
+      bonus — guaranteed-accepted at position 0 of the next verify, where
+      its K/V and aux are computed as part of the batched forward.
+
+    Per-block commit = the accepted candidate prefix (position 0, the
+    carried bonus/correction, always accepts by construction — every block
+    commits >= 1 token, so the loop degrades to AR pace, never below).
+    """
+    import mlx.core as mx  # type: ignore
+
+    eos = set(int(t) for t in eos_ids)
+    C = adapter._past_len
+    t_ctx = time.perf_counter()
+    ctx_kv = drafter.make_context_kv(list(aux_prompt), mx.arange(0, C))
+    mx.async_eval([t for kv in ctx_kv for t in kv])
+    timing = {
+        "ctx_kv_build_s": time.perf_counter() - t_ctx,
+        "build_s": 0.0,   # lazy graph construction (python-side)
+        "eval_s": 0.0,    # the per-block single sync (Metal compute)
+        "extend_s": 0.0,
+    }
+    adapter._capture_aux = True
+
+    generated: List[int] = []
+    accepts: List[int] = []
+    next_logits = adapter.next_token_logits  # mx [V], may be lazy
+    try:
+        while len(generated) < gen_tokens:
+            L = min(block_size, gen_tokens - len(generated))
+            cstart = adapter._past_len
+            t_build = time.perf_counter()
+            bonus_id = mx.argmax(next_logits)            # lazy scalar
+            n_draft = max(L - 1, 0)
+            if n_draft:
+                drafts = drafter.draft_block_ids(
+                    ctx_kv, bonus_id, embed_fn, lm_head_fn,
+                    n_masks=n_draft, context_len=cstart)
+                candidate = mx.concatenate([bonus_id[None], drafts])  # [L]
+            else:
+                candidate = bonus_id[None]
+            block_logits = adapter.forward_block_lazy(candidate[None])  # [L, V]
+            # In-graph greedy acceptance: row i of pred_rows predicts
+            # candidate[i]; leading-match count via cumprod.
+            pred_rows = mx.concatenate(
+                [next_logits[None], block_logits[:-1]], axis=0)  # [L, V]
+            matches = (mx.argmax(pred_rows, axis=-1) == candidate)
+            accepted_mx = mx.sum(mx.cumprod(matches.astype(mx.int32)))
+            # Logits predicting position cstart+accepted (the carried
+            # bonus/correction source for the next block).
+            rows = mx.concatenate([next_logits[None], block_logits], axis=0)
+            next_row = mx.take(rows, accepted_mx[None], axis=0)[0]   # [V]
+            timing["build_s"] += time.perf_counter() - t_build
+            # ---- the block's single host sync ----
+            t_eval = time.perf_counter()
+            mx.eval(accepted_mx, candidate)
+            timing["eval_s"] += time.perf_counter() - t_eval
+            accepted = int(accepted_mx.item())
+            cand = [int(x) for x in candidate.tolist()]
+            adapter.commit_or_truncate(forwarded=L, accepted=accepted)
+            commit = cand[:accepted]
+            generated += commit
+            accepts.append(accepted)
+            next_logits = next_row
+            adapter.next_token_logits = next_row
+            if accepted and adapter._last_aux_mx is not None:
+                t_extend = time.perf_counter()
+                new_aux = [a[0:accepted][None] for a in adapter._last_aux_mx]
+                ctx_kv = drafter.extend_context_kv(
+                    ctx_kv,
+                    drafter.make_context_kv(
+                        new_aux, mx.arange(cstart, cstart + accepted)))
+                mx.async_eval([t for kv in ctx_kv for t in kv])
+                timing["extend_s"] += time.perf_counter() - t_extend
+            if any(t in eos for t in commit):
+                break
+    finally:
+        adapter._capture_aux = False
+    generated = generated[:gen_tokens]
+    return {
+        "tokens": generated,
+        "blocks": len(accepts),
+        "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
+                            if accepts else 0.0),
+        "decode_tokens": len(generated),
+        "loop": "mlx_single_sync_v2",
+        "time_breakdown_s": {k: round(v, 3) for k, v in timing.items()},
+    }
 
 
 # --------------------------------------------------------------------------- #

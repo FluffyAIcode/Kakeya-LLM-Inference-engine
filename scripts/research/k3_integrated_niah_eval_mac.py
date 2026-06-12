@@ -179,6 +179,7 @@ def main() -> int:
     from inference_engine.backends.mlx.fused_specdecode import (
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
+        fused_specdecode_generate_mlx,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -684,13 +685,21 @@ def main() -> int:
             prefill_s = time.perf_counter() - prefill_t0
             t0 = time.perf_counter()
             if args.force_fused_specdecode:
-                res = fused_specdecode_generate(
-                    adapter, active_drafter, aux_prompt=aux_prompt,
-                    embed_fn=embed_fn, lm_head_fn=lm_head_fn,
-                    gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                    eos_ids=end_ids,
-                    argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn,
-                    allow_greedy_fallback=False)
+                if mlx_drafter is not None:
+                    # Single-sync all-MLX loop (levers ①②③).
+                    res = fused_specdecode_generate_mlx(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens,
+                        block_size=args.block_size, eos_ids=end_ids)
+                else:
+                    res = fused_specdecode_generate(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=end_ids,
+                        argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn,
+                        allow_greedy_fallback=False)
                 res["drafter_runtime"] = "mlx" if mlx_drafter is not None else "torch"
             else:
                 t_greedy = time.perf_counter()

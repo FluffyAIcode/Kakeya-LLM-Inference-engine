@@ -280,6 +280,36 @@ class MLXDFlashDrafter:
             hidden = layer(hidden, query_positions, ck, cv)
         return self.norm(hidden)
 
+    def draft_block_ids(
+        self,
+        ctx_kv,
+        bonus_id_mx: Any,
+        embed_fn: Callable[[Any], Any],
+        lm_head_fn: Callable[[Any], Any],
+        *,
+        n_masks: int,
+        context_len: int,
+    ) -> Any:
+        """LAZY draft: ``[bonus, mask×n_masks]`` → mx ``[n_masks]`` draft ids.
+
+        Nothing is evaluated and nothing crosses to python — the returned
+        ids feed the verifier forward inside the same lazy graph (lever ②
+        of the single-sync block loop). ``bonus_id_mx`` is an mx scalar
+        (e.g. ``mx.argmax(next_token_logits)``).
+        """
+        mx = _mx()
+        cfg = self.cfg
+        mask_ids = mx.full((n_masks,), cfg.mask_token_id, dtype=bonus_id_mx.dtype)
+        query_ids = mx.concatenate([bonus_id_mx[None], mask_ids])[None]
+        query_positions = mx.arange(context_len, context_len + 1 + n_masks)
+        h = embed_fn(query_ids).astype(self.fc.weight.dtype)
+        h = self._run_layers(h, query_positions, ctx_kv)
+        logits = lm_head_fn(h)  # [1, 1+n_masks, vocab]
+        vocab = logits.shape[-1]
+        never_mask = mx.arange(vocab) == cfg.mask_token_id
+        logits = mx.where(never_mask, mx.array(-float("inf")), logits)
+        return mx.argmax(logits[0, 1:1 + n_masks], axis=-1)
+
     def draft_block_cached(
         self,
         ctx_kv,
@@ -291,20 +321,15 @@ class MLXDFlashDrafter:
         context_len: int,
     ) -> List[int]:
         """Single non-causal pass over ``[bonus, mask×block_size]`` against the
-        cached context K/V → ``block_size`` draft token ids. All-MLX: the
-        embed/lm_head fns are the verifier's native MLX weights — no bridge."""
+        cached context K/V → ``block_size`` draft token ids (materialised).
+        Compatibility surface for the generic fused loop / parity gate; the
+        single-sync loop uses :meth:`draft_block_ids` instead."""
         mx = _mx()
-        cfg = self.cfg
-        query_ids = mx.array(
-            [[int(bonus_token_id)] + [cfg.mask_token_id] * block_size])
-        query_positions = mx.arange(context_len, context_len + 1 + block_size)
-        h = embed_fn(query_ids).astype(self.fc.weight.dtype)
-        h = self._run_layers(h, query_positions, ctx_kv)
-        logits = lm_head_fn(h)  # [1, 1+block, vocab]
-        vocab = logits.shape[-1]
-        never_mask = mx.arange(vocab) == cfg.mask_token_id
-        logits = mx.where(never_mask, mx.array(-float("inf")), logits)
-        drafts = mx.argmax(logits[0, 1:1 + block_size], axis=-1)
+        drafts = self.draft_block_ids(
+            ctx_kv, mx.array(int(bonus_token_id), dtype=mx.uint32),
+            embed_fn, lm_head_fn,
+            n_masks=block_size, context_len=context_len,
+        )
         mx.eval(drafts)
         return [int(t) for t in drafts.tolist()]
 
