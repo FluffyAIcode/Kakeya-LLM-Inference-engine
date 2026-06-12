@@ -135,3 +135,28 @@ Common causes:
 - macOS auto-update rebooted the host; service didn't auto-start (rare with `launchd` but possible).
 - HF cache was purged; the verify step fails. Re-warm.
 - Disk full from accumulated pip downloads; clear cache.
+
+## Mac bridge (cloud-agent access)
+
+The same runner also serves the **Mac bridge**
+(`.github/workflows/mac-bridge.yaml`): pushes to `mac-bridge/**`
+branches execute an allowlisted preset (see
+`inference_engine/bridge/manifest.py`) and commit logs/results back to
+the request branch. Full protocol + security model:
+`docs/design/mac-bridge-cloud-agent-access.md`.
+
+Operator setup beyond the standard runner install:
+
+1. **Model locations** (used by the `k3-*` harness presets) are read
+   from the environment / repo Actions variables, never from the
+   request manifest. Set repo variables (Settings → Secrets and
+   variables → Actions → Variables) when the on-disk layout differs
+   from the defaults:
+   - `KAKEYA_MAC_VERIFIER_PATH` — MLX 4-bit Gemma-4 verifier directory
+   - `KAKEYA_MAC_DRAFTER_ID` — DFlash drafter HF id or local path
+   - `KAKEYA_MAC_FTHETA_DIR` — trained f_θ checkpoint directory
+2. Bridge runs are serialized (`concurrency: mac-bridge`) and capped at
+   150 minutes; cancel stuck runs from the Actions UI.
+3. K3 acceptance reports produced by bridge runs are validated by the
+   evidence gate on this machine; a non-conforming report fails the
+   bridge run (exit ≠ 0) by design.

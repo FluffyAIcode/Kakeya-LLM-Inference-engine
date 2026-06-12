@@ -1,0 +1,95 @@
+name: Mac bridge
+
+# Git-bus executor for cloud-agent access to the self-hosted Apple
+# Silicon node (docs/design/mac-bridge-cloud-agent-access.md §2.1).
+#
+# Protocol: an agent pushes a branch `mac-bridge/<preset>-<nonce>`
+# containing the workload tree + a manifest at .mac-bridge/request.json
+# (created by scripts/mac_bridge/request_run.py). This workflow runs the
+# manifest's ALLOWLISTED preset on the kakeya-mac-m4 runner and pushes
+# logs + result JSONs back to the same branch, where the agent fetches
+# them with plain git (and read-only `gh run list`).
+#
+# Security (design doc §3):
+#   * Command surface = the preset allowlist in
+#     inference_engine/bridge/manifest.py — typed, bounded params; no
+#     manifest string ever reaches a shell. Validation is unit-tested
+#     at 100% coverage on the Linux gate.
+#   * Trigger surface = push permission on mac-bridge/** — the same
+#     population that can already execute code on this runner via the
+#     `needs-mac-m4` PR label (integration.yaml).
+#   * The single Mac is serialized via the concurrency group; every
+#     preset carries its own timeout inside the executor and the job
+#     has a hard cap below.
+#   * K3 acceptance reports produced by a run are validated by the
+#     PR #109 evidence gate ON the runner; a non-conforming report
+#     fails the bridge run itself.
+
+on:
+  push:
+    branches:
+      - "mac-bridge/**"
+
+concurrency:
+  # One Mac: queue bridge runs globally, never cancel a running one
+  # (results are expensive; the requester can cancel from the UI).
+  group: mac-bridge
+  cancel-in-progress: false
+
+permissions:
+  contents: write # commit logs/results back to the request branch
+
+jobs:
+  bridge:
+    name: run allowlisted preset on kakeya-mac-m4
+    runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Push results back to the request branch.
+          persist-credentials: true
+
+      - name: Show request
+        run: |
+          echo "=== .mac-bridge/request.json ==="
+          cat .mac-bridge/request.json
+
+      - name: Run preset (allowlist-validated executor)
+        env:
+          PYTHONPATH: .:sdks/python
+          # Machine-local model locations come from the runner env,
+          # never from the manifest (docs/ops/mac-m4-runner-setup.md).
+          # Defaults match the current kakeya-mac-m4 layout; override
+          # in the runner service env when the layout changes.
+          KAKEYA_MAC_VERIFIER_PATH: ${{ vars.KAKEYA_MAC_VERIFIER_PATH || 'models/gemma-4-26B-A4B-it-mlx-4bit' }}
+          KAKEYA_MAC_DRAFTER_ID: ${{ vars.KAKEYA_MAC_DRAFTER_ID || 'z-lab/gemma-4-26B-A4B-it-DFlash' }}
+          KAKEYA_MAC_FTHETA_DIR: ${{ vars.KAKEYA_MAC_FTHETA_DIR || 'results/research/f_theta_v5_s5_sliding' }}
+          HF_HUB_OFFLINE: "1"
+        run: |
+          python3 scripts/mac_bridge/run_preset.py \
+            --manifest .mac-bridge/request.json
+
+      - name: Commit results back to the request branch
+        if: always()
+        run: |
+          git config user.name "kakeya-mac-bridge"
+          git config user.email "mac-bridge@users.noreply.github.com"
+          git add -A .mac-bridge/logs results/research 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no result files to commit"
+          else
+            git commit -m "mac-bridge results: ${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload results as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-bridge-${{ github.run_id }}
+          path: |
+            .mac-bridge/logs/
+            results/research/k3_mac_bridge_*.json
+          if-no-files-found: warn
+          retention-days: 14
