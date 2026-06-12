@@ -134,6 +134,31 @@ float32 CPU-torch drafter. The all-MLX drafter
   trimming the correction-token `append` forward. Until then Step 1
   remains the shipping Mac path.
 
+## KV-quant shoot-out (2026-06-12): affine wins, KL MLX port NOT justified
+
+`k3-kv-quant-eval` (ctx280, n=5, real recall per arm, identity control
+clean, oracle 1.0):
+
+| arm | bits/value | full-attn rel_mse | recall |
+|---|---|---|---|
+| identity | 16.0 | 0 | 5/5 |
+| **affine8** (QuantizedKVCache format) | 8.5 | 0.000056 | 5/5 |
+| **affine4** | 4.5 | 0.014438 | **5/5** |
+| KL-D4 (q38) | 6.31 | 0.000753 | 5/5 |
+| KL-E8 (q38) | 6.44 | 0.000499 | 5/5 |
+
+- **affine4 already passes recall with ~25× rel_mse margin** vs the
+  0.36 threshold → the S5 linear term compresses 20 → 5.6 KB/token
+  (S5 resident @5.8k: 132.9 → ~48 MB) with the native, kernel-fused
+  `QuantizedKVCache` format. Adopt this; throughput expected neutral
+  or better (bandwidth-bound decode).
+- KL's rate-distortion is genuinely better (~2× lower distortion at
+  interpolated equal rate) but it cannot reach affine4's rate with the
+  current codec settings, and nothing binds at the fidelity affine4
+  already delivers. **MLX port shelved**; revisit only if a future
+  requirement needs <4.5 bits/value or <1e-3 rel_mse at ≤4.5 bits
+  (e.g. 128k+ contexts × many sessions).
+
 ## Do-not-repeat (anti-patterns)
 
 - ❌ Re-forwarding the full sequence per generated token (the current collapse).
