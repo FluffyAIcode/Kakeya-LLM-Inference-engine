@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "preset": "k3-step1-incremental",
+  "params": {
+    "n_samples": "5",
+    "max_new_tokens": "64"
+  },
+  "ref": "origin/pr-109-mlx-incremental",
+  "requested_by": "cursor-cloud-agent-b876",
+  "nonce": "1781268308-dc400e"
+}
