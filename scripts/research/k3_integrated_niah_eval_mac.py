@@ -122,6 +122,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--kl-lattice", default="D4", choices=["D4", "E8"])
     ap.add_argument("--kl-q-range", type=int, default=38)
     ap.add_argument("--skip-oracle", action="store_true")
+    ap.add_argument("--decode-warmup-tokens", type=int, default=1,
+                    help="Run a tiny untimed native decode warmup before "
+                         "cross/oracle measurements so MLX/Metal compilation "
+                         "cost does not fall only on the first measured path.")
     ap.add_argument("--output", default=None)
     return ap.parse_args()
 
@@ -380,8 +384,35 @@ def main() -> int:
     answer_ids = [encode_answer(s.answer_text) for s in samples]
     seq_lens = [len(t) for t in sample_ids]
     eos_id = getattr(tokenizer, "eos_token_id", None)
+    end_ids = set()
+    if eos_id is not None:
+        end_ids.add(int(eos_id))
+    try:
+        eot_ids = tokenizer.encode("<turn|>", add_special_tokens=False)
+    except TypeError:
+        eot_ids = tokenizer.encode("<turn|>")
+    if hasattr(eot_ids, "tolist"):
+        eot_ids = eot_ids.tolist()
+    if len(eot_ids) == 1:
+        end_ids.add(int(eot_ids[0]))
     print(f"[mac] {len(samples)} samples, prompt len "
           f"min={min(seq_lens)} max={max(seq_lens)}", file=sys.stderr)
+
+    def warmup_decode() -> None:
+        """Warm MLX/Metal decode kernels before comparing cross vs oracle."""
+        if args.decode_warmup_tokens <= 0 or not sample_ids:
+            return
+        cache = (getattr(mlx_model, "make_cache", lambda: None)())
+        out = mlx_model(mx.array([sample_ids[0]]), cache=cache)
+        mx.eval(out)
+        logits = out[0, -1]
+        for _ in range(args.decode_warmup_tokens):
+            tok = int(mx.argmax(logits).item())
+            out = mlx_model(mx.array([[tok]]), cache=cache)
+            mx.eval(out)
+            logits = out[0, -1]
+            if tok in end_ids:
+                break
 
     def eval_teacher_forced(logits_all_fn) -> Tuple[List[str], List[float], List[int]]:
         """One restored forward per sample over [prompt + needle-code]; check
@@ -414,7 +445,7 @@ def main() -> int:
             for _ in range(args.max_new_tokens):
                 last = restored_forward(cur, rk, rv, tsrc, return_all=False)
                 nxt = int(mx.argmax(last).item()); gen.append(nxt)
-                if eos_id is not None and nxt == eos_id:
+                if nxt in end_ids:
                     break
                 cur.append(nxt)
             lats.append(time.perf_counter() - t0)
@@ -447,7 +478,7 @@ def main() -> int:
             gen = restored_incremental_generate(
                 mlx_model, cache, first,
                 max_tokens=args.max_new_tokens,
-                eos_ids=([eos_id] if eos_id is not None else ()))
+                eos_ids=end_ids)
             lats.append(time.perf_counter() - t0)
             decoded.append(tokenizer.decode(gen)); toks.append(len(gen))
             print(f"[mac]   incr {i}: T={seq_lens[i]} -> {decoded[-1][:48]!r}",
@@ -517,7 +548,7 @@ def main() -> int:
                     adapter, drafter, aux_prompt=aux_prompt,
                     embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                     gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                    eos_ids=([eos_id] if eos_id is not None else ()),
+                    eos_ids=end_ids,
                     argmax_fn=argmax_fn, arange_fn=arange_fn, cat_aux_fn=cat_aux_fn)
             else:
                 t_greedy = time.perf_counter()
@@ -530,7 +561,7 @@ def main() -> int:
                     out = mlx_model(mx.array([[tok]]), cache=adapter._cache)
                     mx.eval(out)
                     logits_row = out[0, -1]
-                    if eos_id is not None and tok == eos_id:
+                    if tok in end_ids:
                         break
                 adapter.next_token_logits = logits_row
                 res = {
@@ -570,7 +601,7 @@ def main() -> int:
             out = mlx_model(mx.array([pid]), cache=cache); mx.eval(out)
             tok = int(mx.argmax(out[0, -1]).item()); gen = [tok]
             for _ in range(args.max_new_tokens - 1):
-                if eos_id is not None and tok == eos_id:
+                if tok in end_ids:
                     break
                 out = mlx_model(mx.array([[tok]]), cache=cache); mx.eval(out)
                 tok = int(mx.argmax(out[0, -1]).item()); gen.append(tok)
@@ -592,6 +623,7 @@ def main() -> int:
     eval_mode = ("teacher_forced" if args.teacher_forced
                  else "free_gen_fused_specdecode" if args.fused_specdecode
                  else "free_gen_incremental" if args.incremental else "free_gen")
+    warmup_decode()
     print(f"[mac] running restored cross-model verifier ({label}, {eval_mode})",
           file=sys.stderr, flush=True)
     if args.teacher_forced:
