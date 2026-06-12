@@ -206,8 +206,20 @@ class MLXDFlashDrafter:
             setattr(mod, attr, weights[key])
 
     @classmethod
-    def from_pretrained(cls, model_id_or_path: str) -> "MLXDFlashDrafter":
+    def from_pretrained(
+        cls, model_id_or_path: str, *, compute_dtype: str = "bf16",
+    ) -> "MLXDFlashDrafter":
+        """Load from the checkpoint. ``compute_dtype``:
+
+        * ``"bf16"`` (default, shipping config) — keep checkpoint dtype;
+        * ``"fp32"`` — cast weights up, matching the torch reference's
+          float32 execution. Used by the parity gate to separate port
+          bugs (would still mismatch) from dtype-induced near-tie argmax
+          flips (vanish at fp32-vs-fp32).
+        """
         mx = _mx()
+        if compute_dtype not in ("bf16", "fp32"):
+            raise ValueError(f"unsupported compute_dtype {compute_dtype!r}")
         cfg = DFlashConfig.from_pretrained(model_id_or_path)
         local = Path(model_id_or_path) / "model.safetensors"
         if local.is_file():
@@ -216,8 +228,11 @@ class MLXDFlashDrafter:
             from huggingface_hub import hf_hub_download
 
             path = hf_hub_download(model_id_or_path, "model.safetensors")
+        weights = mx.load(path)
+        if compute_dtype == "fp32":
+            weights = {k: v.astype(mx.float32) for k, v in weights.items()}
         model = cls(cfg)
-        model.load_weights(mx.load(path))
+        model.load_weights(weights)
         return model
 
     # -- aux fusion + context K/V (components B) -----------------------------

@@ -57,6 +57,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
     assert sorted(PRESETS) == [
         "integration-tests",
         "k3-drafter-parity",
+        "k3-drafter-parity-fp32",
         "k3-evidence-gate",
         "k3-native-baseline",
         "k3-step1-incremental",

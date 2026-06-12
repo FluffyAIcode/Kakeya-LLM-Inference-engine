@@ -155,8 +155,8 @@ PRESETS: Dict[str, Preset] = {
         ),
         Preset(
             name="k3-drafter-parity",
-            description="All-MLX vs torch DFlash drafter token parity "
-                        "(blocks throughput claims until it passes).",
+            description="All-MLX (bf16, shipping dtype) vs torch DFlash "
+                        "drafter token parity.",
             command_templates=(
                 (
                     "python3", "scripts/research/k3_mlx_drafter_parity.py",
@@ -166,6 +166,28 @@ PRESETS: Dict[str, Preset] = {
                     "--block-size", "{block_size}",
                     "--output",
                     "results/research/k3_mlx_drafter_parity.json",
+                ),
+            ),
+            timeout_minutes=60,
+            params={
+                "n_samples": ("int:n_samples", "3"),
+                "block_size": ("int:block_size", "8"),
+            },
+        ),
+        Preset(
+            name="k3-drafter-parity-fp32",
+            description="Port-bug discriminator: all-MLX drafter at fp32 vs "
+                        "the fp32 torch reference must match EXACTLY.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_mlx_drafter_parity.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--mlx-dtype", "fp32",
+                    "--n-samples", "{n_samples}",
+                    "--block-size", "{block_size}",
+                    "--output",
+                    "results/research/k3_mlx_drafter_parity_fp32.json",
                 ),
             ),
             timeout_minutes=60,

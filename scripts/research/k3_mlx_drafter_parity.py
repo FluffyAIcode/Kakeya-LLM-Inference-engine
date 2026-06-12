@@ -47,6 +47,11 @@ def main() -> int:
     ap.add_argument("--haystack-max-lines", type=int, default=40)
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--min-agreement", type=float, default=1.0)
+    ap.add_argument("--mlx-dtype", choices=["bf16", "fp32"], default="bf16",
+                    help="MLX drafter compute dtype. fp32 matches the torch "
+                         "reference exactly (port-bug discriminator); bf16 "
+                         "is the shipping config (near-tie argmax flips vs "
+                         "fp32 are expected and correctness-contained).")
     ap.add_argument("--output",
                     default="results/research/k3_mlx_drafter_parity.json")
     args = ap.parse_args()
@@ -80,8 +85,10 @@ def main() -> int:
     print(f"[parity] loading torch drafter {args.drafter_id}", file=sys.stderr)
     t_drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=torch.float32)
     t_drafter = t_drafter.to("cpu").eval()
-    print(f"[parity] loading MLX drafter {args.drafter_id}", file=sys.stderr)
-    m_drafter = MLXDFlashDrafter.from_pretrained(args.drafter_id)
+    print(f"[parity] loading MLX drafter {args.drafter_id} "
+          f"({args.mlx_dtype})", file=sys.stderr)
+    m_drafter = MLXDFlashDrafter.from_pretrained(
+        args.drafter_id, compute_dtype=args.mlx_dtype)
     aux_ids = tuple(m_drafter.cfg.aux_layer_ids)
 
     m_embed, m_head = make_native_embed_lm_head(text_model, softcap=softcap)
