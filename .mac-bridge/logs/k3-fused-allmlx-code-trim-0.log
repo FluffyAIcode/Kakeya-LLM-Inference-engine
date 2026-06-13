@@ -1,0 +1,30 @@
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading ALL-MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[mac] CODE-PROMPTS workload: 8 prompts (recall N/A; measuring decode throughput + acceptance)
+[mac] 8 samples, prompt len min=67 max=74
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[mac]   fused 0: T=74 acc_len=3.2 -> 'PREFIX-8291\n\n```python\nfrom typing import Option'
+[mac]   fused 1: T=67 acc_len=1.4 -> 'PREFIX-8294<turn|>'
+[mac]   fused 2: T=72 acc_len=3.282 -> '```python\nimport csv\nimport io\n\ndef parse_csv_st'
+[mac]   fused 3: T=71 acc_len=3.048 -> 'PREFIX-8291\n```python\ndef quicksort(arr, low=0, '
+[mac]   fused 4: T=74 acc_len=1.167 -> 'PREFIX-8291<turn|>'
+[mac]   fused 5: T=67 acc_len=2.909 -> 'PREFIX-9284\n```python\nclass Parser:\n    def __in'
+[mac]   fused 6: T=74 acc_len=1.75 -> 'PREFIX-8291<turn|>'
+[mac]   fused 7: T=67 acc_len=1.4 -> 'PREFIX-8291<turn|>'
+[mac] restored_cross_model recall = 1.000 (8/8)
+[mac] running oracle
+[mac]   oracle 0: T=74 -> 'PREFIX-8291\n\n```python\nfrom typing import Option'
+[mac]   oracle 1: T=67 -> 'PREFIX-8294<turn|>'
+[mac]   oracle 2: T=72 -> '```python\nimport csv\nimport io\n\ndef parse_csv_st'
+[mac]   oracle 3: T=71 -> 'PREFIX-9284\n```python\ndef quicksort(arr, low=0, '
+[mac]   oracle 4: T=74 -> 'PREFIX-8291<turn|>'
+[mac]   oracle 5: T=67 -> 'PREFIX-9284\n```python\nclass Parser:\n    def __in'
+[mac]   oracle 6: T=74 -> 'PREFIX-8291<turn|>'
+[mac]   oracle 7: T=67 -> 'PREFIX-8291<turn|>'
+[mac] oracle recall = 1.000
+[mac] KV resident @T=74: S5=15.44 MB (growth 20.0 KB/tok); naive-full=16.67 MB
+[mac] cross-model throughput (free_gen_fused_specdecode): 17.4653 tok/s (540 tok / 30.918 s, 3.865 s/sample)
+
+[mac] DONE. restored_cross_model=1.000 oracle=1.0 -> results/research/k3_mac_bridge_k3_fused_allmlx_code_trim.json
+[mac] evidence gate: PASS
