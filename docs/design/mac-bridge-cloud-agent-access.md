@@ -1,5 +1,10 @@
 # Design — Mac bridge: cloud-agent access to the self-hosted `kakeya-mac-m4`
 
+> **New here?** Start with the reader-friendly guide
+> [`docs/mac-bridge.md`](../mac-bridge.md) (what the soft link is, the
+> request/response flow, security, quickstart). This document is the deeper
+> design record (transports M1/M2/M3 + fleet-integration evaluation).
+
 - **Status**: M1 implemented (git-bus transport); M2/M3 designed
 - **Relates to**: ADR 0009 (multi-host plane), PR #105 (CapabilityService),
   PR #109 evidence gate (`inference_engine/bench/k3_report_gate.py`),

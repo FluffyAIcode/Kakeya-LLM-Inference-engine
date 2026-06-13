@@ -282,6 +282,7 @@ since MLX runs only on Apple Silicon:
   VPN — only git push. Presets + param bounds are enforced by
   `inference_engine/bridge/manifest.py`; this is itself an instance of the
   multi-host capability plane ([ADR 0009](docs/adr/0009-mlx-distributed-spec-decode-and-capability-exchange.md)).
+  Full guide: [`docs/mac-bridge.md`](docs/mac-bridge.md).
 - **Evidence gate** (`inference_engine/bench/k3_report_gate.py`): every Mac report is
   machine-validated — rejects fused runs that didn't execute (`blocks=0`), baseline
   bypasses claiming recall/speedup, self-comparison speedups, prefill-variance, and
