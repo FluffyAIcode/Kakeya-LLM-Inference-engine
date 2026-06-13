@@ -1,5 +1,18 @@
-"""MLX **native** restored-cache primitive — the systemic fix for the Mac
-token-throughput collapse (PR #109 stacked).
+"""MLX **native** restored-cache primitive.
+
+⚠️ FORBIDDEN FOR ARCHITECTURE VALIDATION (2026-06-13 directive).
+This path is a **product/throughput bypass only**. Its recall comes from
+Gemma-4's *native* retained full-attention layers + native sliding-window
+eviction — it **never exercises f_θ or proposer K/V restoration** (ADR 0008
+§11). It is therefore structurally **incapable of failing in a way that tests
+the restoration architecture**, and its "recall" results MUST NOT be cited as
+evidence that the K/V-Restoration architecture works (see ADR 0012 revision
+2026-06-13). The restoration architecture must be validated on a **pure
+sliding-window model (Qwen3, K1/K2)** where recall is impossible without
+proposer/f_θ restoration. Do not use this module (or the Step-1 incremental
+path) for any architecture-validation attempt.
+
+The systemic fix for the Mac token-throughput collapse (PR #109 stacked).
 
 Problem (per the architecture review): the first MLX port made the *decode* hot
 path native (`generate_step`), but the restored cache was still produced by a
