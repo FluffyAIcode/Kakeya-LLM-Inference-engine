@@ -105,6 +105,66 @@ the binding correctness gate. Mac M4 evidence on `main`:
 
 Raw artifacts: [`results/platform-tests/bench_session_4h_1780332893.json`](results/platform-tests/) (4-h evidence) and the v0.3.0 GA tag's smoke run committed at `6399546`.
 
+## Kakeya Inference Engine for Mac — MLX speculative-decode port (K3 beta baseline)
+
+After the **CUDA** beta (PR #107: f_θ + S5 K/V-restoration verifier, **fused DFlash
+spec-decode at 1.27× AR, recall 1.0 on Gemma-4-26B-A4B / H200**), the engine was
+ported to the **Apple-Silicon MLX** backend. The decode throughput climbed from a
+near-total collapse to **≈AR parity** through a sequence of precisely-diagnosed
+fixes. This is the baseline record of that journey (all numbers are decode-only
+tok/s vs the native `mlx_lm` AR oracle on the same model, measured on a Mac M4 via
+the [Mac bridge](#evaluation-environment); ×AR is the ratio).
+
+| Stage | ×AR | Binding problem | Fix |
+| --- | --- | --- | --- |
+| Naïve restored decode | **~0.09×** | **O(T²) collapse** — the restored verifier did a *full-sequence* forward **per generated token** (`restored_logits`); the Mac harness called it once per token. | **Gap-A incremental decode**: prefill **once**, capture the restored K/V into the model's **native** cache, then decode with `mlx_lm.generate_step` (chunked prefill + `mx.async_eval` pipelined) — O(L)/token, never re-forward the sequence. |
+| Hybrid fused spec-decode | **~0.2×** | **Cross-runtime bridge** — MLX verifier + PyTorch/MPS drafter shipped **MB/block of aux-hidden** across runtimes on the critical path; plus a benchmark **forced-over-generation** artifact (`--ignore-turn-stop`) that tanked acceptance. | Recognised the bridge as the bottleneck; moved toward an **all-MLX drafter** (single runtime, zero per-block bridge crossings). |
+| All-MLX + sound rollback | **~0.5×** | **Unsound rollback** — `RotatingKVCache` is not trimmable once the sliding ring wraps (`is_trimmable → offset < max_size`), so the loop **rolled the whole block back and re-forwarded** the carried accepted tokens every partial-accept block (~2 verifier forwards/block). | **CUDA-`DynamicCache` parity**: prefill an **all-`KVCache`** layout (sliding too — byte-exact, the window mask applies regardless of cache capacity) so `trim_prompt_cache` is a sound O(1) slice; **keep accepted K/V, trim only the rejected tail**, never re-forward. |
+| Block-4 CUDA-trim | **~0.7×** | **Per-block Python graph construction** (`build_s` ≈ 50 ms/block building the 26B lazy graph). | Removing the re-forward (above) closed most of it; block-4 lands at **0.68× AR**. |
+| Block-8 tuned | **~1.0×** | **Block size vs the drafter's accept-len plateau.** | Tune to **block-8** (matches the all-MLX drafter's ~4.5 accept-len ceiling); long-code completions reach **~1.0–1.05× AR (parity, best samples just over)**. block-16 is *worse* — `verify(16)` cost is wasted because acceptance plateaus. |
+
+**Honest ceiling & what was *ruled out*.** ≈AR parity is the Mac result on the
+spec-decode sweet spot (short-context, naturally-long *code/agent* generation);
+**>AR meaningfully remains CUDA-favoured** (H200 1.27×) because the binding
+constraint is the **26B `verify(L)` compute per block** — *not* rollback (fixed),
+*not* sync count (a one-graph "single-fused" probe ran stably at ~0.16 s/block and
+was ≈ equal — the b876 single-fused "143 s" pathology is **large-cache-specific**,
+not fundamental), *not* drafter acceptance (a clean ~3–4.5/block on natural
+workloads), *not* verifier quantization (4-bit ≥ bf16; the loop is self-consistent),
+*not* context length (NIAH ≥ general), and *not* a missing alignment asset
+(fc_norms fine-tuning *degraded* held-out acceptance — the base z-lab drafter is
+already near its block-4 ceiling). The earlier "low acceptance / 2.13" numbers were
+a **forced-over-generation benchmark artifact**, reproduced on a clean full-KV bf16
+verifier. The one genuine remaining lever is closing the **drafter accept-len gap
+(~4.5 ours → ~7.7 z-lab reference)** — a port-fidelity / alignment residual.
+
+Recall (the architecture's primary deliverable) is **1.0** throughout, with
+bounded resident KV (**S5**: ~133 MB vs ~1309 MB naïve at 5.8 k ctx, ~90 % saving;
+~48 MB after affine-4). See [ADR 0012](docs/adr/0012-proposer-verifier-value-proposition.md)
+(value is realised on the **memory axis** all-platform + **throughput** on CUDA)
+and [ADR 0013](docs/adr/0013-distributed-inference-topology.md) (what AR
+sequentiality allows for distribution).
+
+### Evaluation environment
+
+The Mac port was developed and benchmarked **remotely from a Linux cloud agent**,
+since MLX runs only on Apple Silicon:
+
+- **Mac bridge** (`scripts/mac_bridge/`): a **git-bus** request/response plane — the
+  agent pushes an allowlisted-preset request branch, a **self-hosted GitHub Actions
+  runner (`kakeya-mac-m4`)** executes it on the Mac and pushes results back. No SSH/
+  VPN — only git push. Presets + param bounds are enforced by
+  `inference_engine/bridge/manifest.py`; this is itself an instance of the
+  multi-host capability plane ([ADR 0009](docs/adr/0009-mlx-distributed-spec-decode-and-capability-exchange.md)).
+- **Evidence gate** (`inference_engine/bench/k3_report_gate.py`): every Mac report is
+  machine-validated — rejects fused runs that didn't execute (`blocks=0`), baseline
+  bypasses claiming recall/speedup, self-comparison speedups, prefill-variance, and
+  decode-token-budget violations — so a number is admissible only if it survives the
+  same rules that caught the earlier artifacts.
+- **GPU side** (vast.ai H200): alignment-training + acceptance-factor experiments
+  (`scripts/research/k3_dflash_alignment_train.py`, `k3_dflash_specdecode_eval.py`)
+  used to rule out the non-levers above.
+
 ## SDKs
 
 ### Python — `sdks/python/kakeya`
