@@ -1,0 +1,435 @@
+{
+  "schema_version": 1,
+  "kind": "k3_integrated_niah_acceptance_mac",
+  "config": {
+    "verifier_path": "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr94-resolve/models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+    "n_samples": 1,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 60,
+    "haystack_max_lines": 81,
+    "max_new_tokens": 8,
+    "seed": 42,
+    "eval_mode": "free_gen_incremental",
+    "teacher_forced": false,
+    "s5_exact_full_attn": true,
+    "identity_restore": false,
+    "compress_full_attn": false,
+    "kl_lattice": null,
+    "kl_q_range": null,
+    "kl_bits_per_token_per_head": null,
+    "full_attention_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "prompt_token_lens": [
+      1508
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model_mac",
+      "samples_total": 1,
+      "samples_correct": 1,
+      "recall": 1.0,
+      "mean_latency_s": 51.72188008390367,
+      "median_latency_s": 51.72188008390367,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>"
+      ],
+      "per_sample_correct": [
+        true
+      ],
+      "per_sample_decode_tokens": [
+        8
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        0.15467341842605745
+      ],
+      "mean_throughput_tokens_per_sec": 0.15467341842605745,
+      "median_throughput_tokens_per_sec": 0.15467341842605745,
+      "min_throughput_tokens_per_sec": 0.15467341842605745,
+      "max_throughput_tokens_per_sec": 0.15467341842605745
+    },
+    "oracle": {
+      "name": "oracle_mac",
+      "samples_total": 1,
+      "samples_correct": 1,
+      "recall": 1.0,
+      "mean_latency_s": 7.666205584071577,
+      "median_latency_s": 7.666205584071577,
+      "per_sample_decoded": [
+        "BETA-1409<turn|>"
+      ],
+      "per_sample_correct": [
+        true
+      ],
+      "per_sample_decode_tokens": [
+        8
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        1.0435410206872044
+      ],
+      "mean_throughput_tokens_per_sec": 1.0435410206872044,
+      "median_throughput_tokens_per_sec": 1.0435410206872044,
+      "min_throughput_tokens_per_sec": 1.0435410206872044,
+      "max_throughput_tokens_per_sec": 1.0435410206872044
+    }
+  },
+  "gate": {
+    "recall_cross_model": 1.0,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 0.0,
+    "recall_delta_within_5pp": true
+  },
+  "memory": {
+    "s5": {
+      "seq_len": 1508,
+      "kv_dtype_bytes": 2,
+      "sink_window": 68,
+      "exact_layer_indices": [
+        5,
+        11,
+        17,
+        23,
+        29
+      ],
+      "compress_full_bits_per_token_per_head": null,
+      "sliding_resident_bytes": 13926400,
+      "full_resident_bytes": 30883840,
+      "total_resident_bytes": 44810240,
+      "total_resident_mb": 44.81,
+      "per_token_growth_bytes": 20480,
+      "per_token_growth_kb": 20.0,
+      "per_layer": [
+        {
+          "layer": 0,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 1,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 2,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 3,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 4,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 5,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 1508,
+          "bytes_per_token": 4096,
+          "resident_bytes": 6176768
+        },
+        {
+          "layer": 6,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 7,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 8,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 9,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 10,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 11,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 1508,
+          "bytes_per_token": 4096,
+          "resident_bytes": 6176768
+        },
+        {
+          "layer": 12,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 13,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 14,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 15,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 16,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 17,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 1508,
+          "bytes_per_token": 4096,
+          "resident_bytes": 6176768
+        },
+        {
+          "layer": 18,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 19,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 20,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 21,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 22,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 23,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 1508,
+          "bytes_per_token": 4096,
+          "resident_bytes": 6176768
+        },
+        {
+          "layer": 24,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 25,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 26,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 27,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 28,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 29,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 1508,
+          "bytes_per_token": 4096,
+          "resident_bytes": 6176768
+        }
+      ]
+    },
+    "naive_full_kv": {
+      "total_resident_mb": 339.72,
+      "per_token_growth_kb": 220.0
+    },
+    "savings_vs_naive_pct": 86.8
+  },
+  "throughput": {
+    "k3_cross_model": {
+      "tokens": 8,
+      "wall_seconds": 51.722,
+      "tokens_per_second": 0.1547,
+      "mean_latency_per_sample_s": 51.722,
+      "eval_mode": "free_gen_incremental",
+      "restored_forwards_per_sample": 8
+    },
+    "oracle_native_ar": {
+      "tokens": 8,
+      "wall_seconds": 7.666,
+      "tokens_per_second": 1.0435,
+      "mean_latency_per_sample_s": 7.666
+    },
+    "cross_model_speedup_vs_oracle_ar": 0.148
+  }
+}

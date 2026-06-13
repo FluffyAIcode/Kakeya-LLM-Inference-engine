@@ -95,16 +95,17 @@ jobs:
             tests/inference_engine/session/ \
             tests/inference_engine/bench/ \
             tests/inference_engine/setup/ \
+            tests/inference_engine/bridge/ \
             tests/sdk/python/ \
             tests/training/repr_align/ \
             tests/backends/mlx/test_env.py \
             --junitxml=junit.xml \
             -v
           coverage report \
-            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*' \
+            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/bridge/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*' \
             --fail-under=100
           coverage xml -o coverage.xml \
-            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*'
+            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/bridge/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*'
 
       - name: Upload coverage artifact
         if: always()
@@ -166,6 +167,8 @@ jobs:
             import kakeya.client; \
             import kakeya.session; \
             import kakeya.errors; \
+            import inference_engine.bridge; \
+            import inference_engine.bridge.manifest; \
             import inference_engine.proposer; \
             import inference_engine.proposer.sparse_logits; \
             import inference_engine.backends.mlx.env; \
