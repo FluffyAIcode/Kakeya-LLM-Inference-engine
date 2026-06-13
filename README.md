@@ -105,6 +105,65 @@ the binding correctness gate. Mac M4 evidence on `main`:
 
 Raw artifacts: [`results/platform-tests/bench_session_4h_1780332893.json`](results/platform-tests/) (4-h evidence) and the v0.3.0 GA tag's smoke run committed at `6399546`.
 
+## Design philosophy — AR verifier + dLLM proposer, KV restoration for a memory-bounded Gemma-4 26B
+
+Kakeya pairs a frozen **autoregressive (AR) verifier** — `Gemma-4 26B-A4B-it` — with
+a **diffusion-LM (dLLM) proposer** (`z-lab` DFlash, 0.4 B). The proposer's *first*
+role is not "drafter" but **history reconstructor**: a dLLM carries **no KV cache**
+and can emit transient K/V for *any* past position, so it can restore the verifier's
+**evicted** K/V on demand. A small trained projection **f_θ** maps proposer hidden
+states → verifier K/V; on Gemma-4 the **S5** strategy keeps the 5 full-attention
+layers exact and restores the sliding-window layers.
+
+The whole architecture is built around one inequality:
+
+> Make `Gemma-4 26B-A4B-it` **memory-bounded** *without* trading away model
+> **intelligence** (recall), **token throughput**, or **context length**.
+
+**KV restoration is the mechanism.** The verifier only ever keeps a **bounded
+sink+window** of its own K/V resident (constant **~17 MB** on CUDA / **~133 MB** in
+the Mac S5 config), while the *effective* attention context — the full
+multi-thousand-token history — is **reconstructed on demand** by the proposer + f_θ.
+Because the restored/spec-decoded K/V is **byte-checked** against the AR cache, the
+**output is identical to the standalone AR model** (recall **1.0**): the memory win
+costs **zero intelligence**. Throughput and context length are held at **parity**
+(Mac) or **improved** (CUDA spec-decode **1.79× AR**) — never sacrificed. This is the
+inversion of the usual quantize/evict trade-off: instead of *cheaper, dumber, shorter*,
+KV restoration buys *bounded memory at full fidelity*. See
+[ADR 0012](docs/adr/0012-proposer-verifier-value-proposition.md) (value realised on
+the **memory axis** all-platform + **throughput** on CUDA) and
+[ADR 0013](docs/adr/0013-distributed-inference-topology.md).
+
+### Beta scorecards — Kakeya vs the standalone model (`main` @ `9d5e6b4`)
+
+Both betas run the *same* `Gemma-4 26B-A4B-it` verifier, `z-lab` DFlash proposer, and
+`f_theta_v5_s5_sliding`. "Standalone model" = the same Gemma-4 run **without** Kakeya
+(`mlx_lm` AR oracle on Mac; HuggingFace bf16 AR on CUDA) — i.e. the honest *"what does
+the engine cost vs just running the model?"* baseline.
+
+**Mac (MLX) — Kakeya vs `mlx_lm` AR oracle** · Mac mini M4 · 4-bit verifier:
+
+| Axis | Kakeya | MLX-only | Result |
+| --- | --- | --- | --- |
+| **Memory** (resident KV @ 5 810 tok) | **132.92 MB** (S5) | 1 308.88 MB | **89.8 % saved** (20 vs 220 KB/tok, 11× slower growth) |
+| **Context length** | 4 406–5 810 tok handled, **recall 1.0** | recall 1.0 | byte-identical output |
+| **Throughput** (code, 128-tok decode) | 21.68 tok/s | 23.26 tok/s | **0.93×** (≈ parity) |
+
+**CUDA (H200) — Kakeya vs standalone Gemma-4 26B AR** · bf16:
+
+| Axis | Kakeya | AR | Result |
+| --- | --- | --- | --- |
+| **Memory** (resident KV @ 3 238 / 6 438 tok) | **constant 16.71 MB** | 733.06 / 1 453.96 MB | **43.9× / 87.0× saving** |
+| **Context length** | 68-tok window ↦ 3 254 / 6 454 tok, **recall 1.0** | recall 1.0 | **47.9× / 94.9× compression** |
+| **Throughput** (fused spec-decode, block-16) | **28.94 tok/s** | 16.13 tok/s | **1.79× AR** (accept-len 3.32) |
+
+Both platforms hold **recall 1.0 / byte-identical output**. The fork is on the
+throughput axis only: CUDA's cheap verify-batch turns spec-decode into a **1.79×**
+win, while on Mac the **26 B `verify(L)` compute per block** is the floor, so the
+engine lands at **≈ AR parity** — the memory + context wins are platform-independent.
+Reproduce with `scripts/research/k3_e2e_gpu_bench.py` + `k3_specdecode_gpu_bench.py`
+(CUDA) and the `k3-beta-scorecard` / `k3-fused-allmlx-code-trim` Mac-bridge presets.
+
 ## Kakeya Inference Engine for Mac — MLX speculative-decode port (K3 beta baseline)
 
 After the **CUDA** beta (PR #107: f_θ + S5 K/V-restoration verifier, **fused DFlash
@@ -125,7 +184,8 @@ the [Mac bridge](#evaluation-environment); ×AR is the ratio).
 
 **Honest ceiling & what was *ruled out*.** ≈AR parity is the Mac result on the
 spec-decode sweet spot (short-context, naturally-long *code/agent* generation);
-**>AR meaningfully remains CUDA-favoured** (H200 1.27×) because the binding
+**>AR meaningfully remains CUDA-favoured** (H200 **1.79×** fused/block-16 on the
+fresh `main` scorecard above; #107 originally reported 1.27×) because the binding
 constraint is the **26B `verify(L)` compute per block** — *not* rollback (fixed),
 *not* sync count (a one-graph "single-fused" probe ran stably at ~0.16 s/block and
 was ≈ equal — the b876 single-fused "143 s" pathology is **large-cache-specific**,
