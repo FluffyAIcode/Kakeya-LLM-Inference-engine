@@ -56,6 +56,7 @@ def _manifest(**overrides):
 def test_allowlist_contains_exactly_the_documented_presets():
     assert sorted(PRESETS) == [
         "integration-tests",
+        "k3-beta-scorecard",
         "k3-drafter-parity",
         "k3-drafter-parity-fp32",
         "k3-evidence-gate",

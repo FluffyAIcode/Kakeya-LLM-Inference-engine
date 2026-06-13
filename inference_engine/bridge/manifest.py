@@ -267,6 +267,35 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="k3-beta-scorecard",
+            description="Beta scorecard: all-MLX fused + CUDA-trim on NIAH ctx280 "
+                        "(S5), natural stop. Reports Kakeya vs MLX-only oracle: "
+                        "bounded KV (S5 vs naive), recall, context length, decode tok/s.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode",
+                    "--all-mlx-drafter", "--cuda-trim",
+                    "--n-samples", "{n_samples}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                    "--prefill-chunk-size", "512",
+                    "--output",
+                    "results/research/k3_mac_bridge_k3_beta_scorecard.json",
+                ),
+            ),
+            timeout_minutes=120,
+            params={
+                "n_samples": ("int:n_samples", "5"),
+                "max_new_tokens": ("int:max_new_tokens", "32"),
+                "block_size": ("int:block_size", "8"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
             name="k3-fused-allmlx-code-trim",
             description="CUDA-parity rollback test: all-MLX fused + --cuda-trim "
                         "(all-KVCache + native trim, keep accepted / drop rejected, "
