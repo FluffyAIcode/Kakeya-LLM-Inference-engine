@@ -236,6 +236,37 @@ PRESETS: Dict[str, Preset] = {
             params={"path": ("path:tests", None)},
         ),
         Preset(
+            name="k3-fused-singlefused-probe",
+            description="PROBE: single-fused (one drafter+26B graph) vs two-phase, "
+                        "to classify the Metal instability. Small (n=2, gen=16) so a "
+                        "pathological per-block eval is bounded. Compare block_eval_s "
+                        "vs k3-fused-allmlx-code-trim (two-phase).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode",
+                    "--all-mlx-drafter", "--code-prompts", "--cuda-trim",
+                    "--single-fused",
+                    "--n-samples", "{n_samples}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                    "--prefill-chunk-size", "512",
+                    "--output",
+                    "results/research/k3_mac_bridge_k3_fused_singlefused_probe.json",
+                ),
+            ),
+            timeout_minutes=60,
+            params={
+                "n_samples": ("int:n_samples", "2"),
+                "max_new_tokens": ("int:max_new_tokens", "16"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
             name="k3-fused-allmlx-code-trim",
             description="CUDA-parity rollback test: all-MLX fused + --cuda-trim "
                         "(all-KVCache + native trim, keep accepted / drop rejected, "

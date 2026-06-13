@@ -373,6 +373,7 @@ def fused_specdecode_generate_mlx_trim(
     gen_tokens: int,
     block_size: int,
     eos_ids: Sequence[int] = (),
+    single_fused: bool = False,
 ) -> Dict[str, Any]:
     """CUDA-parity fused spec decode: KEEP accepted K/V, TRIM only the rejected
     tail (no rollback, no carry re-forward). Requires the adapter to be
@@ -397,6 +398,7 @@ def fused_specdecode_generate_mlx_trim(
 
     generated: List[int] = []
     accepts: List[int] = []
+    block_evals: List[float] = []
     ctx_len = C
     try:
         while len(generated) < gen_tokens:
@@ -410,7 +412,11 @@ def fused_specdecode_generate_mlx_trim(
                     ctx_kv, bonus_id, embed_fn, lm_head_fn,
                     n_masks=n_draft, context_len=base)
                 check_ids = mx.concatenate([bonus_id[None], drafts])   # [L]
-                mx.eval(check_ids)   # two-phase (drafter graph before 26B graph)
+                if not single_fused:
+                    mx.eval(check_ids)   # two-phase (drafter graph before 26B)
+                # single_fused=True → leave check_ids LAZY so the drafter and
+                # 26B verify fuse into ONE graph (the path b876 found Metal-
+                # pathological); this probe times it to classify the instability.
             else:
                 check_ids = bonus_id[None]
             block_logits = adapter.forward_block_lazy(check_ids[None])  # [L, V]
@@ -426,7 +432,9 @@ def fused_specdecode_generate_mlx_trim(
             timing["build_s"] += time.perf_counter() - t_build
             t_eval = time.perf_counter()
             mx.eval(accepted_mx, check_ids)
-            timing["eval_s"] += time.perf_counter() - t_eval
+            blk_eval = time.perf_counter() - t_eval
+            timing["eval_s"] += blk_eval
+            block_evals.append(round(blk_eval, 4))
             accepted = int(accepted_mx.item())
             check = [int(x) for x in check_ids.tolist()]
             commit = check[:accepted]
@@ -461,7 +469,13 @@ def fused_specdecode_generate_mlx_trim(
         "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
                             if accepts else 0.0),
         "decode_tokens": len(generated),
-        "loop": "mlx_trim_keep_accepted_cuda_parity",
+        "loop": ("mlx_trim_single_fused_probe" if single_fused
+                 else "mlx_trim_keep_accepted_cuda_parity"),
+        "single_fused": bool(single_fused),
+        "block_eval_s_first8": block_evals[:8],
+        "block_eval_s_max": (round(max(block_evals), 4) if block_evals else None),
+        "block_eval_s_mean": (round(sum(block_evals) / len(block_evals), 4)
+                              if block_evals else None),
         "time_breakdown_s": {k: round(v, 3) for k, v in timing.items()},
     }
 

@@ -112,6 +112,11 @@ def parse_args() -> argparse.Namespace:
                          "crossings per block. Requires --s5-exact-full-attn "
                          "(the all-MLX path uses native-S5 injection; the "
                          "f_theta sliding restoration path stays torch).")
+    ap.add_argument("--single-fused", action="store_true",
+                    help="PROBE: with --cuda-trim, fuse drafter+verifier into ONE "
+                         "graph (skip the two-phase eval) to classify the Metal "
+                         "instability (fundamental command-buffer vs fixable SDPA "
+                         "fallback). Reports per-block eval times.")
     ap.add_argument("--cuda-trim", action="store_true",
                     help="All-MLX fused with the CUDA-parity rollback: all-KVCache "
                          "verifier layout + native trim_prompt_cache (keep accepted "
@@ -731,7 +736,8 @@ def main() -> int:
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens,
-                        block_size=args.block_size, eos_ids=end_ids)
+                        block_size=args.block_size, eos_ids=end_ids,
+                        single_fused=args.single_fused)
                 elif mlx_drafter is not None:
                     # Single-sync all-MLX loop (levers ①②③) + v3 carry rollback.
                     res = fused_specdecode_generate_mlx(
