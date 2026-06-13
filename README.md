@@ -149,8 +149,7 @@ the engine cost vs just running the model?"* baseline.
 | **Context length** | 4 406–5 810 tok handled, **recall 1.0** | recall 1.0 | byte-identical output |
 | **Throughput** (code, 128-tok decode) | 21.68 tok/s | 23.26 tok/s | **0.93×** (≈ parity) |
 
-<details>
-<summary>Raw scorecard report — Mac MLX (reproducible evidence)</summary>
+*Raw scorecard report — Mac MLX (reproducible evidence):*
 
 ```
 Kakeya Inference Engine (MLX beta, main @ 9d5e6b4 / PR #117) vs MLX-only
@@ -181,8 +180,6 @@ MLX-only-identical output, at ~AR-parity throughput on Mac (the 26B verify(L)
 compute per block is the throughput floor; >AR remains CUDA-favored: H200 1.79x).
 ```
 
-</details>
-
 **CUDA (H200) — Kakeya vs standalone Gemma-4 26B AR** · bf16:
 
 | Axis | Kakeya | AR | Result |
@@ -191,8 +188,7 @@ compute per block is the throughput floor; >AR remains CUDA-favored: H200 1.79x)
 | **Context length** | 68-tok window ↦ 3 254 / 6 454 tok, **recall 1.0** | recall 1.0 | **47.9× / 94.9× compression** |
 | **Throughput** (fused spec-decode, block-16) | **28.94 tok/s** | 16.13 tok/s | **1.79× AR** (accept-len 3.32) |
 
-<details>
-<summary>Raw scorecard report — CUDA H200 (reproducible evidence)</summary>
+*Raw scorecard report — CUDA H200 (reproducible evidence):*
 
 ```
 Kakeya Inference Engine (GPU beta, main @ 9d5e6b4 / #107+#117) vs standalone AR
@@ -226,8 +222,6 @@ Net (GPU): bounded memory (44-87x KV saving, constant 16.71 MB) + full-context
 recall (48-95x compression, recall 1.0) + 1.79x AR throughput, all at
 AR-identical correctness. This is the platform where spec-decode value lands.
 ```
-
-</details>
 
 Both platforms hold **recall 1.0 / byte-identical output**. The fork is on the
 throughput axis only: CUDA's cheap verify-batch turns spec-decode into a **1.79×**
