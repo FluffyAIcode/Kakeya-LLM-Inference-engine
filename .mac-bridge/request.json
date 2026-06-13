@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "preset": "k3-beta-scorecard",
+  "params": {
+    "n_samples": "5",
+    "max_new_tokens": "32",
+    "block_size": "8"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781348798-e00b47"
+}
