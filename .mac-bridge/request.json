@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-env-probe",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781317768-41fb3d"
+}
