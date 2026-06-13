@@ -310,6 +310,23 @@ def test_adapter_prefill_rejects_empty_prompt(monkeypatch):
                         evicted_positions=[])
 
 
+def test_make_full_kv_prompt_cache_all_kvcache(monkeypatch):
+    # Fake mlx_lm.models.cache with make_prompt_cache (count) + a KVCache class.
+    import types as _t
+    class _FakeKV:
+        instances = 0
+        def __init__(self): type(self).instances += 1
+    cache_mod = _t.ModuleType("mlx_lm.models.cache")
+    cache_mod.make_prompt_cache = lambda model, **k: ["a", "b", "c", "d"]  # 4 layers
+    cache_mod.KVCache = _FakeKV
+    monkeypatch.setitem(sys.modules, "mlx_lm", _t.ModuleType("mlx_lm"))
+    monkeypatch.setitem(sys.modules, "mlx_lm.models", _t.ModuleType("mlx_lm.models"))
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", cache_mod)
+    out = fsd.make_full_kv_prompt_cache(object())
+    assert len(out) == 4 and all(isinstance(c, _FakeKV) for c in out)
+    assert _FakeKV.instances == 4   # every layer is a fresh full KVCache
+
+
 def test_patched_decoder_layers_empty_is_noop(monkeypatch):
     _install_mlx(monkeypatch)
     tm = _TextModel(0)

@@ -112,6 +112,21 @@ def parse_args() -> argparse.Namespace:
                          "crossings per block. Requires --s5-exact-full-attn "
                          "(the all-MLX path uses native-S5 injection; the "
                          "f_theta sliding restoration path stays torch).")
+    ap.add_argument("--single-fused", action="store_true",
+                    help="PROBE: with --cuda-trim, fuse drafter+verifier into ONE "
+                         "graph (skip the two-phase eval) to classify the Metal "
+                         "instability (fundamental command-buffer vs fixable SDPA "
+                         "fallback). Reports per-block eval times.")
+    ap.add_argument("--cuda-trim", action="store_true",
+                    help="All-MLX fused with the CUDA-parity rollback: all-KVCache "
+                         "verifier layout + native trim_prompt_cache (keep accepted "
+                         "K/V, drop only rejected) instead of the v3 carry "
+                         "re-forward. Requires --all-mlx-drafter --fused-specdecode.")
+    ap.add_argument("--code-prompts", action="store_true",
+                    help="Replace the NIAH dataset with code-completion prompts "
+                         "(naturally-long, predictable generation = the spec-decode "
+                         "sweet spot). Recall metric is N/A; measures honest "
+                         "decode-only throughput + acceptance on a real workload.")
     ap.add_argument("--ignore-turn-stop", action="store_true",
                     help="Do not include Gemma4 <turn|> as a stop token. "
                          "Useful for throughput evidence runs that require "
@@ -179,7 +194,7 @@ def main() -> int:
     from inference_engine.backends.mlx.fused_specdecode import (
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
-        fused_specdecode_generate_mlx,
+        fused_specdecode_generate_mlx, fused_specdecode_generate_mlx_trim,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -391,12 +406,41 @@ def main() -> int:
         )
 
     # ---------- Dataset ----------
-    samples: List[NIAHSample] = make_niah_dataset(
-        n_samples=args.n_samples,
-        haystack_min_lines=args.haystack_min_lines,
-        haystack_max_lines=args.haystack_max_lines,
-        seed=args.seed,
-    )
+    if args.code_prompts:
+        _CODE = [
+            "Write a complete Python implementation of a binary search tree class "
+            "with insert, search, and in-order traversal methods. Include type "
+            "hints and docstrings.",
+            "Implement a Python LRU cache class with get and put methods using an "
+            "OrderedDict. Include type hints and docstrings.",
+            "Write a Python function that parses a CSV string into a list of dicts, "
+            "correctly handling quoted fields and embedded commas. Add error handling.",
+            "Implement quicksort in Python with an in-place partition helper. "
+            "Include docstrings and a small example in a __main__ block.",
+            "Write a Python class for a fixed-capacity ring buffer with push, pop, "
+            "and is_full methods, raising on overflow. Include type hints.",
+            "Implement a recursive descent parser in Python for arithmetic "
+            "expressions with + - * / and parentheses. Return the evaluated value.",
+            "Write a Python decorator `retry` that retries a function up to n times "
+            "with exponential backoff on exception. Include type hints and docstring.",
+            "Implement a thread-safe counter class in Python using threading.Lock, "
+            "with increment, decrement, and value methods.",
+        ]
+        n = min(args.n_samples, len(_CODE))
+        samples: List[NIAHSample] = [
+            NIAHSample(prompt_text=p, answer_text="", needle_line_index=0,
+                       needle_text="")
+            for p in _CODE[:n]
+        ]
+        print(f"[mac] CODE-PROMPTS workload: {n} prompts (recall N/A; "
+              f"measuring decode throughput + acceptance)", file=sys.stderr)
+    else:
+        samples = make_niah_dataset(
+            n_samples=args.n_samples,
+            haystack_min_lines=args.haystack_min_lines,
+            haystack_max_lines=args.haystack_max_lines,
+            seed=args.seed,
+        )
 
     def encode(prompt_text: str) -> List[int]:
         if args.direct_answer_prompt:
@@ -681,12 +725,21 @@ def main() -> int:
                     restored_k_per_layer=_pad(rk, tsrc, T),
                     restored_v_per_layer=_pad(rv, tsrc, T),
                     evicted_positions=evicted,
-                    prefill_chunk_size=args.prefill_chunk_size)
+                    prefill_chunk_size=args.prefill_chunk_size,
+                    full_kv=args.cuda_trim)
             prefill_s = time.perf_counter() - prefill_t0
             t0 = time.perf_counter()
             if args.force_fused_specdecode:
-                if mlx_drafter is not None:
-                    # Single-sync all-MLX loop (levers ①②③).
+                if mlx_drafter is not None and args.cuda_trim:
+                    # CUDA-parity: keep accepted K/V, trim only rejected.
+                    res = fused_specdecode_generate_mlx_trim(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens,
+                        block_size=args.block_size, eos_ids=end_ids,
+                        single_fused=args.single_fused)
+                elif mlx_drafter is not None:
+                    # Single-sync all-MLX loop (levers ①②③) + v3 carry rollback.
                     res = fused_specdecode_generate_mlx(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
@@ -1036,12 +1089,17 @@ def main() -> int:
     print(f"\n[mac] DONE. {sut_label}={cross_res.recall:.3f} "
           f"oracle={oracle_res.recall if oracle_res else 'skipped'} "
           f"-> {out_path}", file=sys.stderr)
-    if violations:
+    if violations and args.code_prompts:
+        print("[mac] code-prompts throughput probe: recall is N/A by design; "
+              "evidence gate informational only (not aborting):\n"
+              + summarize_violations(violations), file=sys.stderr)
+    elif violations:
         print("[mac] EVIDENCE GATE FAILED — this report is NOT admissible "
               "as evidence:\n" + summarize_violations(violations),
               file=sys.stderr)
         return 2
-    print("[mac] evidence gate: PASS", file=sys.stderr)
+    else:
+        print("[mac] evidence gate: PASS", file=sys.stderr)
     return 0
 
 
