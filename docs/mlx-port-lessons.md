@@ -1,5 +1,23 @@
 # Porting the K3 GPU beta (#107) to MLX — lessons & plan
 
+> ## ⛔ RETRACTION (2026-06-13) — Step-1 / native-cache "recall 5/5 / 1.0× AR" is NOT architecture evidence
+>
+> The Step-1 incremental path and the native-cache path get their recall from
+> **Gemma-4's native retained full-attention layers + native sliding-window
+> eviction** — they **never exercise f_θ or proposer K/V restoration** (ADR 0008
+> §11). So every "recall 5/5 / 1.0× AR / collapse fixed" claim about Step-1 in
+> this doc is **Gemma-4 native behaviour, not evidence the K/V-Restoration
+> architecture works**. The path is structurally **incapable of failing in a way
+> that tests the architecture** (the full-attn coupon always carries recall).
+>
+> **Step-1 / native-cache bypass is forbidden for any architecture-validation
+> attempt** (2026-06-13 directive; ADR 0012 revision). The bounded-memory +
+> recall *architecture* claim is **unvalidated on a falsifiable model** and must
+> be re-validated on a **pure sliding-window model (Qwen3, K1/K2)** where recall
+> is impossible without proposer/f_θ restoration. Read everything below through
+> this retraction: the throughput/memory plumbing notes are still useful, but
+> the Step-1 *results* are not architectural validation.
+
 Audience: whoever ports the validated CUDA restored-verifier engine
 (`inference_engine/v04/…`, PR #107) to the Apple-Silicon MLX backend
 (`inference_engine/backends/mlx/…`). The current MLX blocker is **decode
