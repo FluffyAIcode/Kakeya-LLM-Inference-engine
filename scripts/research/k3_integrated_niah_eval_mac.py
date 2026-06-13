@@ -112,6 +112,11 @@ def parse_args() -> argparse.Namespace:
                          "crossings per block. Requires --s5-exact-full-attn "
                          "(the all-MLX path uses native-S5 injection; the "
                          "f_theta sliding restoration path stays torch).")
+    ap.add_argument("--cuda-trim", action="store_true",
+                    help="All-MLX fused with the CUDA-parity rollback: all-KVCache "
+                         "verifier layout + native trim_prompt_cache (keep accepted "
+                         "K/V, drop only rejected) instead of the v3 carry "
+                         "re-forward. Requires --all-mlx-drafter --fused-specdecode.")
     ap.add_argument("--code-prompts", action="store_true",
                     help="Replace the NIAH dataset with code-completion prompts "
                          "(naturally-long, predictable generation = the spec-decode "
@@ -184,7 +189,7 @@ def main() -> int:
     from inference_engine.backends.mlx.fused_specdecode import (
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
-        fused_specdecode_generate_mlx,
+        fused_specdecode_generate_mlx, fused_specdecode_generate_mlx_trim,
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -715,12 +720,20 @@ def main() -> int:
                     restored_k_per_layer=_pad(rk, tsrc, T),
                     restored_v_per_layer=_pad(rv, tsrc, T),
                     evicted_positions=evicted,
-                    prefill_chunk_size=args.prefill_chunk_size)
+                    prefill_chunk_size=args.prefill_chunk_size,
+                    full_kv=args.cuda_trim)
             prefill_s = time.perf_counter() - prefill_t0
             t0 = time.perf_counter()
             if args.force_fused_specdecode:
-                if mlx_drafter is not None:
-                    # Single-sync all-MLX loop (levers ①②③).
+                if mlx_drafter is not None and args.cuda_trim:
+                    # CUDA-parity: keep accepted K/V, trim only rejected.
+                    res = fused_specdecode_generate_mlx_trim(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens,
+                        block_size=args.block_size, eos_ids=end_ids)
+                elif mlx_drafter is not None:
+                    # Single-sync all-MLX loop (levers ①②③) + v3 carry rollback.
                     res = fused_specdecode_generate_mlx(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,

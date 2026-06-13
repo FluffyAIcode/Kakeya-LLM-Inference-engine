@@ -376,6 +376,7 @@ def restored_prefill_cache(
     restored_v_per_layer: Dict[int, Any],
     evicted_positions: Sequence[int],
     prefill_chunk_size: int = 0,
+    cache_factory: Optional[Callable[[Any], Any]] = None,
 ):
     """Prefill ONCE with restoration, capturing the restored K/V into a
     persistent mlx_lm prompt cache; return ``(cache, last_logits)``.
@@ -397,7 +398,15 @@ def restored_prefill_cache(
     text_model = resolve_mlx_text_model(mlx_model)
     T = len(list(input_ids))
     evicted = set(int(p) for p in evicted_positions if 0 <= int(p) < T)
-    cache = make_prompt_cache(mlx_model)
+    # cache_factory lets the caller swap the model's native hybrid cache for an
+    # all-`KVCache` layout (full store for sliding layers too) so that the
+    # spec-decode accept/reject rollback can use mlx_lm's native, SOUND
+    # `trim_prompt_cache` (keep accepted K/V, drop only rejected) instead of the
+    # full re-forward carry — `RotatingKVCache` is not trimmable once wrapped.
+    # Sliding attention stays byte-exact: the window mask is applied regardless
+    # of cache capacity. (Costs O(T) sliding KV during decode; fine for the
+    # short-context code/agent workloads this targets.)
+    cache = (cache_factory or make_prompt_cache)(mlx_model)
 
     def _slice_restored(a, start: int, end: int):
         if a is None:
