@@ -1,0 +1,32 @@
+{
+  "preset": "verify-l-sweep",
+  "params": {
+    "context_len": "4096",
+    "reps": "8"
+  },
+  "nonce": "1781318664-f86c3d",
+  "commands": [
+    {
+      "argv": [
+        "python3",
+        "scripts/research/verify_l_sweep_mac.py",
+        "--verifier-path",
+        "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+        "--context-len",
+        "4096",
+        "--reps",
+        "8",
+        "--l-list",
+        "1,2,4,8,16",
+        "--prefill-chunk-size",
+        "512",
+        "--output",
+        "results/research/verify_l_sweep.json"
+      ],
+      "exit_code": 0,
+      "seconds": 63.5,
+      "log": ".mac-bridge/logs/verify-l-sweep-0.log"
+    }
+  ],
+  "exit_code": 0
+}

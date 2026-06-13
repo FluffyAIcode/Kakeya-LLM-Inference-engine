@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "kind": "verify_l_sweep_mac",
+  "config": {
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "context_len": 4096,
+    "reps": 8,
+    "l_list": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "n_layers": 30,
+    "top_k_experts": 8,
+    "num_experts": 128,
+    "vocab": 262144
+  },
+  "rows": [
+    {
+      "L": 1,
+      "verify_s_median": 0.047156,
+      "verify_s_samples": [
+        0.068722,
+        0.045157,
+        0.047666,
+        0.047413,
+        0.048447,
+        0.045781,
+        0.046899,
+        0.046364
+      ],
+      "expert_union_ratio": 1.0,
+      "measured_headroom": 1.0,
+      "expert_union_headroom": 1.0
+    },
+    {
+      "L": 2,
+      "verify_s_median": 0.088487,
+      "verify_s_samples": [
+        0.096678,
+        0.088803,
+        0.087611,
+        0.084942,
+        0.08817,
+        0.086499,
+        0.090546,
+        0.090893
+      ],
+      "expert_union_ratio": 0.725,
+      "measured_headroom": 1.066,
+      "expert_union_headroom": 1.379
+    },
+    {
+      "L": 4,
+      "verify_s_median": 0.112214,
+      "verify_s_samples": [
+        0.113778,
+        0.116019,
+        0.11008,
+        0.109947,
+        0.112298,
+        0.10679,
+        0.112131,
+        0.114569
+      ],
+      "expert_union_ratio": 0.5146,
+      "measured_headroom": 1.681,
+      "expert_union_headroom": 1.943
+    },
+    {
+      "L": 8,
+      "verify_s_median": 0.142878,
+      "verify_s_samples": [
+        0.150643,
+        0.138495,
+        0.142735,
+        0.143712,
+        0.142315,
+        0.140886,
+        0.143021,
+        0.14307
+      ],
+      "expert_union_ratio": 0.349,
+      "measured_headroom": 2.64,
+      "expert_union_headroom": 2.865
+    },
+    {
+      "L": 16,
+      "verify_s_median": 0.192676,
+      "verify_s_samples": [
+        0.197474,
+        0.193483,
+        0.192299,
+        0.20098,
+        0.193054,
+        0.189956,
+        0.191344,
+        0.190094
+      ],
+      "expert_union_ratio": 0.2214,
+      "measured_headroom": 3.916,
+      "expert_union_headroom": 4.517
+    }
+  ],
+  "note": "measured_headroom = L*verify(1)/verify(L) (kernel-dedup real margin); expert_union_headroom = 1/(|union experts|/(L*top_k)) (MoE-FFN theoretical dedup bound, router-measured)."
+}
