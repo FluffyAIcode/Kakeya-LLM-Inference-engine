@@ -1,0 +1,583 @@
+{
+  "schema_version": 2,
+  "kind": "k3_integrated_niah_acceptance_mac",
+  "config": {
+    "native_baseline_bypass": false,
+    "all_mlx_drafter": true,
+    "block_size": 4,
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+    "n_samples": 2,
+    "sink_size": 4,
+    "window_size": 64,
+    "haystack_min_lines": 238,
+    "haystack_max_lines": 322,
+    "max_new_tokens": 16,
+    "prefill_chunk_size": 512,
+    "decode_warmup_tokens": 1,
+    "direct_answer_prompt": true,
+    "content_channel_prefill": true,
+    "seed": 42,
+    "eval_mode": "free_gen_fused_specdecode",
+    "teacher_forced": false,
+    "s5_exact_full_attn": true,
+    "identity_restore": false,
+    "compress_full_attn": false,
+    "kl_lattice": null,
+    "kl_q_range": null,
+    "kl_bits_per_token_per_head": null,
+    "full_attention_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "prompt_token_lens": [
+      74,
+      67
+    ]
+  },
+  "results": {
+    "k3_cross_model": {
+      "name": "k3_cross_model_mac",
+      "samples_total": 2,
+      "samples_correct": 2,
+      "recall": 1.0,
+      "mean_latency_s": 1.7420252499869093,
+      "median_latency_s": 1.7420252499869093,
+      "per_sample_decoded": [
+        "PREFIX-8291\n\n```python\nfrom typing import Optional, List",
+        "PREFIX-8294<turn|>"
+      ],
+      "per_sample_correct": [
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        16,
+        7
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        7.593023136238655,
+        5.084057936380136
+      ],
+      "mean_throughput_tokens_per_sec": 6.338540536309395,
+      "median_throughput_tokens_per_sec": 6.338540536309395,
+      "min_throughput_tokens_per_sec": 5.084057936380136,
+      "max_throughput_tokens_per_sec": 7.593023136238655,
+      "system_under_test": "restored_cross_model"
+    },
+    "oracle": {
+      "name": "oracle_mac",
+      "samples_total": 2,
+      "samples_correct": 2,
+      "recall": 1.0,
+      "mean_latency_s": 0.8558135414496064,
+      "median_latency_s": 0.8558135414496064,
+      "per_sample_decoded": [
+        "PREFIX-8291\n\n```python\nfrom typing import Optional, List",
+        "PREFIX-8294<turn|>"
+      ],
+      "per_sample_correct": [
+        true,
+        true
+      ],
+      "per_sample_decode_tokens": [
+        16,
+        7
+      ],
+      "per_sample_throughput_tokens_per_sec": [
+        15.313718273364815,
+        10.497707564291836
+      ],
+      "mean_throughput_tokens_per_sec": 12.905712918828325,
+      "median_throughput_tokens_per_sec": 12.905712918828325,
+      "min_throughput_tokens_per_sec": 10.497707564291836,
+      "max_throughput_tokens_per_sec": 15.313718273364815
+    }
+  },
+  "gate": {
+    "recall_cross_model": 1.0,
+    "recall_native_baseline": null,
+    "recall_oracle": 1.0,
+    "recall_delta_vs_oracle_pp": 0.0,
+    "recall_delta_within_5pp": true,
+    "evidence_violations": []
+  },
+  "memory": {
+    "s5": {
+      "seq_len": 74,
+      "kv_dtype_bytes": 2,
+      "sink_window": 68,
+      "exact_layer_indices": [
+        5,
+        11,
+        17,
+        23,
+        29
+      ],
+      "compress_full_bits_per_token_per_head": null,
+      "sliding_resident_bytes": 13926400,
+      "full_resident_bytes": 1515520,
+      "total_resident_bytes": 15441920,
+      "total_resident_mb": 15.44,
+      "per_token_growth_bytes": 20480,
+      "per_token_growth_kb": 20.0,
+      "per_layer": [
+        {
+          "layer": 0,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 1,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 2,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 3,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 4,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 5,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 74,
+          "bytes_per_token": 4096,
+          "resident_bytes": 303104
+        },
+        {
+          "layer": 6,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 7,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 8,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 9,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 10,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 11,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 74,
+          "bytes_per_token": 4096,
+          "resident_bytes": 303104
+        },
+        {
+          "layer": 12,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 13,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 14,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 15,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 16,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 17,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 74,
+          "bytes_per_token": 4096,
+          "resident_bytes": 303104
+        },
+        {
+          "layer": 18,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 19,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 20,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 21,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 22,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 23,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 74,
+          "bytes_per_token": 4096,
+          "resident_bytes": 303104
+        },
+        {
+          "layer": 24,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 25,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 26,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 27,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 28,
+          "layer_type": "sliding_attention",
+          "n_kv_heads": 8,
+          "head_dim": 256,
+          "exact": false,
+          "resident_positions": 68,
+          "bytes_per_token": 8192,
+          "resident_bytes": 557056
+        },
+        {
+          "layer": 29,
+          "layer_type": "full_attention",
+          "n_kv_heads": 2,
+          "head_dim": 512,
+          "exact": true,
+          "resident_positions": 74,
+          "bytes_per_token": 4096,
+          "resident_bytes": 303104
+        }
+      ],
+      "scope": "analytical_formula",
+      "formula_matches_run": true
+    },
+    "naive_full_kv": {
+      "total_resident_mb": 16.67,
+      "per_token_growth_kb": 220.0
+    },
+    "savings_vs_naive_pct": 7.4,
+    "measured_peak_mb": 16363.8
+  },
+  "throughput": {
+    "k3_cross_model": {
+      "tokens": 23,
+      "wall_seconds": 3.484,
+      "tokens_per_second": 6.6015,
+      "mean_latency_per_sample_s": 1.742,
+      "timing_scope": "e2e_prefill_plus_decode",
+      "eval_mode": "free_gen_fused_specdecode",
+      "restored_forwards_per_sample": 16,
+      "stage_timings": [
+        {
+          "sample": 0,
+          "build_restoration_s": 0.0,
+          "aux_prompt_capture_s": 0.321,
+          "prefill_s": 0.399,
+          "decode_s": 1.387,
+          "e2e_s": 2.107,
+          "restoration_active": true,
+          "decode_loop": "fused_specdecode",
+          "fused": {
+            "tokens": [
+              92813,
+              236772,
+              236828,
+              236778,
+              236819,
+              236770,
+              108,
+              2717,
+              6719,
+              107,
+              2543,
+              28751,
+              1419,
+              26272,
+              236764,
+              4361
+            ],
+            "blocks": 9,
+            "mean_accept_len": 1.778,
+            "decode_tokens": 16,
+            "loop": "mlx_trim_single_fused_probe",
+            "single_fused": true,
+            "block_eval_s_first8": [
+              0.3315,
+              0.1242,
+              0.129,
+              0.1295,
+              0.1289,
+              0.128,
+              0.1272,
+              0.1294
+            ],
+            "block_eval_s_max": 0.3315,
+            "block_eval_s_mean": 0.1427,
+            "time_breakdown_s": {
+              "ctx_kv_build_s": 0.0,
+              "build_s": 0.037,
+              "eval_s": 1.284,
+              "extend_s": 0.018
+            },
+            "drafter_runtime": "mlx"
+          }
+        },
+        {
+          "sample": 1,
+          "build_restoration_s": 0.001,
+          "aux_prompt_capture_s": 0.319,
+          "prefill_s": 0.393,
+          "decode_s": 0.664,
+          "e2e_s": 1.377,
+          "restoration_active": true,
+          "decode_loop": "fused_specdecode",
+          "fused": {
+            "tokens": [
+              92813,
+              236772,
+              236828,
+              236778,
+              236819,
+              236812,
+              106
+            ],
+            "blocks": 5,
+            "mean_accept_len": 1.4,
+            "decode_tokens": 7,
+            "loop": "mlx_trim_single_fused_probe",
+            "single_fused": true,
+            "block_eval_s_first8": [
+              0.1238,
+              0.1254,
+              0.1244,
+              0.1233,
+              0.1277
+            ],
+            "block_eval_s_max": 0.1277,
+            "block_eval_s_mean": 0.1249,
+            "time_breakdown_s": {
+              "ctx_kv_build_s": 0.0,
+              "build_s": 0.027,
+              "eval_s": 0.625,
+              "extend_s": 0.01
+            },
+            "drafter_runtime": "mlx"
+          }
+        }
+      ]
+    },
+    "oracle_native_ar": {
+      "tokens": 23,
+      "wall_seconds": 1.712,
+      "tokens_per_second": 13.4375,
+      "mean_latency_per_sample_s": 0.856,
+      "timing_scope": "e2e_prefill_plus_decode",
+      "stage_timings": [
+        {
+          "sample": 0,
+          "prefill_s": 0.411,
+          "decode_s": 0.634,
+          "e2e_s": 1.045,
+          "decode_loop": "generate_step"
+        },
+        {
+          "sample": 1,
+          "prefill_s": 0.408,
+          "decode_s": 0.259,
+          "e2e_s": 0.667,
+          "decode_loop": "generate_step"
+        }
+      ],
+      "decode_loop": "generate_step"
+    },
+    "decode_only": {
+      "cross_median_tok_s": 11.0389,
+      "oracle_median_tok_s": 26.1318,
+      "speedup": 0.422
+    },
+    "cross_model_speedup_vs_oracle_ar": null,
+    "speedup_withheld_reasons": [
+      "n_samples<5 (cross=2, oracle=2)",
+      "median_decode_tokens<32 (prefill-dominated wall time)"
+    ]
+  }
+}

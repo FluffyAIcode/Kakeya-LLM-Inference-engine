@@ -1,0 +1,19 @@
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading ALL-MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[mac] CODE-PROMPTS workload: 2 prompts (recall N/A; measuring decode throughput + acceptance)
+[mac] 2 samples, prompt len min=67 max=74
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[mac]   fused 0: T=74 acc_len=1.778 -> 'PREFIX-8291\n\n```python\nfrom typing import Option'
+[mac]   fused 1: T=67 acc_len=1.4 -> 'PREFIX-8294<turn|>'
+[mac] restored_cross_model recall = 1.000 (2/2)
+[mac] running oracle
+[mac]   oracle 0: T=74 -> 'PREFIX-8291\n\n```python\nfrom typing import Option'
+[mac]   oracle 1: T=67 -> 'PREFIX-8294<turn|>'
+[mac] oracle recall = 1.000
+[mac] KV resident @T=74: S5=15.44 MB (growth 20.0 KB/tok); naive-full=16.67 MB
+[mac] speedup WITHHELD (evidence gate): n_samples<5 (cross=2, oracle=2); median_decode_tokens<32 (prefill-dominated wall time)
+[mac] cross-model throughput (free_gen_fused_specdecode): 6.6015 tok/s (23 tok / 3.484 s, 1.742 s/sample)
+
+[mac] DONE. restored_cross_model=1.000 oracle=1.0 -> results/research/k3_mac_bridge_k3_fused_singlefused_probe.json
+[mac] evidence gate: PASS
