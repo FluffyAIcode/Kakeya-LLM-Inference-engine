@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "preset": "verify-l-sweep",
+  "params": {
+    "context_len": "4096",
+    "reps": "8"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781318664-f86c3d"
+}
