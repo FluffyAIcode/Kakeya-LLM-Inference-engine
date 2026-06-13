@@ -267,11 +267,12 @@ jobs:
       - name: Install grpcio-tools
         run: |
           python -m pip install --upgrade pip
-          # Pin the same grpcio-tools range as requirements.txt so the
-          # stubs we regenerate match what production uses. If
-          # grpcio-tools updates and starts producing different stub
-          # bytes, this job catches it as a drift before merge.
-          pip install 'grpcio>=1.65,<2.0' 'grpcio-tools>=1.65,<2.0'
+          # Pin grpcio-tools to the EXACT version in requirements.txt. The
+          # generated stub embeds the generator version
+          # (GRPC_GENERATED_VERSION), so a loose range lets a patch release
+          # float (e.g. 1.81.0 -> 1.81.1) and fail this drift gate on a
+          # version string alone. Keep this in lockstep with requirements.txt.
+          pip install 'grpcio>=1.65,<2.0' 'grpcio-tools==1.81.1'
 
       - name: Set up Node.js (for ts-proto plugin)
         uses: actions/setup-node@v4

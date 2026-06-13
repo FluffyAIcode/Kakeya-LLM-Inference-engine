@@ -51,8 +51,14 @@ prometheus-client>=0.20,<1.0
 # file because (a) we want CI to be able to drift-check the
 # committed stubs, and (b) the install footprint is small and there
 # is no separate dev-requirements file in this project today.
+#
+# grpcio-tools is PINNED to an EXACT version: the generated stub embeds
+# the generator version as `GRPC_GENERATED_VERSION = '<grpcio-tools ver>'`,
+# so a loose range lets a patch release (e.g. 1.81.0 -> 1.81.1) silently
+# change the committed bytes and fail the `proto stub drift` CI gate.
+# Bump this pin (and re-run scripts/regenerate_proto_stubs.sh) deliberately.
 grpcio>=1.65,<2.0
-grpcio-tools>=1.65,<2.0
+grpcio-tools==1.81.1
 
 # K2.A KakeyaLattice K/V cache compression (ADR 0008 §11.11).
 # Pinned to >= 1.5 (the tested Mac M4 release; see PR-K2.A.0
