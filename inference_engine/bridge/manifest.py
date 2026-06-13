@@ -31,6 +31,8 @@ BRANCH_PREFIX = "mac-bridge/"
 MAX_N_SAMPLES = 50
 MAX_NEW_TOKENS = 512
 MAX_BLOCK_SIZE = 16
+MAX_CONTEXT_LEN = 32768
+MAX_REPS = 50
 
 _ENV_PLACEHOLDER = re.compile(r"^\$\{ENV:([A-Z][A-Z0-9_]*)\}$")
 _NONCE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{3,63}$")
@@ -162,6 +164,27 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=45,
             params={"path": ("path:tests", None)},
         ),
+        Preset(
+            name="verify-l-sweep",
+            description="verify(L) calibration sweep: measure verify(L) latency "
+                        "+ router expert-union to quantify kernel-dedup headroom.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/verify_l_sweep_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--context-len", "{context_len}",
+                    "--reps", "{reps}",
+                    "--l-list", "1,2,4,8,16",
+                    "--prefill-chunk-size", "512",
+                    "--output", "results/research/verify_l_sweep.json",
+                ),
+            ),
+            timeout_minutes=45,
+            params={
+                "context_len": ("int:context_len", "2048"),
+                "reps": ("int:reps", "5"),
+            },
+        ),
     )
 }
 
@@ -201,6 +224,8 @@ def _validate_param(name: str, kind: str, raw: str) -> str:
             "int:n_samples": MAX_N_SAMPLES,
             "int:max_new_tokens": MAX_NEW_TOKENS,
             "int:block_size": MAX_BLOCK_SIZE,
+            "int:context_len": MAX_CONTEXT_LEN,
+            "int:reps": MAX_REPS,
         }[kind]
         if not (1 <= value <= bound):
             raise ManifestError(
