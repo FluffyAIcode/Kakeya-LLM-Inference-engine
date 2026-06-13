@@ -1,4 +1,4 @@
-# Kakeya — local agent runtime with session-bound gRPC
+# Kakeya Inference engine — memory bounded local inference engine
 
 [![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
 [![Release](https://img.shields.io/badge/release-v0.3.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.3.0)
