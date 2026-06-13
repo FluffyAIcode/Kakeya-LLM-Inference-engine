@@ -236,6 +236,37 @@ PRESETS: Dict[str, Preset] = {
             params={"path": ("path:tests", None)},
         ),
         Preset(
+            name="k3-fused-allmlx-code",
+            description="HONEST spec-decode throughput probe: all-MLX fused on a "
+                        "code-completion workload (naturally-long, predictable gen "
+                        "= the spec-decode sweet spot), natural stop. Reports "
+                        "decode-only tok/s (fused vs oracle AR) + acceptance.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode",
+                    "--all-mlx-drafter", "--code-prompts",
+                    # natural stop (no --ignore-turn-stop); code finishes itself
+                    "--n-samples", "{n_samples}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                    "--prefill-chunk-size", "512",
+                    "--output",
+                    "results/research/k3_mac_bridge_k3_fused_allmlx_code.json",
+                ),
+            ),
+            timeout_minutes=120,
+            params={
+                "n_samples": ("int:n_samples", "8"),
+                "max_new_tokens": ("int:max_new_tokens", "128"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
             name="k3-fused-allmlx-natural",
             description="Acceptance probe: all-MLX fused, NATURAL stop (no "
                         "--ignore-turn-stop) so generation ends at the real "
