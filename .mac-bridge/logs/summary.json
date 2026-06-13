@@ -1,11 +1,11 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "k3-fused-allmlx-natural",
   "params": {
     "n_samples": "5",
-    "max_new_tokens": "64",
+    "max_new_tokens": "48",
     "block_size": "4"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781339850-e8e8a1",
   "commands": [
     {
       "argv": [
@@ -18,24 +18,23 @@
         "--f-theta-dir",
         "results/research/f_theta_v5_s5_sliding",
         "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
+        "--fused-specdecode",
+        "--all-mlx-drafter",
         "--n-samples",
         "5",
         "--max-new-tokens",
-        "64",
+        "48",
         "--block-size",
         "4",
         "--prefill-chunk-size",
         "512",
         "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "results/research/k3_mac_bridge_k3_fused_allmlx_natural.json"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 376.0,
+      "log": ".mac-bridge/logs/k3-fused-allmlx-natural-0.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }
