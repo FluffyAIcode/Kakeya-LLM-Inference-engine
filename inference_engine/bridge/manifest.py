@@ -235,6 +235,37 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=45,
             params={"path": ("path:tests", None)},
         ),
+        Preset(
+            name="k3-fused-allmlx-natural",
+            description="Acceptance probe: all-MLX fused, NATURAL stop (no "
+                        "--ignore-turn-stop) so generation ends at the real "
+                        "answer. Compare mean_accept_len vs the forced "
+                        "k3-step2-fused-allmlx (which over-generates).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode",
+                    "--all-mlx-drafter",
+                    # deliberately NO --ignore-turn-stop (natural stop)
+                    "--n-samples", "{n_samples}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                    "--prefill-chunk-size", "512",
+                    "--output",
+                    "results/research/k3_mac_bridge_k3_fused_allmlx_natural.json",
+                ),
+            ),
+            timeout_minutes=120,
+            params={
+                "n_samples": ("int:n_samples", "5"),
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
     )
 }
 
