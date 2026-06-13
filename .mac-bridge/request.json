@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "preset": "k3-fused-allmlx-natural",
+  "params": {
+    "n_samples": "5",
+    "max_new_tokens": "48",
+    "block_size": "4"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781339850-e8e8a1"
+}
