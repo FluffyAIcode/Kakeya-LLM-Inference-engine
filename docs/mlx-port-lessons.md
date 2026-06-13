@@ -1,5 +1,23 @@
 # Porting the K3 GPU beta (#107) to MLX — lessons & plan
 
+> ## ⛔ RETRACTION (2026-06-13) — Step-1 / native-cache "recall 5/5 / 1.0× AR" is NOT architecture evidence
+>
+> The Step-1 incremental path and the native-cache path get their recall from
+> **Gemma-4's native retained full-attention layers + native sliding-window
+> eviction** — they **never exercise f_θ or proposer K/V restoration** (ADR 0008
+> §11). So every "recall 5/5 / 1.0× AR / collapse fixed" claim about Step-1 in
+> this doc is **Gemma-4 native behaviour, not evidence the K/V-Restoration
+> architecture works**. The path is structurally **incapable of failing in a way
+> that tests the architecture** (the full-attn coupon always carries recall).
+>
+> **Step-1 / native-cache bypass is forbidden for any architecture-validation
+> attempt** (2026-06-13 directive; ADR 0012 revision). The bounded-memory +
+> recall *architecture* claim is **unvalidated on a falsifiable model** and must
+> be re-validated on a **pure sliding-window model (Qwen3, K1/K2)** where recall
+> is impossible without proposer/f_θ restoration. Read everything below through
+> this retraction: the throughput/memory plumbing notes are still useful, but
+> the Step-1 *results* are not architectural validation.
+
 Audience: whoever ports the validated CUDA restored-verifier engine
 (`inference_engine/v04/…`, PR #107) to the Apple-Silicon MLX backend
 (`inference_engine/backends/mlx/…`). The current MLX blocker is **decode
@@ -50,17 +68,57 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
 
 ## MLX port plan (ordered; each gates the next)
 
-1. **Incremental decode (kills the collapse).** Add an MLX analog of
-   `CrossModelRestoredSinkWindowVerifier(incremental=True)`: prefill → capture
-   restored K/V into `SinkWindowKVCache` (full-attn = own/exact; sliding = f_θ or
-   window-masked) → decode via `generate_step(prompt_cache=…)`. **Gate: decode
-   tok/s ≈ native mlx_lm AR; recall 1.0** (carried by S5).
+1. **Incremental decode (kills the collapse). [IMPLEMENTED — needs Mac validation]**
+   `backends/mlx/cross_model_dlm_verifier.py`: `restored_prefill_cache` (prefill
+   once with injection **into the model's native hybrid cache** → full-attn/global
+   layers store exact own K/V, sliding store f_θ-restored + window-bounded) +
+   `restored_incremental_generate` (decode via `mlx_lm.generate_step` over that
+   cache, O(L)/token, async-pipelined). Wired into the Mac harness via
+   `--incremental`:
+   ```bash
+   PYTHONPATH=.:sdks/python python scripts/research/k3_integrated_niah_eval_mac.py \
+     --verifier-path models/gemma-4-26B-A4B-it-mlx-4bit \
+     --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \
+     --f-theta-dir results/research/f_theta_v5_s5_sliding \
+     --s5-exact-full-attn --incremental --n-samples 5 --max-new-tokens 32
+   ```
+   **Gate: decode tok/s ≫ the per-token re-forward (toward native mlx_lm AR);
+   recall == oracle (1.0)** (carried by S5). Mechanism mirrors CUDA Gap-A: the
+   existing MLX dispatch already calls `cache.update_and_fetch`, so prefill *with*
+   a cache populates it; decode then runs native incremental attention.
 2. **Drop the extra build forward.** Capture full-attn own K/V at prefill; do not
    re-run a clean verifier forward per request beyond prefill. **Gate:
-   `build_restoration` from ~12s → ~prefill cost.**
+   `build_restoration` from ~12s → ~prefill cost.** *(Still pending: the Mac
+   harness `build_restoration` keeps the clean capture forward; the fused path
+   does add one clean aux-capture forward at prefill — fold these together when
+   optimizing.)*
 3. **Gap-B drafter embed fix** (no `×sqrt`) on the MLX/Bridge drafting path.
-   **Gate: acceptance toward reference on code prompts.**
-4. **Fused spec-decode** (A+B+C incremental caches). **Gate: tok/s > AR.**
+   **[IMPLEMENTED]** `fused_specdecode.make_bridge_embed_lm_head` builds the
+   drafting `embed_fn` as a **plain shared-embedding lookup (no `×sqrt(hidden)`)**;
+   `lm_head_fn` = tied-embed + `final_logit_softcapping`.
+4. **Fused spec-decode** (A+B+C incremental caches). **[IMPLEMENTED — needs Mac
+   validation]** `inference_engine/backends/mlx/fused_specdecode.py`:
+   - **A** `capture_aux_hidden` + `MLXRestoredIncrementalVerifier.forward_block`
+     (patch the Gemma-4 `DecoderLayer.__call__` to record aux-layer outputs —
+     there is no `output_hidden_states` on MLX) capture the verify forward's aux
+     hidden, bridged to torch.
+   - **B** reuses the PyTorch drafter's `make_context_kv` / `extend_context_kv` /
+     `draft_block_cached` (drafter context K/V cache).
+   - **C** `MLXRestoredIncrementalVerifier` (prefill = Gap-A restored cache;
+     `commit_or_truncate` rolls back rejected tokens via **`mlx_lm`'s native
+     `trim_prompt_cache`** — the same primitive mlx_lm's own spec-decode uses).
+   - `fused_specdecode_generate` is the per-block O(L) accept/reject loop.
+   Wired into the Mac harness via `--fused-specdecode --block-size N`:
+   ```bash
+   PYTHONPATH=.:sdks/python python scripts/research/k3_integrated_niah_eval_mac.py \
+     --verifier-path models/gemma-4-26B-A4B-it-mlx-4bit \
+     --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash \
+     --f-theta-dir results/research/f_theta_v5_s5_sliding \
+     --s5-exact-full-attn --fused-specdecode --block-size 4 \
+     --n-samples 5 --max-new-tokens 32
+   ```
+   **Gate: tok/s > AR; recall == oracle (1.0).** Reference (#107 H200): fused
+   1.27× AR, recall 1.0.
 
 ## Validation gates (match #107 evidence)
 
@@ -71,6 +129,18 @@ speed** (on CUDA: 1.3–2.8 tok/s re-forward → ~21 tok/s incremental = AR).
   fused 1.27× AR, recall 1.0. (`docs/k3-gpu-beta.md`,
   `results/research/k3_e2e_gpu_bench_incremental.json`,
   `k3_specdecode_fused_stable.json`.)
+
+## Evidence gate (hard constraints)
+
+The failure modes above are no longer left to reviewer vigilance. The Mac
+harness self-validates its report and exits non-zero on violation, and the
+Linux CI job re-validates every committed K3 Mac report:
+
+- Rules + rationale: `inference_engine/bench/k3_report_gate.py`
+  (blocks=0 fused runs, baseline-as-SUT, prefill-noise speedups,
+  formula-only memory claims are all hard failures at schema ≥ 2).
+- CI walker: `scripts/validate_k3_reports.py` (schema-1 reports are
+  grandfathered as non-evidence).
 
 ## Do-not-repeat (anti-patterns)
 

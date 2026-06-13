@@ -101,10 +101,23 @@ jobs:
             --junitxml=junit.xml \
             -v
           coverage report \
-            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*' \
+            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/bench/k3_report_gate.py,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*' \
             --fail-under=100
           coverage xml -o coverage.xml \
-            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*'
+            --include='inference_engine/server/auth.py,inference_engine/server/config.py,inference_engine/server/errors.py,inference_engine/server/grpc_app.py,inference_engine/server/metrics.py,inference_engine/server/schemas.py,inference_engine/server/proto_gen/**/*.py,inference_engine/memory/*,inference_engine/bench/k3_report_gate.py,inference_engine/scheduler/config.py,inference_engine/scheduler/session.py,inference_engine/pipeline/*,inference_engine/session/store.py,inference_engine/setup/*,sdks/python/kakeya/__init__.py,sdks/python/kakeya/errors.py,training/repr_align/*'
+
+      - name: K3 Mac evidence gate (committed report constraints)
+        # PR #109 review hardening: every committed K3 Mac acceptance
+        # report (schema >= 2) must satisfy the machine-checkable
+        # evidence rules in inference_engine/bench/k3_report_gate.py
+        # (fused engine actually ran, no baseline-as-SUT, decode-only
+        # variance-controlled speedups, memory formulas that describe
+        # the measured run). Legacy schema-1 reports are grandfathered
+        # as non-evidence warnings.
+        env:
+          PYTHONPATH: .
+        run: |
+          python3 scripts/validate_k3_reports.py results/research
 
       - name: Upload coverage artifact
         if: always()
