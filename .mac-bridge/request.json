@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "preset": "k3-fused-singlefused-probe",
+  "params": {
+    "n_samples": "8",
+    "max_new_tokens": "128",
+    "block_size": "8"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781345196-591a7a"
+}
