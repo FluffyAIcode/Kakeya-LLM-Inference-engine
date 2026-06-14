@@ -132,6 +132,31 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=60,
         ),
         Preset(
+            name="mlx-batched-multitenant",
+            description="Mac analog of the §3.7 batched scheduler: N sessions "
+                        "decoded in one batched MLX forward over the gemma "
+                        "verifier vs serialized; reports aggregate tok/s, "
+                        "speedup, per-session recall (recall-preserving native "
+                        "cache).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_multitenant_bench.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "{n_samples}",
+                    "--haystack-lines", "60",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_batched_multitenant.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "n_samples": ("int:n_samples", "8"),
+                "max_new_tokens": ("int:max_new_tokens", "24"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
             name="agent-capacity-loadtest",
             description="Test case 1: ramp concurrent agent connections "
                         "(independent gRPC channel + session each) against a "
