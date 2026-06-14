@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-multitenant-pressure",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781414625-e287ba"
+}
