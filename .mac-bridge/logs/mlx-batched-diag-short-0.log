@@ -1,0 +1,13 @@
+[mlx-mt] loading /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+Traceback (most recent call last):
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/mlx_batched_multitenant_bench.py", line 169, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/mlx_batched_multitenant_bench.py", line 66, in main
+    pool = make_niah_dataset(n_samples=N * 3, haystack_min_lines=args.haystack_lines,
+                             haystack_max_lines=args.haystack_lines, seed=0)
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/inference_engine/v04/niah_eval.py", line 155, in make_niah_dataset
+    raise ValueError(
+    ...<2 lines>...
+    )
+ValueError: haystack_min_lines must be >= 10 to leave room for sink-anchored and window-anchored regions; got 8
