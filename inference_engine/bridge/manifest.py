@@ -170,7 +170,7 @@ PRESETS: Dict[str, Preset] = {
                     "--mode", "both",
                     "--context-len", "2048",
                     "--sink", "4", "--window", "64",
-                    "--max-agents", "128",
+                    "--max-agents", "64",
                     "--mem-budget-mb", "21000",
                     "--decode-steps", "16",
                     "--output",

@@ -100,7 +100,11 @@ def _clone_cache(src: list, cls_native):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--verifier-path", required=True)
-    ap.add_argument("--mode", choices=["native", "kakeya", "both"], default="both")
+    ap.add_argument("--mode", choices=["native", "s5", "sinkwin", "both"],
+                    default="both",
+                    help="'both' = native vs s5 (recall-preserving deployment "
+                         "config). 'sinkwin' = pure sink+window memory floor "
+                         "(does not preserve full-attn recall).")
     ap.add_argument("--context-len", type=int, default=2048)
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
@@ -121,6 +125,33 @@ def main() -> int:
     from inference_engine.backends.mlx.cache import (
         make_sink_window_cache, SinkWindowKVCache,
     )
+
+    def make_cache_for(mode: str):
+        """Fresh per-agent cache for a mode.
+
+        * native  — gemma's own hybrid cache (full-attn layers grow with ctx;
+          sliding layers bounded by the model's sliding_window, ~1024).
+        * sinkwin — pure sink+window on ALL layers (smallest, but the
+          full-attn layers lose long-context recall — not a recall-preserving
+          config; reported for the memory floor).
+        * s5      — recall-preserving deployment config: the 5 full-attention
+          layers keep exact KV (native KVCache), sliding layers bounded to
+          sink+window.
+        """
+        if mode == "sinkwin":
+            return make_sink_window_cache(text_model, sink_size=args.sink,
+                                          window_size=args.window)
+        if mode == "s5":
+            native = mlx_model.make_cache()
+            mixed = []
+            for li in range(len(native)):
+                if li in set(full_idx):
+                    mixed.append(native[li])  # exact full-attn KV
+                else:
+                    mixed.append(SinkWindowKVCache(sink_size=args.sink,
+                                                   window_size=args.window))
+            return mixed
+        return mlx_model.make_cache()
 
     print(f"[mt] loading {args.verifier_path}", flush=True)
     mlx_model, _tok = mlx_lm.load(args.verifier_path)
@@ -155,12 +186,8 @@ def main() -> int:
 
     def run_mode(mode: str) -> Dict[str, Any]:
         _reset_peak()
-        if mode == "kakeya":
-            base = make_sink_window_cache(text_model, sink_size=args.sink,
-                                          window_size=args.window)
-        else:
-            base = mlx_model.make_cache()
-        # one real prefill to context C
+        # First agent: real prefill to context C, measure per-agent KV + decode.
+        base = make_cache_for(mode)
         t0 = time.perf_counter()
         prefill(base)
         prefill_s = round(time.perf_counter() - t0, 2)
@@ -168,34 +195,43 @@ def main() -> int:
         mx.eval(out)
         per_agent_kv = _cache_kv_bytes(base)
         tps = decode_tps(base, out[0, -1])
-        # ramp: replicate the prefilled cache into N independent allocations
+        # REAL ramp: each additional agent gets its own freshly-prefilled cache
+        # (real N x memory — no copy-on-write shortcut). Keep all alive; stop at
+        # the memory budget or the agent cap.
         agents = [base]
         peak = _peak_mb()
-        rows = [{"agents": 1, "peak_mb": peak, "kv_total_mb": round(per_agent_kv / 1e6, 1)}]
+        rows = [{"agents": 1, "peak_mb": peak}]
         max_agents = 1
+        budget_hit = False
         while len(agents) < args.max_agents:
-            try:
-                agents.append(_clone_cache(base, None))
-            except Exception as e:  # noqa: BLE001 - OOM or alloc failure
-                print(f"[mt][{mode}] alloc failed at N={len(agents)+1}: "
-                      f"{type(e).__name__}", flush=True)
-                break
+            c = make_cache_for(mode)
+            prefill(c)
+            mx.eval(out)
+            agents.append(c)
             peak = _peak_mb()
             n = len(agents)
-            if n in (2, 4, 8, 16, 32, 64, 128, 256) or n == args.max_agents:
-                rows.append({"agents": n, "peak_mb": peak,
-                             "kv_total_mb": round(n * per_agent_kv / 1e6, 1)})
+            rows.append({"agents": n, "peak_mb": peak})
+            if n in (2, 4, 8, 16, 24, 32, 48, 64, 96, 128) or n == args.max_agents:
                 print(f"[mt][{mode}] agents={n:4d} peak={peak}MB "
-                      f"kv_total={round(n*per_agent_kv/1e6,1)}MB", flush=True)
+                      f"(per-agent KV {round(per_agent_kv/1e6,1)}MB)", flush=True)
             max_agents = n
             if peak and peak > args.mem_budget_mb:
                 print(f"[mt][{mode}] budget {args.mem_budget_mb}MB hit at N={n}",
                       flush=True)
+                budget_hit = True
                 break
+        # Derived capacity from the measured per-agent KV + a stated KV budget
+        # (in case the cap was hit before the budget).
+        kv_budget_mb = args.mem_budget_mb - (weights_mb or 0)
+        derived_max = (int(kv_budget_mb / (per_agent_kv / 1e6))
+                       if per_agent_kv else None)
         result = {
             "mode": mode,
             "per_agent_kv_mb": round(per_agent_kv / 1e6, 2),
-            "max_agents_in_budget": max_agents,
+            "max_agents_measured": max_agents,
+            "max_agents_hit_budget": budget_hit,
+            "derived_max_agents_in_kv_budget": derived_max,
+            "kv_budget_mb": round(kv_budget_mb, 1),
             "prefill_s": prefill_s,
             "decode_tokens_per_s_per_agent": tps,
             "peak_mb_at_max": peak,
@@ -204,7 +240,10 @@ def main() -> int:
         del agents
         return result
 
-    modes = (["native", "kakeya"] if args.mode == "both" else [args.mode])
+    if args.mode == "both":
+        modes = ["native", "s5"]
+    else:
+        modes = [args.mode]
     results = {m: run_mode(m) for m in modes}
     report: Dict[str, Any] = {
         "kind": "mlx_multitenant_pressure",
@@ -217,18 +256,20 @@ def main() -> int:
         },
         "results": results,
     }
-    if "native" in results and "kakeya" in results:
-        nv, kk = results["native"], results["kakeya"]
+    kk_key = "s5" if "s5" in results else ("sinkwin" if "sinkwin" in results else None)
+    if "native" in results and kk_key:
+        nv, kk = results["native"], results[kk_key]
         report["ab"] = {
+            "kakeya_config": kk_key,
             "per_agent_kv_mb": {"native": nv["per_agent_kv_mb"],
                                 "kakeya": kk["per_agent_kv_mb"]},
             "kv_reduction_x": (round(nv["per_agent_kv_mb"] / kk["per_agent_kv_mb"], 2)
                                if kk["per_agent_kv_mb"] else None),
-            "max_agents": {"native": nv["max_agents_in_budget"],
-                           "kakeya": kk["max_agents_in_budget"]},
-            "agent_capacity_x": (round(kk["max_agents_in_budget"]
-                                       / nv["max_agents_in_budget"], 2)
-                                 if nv["max_agents_in_budget"] else None),
+            "derived_max_agents": {"native": nv["derived_max_agents_in_kv_budget"],
+                                   "kakeya": kk["derived_max_agents_in_kv_budget"]},
+            "agent_capacity_x": (round(kk["derived_max_agents_in_kv_budget"]
+                                       / nv["derived_max_agents_in_kv_budget"], 2)
+                                 if nv["derived_max_agents_in_kv_budget"] else None),
             "decode_tps_per_agent": {"native": nv["decode_tokens_per_s_per_agent"],
                                      "kakeya": kk["decode_tokens_per_s_per_agent"]},
         }
@@ -238,11 +279,12 @@ def main() -> int:
         print(f"[mt] wrote {args.output}", flush=True)
     if "ab" in report:
         ab = report["ab"]
-        print(f"[mt] A/B @ctx{C}: per-agent KV native={ab['per_agent_kv_mb']['native']}MB "
-              f"vs kakeya={ab['per_agent_kv_mb']['kakeya']}MB ({ab['kv_reduction_x']}x) | "
-              f"max agents native={ab['max_agents']['native']} "
-              f"vs kakeya={ab['max_agents']['kakeya']} ({ab['agent_capacity_x']}x)",
-              flush=True)
+        print(f"[mt] A/B @ctx{C} ({ab['kakeya_config']}): per-agent KV "
+              f"native={ab['per_agent_kv_mb']['native']}MB vs "
+              f"kakeya={ab['per_agent_kv_mb']['kakeya']}MB ({ab['kv_reduction_x']}x) | "
+              f"derived max agents native={ab['derived_max_agents']['native']} "
+              f"vs kakeya={ab['derived_max_agents']['kakeya']} "
+              f"({ab['agent_capacity_x']}x)", flush=True)
     return 0
 
 
