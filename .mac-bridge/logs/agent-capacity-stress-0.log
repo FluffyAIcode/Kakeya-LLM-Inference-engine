@@ -1,0 +1,9 @@
+[loadtest] RLIMIT_NOFILE: {'requested': 100000, 'before': [10240, 9223372036854775807], 'after': [100000, 9223372036854775807]}
+[loadtest] launching server: /Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3 scripts/start_grpc_runtime_server.py --backend cpu --verifier-id Qwen/Qwen3-0.6B --bind 127.0.0.1:52038 --capacity 2048 --sink 4 --window 256 --skip-cache-check --log-level WARNING
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 22815.86it/s]
+[loadtest] server ready on 127.0.0.1:52038 (backend=cpu, capacity=2048)
+[loadtest] agents=    1 created=1/1 gen_ok=1 errs={} create_p95=3.0911s gen_p95=0.0297s kv/sess=29474816B rss=11227.9MB
+[loadtest] agents=   64 created=14/64 gen_ok=14 errs={'RpcCancelledError': 50} create_p95=40.7049s gen_p95=0.3998s kv/sess=29818880B rss=10849.8MB
+[loadtest] admission/resource ceiling hit at n=64 (created 14); stopping ramp.
+[loadtest] wrote results/research/k3_mac_bridge_agent_capacity_stress.json
+[loadtest] DONE max_concurrent_agents_clean=1 per_session_kv=29.8189MB node_kv_upper_bound=61069.07MB peak_rss=11227.9MB
