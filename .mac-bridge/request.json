@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-batched-diag-short",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781437292-c915d8"
+}
