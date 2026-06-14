@@ -158,6 +158,29 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="mlx-multitenant-pressure",
+            description="Multi-tenant resident-window pressure test + A/B vs "
+                        "MLX-native: per-agent KV and max concurrent agents in "
+                        "a memory budget, Kakeya S5 sink+window vs gemma's "
+                        "native hybrid cache, on the real MLX gemma verifier.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_multitenant_pressure.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--mode", "both",
+                    "--context-len", "2048",
+                    "--sink", "4", "--window", "64",
+                    "--max-agents", "128",
+                    "--mem-budget-mb", "21000",
+                    "--decode-steps", "16",
+                    "--output",
+                    "results/research/k3_mac_bridge_multitenant_pressure.json",
+                ),
+            ),
+            timeout_minutes=120,
+            validate_reports=False,
+        ),
+        Preset(
             name="agent-capacity-stress",
             description="Test case 1 (stress): push concurrent agents to 2048 "
                         "with a per-agent prefilled context (window 256), "
