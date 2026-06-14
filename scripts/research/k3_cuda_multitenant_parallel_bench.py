@@ -179,9 +179,10 @@ def main() -> int:
     def recall(tokens, ans):
         return ans in tok.decode(tokens, skip_special_tokens=True)
 
-    # warmup (kernels) at the largest batch
+    # warmup (kernels) at a SMALL batch (avoid the full [N,T,vocab] logits
+    # blow-up at the largest batch during warmup).
     print("[mt] warmup ...", file=sys.stderr, flush=True)
-    wb = torch.tensor([b[0] for b in bucket[:max(batch_sizes)]], device=device)
+    wb = torch.tensor([b[0] for b in bucket[:min(2, max(batch_sizes))]], device=device)
     try:
         _ar_batched(verifier, wb, 4, device, eos_ids)
         c, ll = _restored_prefill_batched(restored, wb, helpers)
