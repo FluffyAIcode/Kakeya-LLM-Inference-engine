@@ -98,7 +98,7 @@ patterns — see [`docs/quickstart.md`](docs/quickstart.md).
 | **Restored verifier** | Gemma-4 26B-A4B (AR) + DFlash dLLM proposer + trained **f_θ**; **S5** keeps 5 full-attention layers exact, restores sliding layers → bounded resident KV, recall preserved. | `inference_engine.v04` (CUDA), `inference_engine.backends.mlx` (Apple Silicon) |
 | `SinkWindowVerifier` | Lightweight path: Qwen3 (0.6B / 1.7B / 4-bit MLX), sink+window K/V trim (ADR 0001 / 0002). | `kv_cache_proposer.verifier` (CPU), `inference_engine.backends.mlx.verifier` |
 | **Per-session binding** | `PerSessionVerifierRegistry` + coordinator resolver: each session owns isolated KV (shared weights) — true multi-tenant serving (PR-A3c, `--multi-tenant`). | `inference_engine.session.verifier_registry` |
-| **Batched scheduler** | Fuses a cohort's decode steps into one batched forward — **8.45× served throughput** at 8 sessions, recall 1.0. | `inference_engine.session.batch_scheduler` |
+| **Batched scheduler** | Fuses a cohort's decode steps into one batched forward — **8.45× served throughput** at 8 sessions, recall 1.0. **CUDA-only**: on Apple-Silicon MLX, `v0.4-mac` multi-tenant is **serial-only** (batched `B>1` decode is unsupported — upstream MLX `B>1, L=1` quantized-kernel bug, [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)). | `inference_engine.session.batch_scheduler` |
 | `AppendTokens` / `Generation` coordinators | Drive prefill / incremental forward / greedy decode; route per-session (multi-tenant) or single. | `inference_engine.session.{coordinator,generator}` |
 | Python / TypeScript SDKs | `kakeya.Client` / `Session` (sync gRPC); `@kakeya/runtime` (Node 20+). | [`sdks/`](sdks/) |
 | HTTP shim (deprecated) | OpenAI-compatible `/v1/chat/completions`; `Deprecation` + `Sunset` headers. | `inference_engine.server.app` |
@@ -289,6 +289,13 @@ owns isolated KV (shared weights) — making serving truly multi-tenant, and a
 at 8 sessions with **per-session recall 1.0** (see the multi-tenant results
 below / [ADR 0014 §3.4–3.7](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 and the [detailed report](docs/reports/pr-a3c-multitenant-serving-test-report.md)).
+**Platform scope:** the batched/parallel cohort path is **CUDA-only**. On
+Apple-Silicon **MLX, `v0.4-mac` multi-tenant is serial-only** — per-session
+binding still gives isolated, recall-preserving sessions, but they are served
+**one at a time**; batched `B>1` decode is blocked by an upstream MLX
+quantized-kernel bug (`B>1, L=1` → per-session recall collapses to 0.125, while
+serialized stays 1.0; confirmed on the latest published `mlx 0.31.2 / mlx-lm
+0.31.3` — [ADR 0014 §3.4](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)).
 Pushing the connection sweep further (preset `agent-capacity-stress`, the
 open-file-descriptor limit `RLIMIT_NOFILE` raised to 100k / hard unlimited on
 the Mac — each connection uses one descriptor) shows the true ceilings: **the
@@ -584,9 +591,9 @@ scripts/
 | Milestone | Status | Description |
 | --- | --- | --- |
 | Session-bound gRPC runtime | ✅ shipped | Long-running gRPC `RuntimeService`, Python + TS SDKs, bounded memory + prefill (4-h Mac M4 evidence), Mac M4 self-hosted integration gate |
-| **v0.4 for Mac (`v0.4-mac`)** | ✅ shipped | MLX restored Gemma-4 26B engine: bounded KV (~90% saved), recall 1.0, ≈AR-parity spec-decode |
+| **v0.4 for Mac (`v0.4-mac`)** | ✅ shipped | MLX restored Gemma-4 26B engine: bounded KV (~90% saved), recall 1.0, ≈AR-parity spec-decode. Multi-tenant is **serial-only** (no batched `B>1` decode — upstream MLX kernel bug, [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)) |
 | **v0.4 for CUDA (`v0.4-cuda`)** | ✅ shipped | Restored Gemma-4 26B engine on NVIDIA: fused DFlash spec-decode **1.79–2.06× AR**, 44–87× KV saving, recall 1.0 |
-| **v0.4 multi-tenant (PR-A3c)** | ✅ shipped | Per-session binding (isolated KV, shared weights) + batched scheduler — **8.45× served throughput**, per-session recall 1.0 |
+| **v0.4 multi-tenant (PR-A3c)** | ✅ shipped | Per-session binding (isolated KV, shared weights) on both platforms. **CUDA**: batched scheduler → **8.45× served throughput**, per-session recall 1.0. **MLX (Mac): serial-only** (sessions served one at a time; batched parallel decode unsupported upstream) |
 | Async continuous batching | designing | Dynamic mid-flight arrival + ragged-length cohorts under the async gRPC `Generate` handlers (current batcher is fixed-cohort) |
 | Deployment polish | queued | PyPI + npm publishing, GHCR Docker image, `kakeya prewarm` CLI, `kakeya chat` REPL |
 | Cross-request KV reuse | designing | Sessions survive across requests on gRPC; turns intra-session drift into 0 ms inter-request drift |

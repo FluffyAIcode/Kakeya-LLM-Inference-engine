@@ -371,6 +371,18 @@ remains: **serialized**, or the `L≥2` padding probe (recall-safe but 0.67×).
 Evidence: `results/research/k3_mac_bridge_mlx_upstream_batch_probe.json` +
 `.mac-bridge/logs/mlx-upgrade-{0,1,2}.log`.
 
+**DECISION — MLX `v0.4-mac` multi-tenant is SERIAL-ONLY.** Given the upstream
+bug is present on the latest published mlx/mlx-lm and is not Python-patchable,
+the shipped Mac multi-tenant path is **per-session binding served serially**
+(one session decoded at a time): isolated, recall-preserving (1.0) sessions on
+shared weights, with bounded resident KV. **Batched/parallel cohort decode
+(`B>1`) is NOT supported on MLX** and remains a **CUDA-only** capability (§3.5 /
+§3.7: 8.04–8.45× near-linear, recall 1.0). Re-evaluate the Mac batched path
+only if (a) a future mlx release fixes the `B>1, L=1` quantized-decode kernel,
+or (b) a from-source mlx `main` build / upstream patch lands; the `L≥2` padding
+workaround stays available as a recall-safe (but sub-parity, 0.67×) escape
+hatch in the meantime.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out
