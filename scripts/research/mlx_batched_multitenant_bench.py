@@ -42,6 +42,11 @@ def main() -> int:
     ap.add_argument("--full-window", type=int, default=100000,
                     help="full-attn-layer window when --kakeya-cache "
                          "(large = keep all, exact recall).")
+    ap.add_argument("--manual-sdpa", action="store_true",
+                    help="Replace mlx_lm gemma's mx.fast.scaled_dot_product_"
+                         "attention with a manual batched matmul-softmax SDPA "
+                         "(works around the suspected batch>1 + GQA fast-kernel "
+                         "bug). The candidate fix.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -53,6 +58,36 @@ def main() -> int:
     from inference_engine.backends.mlx.cross_model_dlm_verifier import (
         resolve_mlx_text_model, mlx_full_attention_layer_indices,
     )
+
+    if args.manual_sdpa:
+        import mlx_lm.models.gemma4_text as g4
+
+        def _manual_sdpa(queries, keys, values, cache=None, scale=1.0, mask=None,
+                         sinks=None):
+            # queries [B, n_heads, L, D]; keys/values [B, n_kv, S, D] (GQA).
+            n_heads = queries.shape[1]
+            n_kv = keys.shape[1]
+            if n_kv != n_heads:
+                rep = n_heads // n_kv
+                keys = mx.repeat(keys, rep, axis=1)
+                values = mx.repeat(values, rep, axis=1)
+            scores = (queries * scale) @ mx.swapaxes(keys, -1, -2)  # [B,h,L,S]
+            if mask is not None:
+                if isinstance(mask, str):   # "causal"
+                    qL, kL = scores.shape[-2], scores.shape[-1]
+                    qi = mx.arange(kL - qL, kL)[:, None]
+                    ki = mx.arange(kL)[None]
+                    bmask = qi >= ki
+                    scores = mx.where(bmask, scores, mx.finfo(scores.dtype).min)
+                elif mask.dtype == mx.bool_:
+                    scores = mx.where(mask, scores, mx.finfo(scores.dtype).min)
+                else:
+                    scores = scores + mask
+            scores = mx.softmax(scores, axis=-1, precise=True)
+            return scores @ values
+
+        g4.scaled_dot_product_attention = _manual_sdpa
+        print("[mlx-mt] patched gemma SDPA -> manual batched matmul", flush=True)
 
     print(f"[mlx-mt] loading {args.verifier_path}", flush=True)
     model, tok = mlx_lm.load(args.verifier_path)

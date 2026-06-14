@@ -76,6 +76,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-kakeya-cache",
         "mlx-batched-layer-diff",
         "mlx-batched-layer-diff-concat",
+        "mlx-batched-manual-sdpa",
         "mlx-batched-multitenant",
         "mlx-env-probe",
         "mlx-multitenant-pressure",

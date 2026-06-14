@@ -148,6 +148,25 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="mlx-batched-manual-sdpa",
+            description="Candidate fix: MLX batched multi-tenant with a manual "
+                        "matmul-softmax SDPA replacing mx.fast.scaled_dot_"
+                        "product_attention (works around the batch>1 + GQA "
+                        "fast-kernel bug). Expect per-session recall -> 1.0.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_multitenant_bench.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "8", "--haystack-lines", "60",
+                    "--max-new-tokens", "24", "--manual-sdpa",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_batched_manual_sdpa.json",
+                ),
+            ),
+            timeout_minutes=90,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-batched-layer-diff-concat",
             description="Layer-diff with the concat SinkWindowKVCache (no "
                         "in-place write) — if layer-0 output then matches, the "
