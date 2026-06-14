@@ -44,9 +44,24 @@ def main() -> int:
     N = args.sessions
 
     def encode(text):
-        ids = tok.apply_chat_template([{"role": "user", "content": text}],
-                                      add_generation_prompt=True)
-        return list(ids)
+        # Match the working Mac NIAH harness: neutral filler + a direct-answer
+        # instruction, and append Gemma-4's content-channel marker so short
+        # completions don't spend tokens on the thought channel (else recall=0).
+        text = text.replace("and does not contain the answer.",
+                            "and is unrelated filler.")
+        text = (text + "\n\nReturn only the secret code in PREFIX-NNNN format. "
+                       "Do not explain, reason, or add any other text.")
+        ids = list(tok.apply_chat_template([{"role": "user", "content": text}],
+                                           add_generation_prompt=True))
+        try:
+            marker = tok.encode("<|channel>content\n<channel|>",
+                                add_special_tokens=False)
+        except TypeError:
+            marker = tok.encode("<|channel>content\n<channel|>")
+        if hasattr(marker, "tolist"):
+            marker = marker.tolist()
+        ids.extend(list(marker))
+        return ids
 
     pool = make_niah_dataset(n_samples=N * 3, haystack_min_lines=args.haystack_lines,
                              haystack_max_lines=args.haystack_lines, seed=0)
