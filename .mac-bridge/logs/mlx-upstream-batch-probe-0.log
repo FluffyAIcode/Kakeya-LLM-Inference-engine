@@ -1,0 +1,14 @@
+[probe] mlx=0.31.2 mlx_lm=0.31.3
+[probe] loading /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[probe] 8 sessions, modal prompt len=1149
+[probe][diag] row | serial_tok0 | batched_tok0 | match | serial_recall | batched_recall
+[probe][diag]  0 | 236806 | 236806 | True | True | True
+[probe][diag]  1 | 212222 | 212222 | True | True | False
+[probe][diag]  2 | 236953 | 236953 | True | True | False
+[probe][diag]  3 | 28487 | 28487 | True | True | False
+[probe][diag]  4 | 28487 | 28487 | True | True | False
+[probe][diag]  5 | 236791 | 236791 | True | True | False
+[probe][diag]  6 | 236953 | 236953 | True | True | False
+[probe][diag]  7 | 236953 | 236953 | True | True | False
+[probe] mlx=0.31.2 mlx_lm=0.31.3: serialized 21.691 tok/s (recall 1.0) | batched 29.613 tok/s (recall 0.125) | speedup 1.37x | upstream_fixed=False
+[probe] wrote results/research/k3_mac_bridge_mlx_upstream_batch_probe.json
