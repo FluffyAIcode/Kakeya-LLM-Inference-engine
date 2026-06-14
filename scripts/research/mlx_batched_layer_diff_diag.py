@@ -70,9 +70,12 @@ def main() -> int:
     orig_call = DecoderLayer.__call__
     captured: List = []
 
+    captured_in: List = []
+
     def patched(self, *a, **k):
+        captured_in.append(a[0])     # layer INPUT h: [B, L, D]
         out = orig_call(self, *a, **k)
-        captured.append(out[0])      # h: [B, L, D]
+        captured.append(out[0])      # layer OUTPUT h: [B, L, D]
         return out
 
     def prefill(ids_2d):
@@ -83,44 +86,50 @@ def main() -> int:
 
     def decode_capture(token_ids_2d, cache):
         captured.clear()
+        captured_in.clear()
         DecoderLayer.__call__ = patched
         try:
             out = model(mx.array(token_ids_2d), cache=cache)
             mx.eval(out)
         finally:
             DecoderLayer.__call__ = orig_call
-        return list(captured), out
+        return list(captured), list(captured_in), out
 
     # serialized: prefill + first token + capture decode step
-    ser_caches, ser_tok0, ser_layers = [], [], []
+    ser_tok0, ser_out, ser_in = [], [], []
     for i in range(R):
         c, lg = prefill([prompts[i]])
         t0 = int(mx.argmax(lg, axis=-1).item())
         ser_tok0.append(t0)
-        caps, _ = decode_capture([[t0]], c)
-        ser_layers.append(caps)        # n_layers x [1,1,D]
+        co, ci, _ = decode_capture([[t0]], c)
+        ser_out.append(co)
+        ser_in.append(ci)
 
     # batched: prefill + first tokens + capture decode step (same tokens)
     cb, lgb = prefill(prompts)
     bat_tok0 = [int(mx.argmax(lgb[i], axis=-1).item()) for i in range(R)]
-    caps_b, _ = decode_capture([[t] for t in bat_tok0], cb)  # n_layers x [R,1,D]
+    caps_b, caps_in_b, _ = decode_capture([[t] for t in bat_tok0], cb)
 
     print(f"[diff] tok0 serial={ser_tok0} batched={bat_tok0} "
           f"match={ser_tok0 == bat_tok0}", flush=True)
-    print("[diff] layer | type | shared? | max|Δ| row0 | row1 ...", flush=True)
+    # layer-0 INPUT diff isolates embedding/per-layer-input (pre-attention)
+    in0 = [round(float(mx.max(mx.abs(caps_in_b[0][i:i + 1] - ser_in[i][0])).item()), 4)
+           for i in range(R)]
+    print(f"[diff] layer-0 INPUT (embedding) max|Δ| per row = {in0}  "
+          f"(non-zero row>0 => embed/per-layer-input bug; zero => attention bug)",
+          flush=True)
+    print("[diff] layer | type | in max|Δ| | out max|Δ|  (per row)", flush=True)
     first_div = None
     for li in range(n_layers):
-        hb = caps_b[li]                # [R,1,D]
-        diffs = []
-        for i in range(R):
-            d = float(mx.max(mx.abs(hb[i:i + 1] - ser_layers[i][li])).item())
-            diffs.append(round(d, 4))
-        shared = "shared" if li >= first_shared else ""
+        din = [round(float(mx.max(mx.abs(caps_in_b[li][i:i + 1] - ser_in[i][li]).astype(mx.float32)).item()), 3)
+               for i in range(R)]
+        dout = [round(float(mx.max(mx.abs(caps_b[li][i:i + 1] - ser_out[i][li]).astype(mx.float32)).item()), 3)
+                for i in range(R)]
         mark = ""
-        if first_div is None and max(diffs) > 1e-2:
+        if first_div is None and max(dout) > 1e-2:
             first_div = li
-            mark = "  <-- FIRST DIVERGENCE"
-        print(f"[diff] {li:2d} | {layer_types[li]:18s} | {shared:6s} | {diffs}{mark}",
+            mark = "  <-- FIRST OUT DIVERGENCE"
+        print(f"[diff] {li:2d} | {layer_types[li]:18s} | in={din} | out={dout}{mark}",
               flush=True)
     print(f"[diff] FIRST DIVERGENT LAYER = {first_div} "
           f"(type={layer_types[first_div] if first_div is not None else None}, "
