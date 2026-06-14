@@ -1,0 +1,47 @@
+{
+  "kind": "k3_grpc_multitenant_e2e",
+  "config": {
+    "sessions": 4,
+    "multi_tenant": true,
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "max_new_tokens": 24,
+    "sink": 4,
+    "window": 64
+  },
+  "per_session_recall": 1.0,
+  "wall_s": 4.63,
+  "results": [
+    {
+      "session": 0,
+      "answer": "MAPLE-7890",
+      "recall": true,
+      "decoded": "The secret code is **MAPLE-7890**.thought\nThe secret code is",
+      "gen_tokens": 24,
+      "prompt_tokens": 1238
+    },
+    {
+      "session": 1,
+      "answer": "IOTA-8961",
+      "recall": true,
+      "decoded": "The secret code is **IOTA-8961**.\n\nthought\nThe secret code",
+      "gen_tokens": 24,
+      "prompt_tokens": 1238
+    },
+    {
+      "session": 2,
+      "answer": "THETA-6866",
+      "recall": true,
+      "decoded": "The secret code is **THETA-6866**.thought\nThe secret code is",
+      "gen_tokens": 24,
+      "prompt_tokens": 1238
+    },
+    {
+      "session": 3,
+      "answer": "IOTA-3281",
+      "recall": true,
+      "decoded": "The secret code is **IOTA-3281**.thought\nThe secret code is ",
+      "gen_tokens": 24,
+      "prompt_tokens": 1238
+    }
+  ]
+}

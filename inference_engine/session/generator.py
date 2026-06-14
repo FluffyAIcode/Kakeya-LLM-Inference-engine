@@ -114,9 +114,15 @@ class GenerationCoordinator:
         self,
         store: SessionStore,
         verifier: VerifierProtocol,
+        resolver=None,
     ) -> None:
         self._store = store
         self._verifier = verifier
+        # PR-A3c: optional per-session verifier resolver (multi-tenant).
+        self._resolver = resolver
+
+    def _verifier_for(self, session_id: str) -> "VerifierProtocol":
+        return self._resolver(session_id) if self._resolver else self._verifier
 
     def generate(
         self,
@@ -175,6 +181,7 @@ class GenerationCoordinator:
         del seed
 
         session = self._store.get_session(session_id)
+        verifier = self._verifier_for(session_id)
         if session.next_global_position == 0:
             raise ValueError(
                 "session has no history yet; AppendTokens must "
@@ -203,26 +210,26 @@ class GenerationCoordinator:
         for _step in range(max_tokens):
             # Greedy: argmax of the verifier's last next_token_logits.
             next_token = int(
-                torch.argmax(self._verifier.next_token_logits).item()
+                torch.argmax(verifier.next_token_logits).item()
             )
 
             # Forward + commit (forwarded == accepted for prompt-mode
             # appends; same contract used by AppendTokens, just one
             # token at a time).
-            block_logits = self._verifier.forward_block([next_token])
-            self._verifier.commit_or_truncate(forwarded=1, accepted=1)
-            self._verifier.next_token_logits = block_logits[-1].clone()
+            block_logits = verifier.forward_block([next_token])
+            verifier.commit_or_truncate(forwarded=1, accepted=1)
+            verifier.next_token_logits = block_logits[-1].clone()
 
             # Mirror state from verifier onto session BEFORE the
             # store's INV-1 check runs (it compares
             # session.cached_token_sequence length against
             # verifier.k_seq_length).
             session.cached_token_sequence = list(
-                self._verifier.cached_token_sequence,
+                verifier.cached_token_sequence,
             )
             self._store.append_tokens(session_id, [next_token])
             self._store.record_position_advance(
-                session_id, self._verifier.next_global_position,
+                session_id, verifier.next_global_position,
             )
             generated_count += 1
 
@@ -234,7 +241,7 @@ class GenerationCoordinator:
                 # (PR-E1c). Once the cache is at sink+window
                 # capacity, this value plateaus and the caller can
                 # observe the architectural KV bound empirically.
-                _sync_slab_bytes(session, self._verifier)
+                _sync_slab_bytes(session, verifier)
                 yield DoneEvent(
                     stop_reason=STOP_REASON_EOS,
                     generated_token_count=generated_count,
@@ -243,7 +250,7 @@ class GenerationCoordinator:
                 )
                 return
 
-        _sync_slab_bytes(session, self._verifier)
+        _sync_slab_bytes(session, verifier)
         yield DoneEvent(
             stop_reason=STOP_REASON_MAX_TOKENS,
             generated_token_count=generated_count,

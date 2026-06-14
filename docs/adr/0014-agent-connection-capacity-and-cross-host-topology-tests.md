@@ -183,10 +183,43 @@ Result (H200 NVL, gemma-4-26B-A4B 4-bit, NIAH ctx≈1238,
   restoration is free, *and* it keeps the bounded resident window (§3.4: ~4×
   more agents fit). So PR-A3c delivers parallel throughput **and** bounded
   memory **and** recall together.
-- Caveat: this is the **engine/batched-decode** capability (per-session binding
-  validated). Wiring it into the gRPC *served* path (`SessionStore` →
-  per-session adapter, batched scheduler) is the remaining productization step
-  (§6); the batched fused spec-decode (DFlash is batch-1 today) is a follow-up.
+- Caveat: §3.5 is the **engine/batched-decode** capability. The *served*-path
+  productization is §3.6; the batched fused spec-decode (DFlash is batch-1
+  today) remains a follow-up.
+
+### 3.6 PR-A3c in the gRPC served path — true multi-tenant serving (end-to-end)
+
+§3.5 proved the engine can decode N sessions in parallel; §3.6 wires
+**per-session binding into the gRPC `RuntimeService`** so the *served* path is
+genuinely multi-tenant (v0.3 was single-tenant: one shared verifier, concurrent
+sessions would corrupt each other's KV). Implementation:
+
+- `CrossModelRestoredSinkWindowVerifier.spawn()` — a fresh per-session adapter
+  sharing the model weights (multi-GB) but with its own KV cache.
+- `PerSessionVerifierRegistry` (`inference_engine/session/verifier_registry.py`)
+  — `session_id → adapter` (lazy, shared weights); doubles as the
+  `SessionStore` cache-inspector and the coordinators' verifier *resolver*.
+- `AppendTokens`/`Generation` coordinators take an optional per-session
+  resolver (back-compat: single-tenant unchanged — 271 session+server unit
+  tests pass); the servicer's `CloseSession` frees a session's adapter.
+- `start_grpc_runtime_server --multi-tenant` (requires `backend=restored`).
+
+End-to-end test (H200, `k3_grpc_multitenant_e2e.py`,
+`results/research/k3_grpc_multitenant_e2e_gpu.json`): launch the multi-tenant
+server, drive **4 concurrent SDK clients**, each its own session + distinct NIAH
+needle, primed then decoded interleaved.
+
+| sessions | transport | per-session recall | isolation |
+| --- | --- | --- | --- |
+| 4 concurrent | real gRPC `RuntimeService` + Python SDK | **1.0** | ✓ |
+
+Each session recalled **its own** needle (`MAPLE-7890`, `IOTA-8961`,
+`THETA-6866`, `IOTA-3281` — note two `IOTA-*` sessions got their *own* numbers),
+proving **per-session KV isolation** through the real served path. So
+multi-tenant serving is end-to-end correct + recall-preserving. (Execution is
+still RPC-serialized on the asyncio loop — a batched scheduler to fuse
+concurrent decodes into §3.5's parallel forward is the remaining throughput
+step; correctness/isolation is done.)
 
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
@@ -393,6 +426,7 @@ the committed evidence JSON, and the headline result).
 | stress (ctx prefill, file-descriptor limit 100k, cap 2048) | open-file-descriptor limit not the constraint; mem = cap×window (cap 2048→11.5 GB, bound 61 GB>RAM); serialization caps heavy-ctx concurrency at **~8** | `results/research/k3_agent_capacity_stress_mac.json` |
 | multi-tenant capacity A/B (ctx2048, model-level) | per-agent KV native 256.9 MB vs **S5 61.1 MB**; **~4.2× more agents** (budget hit 15 vs 32; derived 22 vs 93) — recall-preserving | `results/research/k3_multitenant_pressure_mac.json` |
 | PR-A3c parallel throughput (H200, batched S5) | **8.04× near-linear scaling at N=8** (220 tok/s ≈ AR), **per-session recall 1.0** — per-session binding works | `results/research/k3_cuda_multitenant_parallel_gpu.json` |
+| PR-A3c served path (H200, gRPC + 4 SDK clients) | **true multi-tenant serving end-to-end**: 4 concurrent sessions, **per-session recall 1.0**, isolated | `results/research/k3_grpc_multitenant_e2e_gpu.json` |
 
 **Case 2 (H200 NVL, Gemma-4-26B + DFlash, fused spec-decode vs AR):**
 

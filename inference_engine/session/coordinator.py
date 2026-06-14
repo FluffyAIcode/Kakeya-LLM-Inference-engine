@@ -136,9 +136,17 @@ class AppendTokensCoordinator:
         self,
         store: SessionStore,
         verifier: VerifierProtocol,
+        resolver=None,
     ) -> None:
         self._store = store
         self._verifier = verifier
+        # PR-A3c: optional ``session_id -> verifier`` resolver for per-session
+        # binding (multi-tenant). When None, the single ``verifier`` is used
+        # for every session (v0.3 single-tenant behaviour, unchanged).
+        self._resolver = resolver
+
+    def _verifier_for(self, session_id: str) -> "VerifierProtocol":
+        return self._resolver(session_id) if self._resolver else self._verifier
 
     def append_tokens(
         self,
@@ -164,6 +172,7 @@ class AppendTokensCoordinator:
         """
         # Lookup early to surface NOT_FOUND before we touch the verifier.
         session = self._store.get_session(session_id)
+        verifier = self._verifier_for(session_id)
 
         token_list = list(token_ids)
 
@@ -184,21 +193,21 @@ class AppendTokensCoordinator:
         #   - next_global_position = sum of all tokens ever appended
         #   - next_token_logits predicts position == next_global_position
         if session.next_global_position == 0:
-            self._verifier.prefill(token_list)
+            verifier.prefill(token_list)
         else:
-            block_logits = self._verifier.forward_block(token_list)
-            self._verifier.commit_or_truncate(
+            block_logits = verifier.forward_block(token_list)
+            verifier.commit_or_truncate(
                 forwarded=len(token_list),
                 accepted=len(token_list),
             )
-            self._verifier.next_token_logits = block_logits[-1].clone()
+            verifier.next_token_logits = block_logits[-1].clone()
 
         # Mirror the verifier's post-trim cached_token_sequence onto the
         # session BEFORE the store's INV-1 assertion runs (it compares
         # session.cached_token_sequence length against
         # verifier.k_seq_length(session)).
         session.cached_token_sequence = list(
-            self._verifier.cached_token_sequence,
+            verifier.cached_token_sequence,
         )
 
         # Extend history + run INV-1. The store's append_tokens does
@@ -213,12 +222,12 @@ class AppendTokensCoordinator:
         # session's via the store so the INV-2 check on subsequent
         # calls reads consistent state.
         self._store.record_position_advance(
-            session_id, self._verifier.next_global_position,
+            session_id, verifier.next_global_position,
         )
 
         # Mirror the verifier's current KV byte count onto the slab
         # so GetSessionInfo.kv_live_bytes reports physical bytes
         # rather than the slab's placeholder zero. PR-E1c.
-        _sync_slab_bytes(session, self._verifier)
+        _sync_slab_bytes(session, verifier)
 
         return new_history_length
