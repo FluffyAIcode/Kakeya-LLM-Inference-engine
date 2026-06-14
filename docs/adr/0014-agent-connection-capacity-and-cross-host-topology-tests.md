@@ -210,6 +210,31 @@ states + draft tokens, **≈156 KB/block** — once per block
   restricted netns), so real latency was obtained from a real inter-host link
   (the reverse-tunnel RTT) rather than synthetic netem.
 
+**What the ~102 ms is (and is not).** It is **not** a gRPC RTT and **not** a
+floor — it is a raw TCP round-trip through a **reverse SSH tunnel between two
+different-region hosts**. Decomposed by payload over the real path:
+
+| payload | median RTT |
+| --- | --- |
+| 64 B | 102.6 ms |
+| 40 KB | 205.2 ms |
+| 80 KB | 206.0 ms |
+| 156 KB | 206.9 ms |
+
+The 64 B point (~102 ms) is the **pure inter-region latency + SSH-relay
+overhead**; the flat 205–207 ms from 40 KB up is **one extra tunnel round-trip**
+(TCP windowing / SSH framing), not linear bandwidth. So this is a **worst-case
+far-WAN + SSH artifact**, not a deployment floor. Optimization room is large and
+is exactly the architecture's prescription: (1) **latency** — co-locate the
+draft loop on a low-RTT link (same region ~5–20 ms, LAN ~0.5–2 ms, Thunderbolt
+sub-ms; at ≤15 ms the engine is back to 1.8–2.2×, cf. §4.3 / loopback 2.02×);
+(2) **transport** — a direct **gRPC/QUIC/RDMA** path drops the SSH relay + the
+extra round-trip (gRPC would be *lower*, not higher); (3) **payload** — the
+156 KB/block fp16 aux can be fp8/int8/top-k compressed 2–4×; (4) **fewer
+round-trips** — larger blocks. The invariant is the ratio *per-block RTT :
+per-block compute* (break-even ~100 ms/block): the strategy is to keep the loop
+on a low-RTT link, not to chase a faster WAN.
+
 ## 5. Decision
 
 1. **Case 1 is validated**: the session-bound gRPC runtime admits and serves
