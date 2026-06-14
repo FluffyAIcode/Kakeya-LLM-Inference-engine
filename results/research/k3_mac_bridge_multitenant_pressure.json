@@ -1,0 +1,138 @@
+{
+  "kind": "mlx_multitenant_pressure",
+  "schema_version": 1,
+  "config": {
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "context_len": 2048,
+    "sink": 4,
+    "window": 64,
+    "mem_budget_mb": 21000.0,
+    "n_layers": 30,
+    "full_attn_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "decode_steps": 16
+  },
+  "results": {
+    "native": {
+      "mode": "native",
+      "per_agent_kv_mb": 256.9,
+      "max_agents_in_budget": 128,
+      "prefill_s": 17.93,
+      "decode_tokens_per_s_per_agent": 22.624,
+      "peak_mb_at_max": 16319.2,
+      "ramp": [
+        {
+          "agents": 1,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 256.9
+        },
+        {
+          "agents": 2,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 513.8
+        },
+        {
+          "agents": 4,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 1027.6
+        },
+        {
+          "agents": 8,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 2055.2
+        },
+        {
+          "agents": 16,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 4110.4
+        },
+        {
+          "agents": 32,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 8220.8
+        },
+        {
+          "agents": 64,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 16441.7
+        },
+        {
+          "agents": 128,
+          "peak_mb": 16319.2,
+          "kv_total_mb": 32883.3
+        }
+      ]
+    },
+    "kakeya": {
+      "mode": "kakeya",
+      "per_agent_kv_mb": 15.32,
+      "max_agents_in_budget": 128,
+      "prefill_s": 6.08,
+      "decode_tokens_per_s_per_agent": 25.246,
+      "peak_mb_at_max": 16057.0,
+      "ramp": [
+        {
+          "agents": 1,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 15.3
+        },
+        {
+          "agents": 2,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 30.6
+        },
+        {
+          "agents": 4,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 61.3
+        },
+        {
+          "agents": 8,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 122.6
+        },
+        {
+          "agents": 16,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 245.1
+        },
+        {
+          "agents": 32,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 490.2
+        },
+        {
+          "agents": 64,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 980.4
+        },
+        {
+          "agents": 128,
+          "peak_mb": 16057.0,
+          "kv_total_mb": 1960.8
+        }
+      ]
+    }
+  },
+  "ab": {
+    "per_agent_kv_mb": {
+      "native": 256.9,
+      "kakeya": 15.32
+    },
+    "kv_reduction_x": 16.77,
+    "max_agents": {
+      "native": 128,
+      "kakeya": 128
+    },
+    "agent_capacity_x": 1.0,
+    "decode_tps_per_agent": {
+      "native": 22.624,
+      "kakeya": 25.246
+    }
+  }
+}

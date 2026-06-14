@@ -1,0 +1,18 @@
+[mt] loading /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mt] layers=30 full_attn=[5, 11, 17, 23, 29] ctx=2048 weights/peak~15258.6MB
+[mt][native] agents=   2 peak=16319.2MB kv_total=513.8MB
+[mt][native] agents=   4 peak=16319.2MB kv_total=1027.6MB
+[mt][native] agents=   8 peak=16319.2MB kv_total=2055.2MB
+[mt][native] agents=  16 peak=16319.2MB kv_total=4110.4MB
+[mt][native] agents=  32 peak=16319.2MB kv_total=8220.8MB
+[mt][native] agents=  64 peak=16319.2MB kv_total=16441.7MB
+[mt][native] agents= 128 peak=16319.2MB kv_total=32883.3MB
+[mt][kakeya] agents=   2 peak=16057.0MB kv_total=30.6MB
+[mt][kakeya] agents=   4 peak=16057.0MB kv_total=61.3MB
+[mt][kakeya] agents=   8 peak=16057.0MB kv_total=122.6MB
+[mt][kakeya] agents=  16 peak=16057.0MB kv_total=245.1MB
+[mt][kakeya] agents=  32 peak=16057.0MB kv_total=490.2MB
+[mt][kakeya] agents=  64 peak=16057.0MB kv_total=980.4MB
+[mt][kakeya] agents= 128 peak=16057.0MB kv_total=1960.8MB
+[mt] wrote results/research/k3_mac_bridge_multitenant_pressure.json
+[mt] A/B @ctx2048: per-agent KV native=256.9MB vs kakeya=15.32MB (16.77x) | max agents native=128 vs kakeya=128 (1.0x)
