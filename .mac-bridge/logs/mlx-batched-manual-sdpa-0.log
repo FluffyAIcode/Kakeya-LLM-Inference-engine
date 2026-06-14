@@ -1,0 +1,14 @@
+[mlx-mt] patched gemma SDPA -> manual batched matmul
+[mlx-mt] loading /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mlx-mt] 8 sessions, modal prompt len=1149
+[mlx-mt][diag] row | serial_tok0 | batched_tok0 | match | serial_recall | batched_recall
+[mlx-mt][diag]  0 | 28487 | 28487 | True | True | True
+[mlx-mt][diag]  1 | 236777 | 236777 | True | True | False
+[mlx-mt][diag]  2 | 4989 | 4989 | True | True | False
+[mlx-mt][diag]  3 | 236777 | 236777 | True | True | False
+[mlx-mt][diag]  4 | 28487 | 28487 | True | True | False
+[mlx-mt][diag]  5 | 212222 | 212222 | True | True | False
+[mlx-mt][diag]  6 | 212222 | 212222 | True | True | False
+[mlx-mt][diag]  7 | 236953 | 236953 | True | True | False
+[mlx-mt] N=8: serialized 16.115 tok/s (recall 1.0) | batched 0.955 tok/s (recall 0.125) | speedup 0.06x
+[mlx-mt] wrote results/research/k3_mac_bridge_mlx_batched_manual_sdpa.json
