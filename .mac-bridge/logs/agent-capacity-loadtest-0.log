@@ -1,0 +1,33 @@
+[loadtest] launching server: /Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3 scripts/start_grpc_runtime_server.py --backend mlx --verifier-id /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit --bind 127.0.0.1:65287 --capacity 256 --sink 4 --window 64 --skip-cache-check --log-level WARNING
+Traceback (most recent call last):
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/start_grpc_runtime_server.py", line 266, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/start_grpc_runtime_server.py", line 262, in main
+    return asyncio.run(_serve(args))
+           ~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/start_grpc_runtime_server.py", line 151, in _serve
+    verifier = _build_verifier(
+        backend=args.backend, verifier_id=args.verifier_id,
+    ...<3 lines>...
+        device=args.device,
+    )
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/start_grpc_runtime_server.py", line 107, in _build_verifier
+    return MLXSinkWindowVerifier(cfg)
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/inference_engine/backends/mlx/verifier.py", line 111, in __init__
+    num_layers = int(getattr(cfg, "num_hidden_layers"))
+                     ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/lib/python3.13/site-packages/mlx/nn/layers/base.py", line 103, in __getattr__
+    super(Module, self).__getattribute__(key)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+AttributeError: 'Model' object has no attribute 'num_hidden_layers'
+[loadtest] ERROR: server never became ready
