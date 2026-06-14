@@ -183,6 +183,33 @@ straddles or exceeds break-even, while a LAN/Thunderbolt link (≤15 ms) preserv
 the 1.8–2.2× win. This is the architecture's prediction (design doc §4.2),
 **now quantified on real compute** — and it is why the data plane must be LAN.
 
+### 4.4 Real two-process socket over a real network (no simulation)
+
+To remove the "injected sleep" caveat, the per-block exchange was run through a
+**real TCP socket to a second process** (`scripts/research/socket_echo_server.py`),
+serializing the **actual** per-block payload — the verifier→proposer aux hidden
+states + draft tokens, **≈156 KB/block** — once per block
+(`--socket-echo-addr`). Two transports were measured (H200 NVL,
+`results/research/k3_crosshost_{socket_loopback,realnet}_gpu.json`):
+
+| transport | RTT | decode tok/s | vs AR |
+| --- | --- | --- | --- |
+| loopback socket (same host) | ~0 ms | 51.5 | **2.02×** |
+| **real network** (GPU↔cloud-agent, reverse SSH tunnel) | **~102 ms** | **14.1** | **0.56×** |
+
+- **Loopback** matches the co-located number → the socket + serialization of the
+  156 KB payload are themselves cheap; the killer is purely the round-trip.
+- **Real network**: at a genuine ~102 ms RTT the cross-host loop collapses to
+  **0.56× AR — a net loss, worse than running AR alone**, and *worse* than the
+  latency-only model (0.98× at 100 ms) because the real transport also pays the
+  **156 KB/block bandwidth** (network was **71 %** of decode wall time). This is
+  an end-to-end real-models + real-network confirmation that the token-level
+  draft data plane is WAN-infeasible.
+- Note: `tc netem` artificial latency could **not** be applied inside the vast
+  container (`RTNETLINK: Operation not permitted` — no `NET_ADMIN` in the
+  restricted netns), so real latency was obtained from a real inter-host link
+  (the reverse-tunnel RTT) rather than synthetic netem.
+
 ## 5. Decision
 
 1. **Case 1 is validated**: the session-bound gRPC runtime admits and serves
