@@ -247,13 +247,15 @@ channel + session each — against one runtime:
 Caveat: v0.3 is **single-tenant** (one shared verifier, RPCs serialized on one
 asyncio loop — per-session binding is a v0.4 / PR-A3c item), so create/generate
 latency is linear in N and "256" is the max concurrent connections *served*, not
-parallel inferences. Pushing further (preset `agent-capacity-stress`, FD raised
-to 100k / hard unlimited on the Mac) shows the true ceilings: **FD is not the
-limit**; **memory** scales with `capacity × window` (capacity 2048 @ window 256
-→ ~11 GB RSS, theoretical node bound ~61 GB > 24 GB RAM, so capacity must be
-sized to RAM); and with a per-agent **context** prefill the binding constraint
-is **single-tenant serialization** (concurrent heavy-prefill agents serialize
-and time out well before any FD/connection limit). Bounded memory is structural:
+parallel inferences. Pushing further (preset `agent-capacity-stress`, the
+open-file-descriptor limit `RLIMIT_NOFILE` raised to 100k / hard unlimited on
+the Mac — each connection uses one descriptor) shows the true ceilings: **the
+open-file-descriptor limit is not the constraint**; **memory** scales with
+`capacity × window` (capacity 2048 @ window 256 → ~11 GB RSS, theoretical node
+bound ~61 GB > 24 GB RAM, so capacity must be sized to RAM); and with a
+per-agent **context** prefill the binding constraint is **single-tenant
+serialization** (concurrent heavy-prefill agents serialize and time out well
+before any file-descriptor / connection limit). Bounded memory is structural:
 light-session agent count does **not** grow RSS; the memory lever is the
 resident **window**, not the number of agents.
 

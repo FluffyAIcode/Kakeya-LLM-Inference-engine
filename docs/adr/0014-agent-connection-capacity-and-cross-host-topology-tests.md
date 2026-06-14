@@ -84,8 +84,8 @@ behavior; the served **MLX gemma** path is a separate v0.4 gap (§6).
 
 ### 3.2b Stress beyond 256 — the real ceilings (preset `agent-capacity-stress`)
 
-Pushing further with the FD limit raised (`RLIMIT_NOFILE` soft 100k, hard
-unlimited on the Mac) and a **per-agent context prefill** (window 256,
+Pushing further with the open-file-descriptor limit raised (`RLIMIT_NOFILE`
+soft 100k, hard unlimited on the Mac) and a **per-agent context prefill** (window 256,
 `--context-len 256`, capacity 2048):
 
 | agents | created | create p95 | per-session KV | server RSS |
@@ -94,7 +94,8 @@ unlimited on the Mac) and a **per-agent context prefill** (window 256,
 | 8 | 8/8 | 25.2 s | 29.8 MB | 11 343 MB |
 | 16 | 15/16 (1 `RpcCancelled`) | 44.6 s | 29.8 MB | 10 781 MB |
 
-- **FD is not the ceiling** (raised to 100k; Mac hard limit is unlimited).
+- **The open-file-descriptor limit is not the ceiling** (raised to 100k; Mac
+  hard limit is unlimited) — each gRPC channel/session consumes one descriptor.
 - **Memory** scales with `capacity × window`: capacity 2048 @ window 256 →
   **~11.5 GB RSS**, and the theoretical node bound is **~61 GB > 24 GB RAM** —
   so capacity must be **sized to RAM** (it is the memory knob, not agent count).
@@ -305,7 +306,7 @@ the committed evidence JSON, and the headline result).
 | Test | Harness / preset | Reproduce |
 | --- | --- | --- |
 | Case 1 — agent connections (light) | `scripts/research/grpc_agent_capacity_loadtest.py`; preset `agent-capacity-loadtest` | `kakeya_mac.py run --preset agent-capacity-loadtest` |
-| Case 1 — agent connections (stress) | same; preset `agent-capacity-stress` (`--context-len`, FD raise) | `kakeya_mac.py run --preset agent-capacity-stress` |
+| Case 1 — agent connections (stress) | same; preset `agent-capacity-stress` (`--context-len`, open-file-descriptor limit raise) | `kakeya_mac.py run --preset agent-capacity-stress` |
 | Case 2 — injected-RTT sweep | `scripts/research/k3_specdecode_gpu_bench.py --rtt-sweep` | H200, real models |
 | Case 2 — raw socket (real net) | `socket_echo_server.py` + `k3_specdecode_gpu_bench.py --socket-echo-addr` | echo on host B; reverse-SSH path |
 | Case 2 — direct gRPC | `grpc_echo_probe.py` + `k3_specdecode_gpu_bench.py --grpc-echo-addr` | gRPC echo on host B |
@@ -317,7 +318,7 @@ the committed evidence JSON, and the headline result).
 | run | result | evidence |
 | --- | --- | --- |
 | light sessions | **256/256 agents, 0 errors**; per-session KV 7.80 MB; node bound ≈2.0 GB; RSS flat ~3.85 GB | `results/research/k3_agent_capacity_mac.json` |
-| stress (ctx prefill, FD 100k, cap 2048) | FD not the limit; mem = cap×window (cap 2048→11.5 GB, bound 61 GB>RAM); serialization caps heavy-ctx concurrency at **~8** | `results/research/k3_agent_capacity_stress_mac.json` |
+| stress (ctx prefill, file-descriptor limit 100k, cap 2048) | open-file-descriptor limit not the constraint; mem = cap×window (cap 2048→11.5 GB, bound 61 GB>RAM); serialization caps heavy-ctx concurrency at **~8** | `results/research/k3_agent_capacity_stress_mac.json` |
 
 **Case 2 (H200 NVL, Gemma-4-26B + DFlash, fused spec-decode vs AR):**
 
