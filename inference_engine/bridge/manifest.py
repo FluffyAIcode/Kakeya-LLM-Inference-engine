@@ -135,14 +135,17 @@ PRESETS: Dict[str, Preset] = {
             name="agent-capacity-loadtest",
             description="Test case 1: ramp concurrent agent connections "
                         "(independent gRPC channel + session each) against a "
-                        "single RuntimeService on the real MLX gemma verifier; "
-                        "report max concurrent agents, per-session bounded KV, "
-                        "node KV upper bound, latency curve, server RSS.",
+                        "single RuntimeService; report max concurrent agents, "
+                        "per-session bounded KV, node KV upper bound, latency "
+                        "curve, server RSS. Uses the cpu Qwen3-0.6B verifier "
+                        "(the integration-gate model; connection/admission "
+                        "scaling is model-independent — the served MLX gemma "
+                        "path is a separate v0.4 item).",
             command_templates=(
                 (
                     "python3", "scripts/research/grpc_agent_capacity_loadtest.py",
-                    "--backend", "mlx",
-                    "--verifier-id", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--backend", "cpu",
+                    "--verifier-id", "Qwen/Qwen3-0.6B",
                     "--capacity", "256",
                     "--sink", "4", "--window", "64",
                     "--levels", "1,2,4,8,16,32,64,128,256",
