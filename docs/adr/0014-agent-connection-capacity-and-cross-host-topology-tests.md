@@ -289,6 +289,35 @@ present on CUDA (HF transformers batched decode is correct → §3.5/§3.7's 8.0
 custom batched gemma decode kernel) — tracked as a follow-up; CUDA is the
 recall-safe batched path today.
 
+**Deep localization (per-layer logits + ablations).** A per-layer hidden-diff
+instrument (`mlx_batched_layer_diff_diag.py`) + targeted ablations narrowed the
+batch>1 decode bug to a single op class. At decode step 1, batched **row 0 is
+bit-exact** vs serialized while **row 1+ diverge starting at layer 0**, with
+**layer-0 input identical** (embedding/per-layer-input correct). Every
+Python-level cause was **ruled out** with evidence:
+
+| candidate | test | result |
+| --- | --- | --- |
+| sliding-window rotation | short prompt (no rotation) | still diverges |
+| in-place cache write | concat `SinkWindowKVCache` | still diverges |
+| KV-shared layers | model has **0** shared layers (`first_kv_shared_idx=30`) | N/A |
+| embedding / per-layer-input | layer-0 **input** diff = 0 for all rows | ruled out |
+| attention mask | decode mask is `None` at this offset | ruled out |
+| `mx.fast.scaled_dot_product_attention` | manual matmul-softmax SDPA | still diverges |
+
+With identical layer-0 input + concat cache + manual SDPA, row 1 *still* breaks,
+and **prefill (L=327) is correct while decode (L=1) breaks** → the residual is
+an **MLX core-kernel bug for 4-bit-quantized *batched single-token* decode**
+(`mx.quantized_matmul` / `mx.fast.rope` at `B>1, L=1`) — below the Python layer,
+**not patchable in this repo**. (CUDA is unaffected: HF transformers, no MLX
+quantized kernels — §3.5/§3.7 keep recall 1.0.)
+
+**Outcome:** the Mac batched path is **blocked upstream in MLX**, now precisely
+characterized for an upstream report. Recall-safe Mac multi-tenant remains
+**serialized**; a Python workaround (e.g. L≥2 padded decode, or de-quantized
+projections) is a possible future probe. Evidence:
+`results/research/k3_mlx_batched_manual_sdpa_mac.json` + the layer-diff logs.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out
