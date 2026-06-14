@@ -143,7 +143,7 @@ PRESETS: Dict[str, Preset] = {
                     "python3", "scripts/research/mlx_batched_multitenant_bench.py",
                     "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
                     "--sessions", "4",
-                    "--haystack-lines", "8",
+                    "--haystack-lines", "15",
                     "--max-new-tokens", "16",
                     "--output",
                     "results/research/k3_mac_bridge_mlx_batched_diag_short.json",
