@@ -266,6 +266,29 @@ batching) — recall is the bottom line. Note also the Mac speedup ceiling is lo
 even nominally (M4 saturates at small batch — 2.7× vs CUDA's 8.45×). The
 validated batched scheduler is **CUDA-only** today.
 
+**Root-cause of the Mac batched-recall break (investigated).** The
+`RotatingKVCache` / sliding-window-mask line was investigated and **ruled out**:
+
+| Mac diagnostic | batched per-session recall | what it isolates |
+| --- | --- | --- |
+| short prompt (ctx 339 < sliding window → **no rotation**) | 0.25 | **not** rotation |
+| concat-based Kakeya `SinkWindowKVCache` (no in-place buffer assign) | 0.25 | **not** the cache (in-place or concat) |
+| per-row first decoded token vs serialized | **matches** (all rows) | batched **prefill is correct** |
+
+So the break is **cache-independent and prefill-correct**: batched **decode**
+diverges only *after* the first token, with both mlx_lm's in-place cache and
+Kakeya's concat cache. That localizes it to **mlx_lm 0.31.3's gemma-4
+batched (batch>1) decode forward** (RoPE-offset / mask / shared-KV path), an
+**upstream MLX limitation** — not a Kakeya cache or rotation issue, and not
+present on CUDA (HF transformers batched decode is correct → §3.5/§3.7's 8.04×
+/ 8.45×, recall 1.0). Evidence:
+`results/research/k3_mlx_batched_{diag_short,kakeya_cache}_mac.json`.
+
+**Status:** recall-safe Mac multi-tenant = **serialized** (recall 1.0). Mac
+**batched** throughput needs an upstream mlx_lm gemma-4 batched-decode fix (or a
+custom batched gemma decode kernel) — tracked as a follow-up; CUDA is the
+recall-safe batched path today.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out
