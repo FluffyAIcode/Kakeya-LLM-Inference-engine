@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-batched-multitenant",
+  "params": {
+    "n_samples": "8",
+    "max_new_tokens": "24"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781432833-19770f"
+}
