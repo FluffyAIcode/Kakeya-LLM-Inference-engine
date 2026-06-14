@@ -246,6 +246,26 @@ the dominant multi-tenant case); dynamic mid-flight arrival + ragged-length
 continuous batching (and the async-gRPC futures glue that lets independent
 `Generate` RPC coroutines feed one batch loop) is the remaining productization.
 
+**Platform note — §3.7 is CUDA only.** The `BatchedDecodeScheduler` and its
+bench are torch/CUDA (they ran on H200); the Mac served-restored path is blocked
+by the MLX-gemma nested-config load gap (§6). A Mac analog
+(`scripts/research/mlx_batched_multitenant_bench.py`, preset
+`mlx-batched-multitenant`) was run on the Mac mini and surfaced a **correctness
+blocker**: batched MLX decode over gemma-4 at batch > 1 **breaks per-session
+recall** (`results/research/k3_mlx_batched_multitenant_mac.json`):
+
+| Mac (M4, 8 sessions) | aggregate tok/s | per-session recall |
+| --- | --- | --- |
+| serialized | 21.2 | **1.0** |
+| batched (MLX, batch>1) | 57.1 (2.7× *if* recall held) | **0.125** ✗ |
+
+So on Mac the **recall-safe** multi-tenant path is **serialized** (recall 1.0);
+batched throughput is *not* shippable there until the MLX batch>1 forward/cache
+correctness is fixed (likely the gemma hybrid/sliding `RotatingKVCache` under
+batching) — recall is the bottom line. Note also the Mac speedup ceiling is low
+even nominally (M4 saturates at small batch — 2.7× vs CUDA's 8.45×). The
+validated batched scheduler is **CUDA-only** today.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out
