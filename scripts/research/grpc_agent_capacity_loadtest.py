@@ -27,13 +27,36 @@ from __future__ import annotations
 import argparse
 import json
 import socket
-import statistics
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def _raise_fd_limit(target: int = 100_000) -> Dict[str, Any]:
+    """Best-effort raise of RLIMIT_NOFILE so the parent (and the server
+    subprocess it spawns, which inherits the soft limit) can hold many
+    concurrent gRPC channels. Returns the before/after for the report."""
+    info: Dict[str, Any] = {"requested": target}
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        info["before"] = [soft, hard]
+        new_soft = hard if hard not in (-1, resource.RLIM_INFINITY) else target
+        new_soft = min(new_soft, target) if new_soft > 0 else target
+        new_hard = hard
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, new_hard))
+        except (ValueError, OSError):
+            # Some platforms forbid raising; fall back to the hard cap.
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(soft, hard), hard))
+        info["after"] = list(resource.getrlimit(resource.RLIMIT_NOFILE))
+    except Exception as exc:  # noqa: BLE001
+        info["error"] = str(exc)
+    return info
 
 
 def _free_port() -> int:
@@ -115,8 +138,10 @@ def _run_level(
             t0 = time.time()
             c = Client(address)
             sess = c.create_session(client_label=f"agent-{i}")
-            if prompt_ids:
-                sess.append(prompt_ids)
+            # Prefill a per-agent context (chunked) so each session carries a
+            # realistic KV footprint up to the verifier's bounded window.
+            for off in range(0, len(prompt_ids), 256):
+                sess.append(prompt_ids[off:off + 256])
             r.create_s = time.time() - t0
             r.created = True
             clients[i] = c
@@ -171,10 +196,17 @@ def main() -> int:
                     help="comma-separated concurrent-agent counts to ramp")
     ap.add_argument("--gen-tokens", type=int, default=4)
     ap.add_argument("--prompt-len", type=int, default=8)
+    ap.add_argument("--context-len", type=int, default=0,
+                    help="per-agent prefill length (tokens); overrides "
+                         "--prompt-len when >0. Fills each session's KV up to "
+                         "the bounded window to probe the memory ceiling.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--server-ready-timeout", type=float, default=600.0)
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
+
+    fd_info = _raise_fd_limit()
+    print(f"[loadtest] RLIMIT_NOFILE: {fd_info}", flush=True)
 
     port = _free_port()
     address = f"127.0.0.1:{port}"
@@ -192,7 +224,9 @@ def main() -> int:
     print(f"[loadtest] launching server: {' '.join(server_cmd)}", flush=True)
     server = subprocess.Popen(server_cmd)
     levels = [int(x) for x in args.levels.split(",") if x.strip()]
-    prompt_ids = list(range(1, args.prompt_len + 1))
+    prefill_len = args.context_len if args.context_len > 0 else args.prompt_len
+    # Cycle small valid token ids to reach the requested prefill length.
+    prompt_ids = [1 + (j % 64) for j in range(prefill_len)]
     rows: List[Dict[str, Any]] = []
     peak_rss = 0.0
     try:
@@ -264,6 +298,9 @@ def main() -> int:
             "window": args.window,
             "gen_tokens": args.gen_tokens,
             "prompt_len": args.prompt_len,
+            "context_len": args.context_len,
+            "prefill_len": prefill_len,
+            "fd_limit": fd_info,
             "levels": levels,
             "single_tenant_note": (
                 "v0.3 single-tenant: shared verifier, RPCs serialized on one "

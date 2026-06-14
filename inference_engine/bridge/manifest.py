@@ -157,6 +157,30 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=90,
             validate_reports=False,
         ),
+        Preset(
+            name="agent-capacity-stress",
+            description="Test case 1 (stress): push concurrent agents to 2048 "
+                        "with a per-agent prefilled context (window 256), "
+                        "raised FD limit, to probe the true connection ceiling "
+                        "and the bounded-memory behavior (RSS vs agents) on the "
+                        "Mac. cpu Qwen3-0.6B verifier.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/grpc_agent_capacity_loadtest.py",
+                    "--backend", "cpu",
+                    "--verifier-id", "Qwen/Qwen3-0.6B",
+                    "--capacity", "2048",
+                    "--sink", "4", "--window", "256",
+                    "--context-len", "256",
+                    "--levels", "1,64,256,512,1024,2048",
+                    "--gen-tokens", "1",
+                    "--output",
+                    "results/research/k3_mac_bridge_agent_capacity_stress.json",
+                ),
+            ),
+            timeout_minutes=120,
+            validate_reports=False,
+        ),
         _harness_preset(
             "k3-step1-incremental",
             "PR #109 Step-1 evidence: incremental restored decode.",
