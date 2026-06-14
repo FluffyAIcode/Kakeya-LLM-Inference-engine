@@ -294,3 +294,47 @@ on a low-RTT link, not to chase a faster WAN.
 - **Hold live cloud→Mac gRPC sessions for Case 1.** Impossible: the Mac has no
   inbound path (the reason the bridge exists). The load test runs co-located on
   the Mac, dispatched via the bridge.
+
+## Appendix A — Test report index & evidence
+
+Consolidated record of every run behind this ADR (harnesses, how to reproduce,
+the committed evidence JSON, and the headline result).
+
+### A.1 Harnesses & how to reproduce
+
+| Test | Harness / preset | Reproduce |
+| --- | --- | --- |
+| Case 1 — agent connections (light) | `scripts/research/grpc_agent_capacity_loadtest.py`; preset `agent-capacity-loadtest` | `kakeya_mac.py run --preset agent-capacity-loadtest` |
+| Case 1 — agent connections (stress) | same; preset `agent-capacity-stress` (`--context-len`, FD raise) | `kakeya_mac.py run --preset agent-capacity-stress` |
+| Case 2 — injected-RTT sweep | `scripts/research/k3_specdecode_gpu_bench.py --rtt-sweep` | H200, real models |
+| Case 2 — raw socket (real net) | `socket_echo_server.py` + `k3_specdecode_gpu_bench.py --socket-echo-addr` | echo on host B; reverse-SSH path |
+| Case 2 — direct gRPC | `grpc_echo_probe.py` + `k3_specdecode_gpu_bench.py --grpc-echo-addr` | gRPC echo on host B |
+
+### A.2 Consolidated results
+
+**Case 1 (Mac mini M4, gRPC `RuntimeService`, cpu Qwen3-0.6B):**
+
+| run | result | evidence |
+| --- | --- | --- |
+| light sessions | **256/256 agents, 0 errors**; per-session KV 7.80 MB; node bound ≈2.0 GB; RSS flat ~3.85 GB | `results/research/k3_agent_capacity_mac.json` |
+| stress (ctx prefill, FD 100k, cap 2048) | FD not the limit; mem = cap×window (cap 2048→11.5 GB, bound 61 GB>RAM); serialization caps heavy-ctx concurrency at **~8** | `results/research/k3_agent_capacity_stress_mac.json` |
+
+**Case 2 (H200 NVL, Gemma-4-26B + DFlash, fused spec-decode vs AR):**
+
+| transport / RTT | tok/s | vs AR | evidence |
+| --- | --- | --- | --- |
+| co-located (0 network) | 44–52 | **1.85–2.20×** | (all four JSONs) |
+| injected-RTT sweep | — | 2.20× @0 → **0.98× @100 ms** → 0.77× @150 ms | `k3_crosshost_rtt_gpu.json` |
+| loopback gRPC (156 KB) | — | 1.1 ms round-trip | `k3_crosshost_grpc_gpu.json` |
+| raw socket over ~102 ms path | 14.1 | 0.56× | `k3_crosshost_realnet_gpu.json` |
+| direct gRPC over ~102 ms path | 15.95 | 0.63× | `k3_crosshost_grpc_gpu.json` |
+| RTT decomposition | 64 B → 102.6 ms; 156 KB → 206–208 ms (both raw + gRPC) | — | `k3_crosshost_socket_loopback_gpu.json` |
+
+### A.3 One-line verdict
+
+Bounded-memory, admission-controlled multi-agent serving is **validated** (Case 1:
+256+ connections, ~2.0 GB node KV ceiling, flat RSS). Cross-host token-level
+spec-decode is a **co-located/LAN win (1.8–2.2×)** and a **WAN net loss**
+(~0.56–0.63× at ~102 ms RTT, transport-independent) — **WAN = control + tool
+plane, LAN = data plane.** The lever is RTT (co-location), not the transport;
+gRPC only helps once the link is already low-RTT (loopback 1.1 ms).
