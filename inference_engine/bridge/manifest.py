@@ -182,6 +182,31 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="mlx-batched-pad-decode",
+            description="Candidate fix: MLX batched multi-tenant with the L>=2 "
+                        "padded decode workaround (duplicate the new token so "
+                        "every decode forward is length-2 and avoids mlx's L=1 "
+                        "B>1 single-token quantized kernel — the suspected "
+                        "core-kernel bug). Stays batched/parallel over "
+                        "sessions, Python-only; forces the trimmable Kakeya S5 "
+                        "cache. Expect per-session batched recall -> serialized "
+                        "(1.0).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_multitenant_bench.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "8",
+                    "--haystack-lines", "60",
+                    "--max-new-tokens", "24",
+                    "--pad-decode", "--sink", "4", "--window", "64",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_batched_pad_decode.json",
+                ),
+            ),
+            timeout_minutes=90,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-batched-kakeya-cache",
             description="Fix test: MLX batched multi-tenant with Kakeya's "
                         "concat-based SinkWindowKVCache (S5) instead of "

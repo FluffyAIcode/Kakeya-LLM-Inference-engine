@@ -78,6 +78,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-layer-diff-concat",
         "mlx-batched-manual-sdpa",
         "mlx-batched-multitenant",
+        "mlx-batched-pad-decode",
         "mlx-env-probe",
         "mlx-multitenant-pressure",
         "pytest-path",
@@ -105,6 +106,14 @@ def test_allmlx_preset_carries_both_mode_flags():
     assert "--fused-specdecode" in argv
     assert "--all-mlx-drafter" in argv
     assert "--ignore-turn-stop" in argv
+
+
+def test_pad_decode_preset_carries_flag_and_forces_trimmable_cache():
+    request = parse_manifest(_manifest(preset="mlx-batched-pad-decode"))
+    (argv,) = build_commands(request, HARNESS_ENV)
+    assert argv[1].endswith("mlx_batched_multitenant_bench.py")
+    assert "--pad-decode" in argv
+    assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in argv
 
 
 def test_drafter_parity_preset_resolves():
