@@ -150,7 +150,43 @@ Result (Mac mini M4, gemma-4-26B-A4B 4-bit, **ctx 2048**, 21 GB budget):
 - This is **memory-fit capacity**, not parallel-inference throughput: a single
   Mac GPU serializes/batches compute, so per-agent decode rate is unchanged; the
   multi-tenant value is fitting **~4× more bounded-window agents** in the same
-  RAM. A truly parallel served path still needs PR-A3c (§6).
+  RAM. A truly parallel served path is measured in §3.5 (PR-A3c).
+
+### 3.5 PR-A3c — per-session binding + true parallel multi-tenant throughput
+
+§3.2–3.4 establish that v0.3's *served* path is single-tenant (serialized) and
+that bounded windows fit more agents. The remaining question — **does the engine
+actually decode N sessions in parallel, recall-preserving?** — is answered here.
+On a single accelerator, "parallel" = a **batched** forward where **each batch
+row is a session with its own KV-cache row** (per-session binding). Implemented
+as `scripts/research/k3_cuda_multitenant_parallel_bench.py` on the recall-
+preserving restored **S5** path (the non-recall pure sink+window config is out
+of scope by design — recall is the bottom line). Required one batch-1 fix in the
+restore path (RoPE `cos`/`sin` batch-1 broadcast, `restored_attention.py`).
+
+Result (H200 NVL, gemma-4-26B-A4B 4-bit, NIAH ctx≈1238,
+`results/research/k3_cuda_multitenant_parallel_gpu.json`):
+
+| sessions N | restored-S5 agg tok/s | parallel speedup vs N=1 | per-session recall | peak |
+| --- | --- | --- | --- | --- |
+| 1 | 27.4 | 1.00× | 1.0 | 57.6 GB |
+| 2 | 54.6 | 1.99× | 1.0 | 60.4 GB |
+| 4 | 111.6 | 4.07× | 1.0 | 66.0 GB |
+| 8 | 220.4 | **8.04×** | **1.0** | 77.3 GB |
+
+- **Near-linear parallel scaling** (8.04× at N=8) — the engine genuinely decodes
+  N sessions in parallel, the opposite of v0.3's serialized single-tenant path
+  (§3.3, where concurrent sessions serialize and latency is linear in N).
+- **Per-session recall stays 1.0 at every batch size** — recall is preserved
+  under batched multi-tenant decode (the bottom line is met).
+- **Restored S5 ≈ native AR** throughput (220.4 vs 216.4 tok/s at N=8) — the
+  restoration is free, *and* it keeps the bounded resident window (§3.4: ~4×
+  more agents fit). So PR-A3c delivers parallel throughput **and** bounded
+  memory **and** recall together.
+- Caveat: this is the **engine/batched-decode** capability (per-session binding
+  validated). Wiring it into the gRPC *served* path (`SessionStore` →
+  per-session adapter, batched scheduler) is the remaining productization step
+  (§6); the batched fused spec-decode (DFlash is batch-1 today) is a follow-up.
 
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
@@ -356,6 +392,7 @@ the committed evidence JSON, and the headline result).
 | light sessions | **256/256 agents, 0 errors**; per-session KV 7.80 MB; node bound ≈2.0 GB; RSS flat ~3.85 GB | `results/research/k3_agent_capacity_mac.json` |
 | stress (ctx prefill, file-descriptor limit 100k, cap 2048) | open-file-descriptor limit not the constraint; mem = cap×window (cap 2048→11.5 GB, bound 61 GB>RAM); serialization caps heavy-ctx concurrency at **~8** | `results/research/k3_agent_capacity_stress_mac.json` |
 | multi-tenant capacity A/B (ctx2048, model-level) | per-agent KV native 256.9 MB vs **S5 61.1 MB**; **~4.2× more agents** (budget hit 15 vs 32; derived 22 vs 93) — recall-preserving | `results/research/k3_multitenant_pressure_mac.json` |
+| PR-A3c parallel throughput (H200, batched S5) | **8.04× near-linear scaling at N=8** (220 tok/s ≈ AR), **per-session recall 1.0** — per-session binding works | `results/research/k3_cuda_multitenant_parallel_gpu.json` |
 
 **Case 2 (H200 NVL, Gemma-4-26B + DFlash, fused spec-decode vs AR):**
 
