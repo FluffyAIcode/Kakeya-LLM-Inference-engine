@@ -192,6 +192,7 @@ def restored_specdecode_fused(
     prompt, gen_tokens, block_size, device, eos_ids,
     block_rtt_ms: float = 0.0,
     sock: Optional[socket.socket] = None,
+    grpc_call=None,
 ) -> Dict[str, Any]:
     """FUSED spec-decode engine (A+B+C): per-block O(L).
 
@@ -269,12 +270,17 @@ def restored_specdecode_fused(
         # proposer's next draft block goes the other way. Round-trip the REAL
         # per-block payload through the socket so netem latency + serialization
         # + bandwidth of the actual aux tensors are all measured.
-        if sock is not None:
+        if sock is not None or grpc_call is not None:
             tn = time.perf_counter()
             buf = io.BytesIO()
             torch.save({"aux": [a.to("cpu", torch.float16) for a in new_aux],
                         "tokens": candidate}, buf)
-            net_bytes += _sock_roundtrip(sock, buf.getvalue())
+            payload = buf.getvalue()
+            if grpc_call is not None:
+                grpc_call(payload)
+                net_bytes += len(payload)
+            else:
+                net_bytes += _sock_roundtrip(sock, payload)
             t_network += time.perf_counter() - tn
         ctx_kv = drafter.extend_context_kv(
             ctx_kv, drafter.make_context_kv(new_aux, new_positions))
@@ -336,6 +342,10 @@ def main() -> int:
                     help="Comma-separated netem delays (ms) to apply to "
                          "--netem-dev between socket-mode runs (needs root + tc).")
     ap.add_argument("--netem-dev", default="lo")
+    ap.add_argument("--grpc-echo-addr", default=None,
+                    help="HOST:PORT of grpc_echo_probe.py --role server. Enables "
+                         "a real gRPC per-block round-trip (direct-gRPC transport "
+                         "instead of the raw socket).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -557,6 +567,40 @@ def main() -> int:
                      "RTT is typically 30-150 ms. Quantifies why the cross-host "
                      "token-level draft data plane is WAN-infeasible."),
         }
+
+    # --- Case 2 (REAL): direct-gRPC transport over the network ---
+    if args.grpc_echo_addr:
+        import grpc as _grpc
+        _ident = lambda b: b  # noqa: E731
+        _opts = [("grpc.max_send_message_length", 256 * 1024 * 1024),
+                 ("grpc.max_receive_message_length", 256 * 1024 * 1024),
+                 ("grpc.enable_http_proxy", 0)]
+        _ch = _grpc.insecure_channel(args.grpc_echo_addr, options=_opts)
+        _echo = _ch.unary_unary("/echo.Echo/Echo", request_serializer=_ident,
+                                response_deserializer=_ident)
+        _grpc.channel_ready_future(_ch).result(timeout=30)
+        prompt0 = ids_list[0][0].tolist()
+        r = restored_specdecode_fused(
+            adapter, drafter, verifier, aux_layer_ids, embed_fn, lm_head_fn,
+            prompt0, args.max_new_tokens, args.block_size, device, eos_ids,
+            grpc_call=_echo)
+        _ch.close()
+        tps = r["decode_tokens_per_s"]
+        report["crosshost_grpc_realnet"] = {
+            "ar_baseline_tps": ar_mean,
+            "colocated_fused_tps": fu_tps,
+            "transport": "direct gRPC (HTTP/2) per-block round-trip",
+            "decode_tokens_per_s": tps,
+            "vs_ar_x": round(tps / ar_mean, 3) if ar_mean else None,
+            "blocks": r["blocks"], "mean_accept_len": r["mean_accept_len"],
+            "net_bytes_per_block": r["net_bytes_per_block"],
+            "network_s": r["time_breakdown_s"]["network_rtt"],
+            "decode_s": r["decode_s"],
+        }
+        print(f"[sd][grpc] direct gRPC -> {tps} tok/s "
+              f"({report['crosshost_grpc_realnet']['vs_ar_x']}x AR, "
+              f"{r['net_bytes_per_block']} B/block, blocks={r['blocks']})",
+              file=sys.stderr, flush=True)
 
     # --- Case 2 (REAL): two-process socket + tc netem real-network sweep ---
     if args.socket_echo_addr:
