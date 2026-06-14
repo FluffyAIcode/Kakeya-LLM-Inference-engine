@@ -1,0 +1,15 @@
+[mlx-mt] --pad-decode forces --kakeya-cache (trimmable cache needed to drop the padding token)
+[mlx-mt] loading /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mlx-mt] 8 sessions, modal prompt len=1149
+[mlx-mt] decode path: L>=2 padded (qmm, avoids L=1 qmv kernel)
+[mlx-mt][diag] row | serial_tok0 | batched_tok0 | match | serial_recall | batched_recall
+[mlx-mt][diag]  0 | 28487 | 28487 | True | True | True
+[mlx-mt][diag]  1 | 236777 | 236777 | True | True | True
+[mlx-mt][diag]  2 | 4989 | 4989 | True | True | True
+[mlx-mt][diag]  3 | 236777 | 236777 | True | True | True
+[mlx-mt][diag]  4 | 28487 | 28487 | True | True | True
+[mlx-mt][diag]  5 | 212222 | 212222 | True | True | True
+[mlx-mt][diag]  6 | 212222 | 212222 | True | True | True
+[mlx-mt][diag]  7 | 236953 | 236953 | True | True | True
+[mlx-mt] N=8: serialized 14.927 tok/s (recall 1.0) | batched 9.945 tok/s (recall 1.0) | speedup 0.67x
+[mlx-mt] wrote results/research/k3_mac_bridge_mlx_batched_pad_decode.json
