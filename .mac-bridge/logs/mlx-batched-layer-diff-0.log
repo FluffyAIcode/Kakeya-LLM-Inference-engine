@@ -1,0 +1,35 @@
+[diff] layers=30 first_kv_shared_idx=30
+[diff] 2 rows, prompt len=327
+[diff] tok0 serial=[28487, 236777] batched=[28487, 236777] match=True
+[diff] layer | type | shared? | max|Δ| row0 | row1 ...
+[diff]  0 | sliding_attention  |        | [0.0, 7.3125]  <-- FIRST DIVERGENCE
+[diff]  1 | sliding_attention  |        | [0.1406, 10.25]
+[diff]  2 | sliding_attention  |        | [0.25, 15.75]
+[diff]  3 | sliding_attention  |        | [0.375, 10.5]
+[diff]  4 | sliding_attention  |        | [0.1562, 13.25]
+[diff]  5 | full_attention     |        | [0.25, 13.875]
+[diff]  6 | sliding_attention  |        | [0.375, 11.125]
+[diff]  7 | sliding_attention  |        | [0.3125, 14.375]
+[diff]  8 | sliding_attention  |        | [0.2812, 19.25]
+[diff]  9 | sliding_attention  |        | [1.0, 31.875]
+[diff] 10 | sliding_attention  |        | [0.5, 28.75]
+[diff] 11 | full_attention     |        | [0.5, 22.875]
+[diff] 12 | sliding_attention  |        | [0.8906, 20.0]
+[diff] 13 | sliding_attention  |        | [1.25, 19.5]
+[diff] 14 | sliding_attention  |        | [1.25, 20.0]
+[diff] 15 | sliding_attention  |        | [1.0, 32.0]
+[diff] 16 | sliding_attention  |        | [1.2656, 13.75]
+[diff] 17 | full_attention     |        | [1.5, 12.125]
+[diff] 18 | sliding_attention  |        | [1.375, 14.25]
+[diff] 19 | sliding_attention  |        | [1.75, 13.25]
+[diff] 20 | sliding_attention  |        | [1.875, 10.8125]
+[diff] 21 | sliding_attention  |        | [1.125, 10.5]
+[diff] 22 | sliding_attention  |        | [1.0, 8.125]
+[diff] 23 | full_attention     |        | [0.5469, 11.125]
+[diff] 24 | sliding_attention  |        | [0.4062, 10.5]
+[diff] 25 | sliding_attention  |        | [0.5, 6.5]
+[diff] 26 | sliding_attention  |        | [0.6562, 5.9375]
+[diff] 27 | sliding_attention  |        | [0.4375, 6.0]
+[diff] 28 | sliding_attention  |        | [0.25, 6.75]
+[diff] 29 | full_attention     |        | [0.4531, 7.25]
+[diff] FIRST DIVERGENT LAYER = 0 (type=sliding_attention, shared=False)
