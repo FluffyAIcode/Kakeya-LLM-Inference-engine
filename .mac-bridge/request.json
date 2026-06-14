@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-upstream-batch-probe",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "cloud-agent-batch-probe",
+  "nonce": "1781445414-59502d"
+}
