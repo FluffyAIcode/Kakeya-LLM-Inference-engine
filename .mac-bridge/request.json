@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-upgrade",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "cloud-agent-mlx-upgrade",
+  "nonce": "1781445236-598dc5"
+}
