@@ -134,6 +134,30 @@ KV restoration buys *bounded memory at full fidelity*. See
 the **memory axis** all-platform + **throughput** on CUDA) and
 [ADR 0013](docs/adr/0013-distributed-inference-topology.md).
 
+### How this differs — Kakeya Attention vs PagedAttention / RadixAttention
+
+Other engines optimise *how* the KV cache is **stored/laid out**; they still
+store the **whole** history, so memory **grows with the conversation** and the
+node must provision for the *total* footprint. Kakeya optimises *how much* is
+stored: a sliding-window bound + a global-attention **restoration** mechanism,
+so the resident footprint is **bounded** and the node provisions only for the
+**peak window** — not the whole history.
+
+| Engine | Mechanism | What it manages | Memory vs conversation length |
+| --- | --- | --- | --- |
+| **vLLM** — PagedAttention | OS-style **paged** KV blocks (virtual→physical page tables) | layout: non-contiguous block allocation; great for whole-block access | **grows** — still stores full KV; needs large-capacity store |
+| **SGLang** — RadixAttention | **radix-tree** over KV, dynamic insert/evict | layout + **prefix reuse**: fast, precise prefix lookup/sharing | **grows** — still stores full KV; needs large-capacity store |
+| **Kakeya** — Kakeya Attention | sliding-window bound + **global-attention restoration** (dLLM proposer + f_θ/S5) | *length*: dynamically bounds resident KV; evicted context **reconstructed on demand** | **bounded** — footprint does **not** grow with the session; provision only for the **peak window** |
+| **CXL / Ollama** | reuse PagedAttention | layout (offload tier / local serving) | **grows** — inherits PagedAttention's full-KV storage |
+
+The orthogonality matters: PagedAttention and RadixAttention make the *same
+total* KV cheaper to allocate or share; **Kakeya Attention makes the total
+itself bounded** (and is composable — a paged/radix store could hold Kakeya's
+bounded window). The cost is the restoration compute (a proposer forward), which
+the rest of this section quantifies (recall 1.0; ~AR-parity / 1.79–2.06× on
+CUDA; ~4× more concurrent agents per GB, §3.4 of
+[ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)).
+
 ### Beta scorecards — Kakeya vs the standalone model (`main` @ `9d5e6b4`)
 
 Both betas run the *same* `Gemma-4 26B-A4B-it` verifier, `z-lab` DFlash proposer, and
