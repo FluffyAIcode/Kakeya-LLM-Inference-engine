@@ -267,7 +267,10 @@ H200 compute by injecting one proposer↔verifier round-trip per block:
 | vs AR | **2.20×** | 1.81× | 1.50× | 1.22× | **0.98×** (break-even) | 0.77× (loss) |
 
 **Break-even ≈100 ms/block**: a cloud↔desk WAN (30–150 ms) straddles/exceeds it,
-while a LAN (≤15 ms) keeps the 1.8–2.2× win. So the realizable split is **WAN =
+while a LAN (≤15 ms) keeps the 1.8–2.2× win. Confirmed end-to-end with a **real
+two-process socket over a real ~102 ms network** (reverse SSH tunnel, real
+156 KB/block aux payload): co-located **2.02×** → real-network **0.56× AR** (a
+net loss; network was 71 % of wall time). So the realizable split is **WAN =
 control + tool plane** (the Mac bridge) and **LAN = co-located data plane**. See
 [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 for the full plan, evidence, and the served-MLX-gemma gap found during testing.

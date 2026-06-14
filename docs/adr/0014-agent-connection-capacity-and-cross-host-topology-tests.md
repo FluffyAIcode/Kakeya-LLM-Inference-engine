@@ -183,6 +183,76 @@ straddles or exceeds break-even, while a LAN/Thunderbolt link (≤15 ms) preserv
 the 1.8–2.2× win. This is the architecture's prediction (design doc §4.2),
 **now quantified on real compute** — and it is why the data plane must be LAN.
 
+### 4.4 Real two-process socket over a real network (no simulation)
+
+To remove the "injected sleep" caveat, the per-block exchange was run through a
+**real TCP socket to a second process** (`scripts/research/socket_echo_server.py`),
+serializing the **actual** per-block payload — the verifier→proposer aux hidden
+states + draft tokens, **≈156 KB/block** — once per block
+(`--socket-echo-addr`). Two transports were measured (H200 NVL,
+`results/research/k3_crosshost_{socket_loopback,realnet}_gpu.json`):
+
+| transport | RTT | decode tok/s | vs AR |
+| --- | --- | --- | --- |
+| loopback socket (same host) | ~0 ms | 51.5 | **2.02×** |
+| **real network** (GPU↔cloud-agent, reverse SSH tunnel) | **~102 ms** | **14.1** | **0.56×** |
+
+- **Loopback** matches the co-located number → the socket + serialization of the
+  156 KB payload are themselves cheap; the killer is purely the round-trip.
+- **Real network**: at a genuine ~102 ms RTT the cross-host loop collapses to
+  **0.56× AR — a net loss, worse than running AR alone**, and *worse* than the
+  latency-only model (0.98× at 100 ms) because the real transport also pays the
+  **156 KB/block bandwidth** (network was **71 %** of decode wall time). This is
+  an end-to-end real-models + real-network confirmation that the token-level
+  draft data plane is WAN-infeasible.
+- Note: `tc netem` artificial latency could **not** be applied inside the vast
+  container (`RTNETLINK: Operation not permitted` — no `NET_ADMIN` in the
+  restricted netns), so real latency was obtained from a real inter-host link
+  (the reverse-tunnel RTT) rather than synthetic netem.
+
+**What the ~102 ms is (and is not).** It is **not** a gRPC RTT and **not** a
+floor — it is a raw TCP round-trip through a **reverse SSH tunnel between two
+different-region hosts**. Decomposed by payload over the real path:
+
+| payload | median RTT |
+| --- | --- |
+| 64 B | 102.6 ms |
+| 40 KB | 205.2 ms |
+| 80 KB | 206.0 ms |
+| 156 KB | 206.9 ms |
+
+The 64 B point (~102 ms) is the **pure inter-region latency + SSH-relay
+overhead**; the flat 205–207 ms from 40 KB up is **one extra tunnel round-trip**
+(TCP windowing / SSH framing), not linear bandwidth.
+
+**Direct-gRPC transport, re-tested.** Swapping the raw socket for a real
+**gRPC (HTTP/2)** channel (`grpc_echo_probe.py`, `--grpc-echo-addr`):
+
+| transport / path | 156 KB RTT | fused tok/s | vs AR |
+| --- | --- | --- | --- |
+| loopback gRPC (same host) | **1.1 ms** | — | — |
+| raw socket over the ~102 ms path | 207 ms | 14.1 | 0.56× |
+| **gRPC over the ~102 ms path** | 208 ms | **15.95** | **0.63×** |
+
+gRPC is **modestly better** (0.63× vs 0.56×; ~197 vs ~232 ms/block network) —
+it serializes the 156 KB more efficiently — but **still a net loss**, because
+the **~102 ms geographic RTT dominates, not the transport**. gRPC's real value
+shows at **loopback (1.1 ms for 156 KB)** → on a low-RTT link the transport is
+free and the engine returns to its 1.8–2.2× win. (A *true* non-SSH ingress to
+the GPU could not be established — vast's non-SSH mapped ports accept SYNs but
+do not forward data end-to-end, so the gRPC run used the same reverse-SSH path;
+this only adds relay overhead, so the real direct-gRPC number would be ≤ these.) So this is a **worst-case
+far-WAN + SSH artifact**, not a deployment floor. Optimization room is large and
+is exactly the architecture's prescription: (1) **latency** — co-locate the
+draft loop on a low-RTT link (same region ~5–20 ms, LAN ~0.5–2 ms, Thunderbolt
+sub-ms; at ≤15 ms the engine is back to 1.8–2.2×, cf. §4.3 / loopback 2.02×);
+(2) **transport** — a direct **gRPC/QUIC/RDMA** path drops the SSH relay + the
+extra round-trip (gRPC would be *lower*, not higher); (3) **payload** — the
+156 KB/block fp16 aux can be fp8/int8/top-k compressed 2–4×; (4) **fewer
+round-trips** — larger blocks. The invariant is the ratio *per-block RTT :
+per-block compute* (break-even ~100 ms/block): the strategy is to keep the loop
+on a low-RTT link, not to chase a faster WAN.
+
 ## 5. Decision
 
 1. **Case 1 is validated**: the session-bound gRPC runtime admits and serves
@@ -224,3 +294,47 @@ the 1.8–2.2× win. This is the architecture's prediction (design doc §4.2),
 - **Hold live cloud→Mac gRPC sessions for Case 1.** Impossible: the Mac has no
   inbound path (the reason the bridge exists). The load test runs co-located on
   the Mac, dispatched via the bridge.
+
+## Appendix A — Test report index & evidence
+
+Consolidated record of every run behind this ADR (harnesses, how to reproduce,
+the committed evidence JSON, and the headline result).
+
+### A.1 Harnesses & how to reproduce
+
+| Test | Harness / preset | Reproduce |
+| --- | --- | --- |
+| Case 1 — agent connections (light) | `scripts/research/grpc_agent_capacity_loadtest.py`; preset `agent-capacity-loadtest` | `kakeya_mac.py run --preset agent-capacity-loadtest` |
+| Case 1 — agent connections (stress) | same; preset `agent-capacity-stress` (`--context-len`, FD raise) | `kakeya_mac.py run --preset agent-capacity-stress` |
+| Case 2 — injected-RTT sweep | `scripts/research/k3_specdecode_gpu_bench.py --rtt-sweep` | H200, real models |
+| Case 2 — raw socket (real net) | `socket_echo_server.py` + `k3_specdecode_gpu_bench.py --socket-echo-addr` | echo on host B; reverse-SSH path |
+| Case 2 — direct gRPC | `grpc_echo_probe.py` + `k3_specdecode_gpu_bench.py --grpc-echo-addr` | gRPC echo on host B |
+
+### A.2 Consolidated results
+
+**Case 1 (Mac mini M4, gRPC `RuntimeService`, cpu Qwen3-0.6B):**
+
+| run | result | evidence |
+| --- | --- | --- |
+| light sessions | **256/256 agents, 0 errors**; per-session KV 7.80 MB; node bound ≈2.0 GB; RSS flat ~3.85 GB | `results/research/k3_agent_capacity_mac.json` |
+| stress (ctx prefill, FD 100k, cap 2048) | FD not the limit; mem = cap×window (cap 2048→11.5 GB, bound 61 GB>RAM); serialization caps heavy-ctx concurrency at **~8** | `results/research/k3_agent_capacity_stress_mac.json` |
+
+**Case 2 (H200 NVL, Gemma-4-26B + DFlash, fused spec-decode vs AR):**
+
+| transport / RTT | tok/s | vs AR | evidence |
+| --- | --- | --- | --- |
+| co-located (0 network) | 44–52 | **1.85–2.20×** | (all four JSONs) |
+| injected-RTT sweep | — | 2.20× @0 → **0.98× @100 ms** → 0.77× @150 ms | `k3_crosshost_rtt_gpu.json` |
+| loopback gRPC (156 KB) | — | 1.1 ms round-trip | `k3_crosshost_grpc_gpu.json` |
+| raw socket over ~102 ms path | 14.1 | 0.56× | `k3_crosshost_realnet_gpu.json` |
+| direct gRPC over ~102 ms path | 15.95 | 0.63× | `k3_crosshost_grpc_gpu.json` |
+| RTT decomposition | 64 B → 102.6 ms; 156 KB → 206–208 ms (both raw + gRPC) | — | `k3_crosshost_socket_loopback_gpu.json` |
+
+### A.3 One-line verdict
+
+Bounded-memory, admission-controlled multi-agent serving is **validated** (Case 1:
+256+ connections, ~2.0 GB node KV ceiling, flat RSS). Cross-host token-level
+spec-decode is a **co-located/LAN win (1.8–2.2×)** and a **WAN net loss**
+(~0.56–0.63× at ~102 ms RTT, transport-independent) — **WAN = control + tool
+plane, LAN = data plane.** The lever is RTT (co-location), not the transport;
+gRPC only helps once the link is already low-RTT (loopback 1.1 ms).
