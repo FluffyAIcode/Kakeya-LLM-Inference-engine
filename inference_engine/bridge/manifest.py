@@ -172,7 +172,7 @@ PRESETS: Dict[str, Preset] = {
                     "--capacity", "2048",
                     "--sink", "4", "--window", "256",
                     "--context-len", "256",
-                    "--levels", "1,64,256,512,1024,2048",
+                    "--levels", "1,4,8,16,32,48,64,96",
                     "--gen-tokens", "1",
                     "--output",
                     "results/research/k3_mac_bridge_agent_capacity_stress.json",
