@@ -131,6 +131,56 @@ PRESETS: Dict[str, Preset] = {
             ),
             timeout_minutes=60,
         ),
+        Preset(
+            name="agent-capacity-loadtest",
+            description="Test case 1: ramp concurrent agent connections "
+                        "(independent gRPC channel + session each) against a "
+                        "single RuntimeService; report max concurrent agents, "
+                        "per-session bounded KV, node KV upper bound, latency "
+                        "curve, server RSS. Uses the cpu Qwen3-0.6B verifier "
+                        "(the integration-gate model; connection/admission "
+                        "scaling is model-independent — the served MLX gemma "
+                        "path is a separate v0.4 item).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/grpc_agent_capacity_loadtest.py",
+                    "--backend", "cpu",
+                    "--verifier-id", "Qwen/Qwen3-0.6B",
+                    "--capacity", "256",
+                    "--sink", "4", "--window", "64",
+                    "--levels", "1,2,4,8,16,32,64,128,256",
+                    "--gen-tokens", "4",
+                    "--output",
+                    "results/research/k3_mac_bridge_agent_capacity.json",
+                ),
+            ),
+            timeout_minutes=90,
+            validate_reports=False,
+        ),
+        Preset(
+            name="agent-capacity-stress",
+            description="Test case 1 (stress): push concurrent agents to 2048 "
+                        "with a per-agent prefilled context (window 256), "
+                        "raised FD limit, to probe the true connection ceiling "
+                        "and the bounded-memory behavior (RSS vs agents) on the "
+                        "Mac. cpu Qwen3-0.6B verifier.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/grpc_agent_capacity_loadtest.py",
+                    "--backend", "cpu",
+                    "--verifier-id", "Qwen/Qwen3-0.6B",
+                    "--capacity", "2048",
+                    "--sink", "4", "--window", "256",
+                    "--context-len", "256",
+                    "--levels", "1,4,8,16,32,48,64,96",
+                    "--gen-tokens", "1",
+                    "--output",
+                    "results/research/k3_mac_bridge_agent_capacity_stress.json",
+                ),
+            ),
+            timeout_minutes=120,
+            validate_reports=False,
+        ),
         _harness_preset(
             "k3-step1-incremental",
             "PR #109 Step-1 evidence: incremental restored decode.",

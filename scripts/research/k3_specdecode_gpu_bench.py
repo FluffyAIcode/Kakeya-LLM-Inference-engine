@@ -169,6 +169,7 @@ def restored_specdecode(
 def restored_specdecode_fused(
     adapter, drafter, verifier, aux_layer_ids, embed_fn, lm_head_fn,
     prompt, gen_tokens, block_size, device, eos_ids,
+    block_rtt_ms: float = 0.0,
 ) -> Dict[str, Any]:
     """FUSED spec-decode engine (A+B+C): per-block O(L).
 
@@ -195,12 +196,21 @@ def restored_specdecode_fused(
 
     generated: List[int] = []
     accepts: List[int] = []
-    t_draft = t_verify = t_extend = 0.0
+    t_draft = t_verify = t_extend = t_network = 0.0
+    rtt_s = max(0.0, block_rtt_ms) / 1000.0
     torch.cuda.synchronize(device)
     t0 = time.perf_counter()
     while len(generated) < gen_tokens:
         L = min(block_size, gen_tokens - len(generated))
         cstart = adapter._past_len           # committed length at block start
+        # Cross-host model: one proposer<->verifier round-trip per block
+        # (proposer ships the draft block to the verifier host, gets the
+        # accept/reject + bonus back). Injected as a per-block delay so the
+        # measured decode throughput reflects the WAN penalty on real compute.
+        if rtt_s:
+            tn = time.perf_counter()
+            time.sleep(rtt_s)
+            t_network += time.perf_counter() - tn
         bonus = int(adapter.next_token_logits.argmax().item())
         td = time.perf_counter()
         drafts = drafter.draft_block_cached(
@@ -252,10 +262,12 @@ def restored_specdecode_fused(
             "drafter_cached": round(t_draft, 3),
             "incremental_verify": round(t_verify, 3),
             "ctx_kv_extend": round(t_extend, 3),
+            "network_rtt": round(t_network, 3),
         },
         "blocks": len(accepts),
         "mean_accept_len": round(sum(accepts) / len(accepts), 2) if accepts else 0.0,
         "decode_tokens": len(generated),
+        "block_rtt_ms": block_rtt_ms,
     }
 
 
@@ -275,6 +287,11 @@ def main() -> int:
                     help="Skip the un-fused restored spec-decode baseline "
                          "(already characterized; removes GPU contention for a "
                          "clean fused-vs-AR steady-state measurement).")
+    ap.add_argument("--rtt-sweep", default=None,
+                    help="Comma-separated per-block RTT values (ms) to model a "
+                         "cross-host proposer<->verifier draft loop. When set, "
+                         "after the co-located run the fused path is re-timed on "
+                         "prompt[0] at each RTT — the WAN-penalty curve (Case 2).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -461,6 +478,41 @@ def main() -> int:
     fu_tps = report["restored_specdecode_fused"]["decode_tokens_per_s_mean"]
     report["restored_specdecode_fused"]["speedup_over_ar_x"] = (
         round(fu_tps / ar_mean, 2) if ar_mean else None)
+
+    # --- Case 2: cross-host proposer<->verifier WAN-penalty curve ---
+    if args.rtt_sweep:
+        rtts = [float(x) for x in args.rtt_sweep.split(",") if x.strip()]
+        prompt0 = ids_list[0][0].tolist()
+        sweep = []
+        for rtt in rtts:
+            r = restored_specdecode_fused(
+                adapter, drafter, verifier, aux_layer_ids, embed_fn, lm_head_fn,
+                prompt0, args.max_new_tokens, args.block_size, device, eos_ids,
+                block_rtt_ms=rtt)
+            tps = r["decode_tokens_per_s"]
+            sweep.append({
+                "block_rtt_ms": rtt,
+                "decode_tokens_per_s": tps,
+                "vs_ar_x": round(tps / ar_mean, 3) if ar_mean else None,
+                "blocks": r["blocks"],
+                "mean_accept_len": r["mean_accept_len"],
+                "network_s": r["time_breakdown_s"]["network_rtt"],
+                "decode_s": r["decode_s"],
+            })
+            print(f"[sd][rtt] {rtt:6.1f} ms/block -> {tps} tok/s "
+                  f"({sweep[-1]['vs_ar_x']}x AR, blocks={r['blocks']})",
+                  file=sys.stderr, flush=True)
+        # break-even: highest RTT still >= AR (vs_ar_x >= 1.0)
+        over_ar = [s["block_rtt_ms"] for s in sweep if (s["vs_ar_x"] or 0) >= 1.0]
+        report["crosshost_rtt_sweep"] = {
+            "ar_baseline_tps": ar_mean,
+            "colocated_fused_tps": fu_tps,
+            "sweep": sweep,
+            "max_rtt_ms_at_or_above_ar": (max(over_ar) if over_ar else 0.0),
+            "note": ("one proposer<->verifier round-trip per block; cloud<->desk "
+                     "RTT is typically 30-150 ms. Quantifies why the cross-host "
+                     "token-level draft data plane is WAN-infeasible."),
+        }
     out_path = Path(args.output) if args.output else Path(
         f"results/research/k3_specdecode_gpu_bench_{int(time.time())}.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
