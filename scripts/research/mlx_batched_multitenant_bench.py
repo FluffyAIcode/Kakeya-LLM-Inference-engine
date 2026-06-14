@@ -134,6 +134,17 @@ def main() -> int:
     serial_tps = round((N * args.max_new_tokens) / ser_decode_s, 3) if ser_decode_s else 0.0
     serial_recall = sum(recall(g_s[i], answers[i]) for i in range(N)) / N
 
+    # Diagnostic: per-row batched-vs-serialized first token + recall, to
+    # localize whether batched PREFILL diverges from serialized (batch-1).
+    print("[mlx-mt][diag] row | serial_tok0 | batched_tok0 | match | "
+          "serial_recall | batched_recall", flush=True)
+    for i in range(N):
+        s0 = g_s[i][0] if g_s[i] else None
+        b0 = g_b[i][0] if g_b[i] else None
+        print(f"[mlx-mt][diag] {i:2d} | {s0} | {b0} | {s0 == b0} | "
+              f"{recall(g_s[i], answers[i])} | {recall(g_b[i], answers[i])}",
+              flush=True)
+
     speedup = round(batched_tps / serial_tps, 2) if serial_tps else None
     report = {
         "kind": "mlx_batched_multitenant",

@@ -132,6 +132,27 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=60,
         ),
         Preset(
+            name="mlx-batched-diag-short",
+            description="Diagnostic: MLX batched multi-tenant on SHORT prompts "
+                        "(haystack 8, below the sliding window so no "
+                        "RotatingKVCache rotation) — isolates whether the "
+                        "batched-recall bug is rotation-under-batch. Logs "
+                        "per-row batched-vs-serialized first tokens.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_multitenant_bench.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "4",
+                    "--haystack-lines", "8",
+                    "--max-new-tokens", "16",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_batched_diag_short.json",
+                ),
+            ),
+            timeout_minutes=60,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-batched-multitenant",
             description="Mac analog of the §3.7 batched scheduler: N sessions "
                         "decoded in one batched MLX forward over the gemma "
