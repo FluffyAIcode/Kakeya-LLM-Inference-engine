@@ -216,10 +216,35 @@ needle, primed then decoded interleaved.
 Each session recalled **its own** needle (`MAPLE-7890`, `IOTA-8961`,
 `THETA-6866`, `IOTA-3281` — note two `IOTA-*` sessions got their *own* numbers),
 proving **per-session KV isolation** through the real served path. So
-multi-tenant serving is end-to-end correct + recall-preserving. (Execution is
-still RPC-serialized on the asyncio loop — a batched scheduler to fuse
-concurrent decodes into §3.5's parallel forward is the remaining throughput
-step; correctness/isolation is done.)
+multi-tenant serving is end-to-end correct + recall-preserving. Execution was
+still RPC-serialized on the asyncio loop; the batched scheduler that fuses the
+cohort into one forward is §3.7.
+
+### 3.7 PR-A3c batched scheduler — fusing concurrent decodes for throughput
+
+§3.6's served path was *correct* multi-tenant but RPC-serialized (each session's
+decode forward ran alone). `BatchedDecodeScheduler`
+(`inference_engine/session/batch_scheduler.py`) takes the cohort of per-session
+adapters from the registry, **stacks their restored caches along the batch dim,
+and runs one verifier forward per step** (dropping finished rows) — the
+served-path realisation of §3.5's parallel decode.
+
+Result (H200, 8 sessions, NIAH ctx≈1238,
+`results/research/k3_served_batched_scheduler_gpu.json`):
+
+| path | aggregate decode tok/s | per-session recall |
+| --- | --- | --- |
+| serialized (§3.6, each session alone) | 26.6 | 1.0 |
+| **batched scheduler (§3.7)** | **224.9** | **1.0** |
+| **speedup** | **8.45×** | — |
+
+So the batched scheduler converts the correct-but-serialized multi-tenant path
+into **8.45× aggregate throughput at 8 sessions, recall preserved** — matching
+the engine-level near-linear scaling (§3.5) now driven through the served
+per-session adapters. Scope: a **fixed-cohort** batcher (synchronized burst —
+the dominant multi-tenant case); dynamic mid-flight arrival + ragged-length
+continuous batching (and the async-gRPC futures glue that lets independent
+`Generate` RPC coroutines feed one batch loop) is the remaining productization.
 
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
@@ -427,6 +452,7 @@ the committed evidence JSON, and the headline result).
 | multi-tenant capacity A/B (ctx2048, model-level) | per-agent KV native 256.9 MB vs **S5 61.1 MB**; **~4.2× more agents** (budget hit 15 vs 32; derived 22 vs 93) — recall-preserving | `results/research/k3_multitenant_pressure_mac.json` |
 | PR-A3c parallel throughput (H200, batched S5) | **8.04× near-linear scaling at N=8** (220 tok/s ≈ AR), **per-session recall 1.0** — per-session binding works | `results/research/k3_cuda_multitenant_parallel_gpu.json` |
 | PR-A3c served path (H200, gRPC + 4 SDK clients) | **true multi-tenant serving end-to-end**: 4 concurrent sessions, **per-session recall 1.0**, isolated | `results/research/k3_grpc_multitenant_e2e_gpu.json` |
+| PR-A3c batched scheduler (H200, 8 sessions) | **8.45× throughput** (26.6 → 224.9 tok/s) fusing cohort into one forward, **recall 1.0** | `results/research/k3_served_batched_scheduler_gpu.json` |
 
 **Case 2 (H200 NVL, Gemma-4-26B + DFlash, fused spec-decode vs AR):**
 

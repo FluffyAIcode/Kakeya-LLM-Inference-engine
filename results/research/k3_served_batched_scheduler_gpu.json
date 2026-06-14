@@ -1,0 +1,22 @@
+{
+  "kind": "k3_served_batched_scheduler",
+  "config": {
+    "sessions": 8,
+    "modal_prompt_len": 1238,
+    "max_new_tokens": 24,
+    "sink": 4,
+    "window": 64
+  },
+  "env": {
+    "gpu": "NVIDIA H200 NVL"
+  },
+  "serialized": {
+    "aggregate_tps": 26.615,
+    "recall": 1.0
+  },
+  "batched_scheduler": {
+    "aggregate_tps": 224.928,
+    "recall": 1.0
+  },
+  "batched_speedup_vs_serialized": 8.45
+}
