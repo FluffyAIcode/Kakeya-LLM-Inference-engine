@@ -223,7 +223,25 @@ different-region hosts**. Decomposed by payload over the real path:
 
 The 64 B point (~102 ms) is the **pure inter-region latency + SSH-relay
 overhead**; the flat 205–207 ms from 40 KB up is **one extra tunnel round-trip**
-(TCP windowing / SSH framing), not linear bandwidth. So this is a **worst-case
+(TCP windowing / SSH framing), not linear bandwidth.
+
+**Direct-gRPC transport, re-tested.** Swapping the raw socket for a real
+**gRPC (HTTP/2)** channel (`grpc_echo_probe.py`, `--grpc-echo-addr`):
+
+| transport / path | 156 KB RTT | fused tok/s | vs AR |
+| --- | --- | --- | --- |
+| loopback gRPC (same host) | **1.1 ms** | — | — |
+| raw socket over the ~102 ms path | 207 ms | 14.1 | 0.56× |
+| **gRPC over the ~102 ms path** | 208 ms | **15.95** | **0.63×** |
+
+gRPC is **modestly better** (0.63× vs 0.56×; ~197 vs ~232 ms/block network) —
+it serializes the 156 KB more efficiently — but **still a net loss**, because
+the **~102 ms geographic RTT dominates, not the transport**. gRPC's real value
+shows at **loopback (1.1 ms for 156 KB)** → on a low-RTT link the transport is
+free and the engine returns to its 1.8–2.2× win. (A *true* non-SSH ingress to
+the GPU could not be established — vast's non-SSH mapped ports accept SYNs but
+do not forward data end-to-end, so the gRPC run used the same reverse-SSH path;
+this only adds relay overhead, so the real direct-gRPC number would be ≤ these.) So this is a **worst-case
 far-WAN + SSH artifact**, not a deployment floor. Optimization room is large and
 is exactly the architecture's prescription: (1) **latency** — co-locate the
 draft loop on a low-RTT link (same region ~5–20 ms, LAN ~0.5–2 ms, Thunderbolt

@@ -309,7 +309,7 @@ def restored_specdecode_fused(
         "mean_accept_len": round(sum(accepts) / len(accepts), 2) if accepts else 0.0,
         "decode_tokens": len(generated),
         "block_rtt_ms": block_rtt_ms,
-        "net_bytes_per_block": (round(net_bytes / len(accepts)) if accepts and sock else 0),
+        "net_bytes_per_block": (round(net_bytes / len(accepts)) if accepts and net_bytes else 0),
     }
 
 
