@@ -230,6 +230,41 @@ engine lands at **≈ AR parity** — the memory + context wins are platform-ind
 Reproduce with `scripts/research/k3_e2e_gpu_bench.py` + `k3_specdecode_gpu_bench.py`
 (CUDA) and the `k3-beta-scorecard` / `k3-fused-allmlx-code-trim` Mac-bridge presets.
 
+### Agent-connection capacity & cross-host topology ([ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md))
+
+**Agent connections (gRPC `RuntimeService`, Mac mini M4).** A connection load
+test (`scripts/research/grpc_agent_capacity_loadtest.py`, preset
+`agent-capacity-loadtest`) ramps N concurrent agents — an independent gRPC
+channel + session each — against one runtime:
+
+| | result |
+| --- | --- |
+| Max concurrent agents | **256 / 256, zero errors** (the configured capacity — a clean floor, not a failure point) |
+| Per-session resident KV | **bounded** (sink+window; ~7.8 MB @ window 64, ~30 MB @ window 256) |
+| Node KV upper bound | **capacity × per-session bound** (≈2.0 GB @ cap 256) — independent of context length / churn |
+| Server RSS vs agents | **flat** (3825 → 3850 MB across 1 → 256) — adding agents costs ~0 memory |
+
+Caveat: v0.3 is **single-tenant** (one shared verifier, RPCs serialized on one
+asyncio loop — per-session binding is a v0.4 / PR-A3c item), so create/generate
+latency is linear in N and "256" is the max concurrent connections *served*, not
+parallel inferences. Pushing further (preset `agent-capacity-stress`, FD raised
+to 100k / hard unlimited on the Mac) shows the true ceilings: **FD is not the
+limit**; **memory** scales with `capacity × window` (capacity 2048 @ window 256
+→ ~11 GB RSS, theoretical node bound ~61 GB > 24 GB RAM, so capacity must be
+sized to RAM); and with a per-agent **context** prefill the binding constraint
+is **single-tenant serialization** (concurrent heavy-prefill agents serialize
+and time out well before any FD/connection limit). Bounded memory is structural:
+light-session agent count does **not** grow RSS; the memory lever is the
+resident **window**, not the number of agents.
+
+**Cross-host proposer/verifier.** A GPU proposer ⇄ Mac verifier *token-level
+draft* data plane is **design-only** (no `CapabilityService` / `ProposeBlock` /
+gossip) **and** ruled out by the WAN latency budget (per-block RTT ≫ block
+compute). The realizable split is **WAN = control + tool plane** (the Mac
+bridge) and **LAN = co-located data plane** (spec-decode is a same-host win:
+GPU 1.79× AR, Mac ≈ parity). See ADR 0014 for the full plan, evidence, and the
+served-MLX-gemma gap found during testing.
+
 ## Kakeya Inference Engine for Mac — MLX speculative-decode port (K3 beta baseline)
 
 After the **CUDA** beta (PR #107: f_θ + S5 K/V-restoration verifier, **fused DFlash
