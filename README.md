@@ -1,20 +1,25 @@
 # Kakeya Inference engine — memory bounded local inference engine
 
 [![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
-[![Release](https://img.shields.io/badge/release-v0.3.0-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/releases/tag/v0.3.0)
-[![Platform](https://img.shields.io/badge/platform-Apple%20Silicon%20%7C%20Linux--CPU-lightgrey)](docs/quickstart.md)
-[![Architecture](https://img.shields.io/badge/architecture-ADR%200008-green)](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md)
+[![Release](https://img.shields.io/badge/release-v0.4-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/tags)
+[![Platform](https://img.shields.io/badge/platform-Apple%20Silicon%20(MLX)%20%7C%20CUDA%20%7C%20Linux--CPU-lightgrey)](docs/quickstart.md)
+[![Architecture](https://img.shields.io/badge/architecture-ADR%200008%20%7C%200014-green)](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 [![License](https://img.shields.io/badge/license-MIT-lightblue)](LICENSE)
 
-Kakeya is a **local agent runtime**: a long-running inference server that
-holds session state on the server side, exposes a gRPC `RuntimeService`
-(plus a deprecated OpenAI-compatible HTTP shim), and bounds memory + per-
-turn latency on long conversations.
+Kakeya is a **memory-bounded local agent runtime**: a long-running inference
+server that holds session state on the server side, exposes a gRPC
+`RuntimeService`, and bounds **KV memory + per-turn latency** on long
+conversations — its KV footprint **does not grow with the conversation** (see
+[Kakeya Attention](#how-this-differs--kakeya-attention-vs-pagedattention--radixattention)).
 
-The v0.3 architectural arc landed in June 2026 ([ADR 0008](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md));
-the headline result is **9 ms latency drift over a 4-hour, 480-turn run on
-Mac M4 24 GB** — vs +39.74 s on the previous (HTTP-only) architecture, a
-4400× improvement.
+**v0.4** pairs a frozen **AR verifier** (Gemma-4 26B-A4B) with a **dLLM proposer**
+(DFlash) and a trained projection **f_θ**: a sliding-window-bounded KV cache plus
+**K/V restoration** reconstructs evicted context on demand, so memory is bounded
+**without trading away recall, throughput, or context length**. It ships per
+platform — **`v0.4-mac`** (Apple-Silicon MLX) and **`v0.4-cuda`** (NVIDIA) — atop
+the session-bound gRPC runtime whose foundation landed in June 2026
+([ADR 0008](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md): 9 ms
+latency drift over a 4-hour, 480-turn Mac M4 run; bounded memory).
 
 ```
 ┌────────────────────┐    gRPC bidi-stream     ┌────────────────────────┐
@@ -28,25 +33,32 @@ Mac M4 24 GB** — vs +39.74 s on the previous (HTTP-only) architecture, a
                                                │  └────────┬─────────┘  │
                                                │           ▼            │
                                                │  ┌──────────────────┐  │
-                                               │  │ SinkWindow       │  │
-                                               │  │ Verifier         │  │
-                                               │  │ (Qwen3-0.6B,     │  │
-                                               │  │  CPU / MLX)      │  │
+                                               │  │ Restored verifier│  │
+                                               │  │ Gemma-4 26B (AR) │  │
+                                               │  │ + DFlash proposer│  │
+                                               │  │ + f_θ / S5       │  │
+                                               │  │ bounded sink+win │  │
+                                               │  │ per-session bind │  │
                                                │  └──────────────────┘  │
                                                └────────────────────────┘
 ```
 
+> The verifier slot is pluggable: a small **Qwen3 (CPU/MLX)** sink+window
+> verifier for lightweight serving, or the **restored Gemma-4 26B** path
+> (proposer + f_θ/S5) for the memory-bounded, recall-preserving engine below.
+
 ## Quickstart (5 minutes on Mac M4 / Linux x86)
 
-> **Status — v0.3.0 GA.** PyPI + npm + GHCR Docker image are queued for
-> v0.3.1; today the runtime ships from source. The flow below works on
-> a clean checkout against the v0.3.0 tag.
+> **Status — v0.4** (`v0.4-mac` / `v0.4-cuda` tags). Ships from source; PyPI +
+> npm + GHCR packaging is queued. The lightweight CPU flow below works on any
+> checkout; the memory-bounded Gemma-4 restored engine (recall-preserving
+> spec-decode, multi-tenant) is documented in the sections that follow.
 
 ```bash
-# 1. Clone + check out v0.3.0
+# 1. Clone + check out the v0.4 tag for your platform
 git clone https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine
 cd Kakeya-LLM-Inference-engine
-git checkout v0.3.0
+git checkout v0.4-mac     # Apple Silicon (MLX);  or: git checkout v0.4-cuda
 
 # 2. Install (Mac M4 -- handles HF cache + dependencies + venv)
 bash scripts/setup_mac.sh
@@ -77,33 +89,34 @@ For a full 10-minute walkthrough — Mac vs Linux setup, troubleshooting,
 HuggingFace cache pre-warm, mainland-China mirror routing, gRPC SDK
 patterns — see [`docs/quickstart.md`](docs/quickstart.md).
 
-## What's in the v0.3 architecture
+## What's in the v0.4 architecture
 
 | Component | What it does | Where |
 | --- | --- | --- |
 | `RuntimeService` (gRPC) | `CreateSession` / `AppendTokens` / `Generate` (server-streaming) / `GetSessionInfo` / `CloseSession`. Wire-stable; protobuf in [`proto/kakeya/v1/runtime.proto`](proto/kakeya/v1/runtime.proto). | `inference_engine.server.grpc_app` |
 | `SessionStore` | In-memory session registry, server-issued IDs, append-only history, INV-1 / INV-2 enforcement, slab pool ownership. | `inference_engine.session.store` |
-| `AppendTokensCoordinator` | Drives the verifier through `prefill` (cold) or `forward_block` + `commit_or_truncate` (incremental). Mirrors verifier state into the session. | `inference_engine.session.coordinator` |
-| `GenerationCoordinator` | Greedy session-aware decode. Yields `TokenEvent` / `HistoryTruncatedEvent` / `DoneEvent`. | `inference_engine.session.generator` |
-| `SinkWindowVerifier` | Real Qwen3 (0.6B / 1.7B / 4-bit MLX). Sink+window K/V trim per ADR 0001 / 0002. | `kv_cache_proposer.verifier` (CPU), `inference_engine.backends.mlx.verifier` (Apple Silicon) |
-| Python SDK | `kakeya.Client`, `kakeya.Session`. Sync gRPC. | [`sdks/python/kakeya/`](sdks/python/kakeya/) |
-| TypeScript SDK | `@kakeya/runtime` `Client`, `Session`. Node 20+ via `@grpc/grpc-js`. | [`sdks/typescript/`](sdks/typescript/) |
-| HTTP shim (deprecated) | OpenAI-compatible `/v1/chat/completions`. Pure-AR (no speculative decoding); single-shot session per request. `Deprecation` + `Sunset` headers. | `inference_engine.server.app` |
+| **Restored verifier** | Gemma-4 26B-A4B (AR) + DFlash dLLM proposer + trained **f_θ**; **S5** keeps 5 full-attention layers exact, restores sliding layers → bounded resident KV, recall preserved. | `inference_engine.v04` (CUDA), `inference_engine.backends.mlx` (Apple Silicon) |
+| `SinkWindowVerifier` | Lightweight path: Qwen3 (0.6B / 1.7B / 4-bit MLX), sink+window K/V trim (ADR 0001 / 0002). | `kv_cache_proposer.verifier` (CPU), `inference_engine.backends.mlx.verifier` |
+| **Per-session binding** | `PerSessionVerifierRegistry` + coordinator resolver: each session owns isolated KV (shared weights) — true multi-tenant serving (PR-A3c, `--multi-tenant`). | `inference_engine.session.verifier_registry` |
+| **Batched scheduler** | Fuses a cohort's decode steps into one batched forward — **8.45× served throughput** at 8 sessions, recall 1.0. | `inference_engine.session.batch_scheduler` |
+| `AppendTokens` / `Generation` coordinators | Drive prefill / incremental forward / greedy decode; route per-session (multi-tenant) or single. | `inference_engine.session.{coordinator,generator}` |
+| Python / TypeScript SDKs | `kakeya.Client` / `Session` (sync gRPC); `@kakeya/runtime` (Node 20+). | [`sdks/`](sdks/) |
+| HTTP shim (deprecated) | OpenAI-compatible `/v1/chat/completions`; `Deprecation` + `Sunset` headers. | `inference_engine.server.app` |
 
-## v0.3 GA evidence
+## Runtime evidence (foundational, carried into v0.4)
 
 The integration suite under [`tests/integration/`](tests/integration/) is
-the binding correctness gate. Mac M4 evidence on `main`:
+the binding correctness gate. Mac M4 evidence:
 
 | Gate | Metric | Result |
 | --- | --- | --- |
 | Memory bounded ([ADR 0006 §2.3.a](docs/adr/0006-local-agent-infrastructure-positioning.md)) | `agg.kv_bounded` | True |
-| **Prefill bounded** ([ADR 0008 §7 G2](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md)) | `latency_drift_p50_s` over 14400 s | **+0.0093 s** (vs +39.74 s on v0.2.0 HTTP shim — **4400×** improvement) |
+| **Prefill bounded** ([ADR 0008 §7 G2](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md)) | `latency_drift_p50_s` over 14400 s | **+0.0093 s** (vs +39.74 s on the prior HTTP-shim architecture — **4400×** improvement) |
 | INV-3 byte-exact greedy decoding ([ADR 0008 §7 G3](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md)) | All chunkings produce identical token streams | Pass |
-| Throughput | Turns over 4 h | 480 (vs 58 on v0.2.0 — 8.3× more sustained) |
+| Throughput | Turns over 4 h | 480 (vs 58 on the prior architecture — 8.3× more sustained) |
 | Latency | p50 / p95 over 4 h | 1.829 s / 1.853 s |
 
-Raw artifacts: [`results/platform-tests/bench_session_4h_1780332893.json`](results/platform-tests/) (4-h evidence) and the v0.3.0 GA tag's smoke run committed at `6399546`.
+Raw artifacts: [`results/platform-tests/bench_session_4h_1780332893.json`](results/platform-tests/) (4-h evidence). The v0.4 memory / throughput / recall / multi-tenant results are in the [beta scorecards](#beta-scorecards--kakeya-vs-the-standalone-model-main--9d5e6b4) below and [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md).
 
 ## Design philosophy — AR verifier + dLLM proposer, KV restoration for a memory-bounded Gemma-4 26B
 
@@ -268,20 +281,26 @@ channel + session each — against one runtime:
 | Node KV upper bound | **capacity × per-session bound** (≈2.0 GB @ cap 256) — independent of context length / churn |
 | Server RSS vs agents | **flat** (3825 → 3850 MB across 1 → 256) — adding agents costs ~0 memory |
 
-Caveat: v0.3 is **single-tenant** (one shared verifier, RPCs serialized on one
-asyncio loop — per-session binding is a v0.4 / PR-A3c item), so create/generate
-latency is linear in N and "256" is the max concurrent connections *served*, not
-parallel inferences. Pushing further (preset `agent-capacity-stress`, the
+Note on tenancy: this connection sweep ran the **single-tenant** admission path
+(one shared verifier), so "256" is the max concurrent connections *served*, not
+parallel inferences. **v0.4 adds per-session binding (PR-A3c)** — each session
+owns isolated KV (shared weights) — making serving truly multi-tenant, and a
+**batched scheduler** fuses the cohort into one forward for **8.45× throughput**
+at 8 sessions with **per-session recall 1.0** (see the multi-tenant results
+below / [ADR 0014 §3.4–3.7](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
+and the [detailed report](docs/reports/pr-a3c-multitenant-serving-test-report.md)).
+Pushing the connection sweep further (preset `agent-capacity-stress`, the
 open-file-descriptor limit `RLIMIT_NOFILE` raised to 100k / hard unlimited on
 the Mac — each connection uses one descriptor) shows the true ceilings: **the
 open-file-descriptor limit is not the constraint**; **memory** scales with
 `capacity × window` (capacity 2048 @ window 256 → ~11 GB RSS, theoretical node
 bound ~61 GB > 24 GB RAM, so capacity must be sized to RAM); and with a
-per-agent **context** prefill the binding constraint is **single-tenant
-serialization** (concurrent heavy-prefill agents serialize and time out well
-before any file-descriptor / connection limit). Bounded memory is structural:
-light-session agent count does **not** grow RSS; the memory lever is the
-resident **window**, not the number of agents.
+per-agent **context** prefill the binding constraint was **serialization** on
+that single-tenant path (concurrent heavy-prefill agents serialize and time out
+well before any file-descriptor / connection limit) — which is exactly what
+v0.4's per-session binding + batched scheduler remove. Bounded memory is
+structural: light-session agent count does **not** grow RSS; the memory lever is
+the resident **window**, not the number of agents.
 
 **Cross-host proposer/verifier.** A GPU proposer ⇄ Mac verifier *token-level
 draft* data plane is **design-only** (no `CapabilityService` / `ProposeBlock` /
@@ -301,11 +320,11 @@ control + tool plane** (the Mac bridge) and **LAN = co-located data plane**. See
 [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 for the full plan, evidence, and the served-MLX-gemma gap found during testing.
 
-## Kakeya Inference Engine for Mac — MLX speculative-decode port (K3 beta baseline)
+## v0.4 for Mac — MLX speculative-decode port (the journey to parity)
 
-After the **CUDA** beta (PR #107: f_θ + S5 K/V-restoration verifier, **fused DFlash
-spec-decode at 1.27× AR, recall 1.0 on Gemma-4-26B-A4B / H200**), the engine was
-ported to the **Apple-Silicon MLX** backend. The decode throughput climbed from a
+After the **CUDA** path (f_θ + S5 K/V-restoration verifier, **fused DFlash
+spec-decode at 1.79–2.06× AR, recall 1.0 on Gemma-4-26B-A4B / H200**), the engine
+was ported to the **Apple-Silicon MLX** backend (`v0.4-mac`). The decode throughput climbed from a
 near-total collapse to **≈AR parity** through a sequence of precisely-diagnosed
 fixes. This is the baseline record of that journey (all numbers are decode-only
 tok/s vs the native `mlx_lm` AR oracle on the same model, measured on a Mac M4 via
@@ -433,8 +452,8 @@ backward compatibility but is **feature-frozen** per
   pointing to ADR 0008.
 - Each request becomes a single-shot session (no session reuse across
   requests on the HTTP path).
-- Speculative decoding is **not** applied; pure AR. Migrate to gRPC for
-  v0.3's full perf story.
+- Speculative decoding is **not** applied; pure AR. Migrate to gRPC for the
+  full v0.4 perf story.
 
 ```bash
 # Deprecated — only when you really need OpenAI-API compat
@@ -447,21 +466,21 @@ curl -X POST http://127.0.0.1:8000/v1/chat/completions \
     -d '{"model":"any","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-For a curl-friendly path with the v0.3 architecture's full speed, use a
+For a curl-friendly path with the gRPC runtime's full speed, use a
 Python or TypeScript SDK against the gRPC server.
 
 ---
 
 # Architecture & Background
 
-## How speculative decoding worked in v0.2
+## Background — the speculative-decoding lineage
 
-> **Note**: in v0.3, speculative decoding is queued for the v0.4
-> proposer-back-in PR ([roadmap](#roadmap)). The v0.2 architecture is
-> documented here for historical context and because most of the
-> mathematical analysis still applies.
+> **Note**: v0.4 ships speculative decoding in the restored Gemma-4 engine
+> (fused DFlash spec-decode, recall 1.0 — see the scorecards above). This
+> section documents the original proposer/verifier formulation for context;
+> the memory-accounting analysis still applies.
 
-v0.2 ran a DLM (diffusion language model) proposer in front of an AR
+The lineage runs a DLM (diffusion language model) proposer in front of an AR
 verifier with a sink+window KV cache:
 
 ```
@@ -564,11 +583,13 @@ scripts/
 
 | Milestone | Status | Description |
 | --- | --- | --- |
-| **v0.3.0 GA** | ✅ shipped | Session-bound gRPC runtime, Python + TS SDKs, HTTP shim deprecated, no test doubles in Linux CI gate, Mac M4 self-hosted integration workflow |
-| v0.3.1 deployment polish | queued | PyPI + npm publishing (`pip install kakeya-inference`, `npm install @kakeya/runtime`), GHCR Docker image, `kakeya prewarm` CLI, `kakeya chat` REPL |
-| v0.4 proposer-back-in | designing | Wire `SparseLogitsProposer` into the session-bound coordinator; restores speculative decoding to both gRPC and HTTP paths |
-| v0.4 alignment training | designing | [ADR 0004](docs/adr/0004-alignment-training-data-preparation-policy.md) Stage 2-4: data prep → training → ship aligned proposer |
-| v0.4 cross-request KV reuse | designing | Sessions survive across requests on gRPC; turns 9 ms intra-session drift into 0 ms inter-request drift |
+| Session-bound gRPC runtime | ✅ shipped | Long-running gRPC `RuntimeService`, Python + TS SDKs, bounded memory + prefill (4-h Mac M4 evidence), Mac M4 self-hosted integration gate |
+| **v0.4 for Mac (`v0.4-mac`)** | ✅ shipped | MLX restored Gemma-4 26B engine: bounded KV (~90% saved), recall 1.0, ≈AR-parity spec-decode |
+| **v0.4 for CUDA (`v0.4-cuda`)** | ✅ shipped | Restored Gemma-4 26B engine on NVIDIA: fused DFlash spec-decode **1.79–2.06× AR**, 44–87× KV saving, recall 1.0 |
+| **v0.4 multi-tenant (PR-A3c)** | ✅ shipped | Per-session binding (isolated KV, shared weights) + batched scheduler — **8.45× served throughput**, per-session recall 1.0 |
+| Async continuous batching | designing | Dynamic mid-flight arrival + ragged-length cohorts under the async gRPC `Generate` handlers (current batcher is fixed-cohort) |
+| Deployment polish | queued | PyPI + npm publishing, GHCR Docker image, `kakeya prewarm` CLI, `kakeya chat` REPL |
+| Cross-request KV reuse | designing | Sessions survive across requests on gRPC; turns intra-session drift into 0 ms inter-request drift |
 
 ## Continuous integration
 
