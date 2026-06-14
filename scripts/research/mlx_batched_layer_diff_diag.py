@@ -23,6 +23,10 @@ def main() -> int:
     ap.add_argument("--verifier-path", required=True)
     ap.add_argument("--rows", type=int, default=2)
     ap.add_argument("--haystack-lines", type=int, default=15)
+    ap.add_argument("--kakeya-cache", action="store_true",
+                    help="use concat-based SinkWindowKVCache (large window, no "
+                         "eviction) instead of mlx_lm's in-place cache, to test "
+                         "whether the in-place write is the batch>1 bug.")
     args = ap.parse_args()
 
     import mlx.core as mx
@@ -32,10 +36,17 @@ def main() -> int:
     from inference_engine.backends.mlx.cross_model_dlm_verifier import (
         resolve_mlx_text_model,
     )
+    from inference_engine.backends.mlx.cache import SinkWindowKVCache
 
     model, tok = mlx_lm.load(args.verifier_path)
     text_model = resolve_mlx_text_model(model)
     layers = text_model.layers
+
+    def new_cache():
+        if not args.kakeya_cache:
+            return model.make_cache()
+        return [SinkWindowKVCache(sink_size=4, window_size=200000)
+                for _ in range(len(layers))]
     n_layers = len(layers)
     layer_types = [getattr(l, "layer_type", "?") for l in layers]
     first_shared = n_layers - getattr(model.args, "num_kv_shared_layers", 0)
@@ -79,7 +90,7 @@ def main() -> int:
         return out
 
     def prefill(ids_2d):
-        cache = model.make_cache()
+        cache = new_cache()
         out = model(mx.array(ids_2d), cache=cache)
         mx.eval(out)
         return cache, out[:, -1, :]

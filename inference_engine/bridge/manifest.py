@@ -148,6 +148,21 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="mlx-batched-layer-diff-concat",
+            description="Layer-diff with the concat SinkWindowKVCache (no "
+                        "in-place write) — if layer-0 output then matches, the "
+                        "in-place cache write is the batch>1 bug.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_layer_diff_diag.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--rows", "2", "--haystack-lines", "15", "--kakeya-cache",
+                ),
+            ),
+            timeout_minutes=60,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-batched-kakeya-cache",
             description="Fix test: MLX batched multi-tenant with Kakeya's "
                         "concat-based SinkWindowKVCache (S5) instead of "
