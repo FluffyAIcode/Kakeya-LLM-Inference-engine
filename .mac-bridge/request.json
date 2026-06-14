@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-batched-layer-diff",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781439322-dd0cfa"
+}
