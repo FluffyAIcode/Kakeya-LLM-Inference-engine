@@ -344,6 +344,33 @@ padding tax exceeds the batching gain at this scale (**0.67×**), so it is a
 or a much larger cohort / cheaper verify. Evidence:
 `results/research/k3_mac_bridge_mlx_batched_pad_decode.json`.
 
+**mlx/mlx-lm upgrade re-test — bug PERSISTS on the latest published release.**
+We attempted `pip install --upgrade mlx mlx-lm` on the Mac runner (preset
+`mlx-upgrade`): it was a **no-op** — the runner was already at the newest
+versions on PyPI (`mlx=0.31.2`, `mlx_lm=0.31.3`, `mlx-metal=0.31.2`; no newer
+stable or pre-release exists on the index). A self-contained probe (preset
+`mlx-upstream-batch-probe`, zero `inference_engine` imports, native
+`model.make_cache()`, plain `L=1` batched decode) then re-ran the parallel
+test on that latest build:
+
+| metric | batched (native `L=1`) | serialized (truth) |
+| --- | --- | --- |
+| per-session recall | **0.125** ✗ | 1.0 |
+| per-row tok0 vs serialized | **all 8 match** (tok0 is from prefill) | — |
+| aggregate decode tok/s | 29.6 (recall void) | 21.7 |
+| `upstream_l1_batch_bug_fixed` | **false** | — |
+
+The first decoded token (computed from the `L>1` prefill logits) matches on
+**all 8 rows**, and the divergence appears only in the subsequent `L=1` decode
+steps (rows 1–7 fail) — exactly the `B>1, L=1` signature. **Conclusion:** the
+latest PyPI mlx/mlx-lm still ships the bug; a pip upgrade cannot fix it because
+nothing newer is published. The only further "upgrade" is a from-source
+`mlx` git-`main` build (compiles Metal kernels; invasive on the pinned
+runner env) or an upstream patch/issue. Recall-safe Mac parallelism therefore
+remains: **serialized**, or the `L≥2` padding probe (recall-safe but 0.67×).
+Evidence: `results/research/k3_mac_bridge_mlx_upstream_batch_probe.json` +
+`.mac-bridge/logs/mlx-upgrade-{0,1,2}.log`.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out
