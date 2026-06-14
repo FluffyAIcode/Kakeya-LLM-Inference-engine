@@ -81,6 +81,8 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-pad-decode",
         "mlx-env-probe",
         "mlx-multitenant-pressure",
+        "mlx-upgrade",
+        "mlx-upstream-batch-probe",
         "pytest-path",
     ]
 
@@ -106,6 +108,23 @@ def test_allmlx_preset_carries_both_mode_flags():
     assert "--fused-specdecode" in argv
     assert "--all-mlx-drafter" in argv
     assert "--ignore-turn-stop" in argv
+
+
+def test_mlx_upgrade_preset_pip_upgrades_and_brackets_versions():
+    request = parse_manifest(_manifest(preset="mlx-upgrade"))
+    commands = build_commands(request, {})
+    # three steps: version-before, pip upgrade, version-after
+    assert len(commands) == 3
+    pip = commands[1]
+    assert pip[:5] == ["python3", "-m", "pip", "install", "--upgrade"]
+    assert "mlx" in pip and "mlx-lm" in pip
+
+
+def test_upstream_batch_probe_preset_resolves():
+    request = parse_manifest(_manifest(preset="mlx-upstream-batch-probe"))
+    (argv,) = build_commands(request, HARNESS_ENV)
+    assert argv[1].endswith("mlx_upstream_batch_probe.py")
+    assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in argv
 
 
 def test_pad_decode_preset_carries_flag_and_forces_trimmable_cache():
