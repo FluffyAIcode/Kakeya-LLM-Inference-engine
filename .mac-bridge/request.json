@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "agent-capacity-stress",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781407213-852fa9"
+}
