@@ -164,10 +164,14 @@ def apply_rope_to_k_at_positions(
         raise ValueError(
             f"cos shape {tuple(cos.shape)} != sin shape {tuple(sin.shape)}"
         )
-    if cos.shape[0] != k.shape[0] or cos.shape[1] != k.shape[2] or cos.shape[2] != k.shape[3]:
+    # RoPE cos/sin are position-dependent but batch-independent, so a batch-1
+    # table broadcasts across B>1 (multi-tenant batched restore). Accept either
+    # cos.shape[0] == k.shape[0] or cos.shape[0] == 1.
+    if (cos.shape[0] not in (1, k.shape[0])
+            or cos.shape[1] != k.shape[2] or cos.shape[2] != k.shape[3]):
         raise ValueError(
             f"cos shape {tuple(cos.shape)} incompatible with k shape "
-            f"{tuple(k.shape)}: expected [B={k.shape[0]}, T={k.shape[2]}, "
+            f"{tuple(k.shape)}: expected [B in (1,{k.shape[0]}), T={k.shape[2]}, "
             f"head_dim={k.shape[3]}]"
         )
     cos_b = cos.unsqueeze(1)  # [B, 1, T, head_dim]
