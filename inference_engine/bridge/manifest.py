@@ -132,6 +132,22 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=60,
         ),
         Preset(
+            name="mlx-batched-layer-diff",
+            description="Localize the mlx_lm gemma-4 batch>1 decode bug: "
+                        "per-layer hidden-state diff (batched row-i vs "
+                        "serialized-i) at decode step 1; prints the first "
+                        "divergent layer + its type/shared-KV status.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_layer_diff_diag.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--rows", "2", "--haystack-lines", "15",
+                ),
+            ),
+            timeout_minutes=60,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-batched-kakeya-cache",
             description="Fix test: MLX batched multi-tenant with Kakeya's "
                         "concat-based SinkWindowKVCache (S5) instead of "
