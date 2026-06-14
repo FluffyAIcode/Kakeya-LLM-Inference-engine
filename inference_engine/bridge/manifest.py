@@ -132,6 +132,27 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=60,
         ),
         Preset(
+            name="mlx-batched-kakeya-cache",
+            description="Fix test: MLX batched multi-tenant with Kakeya's "
+                        "concat-based SinkWindowKVCache (S5) instead of "
+                        "mlx_lm's in-place buffer cache — should restore "
+                        "per-session recall at batch>1 + bound memory.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_multitenant_bench.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "8",
+                    "--haystack-lines", "60",
+                    "--max-new-tokens", "24",
+                    "--kakeya-cache", "--sink", "4", "--window", "64",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_batched_kakeya_cache.json",
+                ),
+            ),
+            timeout_minutes=90,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-batched-diag-short",
             description="Diagnostic: MLX batched multi-tenant on SHORT prompts "
                         "(haystack 8, below the sliding window so no "

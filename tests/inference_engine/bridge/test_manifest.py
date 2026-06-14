@@ -73,6 +73,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "k3-step2-fused-allmlx",
         "mlx-backend-tests",
         "mlx-batched-diag-short",
+        "mlx-batched-kakeya-cache",
         "mlx-batched-multitenant",
         "mlx-env-probe",
         "mlx-multitenant-pressure",
