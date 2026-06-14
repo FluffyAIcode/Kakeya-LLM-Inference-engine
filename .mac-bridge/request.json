@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "agent-capacity-loadtest",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781405040-1539ab"
+}
