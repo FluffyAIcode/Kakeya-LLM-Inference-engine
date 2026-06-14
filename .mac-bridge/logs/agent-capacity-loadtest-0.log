@@ -1,0 +1,14 @@
+[loadtest] launching server: /Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3 scripts/start_grpc_runtime_server.py --backend cpu --verifier-id Qwen/Qwen3-0.6B --bind 127.0.0.1:50269 --capacity 256 --sink 4 --window 64 --skip-cache-check --log-level WARNING
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 8229.26it/s]
+[loadtest] server ready on 127.0.0.1:50269 (backend=cpu, capacity=256)
+[loadtest] agents=    1 created=1/1 gen_ok=1 errs={} create_p95=0.7768s gen_p95=0.097s kv/sess=1376256B rss=3825.0MB
+[loadtest] agents=    2 created=2/2 gen_ok=2 errs={} create_p95=0.157s gen_p95=0.1982s kv/sess=1835008B rss=3828.4MB
+[loadtest] agents=    4 created=4/4 gen_ok=4 errs={} create_p95=0.3537s gen_p95=0.4059s kv/sess=2752512B rss=3829.0MB
+[loadtest] agents=    8 created=8/8 gen_ok=8 errs={} create_p95=0.7292s gen_p95=0.8227s kv/sess=4587520B rss=3830.5MB
+[loadtest] agents=   16 created=16/16 gen_ok=16 errs={} create_p95=1.3275s gen_p95=1.664s kv/sess=7798784B rss=3834.8MB
+[loadtest] agents=   32 created=32/32 gen_ok=32 errs={} create_p95=2.6569s gen_p95=3.3688s kv/sess=7798784B rss=3836.0MB
+[loadtest] agents=   64 created=64/64 gen_ok=64 errs={} create_p95=5.6604s gen_p95=6.8495s kv/sess=7798784B rss=3839.5MB
+[loadtest] agents=  128 created=128/128 gen_ok=128 errs={} create_p95=11.2716s gen_p95=13.6421s kv/sess=7798784B rss=3845.4MB
+[loadtest] agents=  256 created=256/256 gen_ok=256 errs={} create_p95=22.6077s gen_p95=26.4388s kv/sess=7798784B rss=3849.5MB
+[loadtest] wrote results/research/k3_mac_bridge_agent_capacity.json
+[loadtest] DONE max_concurrent_agents_clean=256 per_session_kv=7.7988MB node_kv_upper_bound=1996.49MB peak_rss=3849.5MB

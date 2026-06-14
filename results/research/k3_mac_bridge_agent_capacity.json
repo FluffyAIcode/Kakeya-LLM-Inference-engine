@@ -1,0 +1,188 @@
+{
+  "kind": "grpc_agent_capacity_loadtest",
+  "schema_version": 1,
+  "config": {
+    "backend": "cpu",
+    "verifier_id": "Qwen/Qwen3-0.6B",
+    "capacity": 256,
+    "sink": 4,
+    "window": 64,
+    "gen_tokens": 4,
+    "prompt_len": 8,
+    "levels": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256
+    ],
+    "single_tenant_note": "v0.3 single-tenant: shared verifier, RPCs serialized on one asyncio loop; this measures connection/session admission scaling, not parallel inference."
+  },
+  "results": [
+    {
+      "agents": 1,
+      "created_ok": 1,
+      "generate_ok": 1,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 0.7768,
+        "p95": 0.7768
+      },
+      "generate_latency_s": {
+        "p50": 0.097,
+        "p95": 0.097
+      },
+      "per_session_kv_bytes": 1376256,
+      "server_rss_mb": 3825.0,
+      "wall_s": 0.87
+    },
+    {
+      "agents": 2,
+      "created_ok": 2,
+      "generate_ok": 2,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 0.0791,
+        "p95": 0.157
+      },
+      "generate_latency_s": {
+        "p50": 0.1981,
+        "p95": 0.1982
+      },
+      "per_session_kv_bytes": 1835008,
+      "server_rss_mb": 3828.4,
+      "wall_s": 0.36
+    },
+    {
+      "agents": 4,
+      "created_ok": 4,
+      "generate_ok": 4,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 0.2667,
+        "p95": 0.3537
+      },
+      "generate_latency_s": {
+        "p50": 0.3802,
+        "p95": 0.4059
+      },
+      "per_session_kv_bytes": 2752512,
+      "server_rss_mb": 3829.0,
+      "wall_s": 0.76
+    },
+    {
+      "agents": 8,
+      "created_ok": 8,
+      "generate_ok": 8,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 0.4326,
+        "p95": 0.7292
+      },
+      "generate_latency_s": {
+        "p50": 0.7434,
+        "p95": 0.8227
+      },
+      "per_session_kv_bytes": 4587520,
+      "server_rss_mb": 3830.5,
+      "wall_s": 1.56
+    },
+    {
+      "agents": 16,
+      "created_ok": 16,
+      "generate_ok": 16,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 0.8042,
+        "p95": 1.3275
+      },
+      "generate_latency_s": {
+        "p50": 1.1834,
+        "p95": 1.664
+      },
+      "per_session_kv_bytes": 7798784,
+      "server_rss_mb": 3834.8,
+      "wall_s": 3.09
+    },
+    {
+      "agents": 32,
+      "created_ok": 32,
+      "generate_ok": 32,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 1.5013,
+        "p95": 2.6569
+      },
+      "generate_latency_s": {
+        "p50": 2.0461,
+        "p95": 3.3688
+      },
+      "per_session_kv_bytes": 7798784,
+      "server_rss_mb": 3836.0,
+      "wall_s": 6.25
+    },
+    {
+      "agents": 64,
+      "created_ok": 64,
+      "generate_ok": 64,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 3.053,
+        "p95": 5.6604
+      },
+      "generate_latency_s": {
+        "p50": 3.7894,
+        "p95": 6.8495
+      },
+      "per_session_kv_bytes": 7798784,
+      "server_rss_mb": 3839.5,
+      "wall_s": 12.89
+    },
+    {
+      "agents": 128,
+      "created_ok": 128,
+      "generate_ok": 128,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 6.0018,
+        "p95": 11.2716
+      },
+      "generate_latency_s": {
+        "p50": 7.3445,
+        "p95": 13.6421
+      },
+      "per_session_kv_bytes": 7798784,
+      "server_rss_mb": 3845.4,
+      "wall_s": 25.9
+    },
+    {
+      "agents": 256,
+      "created_ok": 256,
+      "generate_ok": 256,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 12.0809,
+        "p95": 22.6077
+      },
+      "generate_latency_s": {
+        "p50": 14.1342,
+        "p95": 26.4388
+      },
+      "per_session_kv_bytes": 7798784,
+      "server_rss_mb": 3849.5,
+      "wall_s": 51.47
+    }
+  ],
+  "summary": {
+    "max_concurrent_agents_clean": 256,
+    "per_session_kv_bytes": 7798784,
+    "per_session_kv_mb": 7.7988,
+    "node_kv_upper_bound_mb": 1996.49,
+    "node_kv_upper_bound_note": "capacity * per-session bounded KV \u2014 the whole-node resident-KV ceiling, independent of context length or agent churn.",
+    "server_peak_rss_mb": 3849.5
+  }
+}
