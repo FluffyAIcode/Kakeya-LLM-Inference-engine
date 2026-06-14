@@ -1,0 +1,18 @@
+{
+  "kind": "mlx_batched_multitenant",
+  "config": {
+    "sessions": 8,
+    "modal_prompt_len": 1149,
+    "max_new_tokens": 24,
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+  },
+  "serialized": {
+    "aggregate_tps": 25.801,
+    "recall": 1.0
+  },
+  "batched": {
+    "aggregate_tps": 7.879,
+    "recall": 0.25
+  },
+  "batched_speedup_vs_serialized": 0.31
+}
