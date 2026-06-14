@@ -137,6 +137,7 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         *,
         append_coordinator: Optional[AppendTokensCoordinator] = None,
         generation_coordinator: Optional[GenerationCoordinator] = None,
+        on_session_close=None,
     ) -> None:
         """Construct a Servicer.
 
@@ -155,6 +156,9 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         self._store = session_store
         self._append = append_coordinator
         self._generate = generation_coordinator
+        # PR-A3c: optional ``session_id -> None`` hook invoked on CloseSession
+        # so a per-session verifier registry can free that session's KV.
+        self._on_session_close = on_session_close
 
     async def CreateSession(  # noqa: N802 — gRPC-generated method casing
         self,
@@ -334,6 +338,8 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             final_length = self._store.close_session(request.session_id)
         except SessionNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+        if self._on_session_close is not None:
+            self._on_session_close(request.session_id)
         return runtime_pb2.CloseSessionResponse(
             final_history_length=final_length,
         )
@@ -370,6 +376,7 @@ def create_grpc_server(
     append_coordinator: Optional[AppendTokensCoordinator] = None,
     generation_coordinator: Optional[GenerationCoordinator] = None,
     config: Optional[GrpcServerConfig] = None,
+    on_session_close=None,
 ) -> grpc.aio.Server:
     """Build, but do not start, a configured gRPC asyncio server.
 
@@ -403,6 +410,7 @@ def create_grpc_server(
             session_store,
             append_coordinator=append_coordinator,
             generation_coordinator=generation_coordinator,
+            on_session_close=on_session_close,
         ),
         server,
     )

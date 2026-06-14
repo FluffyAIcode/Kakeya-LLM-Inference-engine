@@ -172,13 +172,32 @@ async def _serve(args: argparse.Namespace) -> int:
         device="cpu",
     )
     pool = SlabPool(num_slabs=args.capacity, slab_config=slab_cfg)
+
+    # PR-A3c: per-session binding for true multi-tenant serving. Each session
+    # gets its own verifier adapter (isolated KV) sharing the model weights via
+    # the adapter's spawn(); the registry doubles as cache_inspector + resolver.
+    registry = None
+    on_session_close = None
+    if args.multi_tenant:
+        if not hasattr(verifier, "spawn"):
+            raise SystemExit(
+                f"--multi-tenant requires a verifier that supports per-session "
+                f"spawn() (backend=restored); backend={args.backend} does not.")
+        from inference_engine.session.verifier_registry import (
+            PerSessionVerifierRegistry,
+        )
+        registry = PerSessionVerifierRegistry(factory=verifier.spawn)
+        on_session_close = registry.remove
+        _LOG.info("multi-tenant per-session binding ENABLED (PR-A3c)")
+
     store = SessionStore(
         capacity=args.capacity,
-        cache_inspector=verifier,
+        cache_inspector=registry if registry is not None else verifier,
         slab_pool=pool,
     )
-    append_coord = AppendTokensCoordinator(store, verifier)
-    gen_coord = GenerationCoordinator(store, verifier)
+    resolver = registry.get if registry is not None else None
+    append_coord = AppendTokensCoordinator(store, verifier, resolver=resolver)
+    gen_coord = GenerationCoordinator(store, verifier, resolver=resolver)
 
     config = GrpcServerConfig(
         bind_address=args.bind,
@@ -189,6 +208,7 @@ async def _serve(args: argparse.Namespace) -> int:
         append_coordinator=append_coord,
         generation_coordinator=gen_coord,
         config=config,
+        on_session_close=on_session_close,
     )
 
     await server.start()
@@ -244,6 +264,11 @@ def main() -> int:
                     help="Cap on simultaneous in-flight gRPC RPCs. "
                          "Defaults to grpc.aio's default; set explicitly on "
                          "CPU-bound hosts.")
+    ap.add_argument("--multi-tenant", action="store_true",
+                    help="PR-A3c: per-session verifier binding — each session "
+                         "gets its own isolated KV cache (sharing model "
+                         "weights). Requires backend=restored (spawn()). "
+                         "Without it, v0.3 single-tenant (one shared cache).")
     ap.add_argument("--shutdown-grace-s", type=float, default=5.0,
                     help="Seconds to give in-flight RPCs to finish on "
                          "SIGTERM/SIGINT before hard-aborting.")

@@ -135,6 +135,26 @@ class CrossModelRestoredSinkWindowVerifier:
         """The verifier ``nn.Module`` (exposes ``.config`` for KV dims)."""
         return self._restored.verifier_model
 
+    def spawn(self) -> "CrossModelRestoredSinkWindowVerifier":
+        """Return a fresh per-session adapter that SHARES the model weights +
+        restored engine but owns its own (empty) cache state.
+
+        This is the PR-A3c per-session-binding primitive: the served path
+        creates one adapter per session via :meth:`spawn`, so concurrent
+        sessions have isolated KV (no cross-session corruption) without
+        reloading the multi-GB weights — ``self._restored`` (model + drafter +
+        f_θ) is shared, only the per-session ``_past`` / ``_committed`` /
+        ``next_token_logits`` differ.
+        """
+        return CrossModelRestoredSinkWindowVerifier(
+            self._restored,
+            apply_rotary_pos_emb=self._apply_rotary_pos_emb,
+            eager_attention_forward=self._eager_attention_forward,
+            all_attention_functions=self._all_attention_functions,
+            device=str(self._device),
+            incremental=self._incremental,
+        )
+
     # ------------------------------------------------------------------ #
     # Construction-time accounting
     # ------------------------------------------------------------------ #
