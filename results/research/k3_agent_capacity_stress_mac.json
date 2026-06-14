@@ -24,11 +24,13 @@
     },
     "levels": [
       1,
+      4,
+      8,
+      16,
+      32,
+      48,
       64,
-      256,
-      512,
-      1024,
-      2048
+      96
     ],
     "single_tenant_note": "v0.3 single-tenant: shared verifier, RPCs serialized on one asyncio loop; this measures connection/session admission scaling, not parallel inference."
   },
@@ -39,43 +41,77 @@
       "generate_ok": 1,
       "errors": {},
       "create_latency_s": {
-        "p50": 3.0911,
-        "p95": 3.0911
+        "p50": 3.0748,
+        "p95": 3.0748
       },
       "generate_latency_s": {
-        "p50": 0.0297,
-        "p95": 0.0297
+        "p50": 0.0296,
+        "p95": 0.0296
       },
       "per_session_kv_bytes": 29474816,
-      "server_rss_mb": 11227.9,
-      "wall_s": 3.12
+      "server_rss_mb": 11476.5,
+      "wall_s": 3.11
     },
     {
-      "agents": 64,
-      "created_ok": 14,
-      "generate_ok": 14,
-      "errors": {
-        "RpcCancelledError": 50
-      },
+      "agents": 4,
+      "created_ok": 4,
+      "generate_ok": 4,
+      "errors": {},
       "create_latency_s": {
-        "p50": 21.683,
-        "p95": 40.7049
+        "p50": 9.255,
+        "p95": 12.3516
       },
       "generate_latency_s": {
-        "p50": 0.2375,
-        "p95": 0.3998
+        "p50": 0.0867,
+        "p95": 0.1155
       },
       "per_session_kv_bytes": 29818880,
-      "server_rss_mb": 10849.8,
-      "wall_s": 67.58
+      "server_rss_mb": 11474.8,
+      "wall_s": 12.47
+    },
+    {
+      "agents": 8,
+      "created_ok": 8,
+      "generate_ok": 8,
+      "errors": {},
+      "create_latency_s": {
+        "p50": 15.7695,
+        "p95": 25.2241
+      },
+      "generate_latency_s": {
+        "p50": 0.1739,
+        "p95": 0.2352
+      },
+      "per_session_kv_bytes": 29818880,
+      "server_rss_mb": 11342.6,
+      "wall_s": 25.46
+    },
+    {
+      "agents": 16,
+      "created_ok": 15,
+      "generate_ok": 15,
+      "errors": {
+        "RpcCancelledError": 1
+      },
+      "create_latency_s": {
+        "p50": 25.6965,
+        "p95": 44.5888
+      },
+      "generate_latency_s": {
+        "p50": 0.2797,
+        "p95": 0.4459
+      },
+      "per_session_kv_bytes": 29818880,
+      "server_rss_mb": 10780.7,
+      "wall_s": 63.64
     }
   ],
   "summary": {
-    "max_concurrent_agents_clean": 1,
+    "max_concurrent_agents_clean": 8,
     "per_session_kv_bytes": 29818880,
     "per_session_kv_mb": 29.8189,
     "node_kv_upper_bound_mb": 61069.07,
     "node_kv_upper_bound_note": "capacity * per-session bounded KV \u2014 the whole-node resident-KV ceiling, independent of context length or agent churn.",
-    "server_peak_rss_mb": 11227.9
+    "server_peak_rss_mb": 11476.5
   }
 }

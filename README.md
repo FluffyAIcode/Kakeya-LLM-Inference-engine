@@ -259,11 +259,18 @@ resident **window**, not the number of agents.
 
 **Cross-host proposer/verifier.** A GPU proposer ⇄ Mac verifier *token-level
 draft* data plane is **design-only** (no `CapabilityService` / `ProposeBlock` /
-gossip) **and** ruled out by the WAN latency budget (per-block RTT ≫ block
-compute). The realizable split is **WAN = control + tool plane** (the Mac
-bridge) and **LAN = co-located data plane** (spec-decode is a same-host win:
-GPU 1.79× AR, Mac ≈ parity). See ADR 0014 for the full plan, evidence, and the
-served-MLX-gemma gap found during testing.
+gossip) **and** ruled out by the WAN latency budget — now **measured** on real
+H200 compute by injecting one proposer↔verifier round-trip per block:
+
+| per-block RTT | 0 (co-located) | 15 ms (LAN) | 30 ms | 60 ms | 100 ms | 150 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| vs AR | **2.20×** | 1.81× | 1.50× | 1.22× | **0.98×** (break-even) | 0.77× (loss) |
+
+**Break-even ≈100 ms/block**: a cloud↔desk WAN (30–150 ms) straddles/exceeds it,
+while a LAN (≤15 ms) keeps the 1.8–2.2× win. So the realizable split is **WAN =
+control + tool plane** (the Mac bridge) and **LAN = co-located data plane**. See
+[ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
+for the full plan, evidence, and the served-MLX-gemma gap found during testing.
 
 ## Kakeya Inference Engine for Mac — MLX speculative-decode port (K3 beta baseline)
 

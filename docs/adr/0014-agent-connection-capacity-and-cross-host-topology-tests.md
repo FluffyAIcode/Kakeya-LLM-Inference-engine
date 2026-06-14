@@ -37,9 +37,9 @@ runnable vs design-only and shaped the test plan below.
   `[self-hosted, macOS, ARM64, kakeya-mac-m4]`, reached via the **Mac bridge**
   git-bus plane (no inbound path; allowlisted presets only).
 - **Cloud agent**: Linux x86 VM (no Metal). Orchestrates via the bridge.
-- **GPU**: H200 (vast.ai) — used for the co-located CUDA reference (PR #119);
-  **unavailable at test time** (instance recycled), so Case-2 GPU numbers are
-  cited from the prior committed evidence.
+- **GPU**: H200 NVL (vast.ai) — runs the CUDA proposer + verifier for the
+  co-located reference (fused **2.06–2.20× AR**, recall 1.0) and the §4.3
+  cross-host WAN-penalty sweep.
 - **Engine**: gRPC `RuntimeService` (`scripts/start_grpc_runtime_server.py`),
   Python SDK clients (`sdks/python/kakeya`).
 
@@ -82,6 +82,29 @@ behavior; the served **MLX gemma** path is a separate v0.4 gap (§6).
 - **Server RSS is flat** (3825 → 3850 MB across 1 → 256 agents): adding agents
   costs ~0 memory beyond the bounded slab; model weights dominate.
 
+### 3.2b Stress beyond 256 — the real ceilings (preset `agent-capacity-stress`)
+
+Pushing further with the FD limit raised (`RLIMIT_NOFILE` soft 100k, hard
+unlimited on the Mac) and a **per-agent context prefill** (window 256,
+`--context-len 256`, capacity 2048):
+
+| agents | created | create p95 | per-session KV | server RSS |
+| --- | --- | --- | --- | --- |
+| 1 | 1/1 | 3.07 s | 29.8 MB | 11 477 MB |
+| 8 | 8/8 | 25.2 s | 29.8 MB | 11 343 MB |
+| 16 | 15/16 (1 `RpcCancelled`) | 44.6 s | 29.8 MB | 10 781 MB |
+
+- **FD is not the ceiling** (raised to 100k; Mac hard limit is unlimited).
+- **Memory** scales with `capacity × window`: capacity 2048 @ window 256 →
+  **~11.5 GB RSS**, and the theoretical node bound is **~61 GB > 24 GB RAM** —
+  so capacity must be **sized to RAM** (it is the memory knob, not agent count).
+- The binding constraint with real per-agent context is **single-tenant
+  serialization**: create latency is purely linear (3 → 12 → 25 → 45 s as
+  N = 1 → 4 → 8 → 16) because every session's prefill serializes through the one
+  shared verifier, so clean concurrency tops out at **~8 heavy-context agents**
+  before RPCs time out — versus **256 light-session agents** (§3.2). Per-session
+  KV stays bounded (29.8 MB @ window 256) throughout.
+
 ### 3.3 Honest caveat — v0.3 is single-tenant
 
 Create/generate latency scales **linearly** with `N` (256 agents → gen p95
@@ -119,21 +142,46 @@ a LAN** for the data plane.
 | --- | --- | --- | --- |
 | Discovery / capability advertise | yes (seconds-scale) | bridge proxy only | bridge dispatch ~10 s + queue; one Mac, serialized (`concurrency: mac-bridge`) |
 | Job/tool dispatch (eval/bench) | yes | implemented (bridge) | this ADR's Case-1 run is itself an instance |
-| **Token-level draft (data plane)** | **no — must be LAN** | not implemented | — (ruled out by §4.1) |
-| Co-located spec-decode (the feasible data plane) | n/a (same host) | implemented | **GPU H200 1.79× AR** (PR #119); **Mac 0.93× AR** (PR #118) |
+| **Token-level draft (data plane)** | **no — must be LAN** | not implemented | **measured penalty curve §4.3** (break-even ~100 ms/block) |
+| Co-located spec-decode (the feasible data plane) | n/a (same host) | implemented | **GPU H200 2.06–2.20× AR**; **Mac 0.93× AR** (PR #118) |
 
 So the answers to Case 2's three metrics, under the **realizable** topology:
 
-- **Token throughput**: spec-decode is a *co-located* win — **1.79× AR on the
-  GPU** (28.94 vs 16.13 tok/s, recall 1.0) and **≈AR parity (0.93×) on the
-  Mac**. A WAN GPU-proposer→Mac-verifier draft loop would be **slower than
-  running either side alone** (§4.1), so it is not a throughput strategy.
+- **Token throughput**: spec-decode is a *co-located* win — **2.06–2.20× AR on
+  the GPU** (recall 1.0) and **≈AR parity (0.93×) on the Mac**. The measured
+  WAN-penalty curve (§4.3) shows the cross-host draft loop falls to **break-even
+  at ~100 ms/block and a net loss at 150 ms**, i.e. slower than running AR
+  locally — so it is not a throughput strategy.
 - **Max agent connections**: governed by the *serving* node (Case 1): **256+
   concurrent agents** on the Mac via `RuntimeService`.
 - **Mac KV upper bound**: bounded — **capacity × per-session `sink+window`**
   (≈2.0 GB at capacity 256 for Qwen3-0.6B; for the gemma S5 production config
   the per-agent resident KV is ~133 MB at 5.8k ctx, dominated by the 5 exact
   full-attention layers — see the README beta scorecard).
+
+### 4.3 Measured WAN-penalty curve (H200, real models, `--rtt-sweep`)
+
+Rather than rest on the latency *estimate*, we measured it: the fused engine was
+re-timed with one injected proposer↔verifier round-trip **per block** on the real
+Gemma-4-26B verifier + DFlash drafter (H200 NVL), sweeping per-block RTT across
+the cloud↔desk range (`scripts/research/k3_specdecode_gpu_bench.py --rtt-sweep`,
+`results/research/k3_crosshost_rtt_gpu.json`):
+
+| per-block RTT | decode tok/s | vs AR | regime |
+| --- | --- | --- | --- |
+| 0 ms (co-located) | 52.4 | **2.20×** | the win |
+| 5 ms (LAN) | 47.0 | 1.97× | LAN keeps it |
+| 15 ms | 43.3 | 1.81× | LAN keeps it |
+| 30 ms | 35.9 | 1.50× | WAN edge |
+| 60 ms | 29.2 | 1.22× | shrinking |
+| 100 ms | 23.5 | **0.98×** | **break-even** |
+| 150 ms | 18.4 | 0.77× | net **loss** |
+
+AR baseline = 23.8 tok/s. **Break-even is ~100 ms/block**: beyond it, cross-host
+spec-decode is *slower than running AR locally*. A cloud↔desk WAN (30–150 ms RTT)
+straddles or exceeds break-even, while a LAN/Thunderbolt link (≤15 ms) preserves
+the 1.8–2.2× win. This is the architecture's prediction (design doc §4.2),
+**now quantified on real compute** — and it is why the data plane must be LAN.
 
 ## 5. Decision
 
