@@ -318,6 +318,32 @@ characterized for an upstream report. Recall-safe Mac multi-tenant remains
 projections) is a possible future probe. Evidence:
 `results/research/k3_mlx_batched_manual_sdpa_mac.json` + the layer-diff logs.
 
+**L≥2 padded decode workaround — hypothesis CONFIRMED, recall recovered, but
+no throughput win (Mac, 8 sessions, modal prompt 1149).** The `--pad-decode`
+mode (preset `mlx-batched-pad-decode`) duplicates the new token each step so
+every decode forward is **length-2**, routing through mlx's matrix-matrix
+(`qmm`) quantized kernel instead of the single-token (`qmv`) kernel; query
+position 0 is the real prediction (attends to cache+self only, == the L=1
+result) and the position-1 duplicate is trimmed from the (Kakeya S5, trimmable)
+cache so RoPE offsets stay exact. The batch dimension is untouched (stays
+parallel over sessions, Python-only).
+
+| metric | batched **L=1** (bug) | batched **L≥2 padded** | serialized (truth) |
+| --- | --- | --- | --- |
+| per-session recall | **0.125** ✗ | **1.0** ✓ | 1.0 |
+| per-row tok0 vs serialized | row 1+ diverge | **all 8 match** | — |
+| aggregate decode tok/s | 57.1 (recall void) | 9.945 | 14.927 |
+| speedup vs serialized | — | **0.67×** | 1.0× |
+
+This **confirms** the root cause: forcing `L≥2` (avoiding the `B>1, L=1` `qmv`
+path) restores batched per-session recall to **1.0**, matching serialized
+bit-for-bit on the first decoded token across all rows. But the 2× per-step
+padding tax exceeds the batching gain at this scale (**0.67×**), so it is a
+**correctness-recovery probe, not a shippable throughput path**: a Mac batched
+*win* still needs the upstream `L=1, B>1` quantized-kernel fix (no padding tax)
+or a much larger cohort / cheaper verify. Evidence:
+`results/research/k3_mac_bridge_mlx_batched_pad_decode.json`.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out
