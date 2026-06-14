@@ -131,6 +131,29 @@ PRESETS: Dict[str, Preset] = {
             ),
             timeout_minutes=60,
         ),
+        Preset(
+            name="agent-capacity-loadtest",
+            description="Test case 1: ramp concurrent agent connections "
+                        "(independent gRPC channel + session each) against a "
+                        "single RuntimeService on the real MLX gemma verifier; "
+                        "report max concurrent agents, per-session bounded KV, "
+                        "node KV upper bound, latency curve, server RSS.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/grpc_agent_capacity_loadtest.py",
+                    "--backend", "mlx",
+                    "--verifier-id", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--capacity", "256",
+                    "--sink", "4", "--window", "64",
+                    "--levels", "1,2,4,8,16,32,64,128,256",
+                    "--gen-tokens", "4",
+                    "--output",
+                    "results/research/k3_mac_bridge_agent_capacity.json",
+                ),
+            ),
+            timeout_minutes=90,
+            validate_reports=False,
+        ),
         _harness_preset(
             "k3-step1-incremental",
             "PR #109 Step-1 evidence: incremental restored decode.",
