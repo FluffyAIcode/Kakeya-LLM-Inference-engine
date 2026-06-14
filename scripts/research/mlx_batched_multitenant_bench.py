@@ -31,6 +31,17 @@ def main() -> int:
     ap.add_argument("--haystack-lines", type=int, default=60)
     ap.add_argument("--max-new-tokens", type=int, default=24)
     ap.add_argument("--prefill-chunk", type=int, default=512)
+    ap.add_argument("--kakeya-cache", action="store_true",
+                    help="Build the batched cache from Kakeya's concat-based "
+                         "SinkWindowKVCache (avoids mlx_lm's in-place "
+                         "buffer-assignment decode path that breaks at batch>1). "
+                         "S5: full-attn layers keep all, sliding bounded.")
+    ap.add_argument("--window", type=int, default=64,
+                    help="sliding-layer window when --kakeya-cache (S5).")
+    ap.add_argument("--sink", type=int, default=4)
+    ap.add_argument("--full-window", type=int, default=100000,
+                    help="full-attn-layer window when --kakeya-cache "
+                         "(large = keep all, exact recall).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -38,10 +49,29 @@ def main() -> int:
     import mlx_lm
     sys.path.insert(0, "sdks/python")
     from inference_engine.v04 import make_niah_dataset
+    from inference_engine.backends.mlx.cache import SinkWindowKVCache
+    from inference_engine.backends.mlx.cross_model_dlm_verifier import (
+        resolve_mlx_text_model, mlx_full_attention_layer_indices,
+    )
 
     print(f"[mlx-mt] loading {args.verifier_path}", flush=True)
     model, tok = mlx_lm.load(args.verifier_path)
     N = args.sessions
+
+    text_model = resolve_mlx_text_model(model)
+    full_idx = set(mlx_full_attention_layer_indices(text_model))
+
+    def new_cache():
+        if not args.kakeya_cache:
+            return model.make_cache()
+        # S5 hybrid via concat-based caches: full-attn layers keep all (large
+        # window = exact recall), sliding layers bounded to sink+window.
+        return [
+            SinkWindowKVCache(sink_size=args.sink,
+                              window_size=(args.full_window if li in full_idx
+                                           else args.window))
+            for li in range(len(text_model.layers))
+        ]
 
     def encode(text):
         # Match the working Mac NIAH harness: neutral filler + a direct-answer
@@ -79,7 +109,7 @@ def main() -> int:
 
     def prefill_batched(ids_2d):
         """Chunked batched prefill -> (cache, last_logits[N,V])."""
-        cache = model.make_cache()
+        cache = new_cache()
         chunk = args.prefill_chunk
         T = len(ids_2d[0])
         last = None
@@ -133,6 +163,17 @@ def main() -> int:
         ser_decode_s += dt
     serial_tps = round((N * args.max_new_tokens) / ser_decode_s, 3) if ser_decode_s else 0.0
     serial_recall = sum(recall(g_s[i], answers[i]) for i in range(N)) / N
+
+    # Diagnostic: per-row batched-vs-serialized first token + recall, to
+    # localize whether batched PREFILL diverges from serialized (batch-1).
+    print("[mlx-mt][diag] row | serial_tok0 | batched_tok0 | match | "
+          "serial_recall | batched_recall", flush=True)
+    for i in range(N):
+        s0 = g_s[i][0] if g_s[i] else None
+        b0 = g_b[i][0] if g_b[i] else None
+        print(f"[mlx-mt][diag] {i:2d} | {s0} | {b0} | {s0 == b0} | "
+              f"{recall(g_s[i], answers[i])} | {recall(g_b[i], answers[i])}",
+              flush=True)
 
     speedup = round(batched_tps / serial_tps, 2) if serial_tps else None
     report = {
