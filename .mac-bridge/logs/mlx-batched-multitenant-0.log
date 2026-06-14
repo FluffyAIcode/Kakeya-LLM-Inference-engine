@@ -1,0 +1,4 @@
+[mlx-mt] loading /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mlx-mt] 8 sessions, modal prompt len=1240
+[mlx-mt] N=8: serialized 22.16 tok/s (recall 0.0) | batched 32.761 tok/s (recall 0.0) | speedup 1.48x
+[mlx-mt] wrote results/research/k3_mac_bridge_mlx_batched_multitenant.json
