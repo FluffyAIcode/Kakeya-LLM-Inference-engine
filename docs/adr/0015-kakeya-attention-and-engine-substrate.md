@@ -129,7 +129,7 @@ PR, so development context stays per-task:
 | **KIE-v1** | engine core: chunked restoration prefill + bounded-KV decode + peak-window admission (NativeHybridBounded) | done (core); concurrency gated on v1.1 | #135 |
 | **KIE-v1.1** | realize the bounded-KV bound at runtime: sliding-window-**evicting** cache without the CUDA-graph segfault (evicting cache, graph capture off) + push concurrency toward the ceiling | **done** — gemma-4 62k concurrency **N=4→N=24** (recall 1.0; chunk-size tuning), **1.55× vLLM's 15.5**. Decoupled prefill/decode implemented (correct) but fragmentation-limited. | #136 |
 | **KIE-v1.1.x** | exact-layer KV quantization toward the N=34+ ceiling | **partial** — int8/int4 exact-layer quant **de-risked recall-safe** (recall 1.0 @62k); genuine int8 storage **implemented + correct** (halves stored bytes). BUT **N=34 still OOMs**: the dequant-on-read returns full bf16 per exact layer (transients coexist), so peak doesn't drop. `v04.kv_compressor` doesn't help (round-trips, no RAM cut); `QuantizedCache` not hybrid-aware. | #137 |
-| **KIE-v1.1.y** | **quantized attention** (tiled/dequant-in-kernel SDPA over int/packed K/V — no full bf16 materialization) to convert storage into concurrency; consumes kakeyalattice v1.6 packed codes; + graph-captured decode | planned | — |
+| **KIE-v1.1.y** | **quantized attention** (tiled online-softmax / flash SDPA over int/packed K/V — no full bf16 materialization) to convert storage into concurrency (target N→60); consumes int8 / kakeyalattice v1.6.1 packed codes | in progress | #138 |
 
 **kakeyalattice v1.6 note.** v1.6 genuinely fixes the compressor (bit-packed
 `KakeyaLatticePackedCache`, real 2.46× HBM at D4 Q=38, contiguous SDPA-feedable
