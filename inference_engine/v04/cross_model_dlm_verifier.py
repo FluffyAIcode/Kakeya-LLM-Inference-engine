@@ -310,8 +310,15 @@ class CrossModelDLMRestoredVerifier:
         eager_attention_forward: Callable,
         all_attention_functions: Optional[Any] = None,
         capture_kv: Optional[list] = None,
+        logits_to_keep: int = 0,
     ):
         """Run a verifier forward with f_θ-mediated K/V Restoration.
+
+        ``logits_to_keep`` is forwarded to the verifier model: 0 (default)
+        computes logits for all positions (needed by spec-decode block
+        verification); set 1 to compute only the last position's logits
+        (decode/prefill that only needs the next token) — this avoids the
+        ``[B, T, vocab]`` materialisation that dominates long-context memory.
 
         Steps:
           1. Compute evicted positions from sink+window per ADR §11.7.
@@ -335,11 +342,23 @@ class CrossModelDLMRestoredVerifier:
         # needed — run the verifier directly. This is the trivial case
         # for short prompts, e.g. T=8 with sink=4 + window=64.
         if not evicted_positions:
-            return self.verifier_model(input_ids=input_ids, use_cache=False)
+            return self.verifier_model(
+                input_ids=input_ids, use_cache=False,
+                logits_to_keep=logits_to_keep,
+            )
 
         # f_θ projection → per-layer lists (layers can have different
         # KV-head counts on Gemma 4).
         verifier_k_layers, verifier_v_layers = self.project_drafter_kv(input_ids)
+        # Hold the restored K/V at the verifier's compute dtype (they are
+        # cast to it at injection anyway): keeps the full-length [B,T,kv,D]
+        # tensors from doubling long-context memory when f_θ runs in fp32.
+        try:
+            vdtype = next(self.verifier_model.parameters()).dtype
+            verifier_k_layers = [k.to(vdtype) for k in verifier_k_layers]
+            verifier_v_layers = [v.to(vdtype) for v in verifier_v_layers]
+        except StopIteration:
+            pass
 
         # S5: for exact layers, replace the f_θ-restored K/V with the
         # verifier's OWN true K/V (the recall-critical full-attention
@@ -375,7 +394,10 @@ class CrossModelDLMRestoredVerifier:
                     all_attention_functions=all_attention_functions,
                     capture_kv=capture_kv,
                 )
-            return self.verifier_model(input_ids=input_ids, use_cache=False)
+            return self.verifier_model(
+                input_ids=input_ids, use_cache=False,
+                logits_to_keep=logits_to_keep,
+            )
         finally:
             for layer_idx, layer in enumerate(layers):
                 layer.self_attn.forward = originals[layer_idx]
@@ -548,7 +570,9 @@ def capture_verifier_own_kv(
         else:
             v_shared.append(i)
     try:
-        verifier_model(input_ids=input_ids, use_cache=False)
+        # Only K/V are needed (captured via k_proj/v_proj hooks); skip the
+        # [B, T, vocab] logits materialisation entirely.
+        verifier_model(input_ids=input_ids, use_cache=False, logits_to_keep=1)
     finally:
         for h in handles:
             h.remove()

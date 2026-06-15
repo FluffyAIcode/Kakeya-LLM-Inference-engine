@@ -115,6 +115,54 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=10,
         ),
         Preset(
+            name="mlx-upgrade",
+            description="Upgrade mlx + mlx-lm to the latest release on the Mac "
+                        "runner, then re-probe the batch>1 L=1 quantized-decode "
+                        "kernel bug after the upstream change. Prints mlx/mlx_lm "
+                        "versions BEFORE, runs pip install --upgrade, prints "
+                        "versions AFTER.",
+            command_templates=(
+                (
+                    "python3", "-c",
+                    "from inference_engine.backends.mlx.env import "
+                    "probe_environment; print('BEFORE:', "
+                    "probe_environment().render())",
+                ),
+                (
+                    "python3", "-m", "pip", "install", "--upgrade",
+                    "mlx", "mlx-lm",
+                ),
+                (
+                    "python3", "-c",
+                    "import importlib.metadata as m; "
+                    "print('AFTER: mlx=' + m.version('mlx') + "
+                    "' mlx_lm=' + m.version('mlx-lm'))",
+                ),
+            ),
+            timeout_minutes=30,
+        ),
+        Preset(
+            name="mlx-upstream-batch-probe",
+            description="Self-contained probe (no inference_engine imports, "
+                        "native model.make_cache(), L=1 batched decode): re-test "
+                        "whether the upstream MLX B>1,L=1 quantized-decode kernel "
+                        "bug is fixed after an mlx/mlx-lm upgrade. Reports "
+                        "batched vs serialized per-session recall + "
+                        "upstream_l1_batch_bug_fixed.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_upstream_batch_probe.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "8", "--haystack-lines", "60",
+                    "--max-new-tokens", "24",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_upstream_batch_probe.json",
+                ),
+            ),
+            timeout_minutes=90,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-backend-tests",
             description="Real-mlx truth for the MLX backend test suites.",
             command_templates=(
@@ -179,6 +227,31 @@ PRESETS: Dict[str, Preset] = {
                 ),
             ),
             timeout_minutes=60,
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-batched-pad-decode",
+            description="Candidate fix: MLX batched multi-tenant with the L>=2 "
+                        "padded decode workaround (duplicate the new token so "
+                        "every decode forward is length-2 and avoids mlx's L=1 "
+                        "B>1 single-token quantized kernel — the suspected "
+                        "core-kernel bug). Stays batched/parallel over "
+                        "sessions, Python-only; forces the trimmable Kakeya S5 "
+                        "cache. Expect per-session batched recall -> serialized "
+                        "(1.0).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/mlx_batched_multitenant_bench.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "8",
+                    "--haystack-lines", "60",
+                    "--max-new-tokens", "24",
+                    "--pad-decode", "--sink", "4", "--window", "64",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_batched_pad_decode.json",
+                ),
+            ),
+            timeout_minutes=90,
             validate_reports=False,
         ),
         Preset(

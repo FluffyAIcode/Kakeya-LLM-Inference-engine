@@ -100,10 +100,19 @@ PR-A3c delivers, recall-preserving (recall 1.0 throughout), the three multi-tena
 properties together:
 
 - **Bounded memory** — ~4.2× more concurrent agents per GB (§3.1).
-- **Parallel throughput** — 8.04× engine-level (§3.2) / **8.45× through the
-  served per-session adapters via the batched scheduler** (§3.4).
+- **Parallel throughput (CUDA)** — 8.04× engine-level (§3.2) / **8.45× through
+  the served per-session adapters via the batched scheduler** (§3.4). This is
+  **CUDA-only**; see the platform note below.
 - **Correct isolation** — true multi-tenant serving end-to-end through gRPC,
   per-session recall 1.0 (§3.3).
+
+**Platform scope — MLX (`v0.4-mac`) multi-tenant is serial-only.** Per-session
+binding (isolated KV, shared weights, recall 1.0) holds on both platforms, but
+the **batched/parallel cohort path is CUDA-only**. On Apple-Silicon MLX,
+batched `B>1` decode collapses per-session recall to 0.125 (vs serialized 1.0)
+because of an upstream MLX `B>1, L=1` quantized-decode kernel bug that persists
+on the latest published `mlx 0.31.2 / mlx-lm 0.31.3` and is not Python-patchable
+(ADR 0014 §3.4). Mac therefore serves multi-tenant sessions **serially**.
 
 ## 5. Remaining work (productization)
 
@@ -113,9 +122,11 @@ properties together:
   **dynamic mid-flight arrival + ragged-length** cohorts (this report's
   scheduler is a fixed synchronized cohort, the dominant burst case).
 - **Batched fused spec-decode** (DFlash is batch-1 today).
-- **Mac served path**: the served MLX gemma verifier can't load gemma-4's nested
-  config (`MLXSinkWindowVerifier`) — a v0.4 item; CUDA is the recall-preserving
-  served path today.
+- **Mac served path**: multi-tenant on MLX is **serial-only by decision** (ADR
+  0014 §3.4) — batched `B>1` decode is blocked by an upstream MLX kernel bug, so
+  Mac serves sessions one at a time (recall-preserving). CUDA is the batched
+  parallel path today. Revisit only if a future mlx release / source build fixes
+  the `B>1, L=1` quantized-decode kernel.
 
 ## 6. Evidence index
 
