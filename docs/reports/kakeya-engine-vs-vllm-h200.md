@@ -56,10 +56,24 @@ zero-overhead ceiling; the achievable bf16 ceiling on a 140 GB card is ~24–26.
 
 **The lever to reach 34+ (not model-switching): exact-layer KV quantization.**
 Quantizing the 5 exact layers' KV to 8-bit halves the floor to 1.27 GB/session →
-~69 sessions fit; 4-bit → ~135. The repo already has KV-compression machinery
-(`inference_engine.v04.kv_compressor`); wiring it into the bounded decode cache is
-**KIE-v1.1.x** and unlocks N=34 and well beyond. (Graph-captured decode for
-throughput is the parallel v1.1.x item.)
+~69 sessions fit; 4-bit → ~0.64 GB → ~135.
+
+> **Note:** `inference_engine.v04.kv_compressor` does **not** help here — it
+> round-trips through the lattice for *fidelity* and stores full bf16 tensors
+> ("not from any in-RAM size change", its docstring), and needs the optional
+> `kakeyalattice` package. transformers' `QuantizedCache` needs an uninstalled
+> backend and is **not hybrid-aware** (it would store all 30 layers full, worse
+> than the bounded-bf16 hybrid). So KIE-v1.1.x needs **genuine int storage of the
+> exact layers** (int8/int4 packed + per-token scale, dequant per-layer on read),
+> with the evicting bf16 sliding layers unchanged.
+
+**De-risk (the exact layers are recall-critical — does int quant break recall?).**
+Probe: round-trip the exact-layer K/V through int8 and int4 in the decoupled
+decode (`--quant-exact-bits`), 62k, N=4. **Both int8 and int4 keep recall 1.0** —
+so int storage of the exact layers is recall-safe, and the memory model above
+(N≈69 at int8, ≈135 at int4) is the achievable ceiling once genuine int storage
+lands. (The round-trip itself dequants back to bf16, so it proves fidelity, not
+the memory drop; genuine int storage is the remaining wiring.)
 
 ## What v1 already delivers
 

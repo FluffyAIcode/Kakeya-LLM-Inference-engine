@@ -35,6 +35,10 @@ def main() -> int:
                     help="use decoupled per-session prefill + stacked batched "
                          "decode (KIE-v1.1.x): prefill transient is per-session, "
                          "so concurrency approaches the peak-window ceiling.")
+    ap.add_argument("--quant-exact-bits", type=int, default=0,
+                    help="KIE-v1.1.x de-risk probe: int{bits} round-trip the "
+                         "exact (recall-critical) layers' KV (8 or 4; 0=off) to "
+                         "test whether int storage preserves recall.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -96,7 +100,8 @@ def main() -> int:
             t0 = time.perf_counter()
             if args.decoupled:
                 gens = engine.decode_cohort([s[0] for s in sel],
-                                            max_new_tokens=args.gen_tokens)
+                                            max_new_tokens=args.gen_tokens,
+                                            quant_exact_bits=args.quant_exact_bits)
             else:
                 gens = engine.generate_cohort([s[0] for s in sel],
                                               max_new_tokens=args.gen_tokens)

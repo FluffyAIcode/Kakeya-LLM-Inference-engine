@@ -182,6 +182,21 @@ class KakeyaEngine:
                 )
         return cache, out.logits[:, -1, :], T
 
+    @staticmethod
+    def _roundtrip_int(t, bits: int):
+        """Per-token affine int{bits} quantize→dequantize round-trip of a
+        K/V tensor [B, kv, S, D] (de-risk probe: proves whether int storage of
+        the exact layers preserves recall, before building int storage)."""
+        import torch
+
+        if bits <= 0:
+            return t
+        qmax = (1 << (bits - 1)) - 1  # int8 -> 127, int4 -> 7
+        amax = t.abs().amax(dim=-1, keepdim=True).clamp_(min=1e-8)
+        scale = amax / qmax
+        q = torch.clamp(torch.round(t / scale), -qmax, qmax)
+        return (q * scale).to(t.dtype)
+
     def _init_batched_layer(self, bl, ref, *, N, device):
         """Allocate a batched layer [N, …] from a prefilled single-session ref
         layer and copy the meta the lazy batched layer hasn't set."""
@@ -201,7 +216,8 @@ class KakeyaEngine:
             cl = ref.cumulative_length  # lockstep scalar (all rows same T)
             bl.cumulative_length = cl.clone() if hasattr(cl, "clone") else cl
 
-    def decode_cohort(self, prompt_ids_2d, *, max_new_tokens, device=None):
+    def decode_cohort(self, prompt_ids_2d, *, max_new_tokens, device=None,
+                      quant_exact_bits: int = 0):
         """Decoupled serve: per-session prefill → row-copy into one batched
         bounded cache → batched bounded decode.
 
@@ -224,10 +240,16 @@ class KakeyaEngine:
                                             device=device)
         batched = self._new_static_cache(max_cache_len=T + max_new_tokens,
                                          batch=N, device=device)
+        exact = set(self.exact_layer_indices)
+
+        def _maybe_q(li, t):
+            # quantize only the exact (recall-critical) full-attention layers
+            return self._roundtrip_int(t, quant_exact_bits) if li in exact else t
+
         for li, bl in enumerate(batched.layers):
             self._init_batched_layer(bl, c0.layers[li], N=N, device=device)
-            bl.keys[0].copy_(c0.layers[li].keys[0])
-            bl.values[0].copy_(c0.layers[li].values[0])
+            bl.keys[0].copy_(_maybe_q(li, c0.layers[li].keys[0]))
+            bl.values[0].copy_(_maybe_q(li, c0.layers[li].values[0]))
         first_tokens = [int(last0.argmax(-1)[0])]
         del c0
 
@@ -236,8 +258,8 @@ class KakeyaEngine:
                                                 max_new_tokens=max_new_tokens,
                                                 device=device)
             for li, bl in enumerate(batched.layers):
-                bl.keys[i].copy_(ci.layers[li].keys[0])
-                bl.values[i].copy_(ci.layers[li].values[0])
+                bl.keys[i].copy_(_maybe_q(li, ci.layers[li].keys[0]))
+                bl.values[i].copy_(_maybe_q(li, ci.layers[li].values[0]))
             first_tokens.append(int(lasti.argmax(-1)[0]))
             del ci
 
