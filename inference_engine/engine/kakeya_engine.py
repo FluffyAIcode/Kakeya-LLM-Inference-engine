@@ -89,6 +89,24 @@ def _int_exact_layer_cls():
         def set_length(self, length):
             self.cumulative_length.fill_(int(length))
 
+        @property
+        def current_len(self):
+            return int(self.cumulative_length.item())
+
+        def append_only(self, key_states, value_states):
+            """Quantize + store one decode step's K/V WITHOUT returning the full
+            bf16 dequant (the quant-attention path reads the int8 store directly
+            via the tiled flash kernel, so no O(S) bf16 materialization)."""
+            L = key_states.shape[-2]
+            pos = torch.arange(L, device=self.device) + self.cumulative_length
+            self.cumulative_length.add_(L)
+            kq, ks = self._quant(key_states)
+            vq, vs = self._quant(value_states)
+            self.keys.index_copy_(2, pos, kq)
+            self.k_scale.index_copy_(2, pos, ks)
+            self.values.index_copy_(2, pos, vq)
+            self.v_scale.index_copy_(2, pos, vs)
+
         def lazy_initialization(self, key_states, value_states):
             self.is_initialized = True
 
@@ -314,8 +332,63 @@ class KakeyaEngine:
             cl = ref.cumulative_length  # lockstep scalar (all rows same T)
             bl.cumulative_length = cl.clone() if hasattr(cl, "clone") else cl
 
+    def _decoder_layers(self):
+        """Resolve the verifier's decoder-layer ModuleList (gemma-4 nests it
+        under model.language_model / model.model.language_model)."""
+        for chain in (("model", "language_model", "layers"),
+                      ("language_model", "model", "layers"),
+                      ("model", "model", "layers"),
+                      ("model", "layers")):
+            o = self.model
+            ok = True
+            for a in chain:
+                if hasattr(o, a):
+                    o = getattr(o, a)
+                else:
+                    ok = False
+                    break
+            if ok:
+                return o
+        raise RuntimeError("could not resolve decoder layers")
+
+    def _make_quant_attn_forward(self, attn, layer_cache, tile):
+        """Patched gemma-4 exact-layer attention (decode): project the new
+        token, append it to the int8 store, then run the tiled quantized flash
+        attention over the store — no full-bf16 K/V materialization (KIE-v1.1.y).
+        """
+        import torch
+        from transformers.models.gemma4.modeling_gemma4 import apply_rotary_pos_emb
+        from inference_engine.engine.quant_attention import quantized_flash_attention
+
+        def _fwd(hidden_states, position_embeddings, attention_mask=None,
+                 past_key_values=None, cache_position=None, **kwargs):
+            cos, sin = position_embeddings
+            hshape = (*hidden_states.shape[:-1], -1, attn.head_dim)
+            q = attn.q_norm(attn.q_proj(hidden_states).view(hshape))
+            q = apply_rotary_pos_emb(q, cos, sin, unsqueeze_dim=2).transpose(1, 2)
+            k_lin = attn.k_proj(hidden_states).view(hshape)
+            v_lin = (attn.v_proj(hidden_states).view(hshape)
+                     if getattr(attn, "v_proj", None) is not None else k_lin)
+            k = attn.k_norm(k_lin)
+            k = apply_rotary_pos_emb(k, cos, sin, unsqueeze_dim=2).transpose(1, 2)
+            v = attn.v_norm(v_lin).transpose(1, 2)
+            layer_cache.append_only(k, v)
+            L = layer_cache.current_len
+            scale = getattr(attn, "scaling", attn.head_dim ** -0.5)
+            out = quantized_flash_attention(
+                q,
+                layer_cache.keys[:, :, :L], layer_cache.k_scale[:, :, :L],
+                layer_cache.values[:, :, :L], layer_cache.v_scale[:, :, :L],
+                scale=scale, tile=tile,
+            )
+            out = out.transpose(1, 2).reshape(*hidden_states.shape[:-1], -1)
+            return attn.o_proj(out), None
+
+        return _fwd
+
     def decode_cohort(self, prompt_ids_2d, *, max_new_tokens, device=None,
-                      quant_exact_bits: int = 0):
+                      quant_exact_bits: int = 0, quant_attn: bool = False,
+                      attn_tile: int = 4096):
         """Decoupled serve: per-session prefill → row-copy into one batched
         bounded cache → batched bounded decode.
 
@@ -325,12 +398,16 @@ class KakeyaEngine:
         held for all N at once (the gate that caps batched generate). Resident
         memory at decode is the peak-window admission regime (§7).
         """
+        import time
+
         import torch
 
         torch._dynamo.config.disable = True
         if device is None:
             device = next(self.model.parameters()).device
         N = len(prompt_ids_2d)
+        torch.cuda.synchronize(device)
+        _t_prefill0 = time.perf_counter()
 
         # Session 0 sets the reference shapes for the batched cache.
         c0, last0, T = self.prefill_session(prompt_ids_2d[0],
@@ -381,17 +458,40 @@ class KakeyaEngine:
                 if isinstance(batched.layers[li], IntCls):
                     batched.layers[li].set_length(T)
 
+        torch.cuda.synchronize(device)
+        self._last_prefill_s = time.perf_counter() - _t_prefill0
+
         gen = [[first_tokens[i]] for i in range(N)]
         nxt = torch.tensor(first_tokens, device=device)
-        with torch.no_grad():
-            for step in range(max_new_tokens - 1):
-                out = self.model(
-                    input_ids=nxt.view(N, 1), past_key_values=batched,
-                    use_cache=True,
-                    cache_position=torch.tensor([T + step], device=device),
-                    logits_to_keep=1,
-                )
-                nxt = out.logits[:, -1, :].argmax(-1)
-                for i in range(N):
-                    gen[i].append(int(nxt[i]))
+        torch.cuda.synchronize(device)
+        _t_decode0 = time.perf_counter()
+
+        # KIE-v1.1.y: patch the exact layers' attention to read the int8 store
+        # via the tiled flash kernel (no full-bf16 transient). Sliding layers
+        # keep the normal path.
+        patched = []
+        if quant_attn and quant:
+            layers = self._decoder_layers()
+            for li in exact:
+                attn = layers[li].self_attn
+                patched.append((attn, attn.forward))
+                attn.forward = self._make_quant_attn_forward(
+                    attn, batched.layers[li], attn_tile)
+        try:
+            with torch.no_grad():
+                for step in range(max_new_tokens - 1):
+                    out = self.model(
+                        input_ids=nxt.view(N, 1), past_key_values=batched,
+                        use_cache=True,
+                        cache_position=torch.tensor([T + step], device=device),
+                        logits_to_keep=1,
+                    )
+                    nxt = out.logits[:, -1, :].argmax(-1)
+                    for i in range(N):
+                        gen[i].append(int(nxt[i]))
+        finally:
+            for attn, orig in patched:
+                attn.forward = orig
+        torch.cuda.synchronize(device)
+        self._last_decode_s = time.perf_counter() - _t_decode0
         return gen
