@@ -1,0 +1,17 @@
+===== ctx16k restored-only sdpa N=1,2,4,8 =====
+[mt] modal prompt len=16038, 20 equal-length prompts (of 24)
+[mt] N=  1 | AR nan tok/s (xnan, recall nan) | restored 11.09 tok/s (x1.0, recall 1.0) | peak 74.46GB
+[mt] N=  2 | AR nan tok/s (xnan, recall nan) | restored 22.99 tok/s (x2.07, recall 1.0) | peak 92.39GB
+[mt] N=  4 | AR nan tok/s (xnan, recall nan) | restored 36.7 tok/s (x3.31, recall 1.0) | peak 124.61GB
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 5.38 GiB. GPU 0 has a total capacity of 139.80 GiB of which 5.00 GiB is free. Process 3233087 has 134.79 GiB memory in use. Of the allocated memory 133.74 GiB is allocated by PyTorch, and 380.97 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+===== ctx32k restored-only sdpa N=1,2,4 =====
+[mt] modal prompt len=32038, 20 equal-length prompts (of 24)
+[mt] N=  1 | AR nan tok/s (xnan, recall nan) | restored 10.22 tok/s (x1.0, recall 1.0) | peak 97.02GB
+[mt] N=  2 | AR nan tok/s (xnan, recall nan) | restored 17.73 tok/s (x1.73, recall 1.0) | peak 133.84GB
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 502.00 MiB. GPU 0 has a total capacity of 139.80 GiB of which 389.06 MiB is free. Process 3235509 has 139.41 GiB memory in use. Of the allocated memory 138.48 GiB is allocated by PyTorch, and 262.44 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+===== ctx62k restored-only sdpa N=1,2 =====
+[mt] modal prompt len=62038, 20 equal-length prompts (of 24)
+[mt] warmup note: CUDA out of memory. Tried to allocate 14.34 GiB. GPU 0 has a total capacity of 139.80 GiB of which 11.77 GiB is free. Process 3238344 has 128.02 GiB memory in use. Of the allocated memory 127.15 GiB is allocated by PyTorch, and 202.42 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[mt] N=  1 | AR nan tok/s (xnan, recall nan) | restored 7.55 tok/s (x1.0, recall 1.0) | peak 120.8GB
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 14.34 GiB. GPU 0 has a total capacity of 139.80 GiB of which 8.41 GiB is free. Process 3238344 has 131.39 GiB memory in use. Of the allocated memory 130.24 GiB is allocated by PyTorch, and 487.67 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+CEILING_DONE

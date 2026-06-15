@@ -49,11 +49,16 @@ long prefills (N=1-only at 16k, OOM at 32k) due to O(T²) eager scores +
 full-vocab logits + a redundant `capture_verifier_own_kv` forward.
 
 **Substrate work items (ordered):**
-1. **Memory-efficient restoration prefill** — replace the patched *eager*
-   attention with SDPA/FlashAttention, chunk the LM-head logits, drop the
-   redundant full forward for the exact layers. (Unblocks long context.)
+1. ✅ **Memory-efficient restoration prefill** — patched forward routes to
+   **SDPA** (`--attn-impl sdpa`), LM-head logits chunked (`logits_to_keep=1` on
+   the restored forward + `capture_verifier_own_kv`), restored K/V held in bf16.
+   **Unblocked long context** (recall 1.0): 16k went N=1-only→N=4, 32k OOM→N=2,
+   62k OOM→N=1; 16k N=1 peak 138.8→74.5 GB. (`docs/reports/kakeya-vs-vllm-longcontext-h200.md`.)
 2. **Bounded decode cache as the native KV layout** — resident sink+window +
-   5 exact full-attention layers; no Python per-step `DynamicCache`.
+   5 exact full-attention layers; no Python per-step `DynamicCache`. **This is
+   the gating item for the long-context concurrency win**: today the bench still
+   captures full-T K/V at decode (~17 GB/session @16k), so the bounded advantage
+   is not yet realized — #1 only made the prefill *run*.
 3. **CUDA graphs** for the decode step; **fused-MoE** kernels for the verifier.
 4. (Optional) integrate Kakeya Attention as a **vLLM attention backend** so the
    bounded window rides vLLM's paged store + scheduler.

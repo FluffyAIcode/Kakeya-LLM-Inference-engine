@@ -75,6 +75,34 @@ where bounded-KV produces a real long-context concurrency sweet spot.
   gemma-4** on this hardware (it runs 62k at ~15× concurrency; Kakeya eager does
   not run past 16k N=1).
 
+## Update — ADR 0015 item #1 (SDPA + chunked logits) landed
+
+Replacing the eager restoration prefill with **SDPA** (`--attn-impl sdpa`, the
+patched forward routes to `all_attention_functions["sdpa"]`) + **chunked logits**
+(`logits_to_keep=1` on the restored forward and `capture_verifier_own_kv`) +
+**bf16 restored K/V** **unblocked long context**, recall **1.0** throughout:
+
+| ctx | eager (before) | SDPA (after) | peak @ max N |
+| --- | --- | --- | --- |
+| 16k | N=1 only (138.8 GB) | **N=4** (recall 1.0) | 124.6 GB |
+| 32k | **OOM at N=1** | **N=2** (recall 1.0) | 133.8 GB |
+| 62k | OOM at N=1 | **N=1** (recall 1.0) | 120.8 GB |
+
+(16k N=1 peak dropped 138.8 → 74.5 GB.) This is the item-#1 win: the restoration
+prefill now executes at 32k/62k where eager could not.
+
+**Remaining bottleneck (→ items #2–3).** Per-session memory still grows
+~linearly with context (~17 GB/session @16k, ~37 GB @32k) because **this bench
+captures the full-T K/V into the decode cache** and holds the f_θ projection
+intermediates — i.e. it does **not** yet exercise the *bounded* resident cache
+(SinkWindowKVCache). So the restored path here is still effectively full-KV at
+decode; beating vLLM's **15.5-way** 62k concurrency requires item #2 (bounded
+native decode cache: store only sink+window + 5 exact layers, restore on demand)
++ freeing the f_θ intermediates. Item #1 was the prerequisite (it makes long
+prefills run at all); the concurrency-ceiling win is gated on #2.
+
+Evidence: `results/research/k3_cuda_mt_longctx_sdpa_ceiling_h200nvl.log`.
+
 ## Evidence
 
 - `results/research/vllm_multitenant_parallel_h200nvl_ctx62k.json`
