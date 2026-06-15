@@ -36,7 +36,7 @@ import torch
 def _ar_batched(model, ids_bt, gen_tokens, device, eos_ids):
     """Batched AR decode. ids_bt: [N, T]. Returns (per_row_tokens, decode_s)."""
     N = ids_bt.size(0)
-    out = model(input_ids=ids_bt, use_cache=True)
+    out = model(input_ids=ids_bt, use_cache=True, logits_to_keep=1)
     cache = out.past_key_values
     nxt = out.logits[:, -1, :].argmax(-1)              # [N]
     gen = [[int(nxt[i].item())] for i in range(N)]
@@ -62,7 +62,7 @@ def _restored_prefill_batched(restored, ids_bt, helpers):
     from transformers.cache_utils import DynamicCache
     n_layers = len(_decoder_layers(restored.verifier_model))
     capture: list = [None] * n_layers
-    out = restored.forward(ids_bt, capture_kv=capture, **helpers)
+    out = restored.forward(ids_bt, capture_kv=capture, logits_to_keep=1, **helpers)
     logits = out.logits if hasattr(out, "logits") else out
     if any(c is None for c in capture):
         raise RuntimeError("restored prefill did not capture all layers "
@@ -111,6 +111,10 @@ def main() -> int:
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--attn-impl", default="eager",
+                    help="verifier attn_implementation: 'eager' (default, exact "
+                         "repro) or 'sdpa'/'flash_attention_2' (memory-efficient "
+                         "prefill — required for long context, ADR 0015 item #1).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -134,7 +138,7 @@ def main() -> int:
     print(f"[mt] loading verifier {args.verifier_id}", file=sys.stderr, flush=True)
     tok = AutoTokenizer.from_pretrained(args.verifier_id)
     verifier = AutoModelForCausalLM.from_pretrained(
-        args.verifier_id, dtype=dtype, attn_implementation="eager",
+        args.verifier_id, dtype=dtype, attn_implementation=args.attn_impl,
     ).to(device).eval()
     for p in verifier.parameters():
         p.requires_grad_(False)
@@ -233,6 +237,7 @@ def main() -> int:
             "verifier_id": args.verifier_id, "drafter_id": args.drafter_id,
             "haystack_lines": args.haystack_lines, "modal_prompt_len": modal_len,
             "gen_tokens": args.gen_tokens, "sink": args.sink, "window": args.window,
+            "attn_impl": args.attn_impl,
             "batch_sizes": batch_sizes, "exact_layers": exact_layers,
             "note": ("per-session binding via batched decode (each row = a "
                      "session with its own KV-cache row); recall-preserving S5 "
