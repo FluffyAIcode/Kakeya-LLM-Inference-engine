@@ -175,13 +175,19 @@ restoration compute (a proposer forward), quantified below (recall 1.0;
 ~AR-parity / 1.79–2.06× on CUDA; ~4× more concurrent agents per GB,
 [ADR 0014 §3.4](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)).
 
-**Engine substrate (target).** Kakeya Attention is the algorithm; the
-**Kakeya Inference Engine** combines it with **CUDA graphs + fused-MoE kernels**
-to compete with vLLM on absolute throughput. This substrate is a **build target**
-([ADR 0015](docs/adr/0015-kakeya-attention-and-engine-substrate.md)): today's
-research path runs the algorithm on an **eager HF-transformers** substrate, which
-is correct and recall-preserving but ~8–14× slower than vLLM and OOMs on long
-prefills — see [the same-H200 comparison](docs/reports/kakeya-vs-vllm-multitenant-h200.md).
+**North star — a product-grade engine that replaces vLLM.** Kakeya Attention is
+the native algorithm of a **product-grade inference engine whose goal is to
+replace vLLM** — not a technique bolted onto HuggingFace transformers, and not
+"vLLM with a different cache". The engine is designed **bounded-KV-native**: the
+full history is never resident, admission/scheduling sizes sessions by their
+**peak window** (not total tokens), and restoration is fused into prefill/decode.
+Graph-captured decode, fused-MoE and efficient masking are table stakes built *in
+service of* that design, not a port of vLLM's full-KV pipeline
+([ADR 0015](docs/adr/0015-kakeya-attention-and-engine-substrate.md)). The
+eager-transformers numbers in the comparison reports are **feasibility probes**,
+not "Kakeya performance"; the vLLM-beating demonstration runs on a
+**full-attention** verifier, where restoration is load-bearing (on gemma-4 its
+native sliding window already bounds 25/30 layers, so it is not the showcase).
 
 **Where the bounded-KV win is large (and where it isn't).** The advantage scales
 with the model's **full-attention fraction**. On **gemma-4-26B-A4B** only 5 of 30

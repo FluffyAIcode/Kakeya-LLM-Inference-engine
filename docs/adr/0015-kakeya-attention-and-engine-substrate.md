@@ -1,31 +1,56 @@
-# ADR 0015 — Kakeya Attention as an attention algorithm + engine substrate roadmap
+# ADR 0015 — Kakeya Inference Engine: a product-grade vLLM replacement, Kakeya Attention native
 
-- Status: Accepted (definition); substrate = roadmap
-- Date: 2026-06-15
+- Status: Accepted (north star + algorithm definition); engine = in design
+- Date: 2026-06-15 (rev. 2026-06-15)
 - Supersedes/extends: the "Kakeya Attention vs PagedAttention/RadixAttention"
-  framing in README and ADR 0014 §3.4 (MLX serial-only / CUDA batched).
+  framing in README; ADR 0014 §3.4.
 
-## Context
+## North star (highest goal — this governs everything below)
 
-Kakeya's KV-restoration work (AR verifier + dLLM proposer + f_θ + S5 sink/window)
-has been described as a *technique inside* the engine. A same-H200 benchmark vs
-vLLM (`docs/reports/kakeya-vs-vllm-multitenant-h200.md`) and a long-context probe
-(`docs/reports/kakeya-vs-vllm-longcontext-h200.md`) forced two clarifications:
+The **Kakeya Inference Engine is a product-grade inference engine whose goal is
+to replace vLLM.** It is **not** a research script, **not** a technique bolted
+onto HuggingFace transformers, and **not** "vLLM with a different cache". Its
+**native, first-class attention algorithm is Kakeya Attention** — sink+window
+bound + f_θ KV-projection + dLLM-proposer restoration, as **one primitive**. The
+whole engine (prefill, KV management, admission/scheduling, kernels) is designed
+**around bounded-KV + on-demand restoration as the default invariant**, exactly
+the way vLLM is designed around full-KV PagedAttention.
 
-1. The throughput gap to vLLM (~8–14×) is a **substrate** gap (eager HF
-   transformers decode loop, O(T²) eager prefill), **not** an algorithmic one.
-2. The bounded-KV memory advantage is **architecture-dependent** and is a
-   **decode-time** property that the eager prefill currently masks (OOM at 32k).
+Everything else in this ADR serves that objective. Explicitly:
 
-This ADR fixes the vocabulary and the roadmap.
+- The product target is measured against vLLM by the **engine**, never by the
+  research bench. The bench (`k3_cuda_multitenant_parallel_bench.py`, eager HF
+  transformers) is **only a correctness/feasibility probe** and is not a thing we
+  ship or benchmark as "Kakeya".
+- "Parity → win" with vLLM is an engine deliverable, not a roadmap of vLLM
+  features to copy.
 
-## Decision
+## Why "borrow vLLM's pipeline" is the wrong plan (rejected)
 
-### 1. Kakeya Attention is a first-class attention algorithm
+vLLM's architecture is **full-KV-centric**: paged blocks store the *whole*
+history; chunked prefill and flash masking are optimizations for *processing and
+storing the full KV*. Porting Kakeya's bounded cache onto that pipeline inherits
+a full-KV-shaped engine and caps the advantage at whatever the cache layout
+saves — i.e. it makes Kakeya a vLLM feature, not a replacement.
 
-Define **Kakeya Attention** = **sink+window bound + f_θ KV-projection +
-dLLM-proposer restoration, as one primitive**. It is a peer of, and a drop-in
-replacement for, the attention layer in current engines:
+A product Kakeya engine instead makes **bounded-KV the native invariant**:
+
+- the **full history is never resident**; evicted context is reconstructed by
+  the proposer on demand (Kakeya Attention);
+- **prefill** produces the bounded resident set **+** the restoration path in one
+  pass — it must never materialize the O(N·T²) attention mask or full-vocab
+  logits that sink the research bench;
+- **admission/scheduling** sizes sessions by their **peak window**, not their
+  total token count — this is the structural source of the concurrency win;
+- graph-captured decode, fused-MoE, efficient masking are **table stakes** any
+  product engine needs, implemented *in service of* the Kakeya-native design —
+  not as a port of vLLM's full-KV pipeline.
+
+## Kakeya Attention — the native algorithm
+
+**Kakeya Attention** = sink+window bound + f_θ KV-projection + dLLM-proposer
+restoration, taken as one primitive. Peer of, and replacement for, the attention
+layer in current engines:
 
 | Algorithm | Replaces | Keeps full KV? |
 | --- | --- | --- |
@@ -34,65 +59,50 @@ replacement for, the attention layer in current engines:
 | **Kakeya Attention** | **compute + storage** | **no — bounded; evicted KV reconstructed on demand** |
 
 FlashAttention makes attention compute cheaper; Paged/Radix make the same *total*
-KV cheaper to allocate/share. **Kakeya Attention makes the total itself bounded**,
-and is **composable** with all of them (a flash kernel can compute a Kakeya
-window; a paged/radix store can hold it).
+KV cheaper to allocate/share. **Kakeya Attention makes the total itself bounded.**
 
-### 2. The engine substrate is Kakeya Attention + CUDA graphs + fused MoE
+## Where the win is real (model architecture matters)
 
-The **Kakeya Inference Engine** = Kakeya Attention on a production substrate
-(**CUDA graphs + fused-MoE kernels + memory-efficient prefill**), targeting vLLM
-on absolute throughput. This is a **build target**, not yet shipped. The current
-research path runs the algorithm on **eager HF transformers**, which is correct
-and recall-preserving but (a) ~8–14× slower than vLLM at ctx-1238 and (b) OOMs on
-long prefills (N=1-only at 16k, OOM at 32k) due to O(T²) eager scores +
-full-vocab logits + a redundant `capture_verifier_own_kv` forward.
+Resident KV is dominated by the **full-attention** layers (they hold full context
+in any engine). So the engine's advantage over vLLM scales with the model's
+full-attention fraction:
 
-**Substrate work items (ordered):**
-1. ✅ **Memory-efficient restoration prefill** — patched forward routes to
-   **SDPA** (`--attn-impl sdpa`), LM-head logits chunked (`logits_to_keep=1` on
-   the restored forward + `capture_verifier_own_kv`), restored K/V held in bf16.
-   **Unblocked long context** (recall 1.0): 16k went N=1-only→N=4, 32k OOM→N=2,
-   62k OOM→N=1; 16k N=1 peak 138.8→74.5 GB. (`docs/reports/kakeya-vs-vllm-longcontext-h200.md`.)
-2. **Bounded decode cache as the native KV layout** — resident sink+window +
-   5 exact full-attention layers; no Python per-step `DynamicCache`. **Probed on
-   gemma-4 and found NOT to beat vLLM there (by architecture):** (a) gemma-4
-   keeps recall 1.0 at `sliding_window=68` *natively, with no restoration* (5/30
-   full-attn layers carry recall) — so bounded decode is just a native window
-   shrink that vLLM can match; (b) even native bounded decode fits only N=2 @62k
-   vs vLLM's 15.5, because the bottleneck is **non-chunked prefill activations**,
-   not the KV bound — vLLM wins on **chunked-prefill + paged-KV engineering**.
-   **Conclusion: the Kakeya bounded-KV win must be demonstrated on a
-   full-attention model** (Qwen/Llama), where shrinking the window without
-   restoration destroys recall and only f_θ+proposer restoration bounds memory at
-   full recall — vLLM, lacking restoration, must keep full KV.
-   (`docs/reports/kakeya-vs-vllm-longcontext-h200.md` Update 2.)
-3. **CUDA graphs** for the decode step; **fused-MoE** kernels for the verifier.
-4. (Optional) integrate Kakeya Attention as a **vLLM attention backend** so the
-   bounded window rides vLLM's paged store + scheduler.
+- **gemma-4-26B-A4B** is 25/30 **natively sliding** → vLLM already bounds those
+  layers, and gemma-4 keeps recall 1.0 at `sliding_window=68` *with no
+  restoration at all* → **no Kakeya moat on gemma-4** (probed; see below). It is
+  the wrong showcase model.
+- **Full-attention models** (Qwen/Llama, no native sliding): shrinking the window
+  without restoration **destroys recall**, so f_θ+proposer restoration is the
+  *only* way to bound memory at full recall — and vLLM, having no restoration,
+  **must keep full KV and cannot match it**. This is the engine's target regime.
 
-### 3. The bounded-KV win is architecture-dependent
+## Feasibility probes so far (informed the design — NOT the product)
 
-Resident KV is dominated by the **full-attention** layers (they hold full
-context in any engine). gemma-4-26B-A4B is 25/30 **natively sliding** → vLLM
-already bounds 25 layers → Kakeya's resident-KV edge is **~7 % at 62k**. On a
-**full-attention** model (no native sliding) the edge is **~6×**. Long-context
-concurrency "sweet spots" must be claimed **per model architecture**, not
-universally. (Consistent with the recorded "S5 free-lunch" caveat: on gemma-4 the
-5-exact-layer S5 shortcut already covers recall, so the proposer/f_θ restoration
-is *replaced* by S5 on this model.)
+These ran on the eager-transformers research bench; they validate correctness and
+locate the engine's required invariants. They are not the product engine.
+
+- **Restoration prefill, memory-efficient (SDPA + chunked logits + bf16 K/V)** —
+  unblocked long-context execution at recall 1.0 (16k N=1-only→N=4, 32k OOM→N=2,
+  62k OOM→N=1). Confirms the engine must avoid O(N·T²) masks / full-vocab logits.
+- **gemma-4 bounded decode** — recall 1.0 at `sliding_window=68` natively (no
+  restoration); native bounded decode still fits only N=2 @62k vs vLLM's 15.5
+  because the bench does non-chunked prefill. Confirms (a) gemma-4 is the wrong
+  showcase, (b) the engine — not bench retrofits — is what must beat vLLM.
+
+(`docs/reports/kakeya-vs-vllm-longcontext-h200.md`.)
 
 ## Consequences
 
-- README and docs now present Kakeya Attention as an algorithm peer to
-  Flash/Paged/Radix, with the substrate explicitly a roadmap.
-- Throughput parity with vLLM is gated on the substrate work items above, not on
-  the algorithm.
-- Memory/sweet-spot claims are scoped by full-attention fraction; the strong
-  long-context demonstration should be run on a full-attention verifier.
+- The repo's highest engineering goal is the **product Kakeya Inference Engine
+  replacing vLLM**, with Kakeya Attention as its native algorithm; the eager
+  research bench is a probe only and is never reported as "Kakeya performance".
+- The engine is designed bounded-KV-native (admission by peak window; restoration
+  fused into prefill/decode), not as a port of vLLM's full-KV pipeline.
+- The vLLM-beating demonstration is to be run on a **full-attention** verifier,
+  where restoration is load-bearing.
 
 ## Evidence
 
 - `docs/reports/kakeya-vs-vllm-multitenant-h200.md` (ctx-1238, same H200)
-- `docs/reports/kakeya-vs-vllm-longcontext-h200.md` (16k–62k, OOM ceiling + KV model)
-- `results/research/{k3_cuda_multitenant_parallel,vllm_multitenant_parallel}_h200nvl_*.json`
+- `docs/reports/kakeya-vs-vllm-longcontext-h200.md` (16k–62k probes + KV model)
+- `results/research/{k3_cuda_multitenant_parallel,vllm_multitenant_parallel,gemma_bounded_decode}_h200nvl_*.{json,log}`

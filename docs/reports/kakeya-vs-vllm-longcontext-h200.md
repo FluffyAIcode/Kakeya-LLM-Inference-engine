@@ -91,15 +91,14 @@ patched forward routes to `all_attention_functions["sdpa"]`) + **chunked logits*
 (16k N=1 peak dropped 138.8 → 74.5 GB.) This is the item-#1 win: the restoration
 prefill now executes at 32k/62k where eager could not.
 
-**Remaining bottleneck (→ items #2–3).** Per-session memory still grows
-~linearly with context (~17 GB/session @16k, ~37 GB @32k) because **this bench
-captures the full-T K/V into the decode cache** and holds the f_θ projection
-intermediates — i.e. it does **not** yet exercise the *bounded* resident cache
-(SinkWindowKVCache). So the restored path here is still effectively full-KV at
-decode; beating vLLM's **15.5-way** 62k concurrency requires item #2 (bounded
-native decode cache: store only sink+window + 5 exact layers, restore on demand)
-+ freeing the f_θ intermediates. Item #1 was the prerequisite (it makes long
-prefills run at all); the concurrency-ceiling win is gated on #2.
+**Remaining bottleneck (this is a bench probe, not the engine).** Per-session
+memory still grows ~linearly with context (~17 GB/session @16k, ~37 GB @32k)
+because **this research bench captures the full-T K/V into the decode cache** and
+holds the f_θ projection intermediates — it does **not** exercise a bounded
+resident cache. That is precisely what the **product-grade Kakeya Inference
+Engine** (ADR 0015) owns natively: bounded-KV as the resident layout (sink+window
++ 5 exact layers, restore on demand), admission by peak window, restoration fused
+into prefill/decode — none of which a transformers research bench provides.
 
 Evidence: `results/research/k3_cuda_mt_longctx_sdpa_ceiling_h200nvl.log`.
 
@@ -136,9 +135,11 @@ engineering the research bench lacks.
 (a) there is no algorithmic lever — vLLM already exploits gemma-4's native hybrid
 attention and can shrink the window too; (b) vLLM's long-context concurrency is
 **prefill/KV engineering** (chunked prefill, paged KV, CUDA graphs, fused MoE),
-not the resident-KV bound. Matching it needs that engine substrate (ADR 0015
-items #2–4, essentially a vLLM-class build), which is orthogonal to the Kakeya
-algorithm. **The Kakeya advantage requires a full-attention model** (Qwen/Llama):
+not the resident-KV bound. Matching/beating it is the job of the **product-grade
+Kakeya Inference Engine** (ADR 0015) — a bounded-KV-native engine (admission by
+peak window, restoration fused into prefill/decode), **not** a port of vLLM's
+full-KV pipeline. **The Kakeya advantage requires a full-attention model**
+(Qwen/Llama):
 there, shrinking the window without restoration destroys recall, so f_θ+proposer
 restoration is the *only* way to bound memory at full recall — and vLLM, having
 no restoration, must keep full KV and cannot match it.
