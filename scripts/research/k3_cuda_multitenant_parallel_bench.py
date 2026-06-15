@@ -115,6 +115,10 @@ def main() -> int:
                     help="verifier attn_implementation: 'eager' (default, exact "
                          "repro) or 'sdpa'/'flash_attention_2' (memory-efficient "
                          "prefill — required for long context, ADR 0015 item #1).")
+    ap.add_argument("--skip-ar", action="store_true",
+                    help="skip the native-AR baseline (its full DynamicCache "
+                         "dominates peak memory at long context); measure the "
+                         "restored-S5 path's true concurrency ceiling alone.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -201,9 +205,15 @@ def main() -> int:
         ids_bt = torch.tensor([s[0] for s in sel], device=device)
         ans = [s[1] for s in sel]
         # AR
-        g_ar, dt_ar = _ar_batched(verifier, ids_bt, args.gen_tokens, device, eos_ids)
-        ar_tps = (N * args.gen_tokens) / dt_ar
-        ar_rec = sum(recall(g, a) for g, a in zip(g_ar, ans)) / N
+        if args.skip_ar:
+            ar_tps, ar_rec = float("nan"), float("nan")
+        else:
+            g_ar, dt_ar = _ar_batched(verifier, ids_bt, args.gen_tokens, device, eos_ids)
+            ar_tps = (N * args.gen_tokens) / dt_ar
+            ar_rec = sum(recall(g, a) for g, a in zip(g_ar, ans)) / N
+        if args.skip_ar:
+            # isolate the restored-S5 path's peak (no AR cache in the high-water)
+            torch.cuda.reset_peak_memory_stats(device)
         # restored S5
         cache, last = _restored_prefill_batched(restored, ids_bt, helpers)
         g_rs, dt_rs = _restored_decode_batched(verifier, cache, last,
