@@ -16,10 +16,14 @@ from inference_engine.engine.admission import (
     max_concurrent_sessions,
     resident_kv_bytes_per_session,
 )
+# kakeya_engine imports torch only lazily (inside methods), so this is safe on
+# torch-less hosts; the class is the engine runtime entry point.
+from inference_engine.engine.kakeya_engine import KakeyaEngine
 
 __all__ = [
     "BoundedKVModel",
     "resident_kv_bytes_per_session",
     "full_kv_bytes_per_session",
     "max_concurrent_sessions",
+    "KakeyaEngine",
 ]

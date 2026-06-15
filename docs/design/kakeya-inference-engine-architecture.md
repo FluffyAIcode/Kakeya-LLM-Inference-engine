@@ -158,11 +158,21 @@ term in §2):
   many more concurrent long-context sessions. **This is the engine's target
   regime.**
 
-## 9. v1 scope and sequencing
+## 9. v1 scope, status, and sequencing
 
-- **v1 (this design):** Chunked Restoration Prefill + Bounded-KV Decode +
-  Peak-Window Admission, with the **NativeHybridBounded** policy (Gemma-4) and the
-  **FThetaRestored** policy interface. Flash kernel wrapped via SDPA/FlashAttention.
-- **v1.1:** graph-captured decode + fused-MoE kernels.
-- **v1.2:** FThetaRestored policy fully wired for a full-attention verifier — the
-  configuration that demonstrates the decisive concurrency win over vLLM.
+- **v1 (implemented):** Chunked Restoration Prefill + Bounded-KV Decode +
+  Peak-Window Admission, NativeHybridBounded policy (Gemma-4), flash kernel via
+  SDPA. `inference_engine.engine.{admission,kakeya_engine}` (admission: 9 unit
+  tests). **Measured @62k:** recall 1.0, chunked prefill lifts concurrency
+  N=2→N=4 by removing the O(N·T²) prefill mask; admission model gives a 2.56 GB/
+  session bound and a 34-session ceiling (`docs/reports/kakeya-engine-vs-vllm-h200.md`).
+- **v1.1 (next):** realize the bounded-KV bound at runtime with the
+  **sliding-window-evicting cache** (transformers' hybrid-aware evicting cache
+  drops sliding-layer KV correctly, but `cache_implementation="static"` currently
+  segfaults under CUDA-graph capture with this model + chunked prefill) →
+  graph-captured + fused-MoE decode. Lifts concurrency from N=4 toward the 34
+  ceiling.
+- **v1.2 (the decisive win):** FThetaRestored policy fully wired for a
+  **full-attention verifier** (Qwen/Llama) — the configuration where restoration
+  is load-bearing and the bounded-KV edge over vLLM is ~6× (§8), not the marginal
+  gemma-4 case.
