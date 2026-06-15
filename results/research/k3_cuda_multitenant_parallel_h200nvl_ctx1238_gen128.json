@@ -1,0 +1,73 @@
+{
+  "kind": "k3_cuda_multitenant_parallel",
+  "schema_version": 1,
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "haystack_lines": 60,
+    "modal_prompt_len": 1238,
+    "gen_tokens": 128,
+    "sink": 4,
+    "window": 64,
+    "batch_sizes": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "exact_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "note": "per-session binding via batched decode (each row = a session with its own KV-cache row); recall-preserving S5 only \u2014 non-recall configs out of scope."
+  },
+  "env": {
+    "gpu": "NVIDIA H200",
+    "torch": "2.12.0+cu130"
+  },
+  "results": [
+    {
+      "agents": 1,
+      "ar_aggregate_tps": 15.84,
+      "restored_aggregate_tps": 16.16,
+      "ar_recall": 1.0,
+      "restored_recall": 1.0,
+      "ar_parallel_speedup_vs_n1": 1.0,
+      "restored_parallel_speedup_vs_n1": 1.0,
+      "peak_gpu_gb": 57.73
+    },
+    {
+      "agents": 2,
+      "ar_aggregate_tps": 33.14,
+      "restored_aggregate_tps": 32.01,
+      "ar_recall": 1.0,
+      "restored_recall": 1.0,
+      "ar_parallel_speedup_vs_n1": 2.09,
+      "restored_parallel_speedup_vs_n1": 1.98,
+      "peak_gpu_gb": 60.55
+    },
+    {
+      "agents": 4,
+      "ar_aggregate_tps": 65.48,
+      "restored_aggregate_tps": 65.93,
+      "ar_recall": 1.0,
+      "restored_recall": 1.0,
+      "ar_parallel_speedup_vs_n1": 4.13,
+      "restored_parallel_speedup_vs_n1": 4.08,
+      "peak_gpu_gb": 66.21
+    },
+    {
+      "agents": 8,
+      "ar_aggregate_tps": 131.73,
+      "restored_aggregate_tps": 131.69,
+      "ar_recall": 1.0,
+      "restored_recall": 1.0,
+      "ar_parallel_speedup_vs_n1": 8.31,
+      "restored_parallel_speedup_vs_n1": 8.15,
+      "peak_gpu_gb": 77.55
+    }
+  ]
+}
