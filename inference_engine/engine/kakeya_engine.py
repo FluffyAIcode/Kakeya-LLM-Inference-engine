@@ -98,26 +98,41 @@ class KakeyaEngine:
         *,
         max_new_tokens: int,
         device: Optional[Any] = None,
+        evicting_cache: bool = True,
     ) -> List[List[int]]:
         """Chunked restoration prefill (§4) + bounded-KV decode (§6) for a cohort.
 
         Equal-length prompts (a served cohort) are decoded as one batch; prefill
         is chunked via ``prefill_chunk_size`` so mask/activation memory scales
-        with ``chunk_size`` not the prompt length, and the sliding-window-aware
-        cache bounds the resident KV.
+        with ``chunk_size`` not the prompt length.
+
+        ``evicting_cache`` (KIE-v1.1) realizes the bounded-KV bound at runtime:
+        it builds a hybrid-aware ``StaticCache`` (sliding layers capped at
+        ``sink+window``, full-attention layers exact) and passes the **cache
+        object** to ``generate``. This evicts the sliding-layer KV (so resident
+        memory is the bounded ~`resident_bytes`, not full KV) while avoiding
+        ``cache_implementation="static"``, which triggers a CUDA-graph compile
+        that segfaults with this model + chunked prefill. With it False the
+        default growing ``DynamicCache`` is used (KV stored full; window applied
+        only in the attention mask).
         """
         import torch
+        from transformers import StaticCache
 
         if device is None:
             device = next(self.model.parameters()).device
         ids = torch.tensor([list(p) for p in prompt_ids_2d], device=device)
-        T = ids.shape[1]
-        with torch.no_grad():
-            out = self.model.generate(
-                ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                use_cache=True,
-                prefill_chunk_size=min(self.chunk_size, T),
+        N, T = ids.shape
+        kwargs: dict = dict(
+            max_new_tokens=max_new_tokens, do_sample=False, use_cache=True,
+            prefill_chunk_size=min(self.chunk_size, T),
+        )
+        if evicting_cache:
+            kwargs["past_key_values"] = StaticCache(
+                config=self.model.config.get_text_config(),
+                max_cache_len=T + max_new_tokens, max_batch_size=N,
+                device=device, dtype=self.model.dtype,
             )
-        return [out[i, T:].tolist() for i in range(ids.shape[0])]
+        with torch.no_grad():
+            out = self.model.generate(ids, **kwargs)
+        return [out[i, T:].tolist() for i in range(N)]

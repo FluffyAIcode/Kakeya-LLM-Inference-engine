@@ -118,6 +118,18 @@ locate the engine's required invariants. They are not the product engine.
 - The vLLM-beating demonstration is to be run on a **full-attention** verifier,
   where restoration is load-bearing.
 
+## Milestone tracking (task encoding)
+
+Engine work is coded **KIE-v1.x** (Kakeya Inference Engine), governed by this ADR
+§9 of `docs/design/kakeya-inference-engine-architecture.md`. One milestone = one
+PR, so development context stays per-task:
+
+| Code | Milestone | Status | PR |
+| --- | --- | --- | --- |
+| **KIE-v1** | engine core: chunked restoration prefill + bounded-KV decode + peak-window admission (NativeHybridBounded) | done (core); concurrency gated on v1.1 | #135 |
+| **KIE-v1.1** | realize the bounded-KV bound at runtime: sliding-window-**evicting** cache without the CUDA-graph segfault (evicting cache, graph capture off) | in progress | _this PR_ |
+| **KIE-v1.2** | FThetaRestored policy on a full-attention verifier (Qwen/Llama) — the decisive vLLM win | planned | — |
+
 ## Evidence
 
 - `docs/reports/kakeya-vs-vllm-multitenant-h200.md` (ctx-1238, same H200)
