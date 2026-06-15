@@ -351,14 +351,31 @@ class KakeyaEngine:
                 return o
         raise RuntimeError("could not resolve decoder layers")
 
-    def _make_quant_attn_forward(self, attn, layer_cache, tile):
+    _compiled_qfa = None
+
+    @classmethod
+    def _qfa(cls, compile_kernel: bool):
+        """Return the quantized flash attention, optionally torch.compiled
+        (KIE-v1.1.z: inductor fuses the tiled online-softmax — ~6.6x at decode
+        shape). dynamic=True so the growing last tile doesn't recompile per step.
+        """
+        from inference_engine.engine.quant_attention import quantized_flash_attention
+        if not compile_kernel:
+            return quantized_flash_attention
+        if cls._compiled_qfa is None:
+            import torch
+            cls._compiled_qfa = torch.compile(
+                quantized_flash_attention, dynamic=True, fullgraph=False)
+        return cls._compiled_qfa
+
+    def _make_quant_attn_forward(self, attn, layer_cache, tile, compile_kernel=True):
         """Patched gemma-4 exact-layer attention (decode): project the new
         token, append it to the int8 store, then run the tiled quantized flash
         attention over the store — no full-bf16 K/V materialization (KIE-v1.1.y).
         """
         import torch
         from transformers.models.gemma4.modeling_gemma4 import apply_rotary_pos_emb
-        from inference_engine.engine.quant_attention import quantized_flash_attention
+        quantized_flash_attention = self._qfa(compile_kernel)
 
         def _fwd(hidden_states, position_embeddings, attention_mask=None,
                  past_key_values=None, cache_position=None, **kwargs):
@@ -388,7 +405,7 @@ class KakeyaEngine:
 
     def decode_cohort(self, prompt_ids_2d, *, max_new_tokens, device=None,
                       quant_exact_bits: int = 0, quant_attn: bool = False,
-                      attn_tile: int = 4096):
+                      attn_tile: int = 4096, compile_attn: bool = False):
         """Decoupled serve: per-session prefill → row-copy into one batched
         bounded cache → batched bounded decode.
 
@@ -476,7 +493,8 @@ class KakeyaEngine:
                 attn = layers[li].self_attn
                 patched.append((attn, attn.forward))
                 attn.forward = self._make_quant_attn_forward(
-                    attn, batched.layers[li], attn_tile)
+                    attn, batched.layers[li], attn_tile,
+                    compile_kernel=compile_attn)
         try:
             with torch.no_grad():
                 for step in range(max_new_tokens - 1):

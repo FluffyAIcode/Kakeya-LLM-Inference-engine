@@ -44,6 +44,9 @@ def main() -> int:
                          "Requires --quant-exact-bits>0.")
     ap.add_argument("--attn-tile", type=int, default=4096,
                     help="key/value tile size for quantized flash attention.")
+    ap.add_argument("--compile-attn", action="store_true",
+                    help="KIE-v1.1.z: torch.compile the quantized attention "
+                         "(inductor fuses the tiled online-softmax, ~6.6x).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -108,7 +111,8 @@ def main() -> int:
                                             max_new_tokens=args.gen_tokens,
                                             quant_exact_bits=args.quant_exact_bits,
                                             quant_attn=args.quant_attn,
-                                            attn_tile=args.attn_tile)
+                                            attn_tile=args.attn_tile,
+                                            compile_attn=args.compile_attn)
             else:
                 gens = engine.generate_cohort([s[0] for s in sel],
                                               max_new_tokens=args.gen_tokens)
