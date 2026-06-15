@@ -61,7 +61,9 @@ def main() -> int:
 
     sys.path.insert(0, ".")
     sys.path.insert(0, "sdks/python")
-    from inference_engine.v04 import make_niah_dataset
+    # Import the submodule directly (not the v04 package __init__, which pulls
+    # the full restored-verifier stack) so this runs cleanly in the vLLM venv.
+    from inference_engine.v04.niah_eval import make_niah_dataset
 
     print(f"[vllm-mt] tokenizer {args.verifier_id}", file=sys.stderr, flush=True)
     tok = AutoTokenizer.from_pretrained(args.verifier_id)
