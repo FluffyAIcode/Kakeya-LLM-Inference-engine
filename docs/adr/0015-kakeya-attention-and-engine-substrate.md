@@ -46,6 +46,23 @@ A product Kakeya engine instead makes **bounded-KV the native invariant**:
   product engine needs, implemented *in service of* the Kakeya-native design —
   not as a port of vLLM's full-KV pipeline.
 
+### vLLM's three prefill techniques, through the Kakeya lens (adopt / wrap / drop)
+
+vLLM gets its 62k concurrency from three prefill-engineering pieces. They are
+**not** copied wholesale; each is reinterpreted against the bounded-KV-native
+design — two are adopted (one reinterpreted, one wrapped), the third is
+structurally **unnecessary**:
+
+| vLLM technique | what it solves for vLLM | Kakeya engine stance |
+| --- | --- | --- |
+| **Chunked prefill** | process a long prompt in fixed token blocks so mask/activation memory is O(N·chunk·d), not O(N·T²) | **Adopt — it *is* our chunked restoration.** Restoration is inherently incremental: consume the prompt in fixed blocks, emitting the bounded resident set + restoration path per block. Chunking is native to how restoration works, not a bolt-on. |
+| **FlashAttention** (native causal + sliding-window kernel) | compute attention without materializing a `[.,.,T,T]` mask/score tensor | **Wrap and use directly.** Window is a kernel parameter; we call the flash kernel over the Kakeya window. It is a table-stakes kernel, not an architecture — no reason to reinvent it. |
+| **Paged KV** | store the **whole growing KV** in non-contiguous pages so a large, ever-growing cache fits and shares | **Not needed — structurally.** Paging is a solution to the problem of *storing a growing full KV*. Kakeya is **on-demand KV restoration**: the resident KV is bounded (sink+window + exact layers) and the full history is never stored, so there is no growing full-KV to page. The problem paging solves **does not exist** in a Kakeya-native engine. |
+
+So the engineering Kakeya needs is **chunked restoration + a wrapped flash kernel
++ native bounded-KV management** — *not* PagedAttention. This is the concrete
+sense in which the engine **replaces** vLLM's design rather than extending it.
+
 ## Kakeya Attention — the native algorithm
 
 **Kakeya Attention** = sink+window bound + f_θ KV-projection + dLLM-proposer
