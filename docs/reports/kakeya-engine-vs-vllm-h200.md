@@ -70,10 +70,24 @@ Quantizing the 5 exact layers' KV to 8-bit halves the floor to 1.27 GB/session �
 **De-risk (the exact layers are recall-critical — does int quant break recall?).**
 Probe: round-trip the exact-layer K/V through int8 and int4 in the decoupled
 decode (`--quant-exact-bits`), 62k, N=4. **Both int8 and int4 keep recall 1.0** —
-so int storage of the exact layers is recall-safe, and the memory model above
-(N≈69 at int8, ≈135 at int4) is the achievable ceiling once genuine int storage
-lands. (The round-trip itself dequants back to bf16, so it proves fidelity, not
-the memory drop; genuine int storage is the remaining wiring.)
+so int storage of the exact layers is recall-safe.
+
+**Genuine int8 storage — implemented, correct, but blocked by dequant-on-read.**
+`_IntQuantExactLayer` (a `CacheLayerMixin`) stores the exact layers' K/V as int8
++ per-token scale and is wired into the decoupled decode. It is **correct**
+(recall 1.0) and **halves the stored** exact-layer bytes (N=4 peak 67.9 → 63.7 GB).
+**But it does not lift the concurrency ceiling — N=34 still OOMs.** The reason:
+the cache `update()` contract returns **bf16** for the model's SDPA, so each
+exact layer dequantizes its full K/V (`[N, 8, 62k, 256]` ≈ 0.25 GB/session/layer)
+on read; across the 5 exact layers these transients coexist and eat the storage
+saving at scale. The stored bytes shrink, the **peak** does not.
+
+**The real unlock (next, custom-kernel): quantized attention.** To convert the
+storage saving into concurrency, the attention must read the int8 K/V **without
+materializing full bf16** — a tiled/dequant-in-kernel (flash-style) SDPA over the
+int8 cache. That is a custom-kernel substrate item; until it lands, the achieved
+recall-1.0 ceiling is the bf16-evicting **N=24** (1.55× vLLM). The int8 storage +
+recall-safety are the prerequisites it builds on.
 
 ## What v1 already delivers
 

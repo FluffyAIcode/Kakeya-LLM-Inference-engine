@@ -25,6 +25,104 @@ from inference_engine.engine.admission import (
 )
 
 
+_INT_EXACT_CLS = None
+
+
+def _int_exact_layer_cls():
+    """Lazily build the int-quantized exact-layer cache class (subclasses
+    transformers' ``CacheLayerMixin`` so the model's mask/length dispatch — an
+    ``isinstance`` check — recognises it). Built lazily so the engine package
+    stays importable on torch-less hosts."""
+    global _INT_EXACT_CLS
+    if _INT_EXACT_CLS is not None:
+        return _INT_EXACT_CLS
+    import torch
+    from transformers.cache_utils import CacheLayerMixin
+
+    class _IntQuantExactLayer(CacheLayerMixin):
+        """Genuine int{bits} storage for a full-attention (exact) cache layer.
+
+        Stores K/V as int8 (or int4-range packed in int8) + per-token scale,
+        halving (8b) / quartering (4b) the resident bytes of the recall-critical
+        exact layers (the bounded-decode floor). Dequantizes to bf16 on
+        ``update`` return (one layer's worth, transient, freed after that
+        layer's attention), so the model attends in bf16 while storage stays
+        int. De-risked: int8/int4 keep recall 1.0 at 62k.
+        """
+
+        is_sliding = False
+        is_compileable = False
+
+        def __init__(self, *, N, kv_heads, max_cache_len, head_dim, device,
+                     dtype, bits):
+            self.max_cache_len = int(max_cache_len)
+            self.max_batch_size = int(N)
+            self.num_heads = int(kv_heads)
+            self.k_head_dim = self.v_head_dim = int(head_dim)
+            self.device = device
+            self.dtype = dtype
+            self.is_initialized = True
+            self._qmax = (1 << (bits - 1)) - 1
+            self.cumulative_length = torch.zeros(1, dtype=torch.long,
+                                                 device=device)
+            shp = (N, kv_heads, self.max_cache_len, head_dim)
+            sshp = (N, kv_heads, self.max_cache_len, 1)
+            self.keys = torch.zeros(shp, dtype=torch.int8, device=device)
+            self.values = torch.zeros(shp, dtype=torch.int8, device=device)
+            self.k_scale = torch.zeros(sshp, dtype=dtype, device=device)
+            self.v_scale = torch.zeros(sshp, dtype=dtype, device=device)
+
+        def _quant(self, t):
+            amax = t.abs().amax(dim=-1, keepdim=True).clamp_(min=1e-8)
+            scale = amax / self._qmax
+            q = torch.clamp(torch.round(t / scale), -self._qmax, self._qmax)
+            return q.to(torch.int8), scale.to(self.dtype)
+
+        def write_prefill_row(self, row, k, v, length):
+            kq, ks = self._quant(k)
+            vq, vs = self._quant(v)
+            self.keys[row, :, :length] = kq[0]
+            self.k_scale[row, :, :length] = ks[0]
+            self.values[row, :, :length] = vq[0]
+            self.v_scale[row, :, :length] = vs[0]
+
+        def set_length(self, length):
+            self.cumulative_length.fill_(int(length))
+
+        def lazy_initialization(self, key_states, value_states):
+            self.is_initialized = True
+
+        def update(self, key_states, value_states, *args, **kwargs):
+            L = key_states.shape[-2]
+            pos = torch.arange(L, device=self.device) + self.cumulative_length
+            self.cumulative_length.add_(L)
+            kq, ks = self._quant(key_states)
+            vq, vs = self._quant(value_states)
+            self.keys.index_copy_(2, pos, kq)
+            self.k_scale.index_copy_(2, pos, ks)
+            self.values.index_copy_(2, pos, vq)
+            self.v_scale.index_copy_(2, pos, vs)
+            return (self.keys.to(self.dtype) * self.k_scale,
+                    self.values.to(self.dtype) * self.v_scale)
+
+        def get_mask_sizes(self, query_length, *a, **k):
+            return self.max_cache_len, 0
+
+        def get_max_cache_shape(self, *a, **k):
+            return self.max_cache_len
+
+        def get_seq_length(self, *a, **k):
+            return int(self.cumulative_length.item())
+
+        def reset(self):
+            self.keys.zero_(); self.values.zero_()
+            self.k_scale.zero_(); self.v_scale.zero_()
+            self.cumulative_length.zero_()
+
+    _INT_EXACT_CLS = _IntQuantExactLayer
+    return _INT_EXACT_CLS
+
+
 class KakeyaEngine:
     """Bounded-KV-native inference engine (v1 core, NativeHybridBounded policy)."""
 
@@ -241,15 +339,29 @@ class KakeyaEngine:
         batched = self._new_static_cache(max_cache_len=T + max_new_tokens,
                                          batch=N, device=device)
         exact = set(self.exact_layer_indices)
+        quant = bool(quant_exact_bits and quant_exact_bits > 0)
+        IntCls = _int_exact_layer_cls() if quant else None
 
-        def _maybe_q(li, t):
-            # quantize only the exact (recall-critical) full-attention layers
-            return self._roundtrip_int(t, quant_exact_bits) if li in exact else t
+        def _write_row(li, row, ci):
+            src = ci.layers[li]
+            bl = batched.layers[li]
+            if quant and li in exact and isinstance(bl, IntCls):
+                bl.write_prefill_row(row, src.keys[:, :, :T], src.values[:, :, :T], T)
+            else:
+                bl.keys[row].copy_(src.keys[0])
+                bl.values[row].copy_(src.values[0])
 
         for li, bl in enumerate(batched.layers):
-            self._init_batched_layer(bl, c0.layers[li], N=N, device=device)
-            bl.keys[0].copy_(_maybe_q(li, c0.layers[li].keys[0]))
-            bl.values[0].copy_(_maybe_q(li, c0.layers[li].values[0]))
+            if quant and li in exact:
+                # genuine int storage for the recall-critical exact layers
+                ref = c0.layers[li]
+                batched.layers[li] = IntCls(
+                    N=N, kv_heads=ref.keys.shape[1],
+                    max_cache_len=T + max_new_tokens, head_dim=ref.keys.shape[3],
+                    device=device, dtype=self.model.dtype, bits=quant_exact_bits)
+            else:
+                self._init_batched_layer(bl, c0.layers[li], N=N, device=device)
+            _write_row(li, 0, c0)
         first_tokens = [int(last0.argmax(-1)[0])]
         del c0
 
@@ -257,11 +369,17 @@ class KakeyaEngine:
             ci, lasti, _ = self.prefill_session(prompt_ids_2d[i],
                                                 max_new_tokens=max_new_tokens,
                                                 device=device)
-            for li, bl in enumerate(batched.layers):
-                bl.keys[i].copy_(_maybe_q(li, ci.layers[li].keys[0]))
-                bl.values[i].copy_(_maybe_q(li, ci.layers[li].values[0]))
+            for li in range(len(batched.layers)):
+                _write_row(li, i, ci)
             first_tokens.append(int(lasti.argmax(-1)[0]))
             del ci
+
+        # exact int layers: set logical length to T so decode appends after the
+        # prompt (bf16 StaticLayers already track this via cumulative_length).
+        if quant:
+            for li in exact:
+                if isinstance(batched.layers[li], IntCls):
+                    batched.layers[li].set_length(T)
 
         gen = [[first_tokens[i]] for i in range(N)]
         nxt = torch.tensor(first_tokens, device=device)
