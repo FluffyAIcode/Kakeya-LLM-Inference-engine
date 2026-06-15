@@ -166,6 +166,22 @@ quant-attention + int8/packed storage; recall 1.0), but the **decode-throughput*
 axis cannot reach vLLM parity without rebuilding the fused-MoE+graph forward —
 which is the honest boundary of what this engine reaches in-session.
 
+### Measured (62k, recall 1.0, int8 + quant-attn)
+
+| N | recall | peak GPU | decode-only tok/s (aggregate) |
+| --- | --- | --- | --- |
+| 60 | 1.0 | 111.7 GB | ~25 |
+| 70 | 1.0 | 121.7 GB | 31.2 |
+| **75** | **1.0** | **126.7 GB** | **31.3** |
+
+**Concurrency goal met: N=75 at recall 1.0** (≈4.8× vLLM's 15.5), with int8
+storage alone (kakeyalattice's 2.46× would add headroom for higher N). **Decode
+goal NOT met:** aggregate decode-only is ~**31 tok/s across all 75 sessions**
+(~0.42/session) — it barely rises with N because the **eager batched 26B-MoE
+forward** scales with batch (≈2.5 s/step at batch-75). vLLM would do the same
+cohort far faster via fused-MoE + CUDA graphs. The decode-throughput parity is
+the unfinished axis (fused-MoE + graph-captured forward = vLLM-class work).
+
 ## What v1 already delivers
 
 - **Chunked restoration prefill works**: the engine runs 62k at **recall 1.0** and
