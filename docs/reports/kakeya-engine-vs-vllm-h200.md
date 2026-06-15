@@ -113,6 +113,40 @@ lever past N=34 remains **quantized attention** (KIE-v1.1.y) — attend on the
 packed/int codes without materializing bf16. v1.6's contiguous packed codes are
 exactly the input that kernel would consume.
 
+## KIE-v1.1.y — quantized attention: N=60 @62k (recall 1.0), 3.9× vLLM
+
+`quantized_flash_attention` (tiled online-softmax over the int8 exact-layer
+store, dequantizing **one tile at a time** → transient `O(tile)` not `O(S)`,
+patched into gemma-4's 5 exact-layer attentions) removes the decode-time bf16
+transient that capped KIE-v1.1.x at N=34. Measured on the same H200, 62k:
+
+| N | recall | peak GPU |
+| --- | --- | --- |
+| 40 | 1.0 | 91.8 GB |
+| 52 | 1.0 | 103.8 GB |
+| **60** | **1.0** | **111.7 GB** |
+
+**N=60 fits at recall 1.0** with headroom (111.7 GB) — **≈3.9× vLLM's 15.5**.
+Concurrency went **N=24 (bf16) → N=60 (quant-attn)**, the int8 storage finally
+converted into concurrency. (Numerically the tiled attention is exact vs full
+SDPA on the same int8 K/V — validated separately.)
+
+**Decode throughput (corrected).** The eval's `aggregate_tps_e2e` includes the
+**sequential** 62k prefill of all N sessions, which dominates the wall time and
+made the e2e figure look like ~2 tok/s — that is **not** the decode rate. With
+prefill and decode timed separately (N=8, 62k): **decode-only = 25.6 tok/s
+aggregate** (8×24 tokens / 7.5 s), vs prefill 86 s (the sequential-prefill
+harness artifact, not how a server admits requests).
+
+**Honest speed caveat.** 25.6 tok/s aggregate at N=8 is **~3.2 tok/s/session** —
+well below vLLM's ~98 tok/s single-session decode at 62k. The tiled
+online-softmax runs **eager** (graph capture off) in Python over 62k × 5 exact
+layers, so the **memory/concurrency** axis is won (N=60, recall 1.0) but the
+**decode-speed** axis is still weak. Closing it = graph-captured + fused
+(Triton/CUDA) quantized-attention kernel + continuous-batched prefill — the
+throughput work that makes it a *fast* product, not just a *high-concurrency*
+one.
+
 ## What v1 already delivers
 
 - **Chunked restoration prefill works**: the engine runs 62k at **recall 1.0** and
