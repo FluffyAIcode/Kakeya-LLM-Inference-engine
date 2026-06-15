@@ -89,6 +89,30 @@ int8 cache. That is a custom-kernel substrate item; until it lands, the achieved
 recall-1.0 ceiling is the bf16-evicting **N=24** (1.55× vLLM). The int8 storage +
 recall-safety are the prerequisites it builds on.
 
+### kakeyalattice v1.6 (the fixed compressor) — evaluated
+
+v1.6 genuinely fixes the two gaps reported against `v04.kv_compressor`: it adds
+**bit-packed storage** (`KakeyaLatticePackedCache`, real **2.46× HBM** at D4 Q=38,
+measured Qwen3-4B/H200 — vs the int8-index path's 1.94×) and a **contiguous,
+SDPA-feedable** decode (also fixing the prior O(N²) re-decode). `kv_compressor`
+now exposes it via `make_packed_kv_cache(...)`. Findings for **this** engine:
+
+1. **It does not drop into the Gemma-4 engine as-is** — the uniform-head-dim
+   packer asserts `expected last dim 256, got 512` on Gemma-4's hybrid layers
+   (full vs sliding K/V shapes differ); needs a per-layer-head-dim adaptation
+   upstream.
+2. **The gain over the int8 path is modest at D=256** (2.46× vs 1.94×) — it
+   shrinks the *stored* exact-layer bytes by ~20%, freeing ~8 GB at N=34.
+3. **It does not change the N>34 blocker.** Like any `DynamicCache`-style cache,
+   it returns **bf16** to SDPA, so the per-layer dequant transient (the thing
+   that OOMs at N=34) is unchanged. v1.6 improves the *floor* (storage), not the
+   *peak* (transient).
+
+**Net:** v1.6 is the right *storage* codec to feed the real fix, but the decisive
+lever past N=34 remains **quantized attention** (KIE-v1.1.y) — attend on the
+packed/int codes without materializing bf16. v1.6's contiguous packed codes are
+exactly the input that kernel would consume.
+
 ## What v1 already delivers
 
 - **Chunked restoration prefill works**: the engine runs 62k at **recall 1.0** and
