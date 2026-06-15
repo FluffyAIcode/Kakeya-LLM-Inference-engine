@@ -166,12 +166,15 @@ term in §2):
   tests). **Measured @62k:** recall 1.0, chunked prefill lifts concurrency
   N=2→N=4 by removing the O(N·T²) prefill mask; admission model gives a 2.56 GB/
   session bound and a 34-session ceiling (`docs/reports/kakeya-engine-vs-vllm-h200.md`).
-- **v1.1 (next):** realize the bounded-KV bound at runtime with the
-  **sliding-window-evicting cache** (transformers' hybrid-aware evicting cache
-  drops sliding-layer KV correctly, but `cache_implementation="static"` currently
-  segfaults under CUDA-graph capture with this model + chunked prefill) →
-  graph-captured + fused-MoE decode. Lifts concurrency from N=4 toward the 34
-  ceiling.
+- **v1.1 (done):** bounded-KV realized at runtime via the hybrid-aware
+  **evicting** `StaticCache` (sliding layers capped at `sink+window`), passed as a
+  cache object with **graph capture off** (`torch._dynamo.config.disable`) to dodge
+  the `cache_implementation="static"` CUDA-graph segfault. **Measured @62k:**
+  gemma-4 concurrency **N=4 → N=16** at recall 1.0 (N=4 peak 117.8 → 67.9 GB),
+  **above vLLM's 15.5**. Residual gap to the 34 ceiling = `StaticCache` full-layer
+  pre-allocation + ungraphed prefill overhead (~4 GB/session vs the 2.56 GB model).
+- **v1.1.x:** graph-captured + fused-MoE decode (stabilize the compile path) +
+  tighter allocation → toward the 34 ceiling and higher decode tok/s.
 - **v1.2 (the decisive win):** FThetaRestored policy fully wired for a
   **full-attention verifier** (Qwen/Llama) — the configuration where restoration
   is load-bearing and the bounded-KV edge over vLLM is ~6× (§8), not the marginal

@@ -128,6 +128,12 @@ class KakeyaEngine:
             prefill_chunk_size=min(self.chunk_size, T),
         )
         if evicting_cache:
+            # KIE-v1.1: graph capture OFF. A static cache makes `generate`
+            # torch.compile the decode step (triton/inductor → CUDA-graph),
+            # which segfaults with this model + chunked prefill (and writes a
+            # .so that fails to load on noexec tmp). Run the evicting cache in
+            # eager mode instead — correct + bounded, just ungraphed.
+            torch._dynamo.config.disable = True
             kwargs["past_key_values"] = StaticCache(
                 config=self.model.config.get_text_config(),
                 max_cache_len=T + max_new_tokens, max_batch_size=N,

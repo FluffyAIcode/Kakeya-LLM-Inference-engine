@@ -9,11 +9,32 @@ NIAH ctx ≈ 62k. Architecture: `docs/design/kakeya-inference-engine-architectur
 
 | Engine | max concurrency @62k | per-session GPU | recall |
 | --- | --- | --- | --- |
-| **Kakeya Engine v1** (chunked prefill, generate-cache) | **N=4** | ~16 GB | 1.0 |
-| Kakeya admission model (bounded-KV target) | **34** (ceiling) | **2.56 GB** | — |
-| vLLM (PagedAttention) | **15.5** | ~4.6 GB | 1.0 |
+| Kakeya Engine **v1** (chunked prefill, growing cache) | N=4 | ~16 GB | 1.0 |
+| Kakeya Engine **v1.1** (chunked prefill + **evicting** cache, graph off) | **N=16** | ~4 GB | 1.0 |
+| vLLM (PagedAttention) | 15.5 | ~4.6 GB | 1.0 |
+| Kakeya admission model (bounded-KV target) | 34 (ceiling) | 2.56 GB | — |
 
-(Engine N=1 68.2 GB → N=2 84.7 → N=4 117.8 GB; N=8 OOM.)
+- **v1** (growing `DynamicCache`): N=1 68.2 → N=2 84.7 → N=4 117.8 GB; N=8 OOM.
+- **v1.1** (evicting `StaticCache`, graph off): N=1 55.7 → N=4 67.9 → N=8 84.1 →
+  **N=16 116.5 GB**; N=24 OOM. The evicting cache drops N=4 peak **117.8 → 67.9 GB**
+  and lifts concurrency **N=4 → N=16**, now **above vLLM's 15.5** — bounded-KV is
+  realized at runtime.
+
+### KIE-v1.1 — what was done
+
+`generate_cohort(evicting_cache=True)` builds a hybrid-aware `StaticCache`
+(sliding layers → `StaticSlidingWindowLayer` capped at `sink+window`; full-attn
+layers exact) and passes the **cache object** to `generate`. A static cache makes
+`generate` torch.compile the decode (triton/inductor → CUDA-graph), which
+**segfaults** with this model + chunked prefill (and writes a `.so` that fails to
+load on noexec tmp), so KIE-v1.1 **turns graph capture off**
+(`torch._dynamo.config.disable`) and runs the evicting cache **eager** — correct
+and bounded, just ungraphed. Concurrency N=16 (recall 1.0) at 62k.
+
+Residual gap to the 34-session admission ceiling: `StaticCache` pre-allocates the
+full layers at `T + gen` and the ungraphed prefill carries working-set overhead,
+so actual per-session is ~4 GB vs the 2.56 GB model. Graph-captured decode +
+tighter allocation is **KIE-v1.1.x / v1.2** substrate work.
 
 ## What v1 already delivers
 

@@ -127,7 +127,7 @@ PR, so development context stays per-task:
 | Code | Milestone | Status | PR |
 | --- | --- | --- | --- |
 | **KIE-v1** | engine core: chunked restoration prefill + bounded-KV decode + peak-window admission (NativeHybridBounded) | done (core); concurrency gated on v1.1 | #135 |
-| **KIE-v1.1** | realize the bounded-KV bound at runtime: sliding-window-**evicting** cache without the CUDA-graph segfault (evicting cache, graph capture off) | in progress | _this PR_ |
+| **KIE-v1.1** | realize the bounded-KV bound at runtime: sliding-window-**evicting** cache without the CUDA-graph segfault (evicting cache, graph capture off) | **done** — gemma-4 62k concurrency **N=4→N=16** (recall 1.0), N=4 peak 117.8→67.9 GB; **> vLLM 15.5** | _this PR_ |
 | **KIE-v1.2** | FThetaRestored policy on a full-attention verifier (Qwen/Llama) — the decisive vLLM win | planned | — |
 
 ## Evidence
