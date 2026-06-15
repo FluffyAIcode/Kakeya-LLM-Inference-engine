@@ -103,6 +103,48 @@ prefills run at all); the concurrency-ceiling win is gated on #2.
 
 Evidence: `results/research/k3_cuda_mt_longctx_sdpa_ceiling_h200nvl.log`.
 
+## Update 2 — ADR 0015 item #2 (bounded decode) on gemma-4: two decisive negatives
+
+Item #2 = bounded native decode cache + on-demand restore + freed f_θ. Two
+probes on gemma-4 settle whether it can beat vLLM **on this model**:
+
+**(i) gemma-4 needs no restoration to bound memory.** With the sliding window
+shrunk to **68** *natively* (no f_θ, no proposer, no Kakeya) gemma-4 keeps
+**recall 1.0** at ctx 1238 (`sw = 1024 / 128 / 68` all 1.0). Its 5 full-attention
+layers (of 30) carry recall; the 25 sliding layers are happy at 68. So on
+gemma-4 "bounded decode" = `sliding_window=68` on the native HybridCache, and the
+restoration machinery (f_θ + proposer) is **entirely bypassed** — exactly the
+recorded "S5 free-lunch / step-1 trap". **vLLM can set the same window**, so this
+is not a Kakeya algorithmic advantage.
+
+**(ii) Even native bounded decode loses to vLLM on gemma-4 — the bottleneck is
+prefill engineering, not the cache.** `gemma_bounded_decode_bench.py`
+(`sliding_window=68`, ctx 62k):
+
+| N | decode tok/s | recall | peak GPU |
+| --- | --- | --- | --- |
+| 1 | 9.67 | 1.0 | 93.0 GB |
+| 2 | 10.12 | 1.0 | 134.2 GB |
+| 4 | — | — | **OOM** |
+
+Max concurrency **N=2** (vs vLLM **15.5**) — ~41 GB/session, **not** the 2.55 GB
+bounded KV. The cost is the **non-chunked prefill activations** for a 62k
+sequence. vLLM fits 15.5 because of **chunked prefill + paged KV**, mature engine
+engineering the research bench lacks.
+
+**Verdict (gemma-4).** You cannot "beat vLLM on gemma-4" with bounded decode:
+(a) there is no algorithmic lever — vLLM already exploits gemma-4's native hybrid
+attention and can shrink the window too; (b) vLLM's long-context concurrency is
+**prefill/KV engineering** (chunked prefill, paged KV, CUDA graphs, fused MoE),
+not the resident-KV bound. Matching it needs that engine substrate (ADR 0015
+items #2–4, essentially a vLLM-class build), which is orthogonal to the Kakeya
+algorithm. **The Kakeya advantage requires a full-attention model** (Qwen/Llama):
+there, shrinking the window without restoration destroys recall, so f_θ+proposer
+restoration is the *only* way to bound memory at full recall — and vLLM, having
+no restoration, must keep full KV and cannot match it.
+
+Evidence: `results/research/gemma_bounded_decode_h200nvl_ctx62k_sw68.{json,log}`.
+
 ## Evidence
 
 - `results/research/vllm_multitenant_parallel_h200nvl_ctx62k.json`

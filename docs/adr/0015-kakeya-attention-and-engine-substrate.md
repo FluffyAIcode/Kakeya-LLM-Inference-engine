@@ -55,10 +55,18 @@ full-vocab logits + a redundant `capture_verifier_own_kv` forward.
    **Unblocked long context** (recall 1.0): 16k went N=1-only→N=4, 32k OOM→N=2,
    62k OOM→N=1; 16k N=1 peak 138.8→74.5 GB. (`docs/reports/kakeya-vs-vllm-longcontext-h200.md`.)
 2. **Bounded decode cache as the native KV layout** — resident sink+window +
-   5 exact full-attention layers; no Python per-step `DynamicCache`. **This is
-   the gating item for the long-context concurrency win**: today the bench still
-   captures full-T K/V at decode (~17 GB/session @16k), so the bounded advantage
-   is not yet realized — #1 only made the prefill *run*.
+   5 exact full-attention layers; no Python per-step `DynamicCache`. **Probed on
+   gemma-4 and found NOT to beat vLLM there (by architecture):** (a) gemma-4
+   keeps recall 1.0 at `sliding_window=68` *natively, with no restoration* (5/30
+   full-attn layers carry recall) — so bounded decode is just a native window
+   shrink that vLLM can match; (b) even native bounded decode fits only N=2 @62k
+   vs vLLM's 15.5, because the bottleneck is **non-chunked prefill activations**,
+   not the KV bound — vLLM wins on **chunked-prefill + paged-KV engineering**.
+   **Conclusion: the Kakeya bounded-KV win must be demonstrated on a
+   full-attention model** (Qwen/Llama), where shrinking the window without
+   restoration destroys recall and only f_θ+proposer restoration bounds memory at
+   full recall — vLLM, lacking restoration, must keep full KV.
+   (`docs/reports/kakeya-vs-vllm-longcontext-h200.md` Update 2.)
 3. **CUDA graphs** for the decode step; **fused-MoE** kernels for the verifier.
 4. (Optional) integrate Kakeya Attention as a **vLLM attention backend** so the
    bounded window rides vLLM's paged store + scheduler.
