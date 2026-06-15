@@ -41,6 +41,7 @@ reader what was *not* chosen.
 | 0007 | [Cross-request KV cache reuse for long sessions](0007-cross-request-kv-reuse.md) | Superseded by 0008 |
 | 0008 | [Session-bound runtime + gRPC protocol](0008-session-bound-runtime-and-grpc-protocol.md) | Accepted |
 | 0014 | [Agent-connection capacity & cross-host proposer/verifier topology: test plan & results](0014-agent-connection-capacity-and-cross-host-topology-tests.md) | Accepted |
+| 0015 | [Kakeya Attention as an attention algorithm + engine substrate roadmap](0015-kakeya-attention-and-engine-substrate.md) | Accepted |
 
 Note: ADR numbering is monotonically increasing; in-flight or
 planned numbers (0005) appear in the index so readers can
