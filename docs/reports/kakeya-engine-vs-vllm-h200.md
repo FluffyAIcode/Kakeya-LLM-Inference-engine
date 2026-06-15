@@ -142,10 +142,29 @@ harness artifact, not how a server admits requests).
 well below vLLM's ~98 tok/s single-session decode at 62k. The tiled
 online-softmax runs **eager** (graph capture off) in Python over 62k × 5 exact
 layers, so the **memory/concurrency** axis is won (N=60, recall 1.0) but the
-**decode-speed** axis is still weak. Closing it = graph-captured + fused
-(Triton/CUDA) quantized-attention kernel + continuous-batched prefill — the
-throughput work that makes it a *fast* product, not just a *high-concurrency*
-one.
+**decode-speed** axis is still weak.
+
+## KIE-v1.1.z — throughput attempt + the decode wall (honest)
+
+- **kakeyalattice v1.6.1**: the gemma-4 head-dim 256/512 bug is fixed (per-layer
+  lazy codec); `KakeyaLatticePackedCache` now runs on gemma-4 at **recall 1.0**
+  (2.46× storage). Wired via `kv_compressor.make_packed_kv_cache`.
+- **`torch.compile` the quantized attention**: **6.62×** on the standalone kernel
+  (eager 36.4 ms → 5.5 ms at decode shape). **But end-to-end decode is unchanged**
+  (25.2 vs 25.6 tok/s). 
+- **Why (decisive):** the decode step is dominated by the **eager 26B-MoE
+  full-model forward** (~322 ms per batch-8 step); the exact-layer quantized
+  attention is a small slice, so fusing *it* 6.6× barely moves the total.
+- **Verdict — decode ≥ vLLM is a vLLM-class kernel project, not a one-pass item.**
+  Matching vLLM's ~98 tok/s/session requires graph-capturing + **fused-MoE** the
+  whole forward (vLLM's core competency). The easy route
+  (`cache_implementation="static"` auto-compile + CUDA graphs) **segfaults** with
+  this model; a bespoke fused-MoE + graph-captured decode is the real work.
+
+**Net for KIE-v1.1.z:** the **memory/concurrency** axis extends (N=60→75 with the
+quant-attention + int8/packed storage; recall 1.0), but the **decode-throughput**
+axis cannot reach vLLM parity without rebuilding the fused-MoE+graph forward —
+which is the honest boundary of what this engine reaches in-session.
 
 ## What v1 already delivers
 
