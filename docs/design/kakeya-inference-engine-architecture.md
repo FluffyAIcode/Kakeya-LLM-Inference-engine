@@ -173,8 +173,14 @@ term in §2):
   gemma-4 concurrency **N=4 → N=16** at recall 1.0 (N=4 peak 117.8 → 67.9 GB),
   **above vLLM's 15.5**. Residual gap to the 34 ceiling = `StaticCache` full-layer
   pre-allocation + ungraphed prefill overhead (~4 GB/session vs the 2.56 GB model).
-- **v1.1.x:** graph-captured + fused-MoE decode (stabilize the compile path) +
-  tighter allocation → toward the 34 ceiling and higher decode tok/s.
+- **v1.1.x:** reach the N=34 ceiling. Chunk-size tuning lifted concurrency
+  N=16→**N=24** (1.55× vLLM); decoupled per-session prefill + stacked batched
+  decode is implemented and correct (recall 1.0) but fragmentation-limited. The
+  hard blocker is the **bf16 KV floor** — the 5 exact full-attention layers cost
+  2.54 GB/session, so 34 sessions need ~138 GB and leave no working set. The
+  lever is **exact-layer KV quantization** (`v04.kv_compressor`): 8-bit → ~69
+  sessions fit, 4-bit → ~135. Plus graph-captured + fused-MoE decode for
+  throughput.
 - **v1.2 (the decisive win):** FThetaRestored policy fully wired for a
   **full-attention verifier** (Qwen/Llama) — the configuration where restoration
   is load-bearing and the bounded-KV edge over vLLM is ~6× (§8), not the marginal

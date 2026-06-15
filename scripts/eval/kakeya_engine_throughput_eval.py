@@ -31,6 +31,10 @@ def main() -> int:
     ap.add_argument("--pool", type=int, default=40)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mem-budget-gb", type=float, default=139.8)
+    ap.add_argument("--decoupled", action="store_true",
+                    help="use decoupled per-session prefill + stacked batched "
+                         "decode (KIE-v1.1.x): prefill transient is per-session, "
+                         "so concurrency approaches the peak-window ceiling.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -90,8 +94,12 @@ def main() -> int:
         torch.cuda.reset_peak_memory_stats(device)
         try:
             t0 = time.perf_counter()
-            gens = engine.generate_cohort([s[0] for s in sel],
-                                          max_new_tokens=args.gen_tokens)
+            if args.decoupled:
+                gens = engine.decode_cohort([s[0] for s in sel],
+                                            max_new_tokens=args.gen_tokens)
+            else:
+                gens = engine.generate_cohort([s[0] for s in sel],
+                                              max_new_tokens=args.gen_tokens)
             dt = time.perf_counter() - t0
         except torch.OutOfMemoryError:
             print(f"[kge] N={N}: OOM", file=sys.stderr, flush=True)

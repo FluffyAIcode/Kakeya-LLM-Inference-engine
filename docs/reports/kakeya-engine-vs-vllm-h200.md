@@ -36,6 +36,31 @@ full layers at `T + gen` and the ungraphed prefill carries working-set overhead,
 so actual per-session is ~4 GB vs the 2.56 GB model. Graph-captured decode +
 tighter allocation is **KIE-v1.1.x / v1.2** substrate work.
 
+## Pushing toward the N=34 ceiling (KIE-v1.1.x)
+
+| lever | result @62k | note |
+| --- | --- | --- |
+| prefill chunk 2048 | N=16 | baseline v1.1 |
+| prefill chunk **1024 / 512** | **N=24** (recall 1.0, peak ~136 GB) | smaller chunk → smaller prefill transient |
+| prefill chunk 256 | ~N=24 | diminishing returns |
+| decoupled prefill+stacked decode | correct (recall 1.0 @N=4), but **OOM @N=30** | fragmentation / per-session prefill transient; no better than batched |
+
+**Best measured concurrency: N=24** at 62k, recall 1.0 — **1.55× vLLM's 15.5**.
+
+**Why N=34 is not reachable at bf16 KV (the hard floor).** Per-session resident
+KV is dominated by the **5 exact full-attention layers** kept at full context:
+`5 × 62 070 × 8 kv × 256 × 2(K,V) × 2 B = 2.54 GB/session`. So 34 sessions need
+`34 × 2.54 + 51.6 (weights) ≈ 138 GB` — leaving ~1.8 GB for *all* prefill/decode
+working set, which no real forward fits in. 34 is the admission model's
+zero-overhead ceiling; the achievable bf16 ceiling on a 140 GB card is ~24–26.
+
+**The lever to reach 34+ (not model-switching): exact-layer KV quantization.**
+Quantizing the 5 exact layers' KV to 8-bit halves the floor to 1.27 GB/session →
+~69 sessions fit; 4-bit → ~135. The repo already has KV-compression machinery
+(`inference_engine.v04.kv_compressor`); wiring it into the bounded decode cache is
+**KIE-v1.1.x** and unlocks N=34 and well beyond. (Graph-captured decode for
+throughput is the parallel v1.1.x item.)
+
 ## What v1 already delivers
 
 - **Chunked restoration prefill works**: the engine runs 62k at **recall 1.0** and

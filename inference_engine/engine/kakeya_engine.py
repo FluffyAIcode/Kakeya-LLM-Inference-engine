@@ -142,3 +142,116 @@ class KakeyaEngine:
         with torch.no_grad():
             out = self.model.generate(ids, **kwargs)
         return [out[i, T:].tolist() for i in range(N)]
+
+    # ------------------------------------------------------------------ #
+    # Decoupled prefill / decode (§4 + §6): prefill each session into its
+    # bounded cache (transient = ONE session), then stack the cohort and
+    # batch-decode — so the prefill working set is never held simultaneously
+    # for all N sessions (the gate that caps batched generate). This is what
+    # lets admitted concurrency approach the peak-window ceiling (§7).
+    # ------------------------------------------------------------------ #
+
+    def _new_static_cache(self, *, max_cache_len: int, batch: int, device: Any):
+        from transformers import StaticCache
+        return StaticCache(
+            config=self.model.config.get_text_config(),
+            max_cache_len=max_cache_len, max_batch_size=batch,
+            device=device, dtype=self.model.dtype,
+        )
+
+    def prefill_session(self, prompt_ids, *, max_new_tokens, device=None):
+        """Chunked prefill ONE session into its bounded StaticCache (eager).
+        Returns (cache, last_logits[1,V], T)."""
+        import torch
+
+        torch._dynamo.config.disable = True
+        if device is None:
+            device = next(self.model.parameters()).device
+        ids = torch.tensor([list(prompt_ids)], device=device)
+        T = ids.shape[1]
+        cache = self._new_static_cache(max_cache_len=T + max_new_tokens,
+                                       batch=1, device=device)
+        out = None
+        with torch.no_grad():
+            for s in range(0, T, self.chunk_size):
+                e = min(s + self.chunk_size, T)
+                out = self.model(
+                    input_ids=ids[:, s:e], past_key_values=cache, use_cache=True,
+                    cache_position=torch.arange(s, e, device=device),
+                    logits_to_keep=1 if e == T else 0,
+                )
+        return cache, out.logits[:, -1, :], T
+
+    def _init_batched_layer(self, bl, ref, *, N, device):
+        """Allocate a batched layer [N, …] from a prefilled single-session ref
+        layer and copy the meta the lazy batched layer hasn't set."""
+        import torch
+
+        shp = list(ref.keys.shape)
+        shp[0] = N
+        bl.keys = torch.zeros(shp, dtype=ref.keys.dtype, device=device)
+        bl.values = torch.zeros(shp, dtype=ref.values.dtype, device=device)
+        bl.is_initialized = True
+        bl.max_batch_size = N
+        for attr in ("dtype", "device", "max_cache_len", "num_heads",
+                     "v_head_dim", "k_head_dim", "cumulative_length_int"):
+            if hasattr(ref, attr):
+                setattr(bl, attr, getattr(ref, attr))
+        if hasattr(ref, "cumulative_length"):
+            cl = ref.cumulative_length  # lockstep scalar (all rows same T)
+            bl.cumulative_length = cl.clone() if hasattr(cl, "clone") else cl
+
+    def decode_cohort(self, prompt_ids_2d, *, max_new_tokens, device=None):
+        """Decoupled serve: per-session prefill → row-copy into one batched
+        bounded cache → batched bounded decode.
+
+        Memory-efficient stacking: the batched cache is allocated once and each
+        session's bounded cache is copied into its row then freed, so the peak is
+        ``batched (N · resident) + one session`` — the prefill transient is never
+        held for all N at once (the gate that caps batched generate). Resident
+        memory at decode is the peak-window admission regime (§7).
+        """
+        import torch
+
+        torch._dynamo.config.disable = True
+        if device is None:
+            device = next(self.model.parameters()).device
+        N = len(prompt_ids_2d)
+
+        # Session 0 sets the reference shapes for the batched cache.
+        c0, last0, T = self.prefill_session(prompt_ids_2d[0],
+                                            max_new_tokens=max_new_tokens,
+                                            device=device)
+        batched = self._new_static_cache(max_cache_len=T + max_new_tokens,
+                                         batch=N, device=device)
+        for li, bl in enumerate(batched.layers):
+            self._init_batched_layer(bl, c0.layers[li], N=N, device=device)
+            bl.keys[0].copy_(c0.layers[li].keys[0])
+            bl.values[0].copy_(c0.layers[li].values[0])
+        first_tokens = [int(last0.argmax(-1)[0])]
+        del c0
+
+        for i in range(1, N):
+            ci, lasti, _ = self.prefill_session(prompt_ids_2d[i],
+                                                max_new_tokens=max_new_tokens,
+                                                device=device)
+            for li, bl in enumerate(batched.layers):
+                bl.keys[i].copy_(ci.layers[li].keys[0])
+                bl.values[i].copy_(ci.layers[li].values[0])
+            first_tokens.append(int(lasti.argmax(-1)[0]))
+            del ci
+
+        gen = [[first_tokens[i]] for i in range(N)]
+        nxt = torch.tensor(first_tokens, device=device)
+        with torch.no_grad():
+            for step in range(max_new_tokens - 1):
+                out = self.model(
+                    input_ids=nxt.view(N, 1), past_key_values=batched,
+                    use_cache=True,
+                    cache_position=torch.tensor([T + step], device=device),
+                    logits_to_keep=1,
+                )
+                nxt = out.logits[:, -1, :].argmax(-1)
+                for i in range(N):
+                    gen[i].append(int(nxt[i]))
+        return gen
