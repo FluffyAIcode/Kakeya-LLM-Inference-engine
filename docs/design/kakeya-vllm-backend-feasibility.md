@@ -101,6 +101,7 @@ H200, ctx 16k, recall **1.0** throughout:
 | 1 | **195.6** | 159.3 | **1.23×** |
 | 4 | **231.9** | 198.6 | 1.17× |
 | 8 | **539.0** | 467.5 | 1.15× |
+| 70 | **1079.0** | 894.9 | **1.21×** |
 
 **Decode throughput exceeds vLLM by ~1.15–1.23×** at recall 1.0 — it inherits
 vLLM's fused-MoE + CUDA-graph + scheduler, and Kakeya's tighter sliding window
