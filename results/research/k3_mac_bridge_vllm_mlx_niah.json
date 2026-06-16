@@ -1,0 +1,103 @@
+{
+  "kind": "vllm_mlx_niah_parallel",
+  "schema_version": 1,
+  "status": "ok",
+  "config": {
+    "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "sessions": 8,
+    "haystack_lines": 60,
+    "max_new_tokens": 24,
+    "engine": "vllm-mlx serve --continuous-batching --use-paged-cache"
+  },
+  "vllm_mlx_version": "0.3.0",
+  "recall": 0.0,
+  "sessions_ok": 0,
+  "n1_decode_tps": 0.0,
+  "aggregate_decode_tps": 0.0,
+  "parallel_speedup_vs_n1": null,
+  "concurrent_wall_s": 0.006,
+  "total_completion_tokens": 0,
+  "per_session": [
+    {
+      "session": 0,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "E1A7B4",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.002,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 1,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "507888",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.003,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 2,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "F58C8A",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.002,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 3,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "DA50B3",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.002,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 4,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "66314F",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.003,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 5,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "6F8C5E",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.003,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 6,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "302671",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.003,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    },
+    {
+      "session": 7,
+      "ok": false,
+      "needle_found": false,
+      "expected_code": "478076",
+      "answer_excerpt": "",
+      "completion_tokens": 0,
+      "latency_s": 0.003,
+      "error": "HTTP 404: {\"detail\":\"The model `default` does not exist. Available model: `/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit`\"}"
+    }
+  ],
+  "server_log_tail": "Loading model: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit\nDefault max tokens: 32768\nMax request tokens: 32768\nMode: Continuous batching (for multiple concurrent users)\nStream interval: 1 tokens\nPaged cache: block_size=64, max_blocks=1000\nStarting server at http://127.0.0.1:58865\nINFO:     127.0.0.1:58903 - \"GET /version HTTP/1.1\" 404 Not Found\nWARNING:vllm_mlx.server:SECURITY WARNING: Server running without API key authentication. Anyone can access the API. Use --api-key to enable authentication.\nINFO:     127.0.0.1:58904 - \"GET /v1/models HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:58905 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58906 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58907 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58909 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58910 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58908 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58911 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58912 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58913 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found\nINFO:     127.0.0.1:58914 - \"POST /v1/chat/completions HTTP/1.1\" 404 Not Found"
+}
