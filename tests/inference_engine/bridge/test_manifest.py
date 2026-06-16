@@ -84,6 +84,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-upgrade",
         "mlx-upstream-batch-probe",
         "pytest-path",
+        "vllm-mlx-niah",
     ]
 
 
@@ -133,6 +134,25 @@ def test_pad_decode_preset_carries_flag_and_forces_trimmable_cache():
     assert argv[1].endswith("mlx_batched_multitenant_bench.py")
     assert "--pad-decode" in argv
     assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in argv
+
+
+def test_vllm_mlx_niah_preset_installs_then_benches():
+    request = parse_manifest(_manifest(
+        preset="vllm-mlx-niah", params={"n_samples": "8", "max_new_tokens": "24"}))
+    commands = build_commands(request, HARNESS_ENV)
+    # two steps: pip install vllm-mlx, then the NIAH bench
+    assert len(commands) == 2
+    pip = commands[0]
+    assert pip[:5] == ["python3", "-m", "pip", "install", "--upgrade"]
+    assert "vllm-mlx" in pip
+    bench = commands[1]
+    assert bench[1].endswith("vllm_mlx_niah_bench.py")
+    assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in bench
+    assert bench[bench.index("--sessions") + 1] == "8"
+    assert bench[bench.index("--max-new-tokens") + 1] == "24"
+    # no unresolved placeholders survive
+    assert not [t for t in bench if t.startswith("${ENV:")]
+    assert not [t for t in bench if t.startswith("{") and t.endswith("}")]
 
 
 def test_drafter_parity_preset_resolves():

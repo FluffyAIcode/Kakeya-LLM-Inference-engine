@@ -650,6 +650,36 @@ PRESETS: Dict[str, Preset] = {
             },
             validate_reports=False,
         ),
+        Preset(
+            name="vllm-mlx-niah",
+            description="Evaluate vLLM-MLX (Apple-Silicon continuous batching) on "
+                        "the SAME local MLX gemma verifier used for the B>1,L=1 "
+                        "batched-decode bug repro: pip install vllm-mlx, serve with "
+                        "--continuous-batching, fire N concurrent NIAH requests "
+                        "(each with a unique needle), report per-session recall + "
+                        "aggregate decode tok/s vs N=1. Answers whether vLLM-MLX is "
+                        "BOTH parallel AND recall-preserving on our config — the "
+                        "Mac analog of the CUDA KIE-v2 (Kakeya Attention on a "
+                        "borrowed runtime).",
+            command_templates=(
+                ("python3", "-m", "pip", "install", "--upgrade", "vllm-mlx"),
+                (
+                    "python3", "scripts/research/vllm_mlx_niah_bench.py",
+                    "--model-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sessions", "{n_samples}",
+                    "--haystack-lines", "60",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--output",
+                    "results/research/k3_mac_bridge_vllm_mlx_niah.json",
+                ),
+            ),
+            timeout_minutes=60,
+            params={
+                "n_samples": ("int:n_samples", "8"),
+                "max_new_tokens": ("int:max_new_tokens", "24"),
+            },
+            validate_reports=False,
+        ),
     )
 }
 
