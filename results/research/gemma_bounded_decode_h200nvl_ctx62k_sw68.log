@@ -1,0 +1,7 @@
+[gb] sliding_window 1024 -> 68
+[gb] modal prompt len=62038, 34 equal-length
+[gb] N=  1 | 9.67 tok/s (x1.0) | recall 1.0 | peak 93.0 GB
+[gb] N=  2 | 10.12 tok/s (x1.05) | recall 1.0 | peak 134.17 GB
+[gb] N=4: OOM (CUDA out of memory. Tried to allocate 28.68 GiB. GPU 0 has a total capacity of 139.80 GiB of which 7.46 GiB is free. Process 3285979 has 132.33 GiB memory in use. Of the allocated memory 131.31 GiB is allocated by PyTorch, and 344.00 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf))
+[gb] wrote results/research/gemma_bounded_decode_h200nvl_ctx62k_sw68.json
+GB_DONE

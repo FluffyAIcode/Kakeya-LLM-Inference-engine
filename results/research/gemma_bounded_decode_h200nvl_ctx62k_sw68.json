@@ -1,0 +1,44 @@
+{
+  "kind": "gemma_bounded_decode",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "sliding_window": 68,
+    "native_sliding_window": 1024,
+    "modal_prompt_len": 62038,
+    "gen_tokens": 64,
+    "batch_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32
+    ],
+    "note": "native gemma-4 hybrid cache with shrunk sliding window; no Kakeya restoration (recall comes from the 5 full-attn layers). vLLM can apply the same window \u2014 not a Kakeya moat."
+  },
+  "env": {
+    "gpu": "NVIDIA H200",
+    "torch": "2.12.0+cu130"
+  },
+  "results": [
+    {
+      "agents": 1,
+      "decode_aggregate_tps": 9.67,
+      "recall": 1.0,
+      "parallel_speedup_vs_n1": 1.0,
+      "peak_gpu_gb": 93.0
+    },
+    {
+      "agents": 2,
+      "decode_aggregate_tps": 10.12,
+      "recall": 1.0,
+      "parallel_speedup_vs_n1": 1.05,
+      "peak_gpu_gb": 134.17
+    },
+    {
+      "agents": 4,
+      "oom": true
+    }
+  ]
+}

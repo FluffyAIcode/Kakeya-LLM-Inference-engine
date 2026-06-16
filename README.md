@@ -98,7 +98,7 @@ patterns — see [`docs/quickstart.md`](docs/quickstart.md).
 | **Restored verifier** | Gemma-4 26B-A4B (AR) + DFlash dLLM proposer + trained **f_θ**; **S5** keeps 5 full-attention layers exact, restores sliding layers → bounded resident KV, recall preserved. | `inference_engine.v04` (CUDA), `inference_engine.backends.mlx` (Apple Silicon) |
 | `SinkWindowVerifier` | Lightweight path: Qwen3 (0.6B / 1.7B / 4-bit MLX), sink+window K/V trim (ADR 0001 / 0002). | `kv_cache_proposer.verifier` (CPU), `inference_engine.backends.mlx.verifier` |
 | **Per-session binding** | `PerSessionVerifierRegistry` + coordinator resolver: each session owns isolated KV (shared weights) — true multi-tenant serving (PR-A3c, `--multi-tenant`). | `inference_engine.session.verifier_registry` |
-| **Batched scheduler** | Fuses a cohort's decode steps into one batched forward — **8.45× served throughput** at 8 sessions, recall 1.0. | `inference_engine.session.batch_scheduler` |
+| **Batched scheduler** | Fuses a cohort's decode steps into one batched forward — **8.45× served throughput** at 8 sessions, recall 1.0. **CUDA-only**: on Apple-Silicon MLX, `v0.4-mac` multi-tenant is **serial-only** (batched `B>1` decode is unsupported — upstream MLX `B>1, L=1` quantized-kernel bug, [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)). | `inference_engine.session.batch_scheduler` |
 | `AppendTokens` / `Generation` coordinators | Drive prefill / incremental forward / greedy decode; route per-session (multi-tenant) or single. | `inference_engine.session.{coordinator,generator}` |
 | Python / TypeScript SDKs | `kakeya.Client` / `Session` (sync gRPC); `@kakeya/runtime` (Node 20+). | [`sdks/`](sdks/) |
 | HTTP shim (deprecated) | OpenAI-compatible `/v1/chat/completions`; `Deprecation` + `Sunset` headers. | `inference_engine.server.app` |
@@ -147,29 +147,57 @@ KV restoration buys *bounded memory at full fidelity*. See
 the **memory axis** all-platform + **throughput** on CUDA) and
 [ADR 0013](docs/adr/0013-distributed-inference-topology.md).
 
-### How this differs — Kakeya Attention vs PagedAttention / RadixAttention
+### Kakeya Attention — the attention algorithm
 
-Other engines optimise *how* the KV cache is **stored/laid out**; they still
-store the **whole** history, so memory **grows with the conversation** and the
-node must provision for the *total* footprint. Kakeya optimises *how much* is
-stored: a sliding-window bound + a global-attention **restoration** mechanism,
-so the resident footprint is **bounded** and the node provisions only for the
-**peak window** — not the whole history.
+**Kakeya Attention** is an LLM attention compute + KV-management algorithm:
+**sliding-window bound (sink + window) + f_θ KV-projection + dLLM-proposer
+restoration, taken as one primitive.** It is a peer of — and drop-in replacement
+for — the attention layer in today's engines: eager attention, **FlashAttention**,
+vLLM **PagedAttention**, and SGLang **RadixAttention**. Where those keep the
+**whole** KV history (memory grows with the conversation) and differ only in
+*how* the full cache is computed or laid out, Kakeya Attention bounds *how much*
+is resident: evicted context is **reconstructed on demand** by the proposer+f_θ,
+so the resident footprint does not grow with the session.
 
-| Engine | Mechanism | What it manages | Memory vs conversation length |
+| Algorithm | Layer it replaces | Mechanism | Memory vs conversation length |
 | --- | --- | --- | --- |
-| **vLLM** — PagedAttention | OS-style **paged** KV blocks (virtual→physical page tables) | layout: non-contiguous block allocation; great for whole-block access | **grows** — still stores full KV; needs large-capacity store |
-| **SGLang** — RadixAttention | **radix-tree** over KV, dynamic insert/evict | layout + **prefix reuse**: fast, precise prefix lookup/sharing | **grows** — still stores full KV; needs large-capacity store |
-| **Kakeya** — Kakeya Attention | sliding-window bound + **global-attention restoration** (dLLM proposer + f_θ/S5) | *length*: dynamically bounds resident KV; evicted context **reconstructed on demand** | **bounded** — footprint does **not** grow with the session; provision only for the **peak window** |
-| **CXL / Ollama** | reuse PagedAttention | layout (offload tier / local serving) | **grows** — inherits PagedAttention's full-KV storage |
+| eager attention | compute | materialise full `QKᵀ` scores | grows (O(T²) compute, full KV) |
+| **FlashAttention** | compute | tiled/online-softmax, no score materialisation | grows — still full KV |
+| **vLLM** PagedAttention | storage | OS-style **paged** KV blocks | grows — still full KV |
+| **SGLang** RadixAttention | storage | **radix-tree** KV, prefix reuse | grows — still full KV |
+| **Kakeya Attention** | **compute + storage** | sink+window bound + **f_θ + dLLM-proposer restoration** | **bounded** — provision for the **peak window**, not the history |
 
-The orthogonality matters: PagedAttention and RadixAttention make the *same
-total* KV cheaper to allocate or share; **Kakeya Attention makes the total
-itself bounded** (and is composable — a paged/radix store could hold Kakeya's
-bounded window). The cost is the restoration compute (a proposer forward), which
-the rest of this section quantifies (recall 1.0; ~AR-parity / 1.79–2.06× on
-CUDA; ~4× more concurrent agents per GB, §3.4 of
-[ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)).
+The orthogonality matters: FlashAttention makes the compute cheaper, Paged/Radix
+make the *same total* KV cheaper to allocate or share — **Kakeya Attention makes
+the total itself bounded**, and is **composable** with all of them (a flash
+kernel computes a Kakeya window; a paged/radix store holds it). The cost is the
+restoration compute (a proposer forward), quantified below (recall 1.0;
+~AR-parity / 1.79–2.06× on CUDA; ~4× more concurrent agents per GB,
+[ADR 0014 §3.4](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)).
+
+**North star — a product-grade engine that replaces vLLM.** Kakeya Attention is
+the native algorithm of a **product-grade inference engine whose goal is to
+replace vLLM** — not a technique bolted onto HuggingFace transformers, and not
+"vLLM with a different cache". The engine is designed **bounded-KV-native**: the
+full history is never resident, admission/scheduling sizes sessions by their
+**peak window** (not total tokens), and restoration is fused into prefill/decode.
+Graph-captured decode, fused-MoE and efficient masking are table stakes built *in
+service of* that design, not a port of vLLM's full-KV pipeline
+([ADR 0015](docs/adr/0015-kakeya-attention-and-engine-substrate.md)). The
+eager-transformers numbers in the comparison reports are **feasibility probes**,
+not "Kakeya performance"; the vLLM-beating demonstration runs on a
+**full-attention** verifier, where restoration is load-bearing (on gemma-4 its
+native sliding window already bounds 25/30 layers, so it is not the showcase).
+
+**Where the bounded-KV win is large (and where it isn't).** The advantage scales
+with the model's **full-attention fraction**. On **gemma-4-26B-A4B** only 5 of 30
+layers are full-attention (25 are natively sliding-window) — so vLLM already
+bounds 25/30 layers, the 5 full layers dominate long-context KV in **both**
+engines, and Kakeya's resident-KV edge is only **~7 % at 62k**. On a
+**full-attention** model (no native sliding, e.g. Qwen/Llama) vLLM keeps all
+layers full while Kakeya bounds all-but-exact → a **~6×** resident-KV edge. The
+long-context concurrency "sweet spot" is therefore **architecture-dependent** —
+see [the long-context report](docs/reports/kakeya-vs-vllm-longcontext-h200.md).
 
 ### Beta scorecards — Kakeya vs the standalone model (`main` @ `9d5e6b4`)
 
@@ -289,6 +317,13 @@ owns isolated KV (shared weights) — making serving truly multi-tenant, and a
 at 8 sessions with **per-session recall 1.0** (see the multi-tenant results
 below / [ADR 0014 §3.4–3.7](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 and the [detailed report](docs/reports/pr-a3c-multitenant-serving-test-report.md)).
+**Platform scope:** the batched/parallel cohort path is **CUDA-only**. On
+Apple-Silicon **MLX, `v0.4-mac` multi-tenant is serial-only** — per-session
+binding still gives isolated, recall-preserving sessions, but they are served
+**one at a time**; batched `B>1` decode is blocked by an upstream MLX
+quantized-kernel bug (`B>1, L=1` → per-session recall collapses to 0.125, while
+serialized stays 1.0; confirmed on the latest published `mlx 0.31.2 / mlx-lm
+0.31.3` — [ADR 0014 §3.4](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)).
 Pushing the connection sweep further (preset `agent-capacity-stress`, the
 open-file-descriptor limit `RLIMIT_NOFILE` raised to 100k / hard unlimited on
 the Mac — each connection uses one descriptor) shows the true ceilings: **the
@@ -584,9 +619,9 @@ scripts/
 | Milestone | Status | Description |
 | --- | --- | --- |
 | Session-bound gRPC runtime | ✅ shipped | Long-running gRPC `RuntimeService`, Python + TS SDKs, bounded memory + prefill (4-h Mac M4 evidence), Mac M4 self-hosted integration gate |
-| **v0.4 for Mac (`v0.4-mac`)** | ✅ shipped | MLX restored Gemma-4 26B engine: bounded KV (~90% saved), recall 1.0, ≈AR-parity spec-decode |
+| **v0.4 for Mac (`v0.4-mac`)** | ✅ shipped | MLX restored Gemma-4 26B engine: bounded KV (~90% saved), recall 1.0, ≈AR-parity spec-decode. Multi-tenant is **serial-only** (no batched `B>1` decode — upstream MLX kernel bug, [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)) |
 | **v0.4 for CUDA (`v0.4-cuda`)** | ✅ shipped | Restored Gemma-4 26B engine on NVIDIA: fused DFlash spec-decode **1.79–2.06× AR**, 44–87× KV saving, recall 1.0 |
-| **v0.4 multi-tenant (PR-A3c)** | ✅ shipped | Per-session binding (isolated KV, shared weights) + batched scheduler — **8.45× served throughput**, per-session recall 1.0 |
+| **v0.4 multi-tenant (PR-A3c)** | ✅ shipped | Per-session binding (isolated KV, shared weights) on both platforms. **CUDA**: batched scheduler → **8.45× served throughput**, per-session recall 1.0. **MLX (Mac): serial-only** (sessions served one at a time; batched parallel decode unsupported upstream) |
 | Async continuous batching | designing | Dynamic mid-flight arrival + ragged-length cohorts under the async gRPC `Generate` handlers (current batcher is fixed-cohort) |
 | Deployment polish | queued | PyPI + npm publishing, GHCR Docker image, `kakeya prewarm` CLI, `kakeya chat` REPL |
 | Cross-request KV reuse | designing | Sessions survive across requests on gRPC; turns intra-session drift into 0 ms inter-request drift |

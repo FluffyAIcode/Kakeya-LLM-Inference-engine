@@ -318,6 +318,71 @@ characterized for an upstream report. Recall-safe Mac multi-tenant remains
 projections) is a possible future probe. Evidence:
 `results/research/k3_mlx_batched_manual_sdpa_mac.json` + the layer-diff logs.
 
+**L≥2 padded decode workaround — hypothesis CONFIRMED, recall recovered, but
+no throughput win (Mac, 8 sessions, modal prompt 1149).** The `--pad-decode`
+mode (preset `mlx-batched-pad-decode`) duplicates the new token each step so
+every decode forward is **length-2**, routing through mlx's matrix-matrix
+(`qmm`) quantized kernel instead of the single-token (`qmv`) kernel; query
+position 0 is the real prediction (attends to cache+self only, == the L=1
+result) and the position-1 duplicate is trimmed from the (Kakeya S5, trimmable)
+cache so RoPE offsets stay exact. The batch dimension is untouched (stays
+parallel over sessions, Python-only).
+
+| metric | batched **L=1** (bug) | batched **L≥2 padded** | serialized (truth) |
+| --- | --- | --- | --- |
+| per-session recall | **0.125** ✗ | **1.0** ✓ | 1.0 |
+| per-row tok0 vs serialized | row 1+ diverge | **all 8 match** | — |
+| aggregate decode tok/s | 57.1 (recall void) | 9.945 | 14.927 |
+| speedup vs serialized | — | **0.67×** | 1.0× |
+
+This **confirms** the root cause: forcing `L≥2` (avoiding the `B>1, L=1` `qmv`
+path) restores batched per-session recall to **1.0**, matching serialized
+bit-for-bit on the first decoded token across all rows. But the 2× per-step
+padding tax exceeds the batching gain at this scale (**0.67×**), so it is a
+**correctness-recovery probe, not a shippable throughput path**: a Mac batched
+*win* still needs the upstream `L=1, B>1` quantized-kernel fix (no padding tax)
+or a much larger cohort / cheaper verify. Evidence:
+`results/research/k3_mac_bridge_mlx_batched_pad_decode.json`.
+
+**mlx/mlx-lm upgrade re-test — bug PERSISTS on the latest published release.**
+We attempted `pip install --upgrade mlx mlx-lm` on the Mac runner (preset
+`mlx-upgrade`): it was a **no-op** — the runner was already at the newest
+versions on PyPI (`mlx=0.31.2`, `mlx_lm=0.31.3`, `mlx-metal=0.31.2`; no newer
+stable or pre-release exists on the index). A self-contained probe (preset
+`mlx-upstream-batch-probe`, zero `inference_engine` imports, native
+`model.make_cache()`, plain `L=1` batched decode) then re-ran the parallel
+test on that latest build:
+
+| metric | batched (native `L=1`) | serialized (truth) |
+| --- | --- | --- |
+| per-session recall | **0.125** ✗ | 1.0 |
+| per-row tok0 vs serialized | **all 8 match** (tok0 is from prefill) | — |
+| aggregate decode tok/s | 29.6 (recall void) | 21.7 |
+| `upstream_l1_batch_bug_fixed` | **false** | — |
+
+The first decoded token (computed from the `L>1` prefill logits) matches on
+**all 8 rows**, and the divergence appears only in the subsequent `L=1` decode
+steps (rows 1–7 fail) — exactly the `B>1, L=1` signature. **Conclusion:** the
+latest PyPI mlx/mlx-lm still ships the bug; a pip upgrade cannot fix it because
+nothing newer is published. The only further "upgrade" is a from-source
+`mlx` git-`main` build (compiles Metal kernels; invasive on the pinned
+runner env) or an upstream patch/issue. Recall-safe Mac parallelism therefore
+remains: **serialized**, or the `L≥2` padding probe (recall-safe but 0.67×).
+Evidence: `results/research/k3_mac_bridge_mlx_upstream_batch_probe.json` +
+`.mac-bridge/logs/mlx-upgrade-{0,1,2}.log`.
+
+**DECISION — MLX `v0.4-mac` multi-tenant is SERIAL-ONLY.** Given the upstream
+bug is present on the latest published mlx/mlx-lm and is not Python-patchable,
+the shipped Mac multi-tenant path is **per-session binding served serially**
+(one session decoded at a time): isolated, recall-preserving (1.0) sessions on
+shared weights, with bounded resident KV. **Batched/parallel cohort decode
+(`B>1`) is NOT supported on MLX** and remains a **CUDA-only** capability (§3.5 /
+§3.7: 8.04–8.45× near-linear, recall 1.0). Re-evaluate the Mac batched path
+only if (a) a future mlx release fixes the `B>1, L=1` quantized-decode kernel,
+or (b) a from-source mlx `main` build / upstream patch lands; the `L≥2` padding
+workaround stays available as a recall-safe (but sub-parity, 0.67×) escape
+hatch in the meantime.
+
 ## 4. Case 2 — cross-host proposer/verifier (FEASIBILITY VERDICT)
 
 ### 4.1 Verdict: the requested topology is not implementable today, and is architecturally bounded out

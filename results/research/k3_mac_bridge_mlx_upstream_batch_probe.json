@@ -1,0 +1,22 @@
+{
+  "kind": "mlx_upstream_batch_probe",
+  "config": {
+    "sessions": 8,
+    "modal_prompt_len": 1149,
+    "max_new_tokens": 24,
+    "verifier_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "mlx_version": "0.31.2",
+    "mlx_lm_version": "0.31.3",
+    "decode": "native L=1 batched (model.make_cache())"
+  },
+  "serialized": {
+    "aggregate_tps": 21.691,
+    "recall": 1.0
+  },
+  "batched": {
+    "aggregate_tps": 29.613,
+    "recall": 0.125
+  },
+  "batched_speedup_vs_serialized": 1.37,
+  "upstream_l1_batch_bug_fixed": false
+}

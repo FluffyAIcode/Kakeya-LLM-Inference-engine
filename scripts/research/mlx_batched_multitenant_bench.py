@@ -47,8 +47,27 @@ def main() -> int:
                          "attention with a manual batched matmul-softmax SDPA "
                          "(works around the suspected batch>1 + GQA fast-kernel "
                          "bug). The candidate fix.")
+    ap.add_argument("--pad-decode", action="store_true",
+                    help="L>=2 padded batched decode workaround: every decode "
+                         "step feeds a length-2 query (the new token "
+                         "duplicated) so the forward never enters mlx's L=1 "
+                         "B>1 single-token (qmv) quantized-decode kernel "
+                         "(the suspected core-kernel bug). The logits at query "
+                         "position 0 give the next token; the duplicate at "
+                         "position 1 is trimmed so the cache stays at the true "
+                         "position. Stays batched/parallel over sessions "
+                         "(the B dimension is untouched), Python-only. Requires "
+                         "a trimmable cache, so it forces --kakeya-cache.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
+
+    if args.pad_decode and not args.kakeya_cache:
+        # The padded loop trims the duplicate KV each step; only the
+        # concat SinkWindowKVCache is soundly trimmable (gemma's native
+        # RotatingKVCache is not once the sliding ring wraps).
+        args.kakeya_cache = True
+        print("[mlx-mt] --pad-decode forces --kakeya-cache (trimmable cache "
+              "needed to drop the padding token)", flush=True)
 
     import mlx.core as mx
     import mlx_lm
@@ -170,16 +189,49 @@ def main() -> int:
         dt = time.perf_counter() - t0
         return gen, dt
 
+    def decode_batched_padded(cache, logits, max_tokens):
+        """L>=2 padded decode: feed the new token duplicated so the
+        forward routes through mlx's matrix-matrix (qmm) quantized
+        kernel instead of the single-token (qmv) decode kernel suspected
+        of the batch>1 bug. Position 0 is the real token (attends only to
+        the cache + itself, so its logits == the L=1 decode result);
+        position 1 is the duplicate, trimmed afterwards so the cache and
+        global offset stay at the true position. B (sessions) untouched.
+        """
+        B = logits.shape[0]
+        nxt = mx.argmax(logits, axis=-1)
+        gen = [[int(nxt[i].item())] for i in range(B)]
+        mx.eval(nxt)
+        t0 = time.perf_counter()
+        for _ in range(max_tokens - 1):
+            cur = nxt.reshape(B, 1)
+            pair = mx.concatenate([cur, cur], axis=1)  # [B, 2], L=2
+            out = model(pair, cache=cache)
+            mx.eval(out)
+            # position 0 == the real next-token prediction (L=1-equivalent)
+            nxt = mx.argmax(out[:, 0, :], axis=-1)
+            for layer in cache:
+                layer.trim(1)  # drop the duplicate (position 1)
+            for i in range(B):
+                gen[i].append(int(nxt[i].item()))
+        dt = time.perf_counter() - t0
+        return gen, dt
+
+    decode = decode_batched_padded if args.pad_decode else decode_batched
+    if args.pad_decode:
+        print("[mlx-mt] decode path: L>=2 padded (qmm, avoids L=1 qmv kernel)",
+              flush=True)
+
     # warmup
     try:
         c, l = prefill_batched([prompts[0]] * min(2, N))
-        decode_batched(c, l, 4)
+        decode(c, l, 4)
     except Exception as e:  # noqa: BLE001
         print(f"[mlx-mt] warmup note: {e}", flush=True)
 
     # batched
     cache, logits = prefill_batched(prompts)
-    g_b, dt_b = decode_batched(cache, logits, args.max_new_tokens)
+    g_b, dt_b = decode(cache, logits, args.max_new_tokens)
     batched_tps = round((N * args.max_new_tokens) / dt_b, 3) if dt_b > 0 else 0.0
     batched_recall = sum(recall(g_b[i], answers[i]) for i in range(N)) / N
 
@@ -188,13 +240,13 @@ def main() -> int:
     g_s = []
     for i in range(N):
         c, l = prefill_batched([prompts[i]])
-        gg, _ = decode_batched(c, l, args.max_new_tokens)
+        gg, _ = decode(c, l, args.max_new_tokens)
         g_s.append(gg[0])
     # serialized decode-only time: re-time decode alone (prefill excluded for fair tps)
     ser_decode_s = 0.0
     for i in range(N):
         c, l = prefill_batched([prompts[i]])
-        _, dt = decode_batched(c, l, args.max_new_tokens)
+        _, dt = decode(c, l, args.max_new_tokens)
         ser_decode_s += dt
     serial_tps = round((N * args.max_new_tokens) / ser_decode_s, 3) if ser_decode_s else 0.0
     serial_recall = sum(recall(g_s[i], answers[i]) for i in range(N)) / N
@@ -215,7 +267,10 @@ def main() -> int:
         "kind": "mlx_batched_multitenant",
         "config": {"sessions": N, "modal_prompt_len": modal,
                    "max_new_tokens": args.max_new_tokens,
-                   "verifier_path": args.verifier_path},
+                   "verifier_path": args.verifier_path,
+                   "kakeya_cache": bool(args.kakeya_cache),
+                   "manual_sdpa": bool(args.manual_sdpa),
+                   "pad_decode": bool(args.pad_decode)},
         "serialized": {"aggregate_tps": serial_tps, "recall": round(serial_recall, 3)},
         "batched": {"aggregate_tps": batched_tps, "recall": round(batched_recall, 3)},
         "batched_speedup_vs_serialized": speedup,
