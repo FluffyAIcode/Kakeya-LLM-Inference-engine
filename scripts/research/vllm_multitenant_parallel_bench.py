@@ -51,6 +51,10 @@ def main() -> int:
                     help="e.g. bitsandbytes for 4-bit; default None = bf16")
     ap.add_argument("--gpu-mem-util", type=float, default=0.90)
     ap.add_argument("--max-model-len", type=int, default=4096)
+    ap.add_argument("--sliding-window", type=int, default=0,
+                    help="KIE-v2: override the model sliding_window (e.g. 68 for "
+                         "Kakeya S5 bounded attention on the vLLM runtime; 0 = "
+                         "model default).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -94,12 +98,21 @@ def main() -> int:
         return ans in tok.decode(token_ids, skip_special_tokens=True)
 
     print(f"[vllm-mt] loading vLLM {args.verifier_id} dtype={args.dtype} "
-          f"quant={args.quantization}", file=sys.stderr, flush=True)
-    llm = LLM(model=args.verifier_id, dtype=args.dtype,
-              quantization=args.quantization,
-              gpu_memory_utilization=args.gpu_mem_util,
-              max_model_len=args.max_model_len, enforce_eager=False,
-              disable_log_stats=True)
+          f"quant={args.quantization} sliding_window={args.sliding_window or 'default'}",
+          file=sys.stderr, flush=True)
+    llm_kwargs = dict(model=args.verifier_id, dtype=args.dtype,
+                      quantization=args.quantization,
+                      gpu_memory_utilization=args.gpu_mem_util,
+                      max_model_len=args.max_model_len, enforce_eager=False,
+                      disable_log_stats=True)
+    if args.sliding_window and args.sliding_window > 0:
+        # KIE-v2: Kakeya S5 bounded window on vLLM. gemma-4 nests sliding_window
+        # under text_config; override both so the hybrid KV bounds tighter.
+        sw = int(args.sliding_window)
+        llm_kwargs["hf_overrides"] = {
+            "sliding_window": sw, "text_config": {"sliding_window": sw},
+        }
+    llm = LLM(**llm_kwargs)
     sp = SamplingParams(temperature=0.0, max_tokens=args.gen_tokens,
                         ignore_eos=True)  # match Kakeya: always gen_tokens steps
 
@@ -174,6 +187,7 @@ def main() -> int:
         "config": {
             "verifier_id": args.verifier_id, "dtype": args.dtype,
             "quantization": args.quantization,
+            "sliding_window": args.sliding_window or "default",
             "haystack_lines": args.haystack_lines, "modal_prompt_len": modal_len,
             "gen_tokens": args.gen_tokens, "batch_sizes": batch_sizes,
             "gpu_memory_utilization": args.gpu_mem_util,

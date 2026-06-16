@@ -118,6 +118,19 @@ locate the engine's required invariants. They are not the product engine.
 - The vLLM-beating demonstration is to be run on a **full-attention** verifier,
   where restoration is load-bearing.
 
+### KIE-v2 direction (recommended): Kakeya Attention as a vLLM backend
+
+Rather than rebuild vLLM's fused-MoE + graph runtime (KIE-v1.1.z2, blocked), run
+Kakeya Attention **inside** vLLM as an attention backend / KV-cache plugin.
+**Feasibility (decode throughput ≈ vLLM): low-risk YES** — the dominant
+fused-MoE + graph + scheduler stays vLLM's (inherited), and Kakeya owns only the
+attention op (minor decode fraction, over smaller/quantized KV, restoration-free
+at decode → graph-capturable). The work is vLLM-backend conformance + one
+graph-safe quantized-exact attention kernel (extends vLLM's fp8-KV attention),
+not a runtime rebuild. Memory differentiation is large only on **full-attention**
+models (gemma-4 is already hybrid-bounded by vLLM). Full assessment:
+`docs/design/kakeya-vllm-backend-feasibility.md`.
+
 ## Milestone tracking (task encoding)
 
 Engine work is coded **KIE-v1.x** (Kakeya Inference Engine), governed by this ADR
@@ -131,7 +144,9 @@ PR, so development context stays per-task:
 | **KIE-v1.1.x** | exact-layer KV quantization toward the N=34+ ceiling | **partial** — int8/int4 exact-layer quant **de-risked recall-safe** (recall 1.0 @62k); genuine int8 storage **implemented + correct** (halves stored bytes). BUT **N=34 still OOMs**: the dequant-on-read returns full bf16 per exact layer (transients coexist), so peak doesn't drop. `v04.kv_compressor` doesn't help (round-trips, no RAM cut); `QuantizedCache` not hybrid-aware. | #137 |
 | **KIE-v1.1.y** | **quantized attention** (tiled online-softmax over the int8 exact-layer store — no full-bf16 transient) | **done (concurrency)** — gemma-4 62k **N=24→N=60 at recall 1.0** (111.7 GB), **≈3.9× vLLM's 15.5**; numerically exact vs SDPA. **Decode-speed weak**: ~25.6 tok/s aggregate @N=8 (~3.2/session) vs vLLM ~98/session — eager tiled loop. | #138 |
 | **KIE-v1.1.z** | throughput + N=75 | **N=75 MET** (recall 1.0, 126.7 GB, ≈4.8× vLLM; int8+quant-attn). kakeyalattice v1.6.1 gemma-4 fix verified (recall 1.0). **decode ≥ vLLM NOT met**: ~31 tok/s aggregate (eager 26B-MoE forward dominates; torch.compile-attn 6.6× but 0% e2e; static-cache auto-compile segfaults). | #139 |
-| **KIE-v1.1.z2** | **fused-MoE + graph-captured full-forward decode** (the actual vLLM-parity lever; the 26B-MoE forward, not attention, is the decode bottleneck) | **blocked — port paths unavailable** | — |
+| **KIE-v1.1.z2** | fused-MoE + graph-captured full-forward decode (rebuild vLLM's runtime) | **abandoned — superseded by KIE-v2** (run on vLLM instead of rebuilding it) | — |
+| **KIE-v2** | **Kakeya Attention on the vLLM runtime** (bounded window + restoration + quantized-exact as a vLLM backend) | **decode-parity MET + EXCEEDED**: gemma-4 bounded-window (sw=68) on vLLM = **195.6/231.9/539/1079 tok/s vs vLLM-default 159.3/198.6/467.5/894.9 @N=1/4/8/70, ~1.15–1.23× faster, recall 1.0** (ctx16k). Full backend (restoration + quantized-exact for full-attn models) = next. | #140 |
+| **v0.5-cuda** | **release**: package KIE-v2 as `inference_engine.engine.KakeyaVLLM` (Kakeya window on vLLM's Apache-2.0 fused-MoE + CUDA-graph + scheduler), consolidate reports, README | **done (gemma-4 instantiation)** — engine evidence = committed gemma-4 KIE-v2 numbers (recall 1.0 @ sw=68 via the S5 free lunch, **no trained f_θ/proposer needed** on gemma-4). `KakeyaVLLM` wrapper **plumbing** smoke-tested on H200 (CUDA graphs captured, window→vLLM config, generate returns) on Qwen3-4B — **smoke test only, NOT engine validation** (Qwen3 has no trained f_θ/proposer → restoration never ran). Model-aware `text_config` nesting (gemma nested / Qwen flat); 13 config unit tests. Scorecard: `docs/reports/kakeya-inference-engine-v0.5-cuda.md`. | this PR |
 
 **KIE-v1.1.z2 port attempt (2026-06-16) — all clean paths blocked:**
 - **HF `kernels` hub** (lowest-surgery kernelize): `kernels` is **version-incompatible
