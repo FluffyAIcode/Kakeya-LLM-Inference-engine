@@ -131,7 +131,26 @@ PR, so development context stays per-task:
 | **KIE-v1.1.x** | exact-layer KV quantization toward the N=34+ ceiling | **partial** — int8/int4 exact-layer quant **de-risked recall-safe** (recall 1.0 @62k); genuine int8 storage **implemented + correct** (halves stored bytes). BUT **N=34 still OOMs**: the dequant-on-read returns full bf16 per exact layer (transients coexist), so peak doesn't drop. `v04.kv_compressor` doesn't help (round-trips, no RAM cut); `QuantizedCache` not hybrid-aware. | #137 |
 | **KIE-v1.1.y** | **quantized attention** (tiled online-softmax over the int8 exact-layer store — no full-bf16 transient) | **done (concurrency)** — gemma-4 62k **N=24→N=60 at recall 1.0** (111.7 GB), **≈3.9× vLLM's 15.5**; numerically exact vs SDPA. **Decode-speed weak**: ~25.6 tok/s aggregate @N=8 (~3.2/session) vs vLLM ~98/session — eager tiled loop. | #138 |
 | **KIE-v1.1.z** | throughput + N=75 | **N=75 MET** (recall 1.0, 126.7 GB, ≈4.8× vLLM; int8+quant-attn). kakeyalattice v1.6.1 gemma-4 fix verified (recall 1.0). **decode ≥ vLLM NOT met**: ~31 tok/s aggregate (eager 26B-MoE forward dominates; torch.compile-attn 6.6× but 0% e2e; static-cache auto-compile segfaults). | #139 |
-| **KIE-v1.1.z2** | **fused-MoE + graph-captured full-forward decode** (the actual vLLM-parity lever; the 26B-MoE forward, not attention, is the decode bottleneck) | planned | — |
+| **KIE-v1.1.z2** | **fused-MoE + graph-captured full-forward decode** (the actual vLLM-parity lever; the 26B-MoE forward, not attention, is the decode bottleneck) | **blocked — port paths unavailable** | — |
+
+**KIE-v1.1.z2 port attempt (2026-06-16) — all clean paths blocked:**
+- **HF `kernels` hub** (lowest-surgery kernelize): `kernels` is **version-incompatible
+  with transformers 5.12** (`hub_kernels.LayerRepository` → "Either a revision or a
+  version must be specified"); installing it **breaks transformers' import**.
+  Needs a pinned `kernels`/transformers pair.
+- **vLLM `fused_moe`**: present but in a separate venv + expects vLLM's model
+  layout (stacked expert weights, routing glue) — **major cross-venv surgery**.
+- **From-scratch Triton fused-MoE + graph capture + custom quant-attention** =
+  multi-week expert kernel project.
+- **Segfault (static+chunked+long) is structural**, not patchable: gemma-4's
+  forward has non-graph-capturable ops (chunked-prefill windowed `copy_`
+  eviction; data-dependent MoE routing). Decode-only capture of the eager MoE
+  bakes in routing → wrong output, so no capture shortcut. The fix == the
+  graph-safe fused MoE (same blocked port).
+**Verdict:** decode-throughput parity with vLLM is a standalone vLLM-class
+runtime project, not reachable in-session. The **memory/concurrency** axis is
+done (N=75, recall 1.0, ≈4.8× vLLM); the **decode-speed** axis is gated on a
+fused-MoE+graph runtime whose clean ports are currently blocked.
 
 **kakeyalattice v1.6 note.** v1.6 genuinely fixes the compressor (bit-packed
 `KakeyaLatticePackedCache`, real 2.46× HBM at D4 Q=38, contiguous SDPA-feedable
