@@ -9,11 +9,109 @@ NIAH ctx ≈ 62k. Architecture: `docs/design/kakeya-inference-engine-architectur
 
 | Engine | max concurrency @62k | per-session GPU | recall |
 | --- | --- | --- | --- |
-| **Kakeya Engine v1** (chunked prefill, generate-cache) | **N=4** | ~16 GB | 1.0 |
-| Kakeya admission model (bounded-KV target) | **34** (ceiling) | **2.56 GB** | — |
-| vLLM (PagedAttention) | **15.5** | ~4.6 GB | 1.0 |
+| Kakeya Engine **v1** (chunked prefill, growing cache) | N=4 | ~16 GB | 1.0 |
+| Kakeya Engine **v1.1** (chunked prefill + **evicting** cache, graph off) | **N=16** | ~4 GB | 1.0 |
+| vLLM (PagedAttention) | 15.5 | ~4.6 GB | 1.0 |
+| Kakeya admission model (bounded-KV target) | 34 (ceiling) | 2.56 GB | — |
 
-(Engine N=1 68.2 GB → N=2 84.7 → N=4 117.8 GB; N=8 OOM.)
+- **v1** (growing `DynamicCache`): N=1 68.2 → N=2 84.7 → N=4 117.8 GB; N=8 OOM.
+- **v1.1** (evicting `StaticCache`, graph off): N=1 55.7 → N=4 67.9 → N=8 84.1 →
+  **N=16 116.5 GB**; N=24 OOM. The evicting cache drops N=4 peak **117.8 → 67.9 GB**
+  and lifts concurrency **N=4 → N=16**, now **above vLLM's 15.5** — bounded-KV is
+  realized at runtime.
+
+### KIE-v1.1 — what was done
+
+`generate_cohort(evicting_cache=True)` builds a hybrid-aware `StaticCache`
+(sliding layers → `StaticSlidingWindowLayer` capped at `sink+window`; full-attn
+layers exact) and passes the **cache object** to `generate`. A static cache makes
+`generate` torch.compile the decode (triton/inductor → CUDA-graph), which
+**segfaults** with this model + chunked prefill (and writes a `.so` that fails to
+load on noexec tmp), so KIE-v1.1 **turns graph capture off**
+(`torch._dynamo.config.disable`) and runs the evicting cache **eager** — correct
+and bounded, just ungraphed. Concurrency N=16 (recall 1.0) at 62k.
+
+Residual gap to the 34-session admission ceiling: `StaticCache` pre-allocates the
+full layers at `T + gen` and the ungraphed prefill carries working-set overhead,
+so actual per-session is ~4 GB vs the 2.56 GB model. Graph-captured decode +
+tighter allocation is **KIE-v1.1.x / v1.2** substrate work.
+
+## Pushing toward the N=34 ceiling (KIE-v1.1.x)
+
+| lever | result @62k | note |
+| --- | --- | --- |
+| prefill chunk 2048 | N=16 | baseline v1.1 |
+| prefill chunk **1024 / 512** | **N=24** (recall 1.0, peak ~136 GB) | smaller chunk → smaller prefill transient |
+| prefill chunk 256 | ~N=24 | diminishing returns |
+| decoupled prefill+stacked decode | correct (recall 1.0 @N=4), but **OOM @N=30** | fragmentation / per-session prefill transient; no better than batched |
+
+**Best measured concurrency: N=24** at 62k, recall 1.0 — **1.55× vLLM's 15.5**.
+
+**Why N=34 is not reachable at bf16 KV (the hard floor).** Per-session resident
+KV is dominated by the **5 exact full-attention layers** kept at full context:
+`5 × 62 070 × 8 kv × 256 × 2(K,V) × 2 B = 2.54 GB/session`. So 34 sessions need
+`34 × 2.54 + 51.6 (weights) ≈ 138 GB` — leaving ~1.8 GB for *all* prefill/decode
+working set, which no real forward fits in. 34 is the admission model's
+zero-overhead ceiling; the achievable bf16 ceiling on a 140 GB card is ~24–26.
+
+**The lever to reach 34+ (not model-switching): exact-layer KV quantization.**
+Quantizing the 5 exact layers' KV to 8-bit halves the floor to 1.27 GB/session →
+~69 sessions fit; 4-bit → ~0.64 GB → ~135.
+
+> **Note:** `inference_engine.v04.kv_compressor` does **not** help here — it
+> round-trips through the lattice for *fidelity* and stores full bf16 tensors
+> ("not from any in-RAM size change", its docstring), and needs the optional
+> `kakeyalattice` package. transformers' `QuantizedCache` needs an uninstalled
+> backend and is **not hybrid-aware** (it would store all 30 layers full, worse
+> than the bounded-bf16 hybrid). So KIE-v1.1.x needs **genuine int storage of the
+> exact layers** (int8/int4 packed + per-token scale, dequant per-layer on read),
+> with the evicting bf16 sliding layers unchanged.
+
+**De-risk (the exact layers are recall-critical — does int quant break recall?).**
+Probe: round-trip the exact-layer K/V through int8 and int4 in the decoupled
+decode (`--quant-exact-bits`), 62k, N=4. **Both int8 and int4 keep recall 1.0** —
+so int storage of the exact layers is recall-safe.
+
+**Genuine int8 storage — implemented, correct, but blocked by dequant-on-read.**
+`_IntQuantExactLayer` (a `CacheLayerMixin`) stores the exact layers' K/V as int8
++ per-token scale and is wired into the decoupled decode. It is **correct**
+(recall 1.0) and **halves the stored** exact-layer bytes (N=4 peak 67.9 → 63.7 GB).
+**But it does not lift the concurrency ceiling — N=34 still OOMs.** The reason:
+the cache `update()` contract returns **bf16** for the model's SDPA, so each
+exact layer dequantizes its full K/V (`[N, 8, 62k, 256]` ≈ 0.25 GB/session/layer)
+on read; across the 5 exact layers these transients coexist and eat the storage
+saving at scale. The stored bytes shrink, the **peak** does not.
+
+**The real unlock (next, custom-kernel): quantized attention.** To convert the
+storage saving into concurrency, the attention must read the int8 K/V **without
+materializing full bf16** — a tiled/dequant-in-kernel (flash-style) SDPA over the
+int8 cache. That is a custom-kernel substrate item; until it lands, the achieved
+recall-1.0 ceiling is the bf16-evicting **N=24** (1.55× vLLM). The int8 storage +
+recall-safety are the prerequisites it builds on.
+
+### kakeyalattice v1.6 (the fixed compressor) — evaluated
+
+v1.6 genuinely fixes the two gaps reported against `v04.kv_compressor`: it adds
+**bit-packed storage** (`KakeyaLatticePackedCache`, real **2.46× HBM** at D4 Q=38,
+measured Qwen3-4B/H200 — vs the int8-index path's 1.94×) and a **contiguous,
+SDPA-feedable** decode (also fixing the prior O(N²) re-decode). `kv_compressor`
+now exposes it via `make_packed_kv_cache(...)`. Findings for **this** engine:
+
+1. **It does not drop into the Gemma-4 engine as-is** — the uniform-head-dim
+   packer asserts `expected last dim 256, got 512` on Gemma-4's hybrid layers
+   (full vs sliding K/V shapes differ); needs a per-layer-head-dim adaptation
+   upstream.
+2. **The gain over the int8 path is modest at D=256** (2.46× vs 1.94×) — it
+   shrinks the *stored* exact-layer bytes by ~20%, freeing ~8 GB at N=34.
+3. **It does not change the N>34 blocker.** Like any `DynamicCache`-style cache,
+   it returns **bf16** to SDPA, so the per-layer dequant transient (the thing
+   that OOMs at N=34) is unchanged. v1.6 improves the *floor* (storage), not the
+   *peak* (transient).
+
+**Net:** v1.6 is the right *storage* codec to feed the real fix, but the decisive
+lever past N=34 remains **quantized attention** (KIE-v1.1.y) — attend on the
+packed/int codes without materializing bf16. v1.6's contiguous packed codes are
+exactly the input that kernel would consume.
 
 ## What v1 already delivers
 

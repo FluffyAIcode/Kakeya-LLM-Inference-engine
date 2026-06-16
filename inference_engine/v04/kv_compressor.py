@@ -478,10 +478,47 @@ def make_default_compressor(
         return IdentityCompressor()
 
 
+def make_packed_kv_cache(
+    *,
+    num_hidden_layers: int,
+    head_dim: int,
+    variant: str = "d4",
+    q_range: int = 38,
+    device: str = "cuda",
+):
+    """Return a genuine **byte-reducing** KV cache from kakeyalattice **v1.6+**.
+
+    Unlike :class:`KakeyaLatticeCompressor` (which round-trips and stores full
+    bf16 — *no in-RAM reduction*), v1.6's ``KakeyaLatticePackedCache`` stores
+    **bit-packed lattice codes** and decodes to a **contiguous, SDPA-feedable**
+    K/V on read — measured **~2.46× (D4 Q=38)** real HBM on uniform-head_dim
+    models (Qwen3/Llama). It is a drop-in ``transformers.DynamicCache``.
+
+    Caveats (empirical, 2026-06-15):
+      * The packer assumes a **uniform** KV head-dim across layers; Gemma-4's
+        hybrid full/sliding layers trip ``expected last dim 256, got 512`` —
+        needs a per-layer-head-dim adaptation upstream before it drops into the
+        Gemma-4 engine.
+      * It is a flat ``DynamicCache`` (no sliding eviction), so for hybrid models
+        the bounded-KV engine should pack the **exact layers only** and keep the
+        sliding layers evicting — not use this as the whole-cache.
+      * The decode returns **bf16** to attention (per layer, transient): genuine
+        *storage* savings, but the per-layer bf16 materialisation is unchanged —
+        converting that into concurrency needs quantized attention (KIE-v1.1.y).
+    """
+    from kakeyalattice.hf import KakeyaLatticePackedCache
+
+    return KakeyaLatticePackedCache(
+        variant=variant, q_range=q_range,
+        num_hidden_layers=num_hidden_layers, head_dim=head_dim, device=device,
+    )
+
+
 __all__ = [
     "KVCompressor",
     "IdentityCompressor",
     "KakeyaLatticeCompressor",
     "KakeyaLatticeUnavailable",
     "make_default_compressor",
+    "make_packed_kv_cache",
 ]

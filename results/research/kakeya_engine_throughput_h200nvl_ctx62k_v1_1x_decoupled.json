@@ -1,0 +1,33 @@
+{
+  "kind": "kakeya_engine_throughput",
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "policy": "native-hybrid",
+    "sink": 4,
+    "window": 64,
+    "chunk_size": 1024,
+    "modal_prompt_len": 62038,
+    "gen_tokens": 32,
+    "exact_layers": [
+      5,
+      11,
+      17,
+      23,
+      29
+    ],
+    "resident_kv_bytes_per_session": 2556313600,
+    "model_weight_bytes": 51611867744,
+    "admission_ceiling": 34,
+    "mem_budget_gb": 139.8
+  },
+  "env": {
+    "gpu": "NVIDIA H200",
+    "torch": "2.12.0+cu130"
+  },
+  "results": [
+    {
+      "agents": 30,
+      "oom": true
+    }
+  ]
+}

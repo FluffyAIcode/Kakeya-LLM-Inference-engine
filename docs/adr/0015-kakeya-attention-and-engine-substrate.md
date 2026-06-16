@@ -118,6 +118,29 @@ locate the engine's required invariants. They are not the product engine.
 - The vLLM-beating demonstration is to be run on a **full-attention** verifier,
   where restoration is load-bearing.
 
+## Milestone tracking (task encoding)
+
+Engine work is coded **KIE-v1.x** (Kakeya Inference Engine), governed by this ADR
+§9 of `docs/design/kakeya-inference-engine-architecture.md`. One milestone = one
+PR, so development context stays per-task:
+
+| Code | Milestone | Status | PR |
+| --- | --- | --- | --- |
+| **KIE-v1** | engine core: chunked restoration prefill + bounded-KV decode + peak-window admission (NativeHybridBounded) | done (core); concurrency gated on v1.1 | #135 |
+| **KIE-v1.1** | realize the bounded-KV bound at runtime: sliding-window-**evicting** cache without the CUDA-graph segfault (evicting cache, graph capture off) + push concurrency toward the ceiling | **done** — gemma-4 62k concurrency **N=4→N=24** (recall 1.0; chunk-size tuning), **1.55× vLLM's 15.5**. Decoupled prefill/decode implemented (correct) but fragmentation-limited. | #136 |
+| **KIE-v1.1.x** | exact-layer KV quantization toward the N=34+ ceiling | **partial** — int8/int4 exact-layer quant **de-risked recall-safe** (recall 1.0 @62k); genuine int8 storage **implemented + correct** (halves stored bytes). BUT **N=34 still OOMs**: the dequant-on-read returns full bf16 per exact layer (transients coexist), so peak doesn't drop. `v04.kv_compressor` doesn't help (round-trips, no RAM cut); `QuantizedCache` not hybrid-aware. | #137 |
+| **KIE-v1.1.y** | **quantized attention** (tiled/dequant-in-kernel SDPA over int/packed K/V — no full bf16 materialization) to convert storage into concurrency; consumes kakeyalattice v1.6 packed codes; + graph-captured decode | planned | — |
+
+**kakeyalattice v1.6 note.** v1.6 genuinely fixes the compressor (bit-packed
+`KakeyaLatticePackedCache`, real 2.46× HBM at D4 Q=38, contiguous SDPA-feedable
+decode, O(N)); `kv_compressor.make_packed_kv_cache` exposes it. But it (a) trips
+a uniform-head-dim assertion on Gemma-4's hybrid layers, (b) gains only ~2.46×
+vs the int8 path's 1.94× at D=256, and (c) still returns bf16 to SDPA — so the
+**per-layer dequant transient (the N>34 blocker) is unchanged**. v1.6 improves
+the storage *floor*, not the decode *peak*; the decisive lever is still
+KIE-v1.1.y quantized attention, which would consume v1.6's packed codes.
+| **KIE-v1.2** | FThetaRestored policy on a full-attention verifier (Qwen/Llama) — the decisive vLLM win | planned | — |
+
 ## Evidence
 
 - `docs/reports/kakeya-vs-vllm-multitenant-h200.md` (ctx-1238, same H200)
