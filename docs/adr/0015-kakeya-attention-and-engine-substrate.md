@@ -118,6 +118,19 @@ locate the engine's required invariants. They are not the product engine.
 - The vLLM-beating demonstration is to be run on a **full-attention** verifier,
   where restoration is load-bearing.
 
+### KIE-v2 direction (recommended): Kakeya Attention as a vLLM backend
+
+Rather than rebuild vLLM's fused-MoE + graph runtime (KIE-v1.1.z2, blocked), run
+Kakeya Attention **inside** vLLM as an attention backend / KV-cache plugin.
+**Feasibility (decode throughput ≈ vLLM): low-risk YES** — the dominant
+fused-MoE + graph + scheduler stays vLLM's (inherited), and Kakeya owns only the
+attention op (minor decode fraction, over smaller/quantized KV, restoration-free
+at decode → graph-capturable). The work is vLLM-backend conformance + one
+graph-safe quantized-exact attention kernel (extends vLLM's fp8-KV attention),
+not a runtime rebuild. Memory differentiation is large only on **full-attention**
+models (gemma-4 is already hybrid-bounded by vLLM). Full assessment:
+`docs/design/kakeya-vllm-backend-feasibility.md`.
+
 ## Milestone tracking (task encoding)
 
 Engine work is coded **KIE-v1.x** (Kakeya Inference Engine), governed by this ADR
