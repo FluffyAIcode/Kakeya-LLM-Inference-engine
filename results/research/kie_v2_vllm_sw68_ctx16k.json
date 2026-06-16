@@ -1,0 +1,55 @@
+{
+  "kind": "vllm_multitenant_parallel",
+  "schema_version": 1,
+  "config": {
+    "verifier_id": "google/gemma-4-26B-A4B-it",
+    "dtype": "bfloat16",
+    "quantization": null,
+    "sliding_window": 68,
+    "haystack_lines": 800,
+    "modal_prompt_len": 16038,
+    "gen_tokens": 128,
+    "batch_sizes": [
+      1,
+      4,
+      8
+    ],
+    "gpu_memory_utilization": 0.9,
+    "max_model_len": 17000,
+    "note": "vLLM PagedAttention (full KV) baseline; continuous batching is the parallel path. decode tok/s excludes prefill via per-request metrics, matching the Kakeya decode-loop timing. vLLM pre-reserves a KV pool (gpu_memory_utilization), so torch_peak reflects the reserved pool, not per-request growth \u2014 see kv_pool."
+  },
+  "env": {
+    "gpu": "NVIDIA H200",
+    "torch": "2.11.0+cu130"
+  },
+  "kv_pool": null,
+  "results": [
+    {
+      "agents": 1,
+      "decode_aggregate_tps": 195.6,
+      "e2e_aggregate_tps": 197.14,
+      "recall": 1.0,
+      "decode_parallel_speedup_vs_n1": 1.0,
+      "e2e_parallel_speedup_vs_n1": 1.0,
+      "torch_peak_alloc_gb": 0.0
+    },
+    {
+      "agents": 4,
+      "decode_aggregate_tps": 231.86,
+      "e2e_aggregate_tps": 233.68,
+      "recall": 1.0,
+      "decode_parallel_speedup_vs_n1": 1.19,
+      "e2e_parallel_speedup_vs_n1": 1.19,
+      "torch_peak_alloc_gb": 0.0
+    },
+    {
+      "agents": 8,
+      "decode_aggregate_tps": 538.95,
+      "e2e_aggregate_tps": 543.2,
+      "recall": 1.0,
+      "decode_parallel_speedup_vs_n1": 2.76,
+      "e2e_parallel_speedup_vs_n1": 2.76,
+      "torch_peak_alloc_gb": 0.0
+    }
+  ]
+}

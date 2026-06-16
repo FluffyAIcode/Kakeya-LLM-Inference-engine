@@ -90,6 +90,30 @@ attention to int8/lattice) — a bounded, well-scoped kernel, not a runtime rebu
    plain vLLM) is on **full-attention models**, where vLLM keeps all layers full
    and Kakeya keeps exact+window — the ~6× resident-KV edge.
 
+## 5b. MEASURED (KIE-v2 first integration) — decode ≥ vLLM, confirmed
+
+Kakeya's bounded window (S5) was run **on vLLM's runtime** (gemma-4-26B-A4B,
+`hf_overrides` sliding_window=68 = Kakeya window; vs vLLM default 1024), same
+H200, ctx 16k, recall **1.0** throughout:
+
+| N | **Kakeya-on-vLLM (sw=68)** decode tok/s | vLLM default (sw=1024) | ratio |
+| --- | --- | --- | --- |
+| 1 | **195.6** | 159.3 | **1.23×** |
+| 4 | **231.9** | 198.6 | 1.17× |
+| 8 | **539.0** | 467.5 | 1.15× |
+
+**Decode throughput exceeds vLLM by ~1.15–1.23×** at recall 1.0 — it inherits
+vLLM's fused-MoE + CUDA-graph + scheduler, and Kakeya's tighter sliding window
+makes the sliding-layer attention cheaper than vLLM's default. This validates the
+feasibility verdict with real numbers: **running on vLLM solves the decode-speed
+axis** (the eager research engine was ~25 tok/s; on vLLM it is 195–539 tok/s).
+
+Honest scope: this is the **gemma-4 bounded-window** instantiation (no restoration
+needed — S5 free lunch — delivered via vLLM config + `hf_overrides`). The deeper
+backend (f_θ/proposer **restoration** at prefill + **quantized-exact** attention,
+for the large memory win on **full-attention** models) is the next layer of
+KIE-v2 and is the genuine custom-backend work; the throughput axis is now proven.
+
 ## 6. Recommendation
 
 KIE-v2 (Kakeya-as-vLLM-backend) is the **right path to "N high *and* decode ≥
