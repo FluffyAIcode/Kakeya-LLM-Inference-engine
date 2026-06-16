@@ -19,6 +19,14 @@ from inference_engine.engine.admission import (
 # kakeya_engine imports torch only lazily (inside methods), so this is safe on
 # torch-less hosts; the class is the engine runtime entry point.
 from inference_engine.engine.kakeya_engine import KakeyaEngine
+# kakeya_vllm defers the vllm import to construction, so importing these names is
+# safe on torch/vllm-free hosts; KakeyaVLLM is the v0.5-CUDA product entrypoint.
+from inference_engine.engine.kakeya_vllm import (
+    KakeyaVLLM,
+    KakeyaVLLMConfig,
+    kakeya_hf_overrides,
+    kakeya_window_total,
+)
 
 __all__ = [
     "BoundedKVModel",
@@ -26,4 +34,8 @@ __all__ = [
     "full_kv_bytes_per_session",
     "max_concurrent_sessions",
     "KakeyaEngine",
+    "KakeyaVLLM",
+    "KakeyaVLLMConfig",
+    "kakeya_hf_overrides",
+    "kakeya_window_total",
 ]

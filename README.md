@@ -1,7 +1,7 @@
 # Kakeya Inference engine — memory bounded local inference engine
 
 [![CI](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/actions/workflows/ci.yaml)
-[![Release](https://img.shields.io/badge/release-v0.4-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/tags)
+[![Release](https://img.shields.io/badge/release-v0.5--cuda%20%7C%20v0.4-blue)](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine/tags)
 [![Platform](https://img.shields.io/badge/platform-Apple%20Silicon%20(MLX)%20%7C%20CUDA%20%7C%20Linux--CPU-lightgrey)](docs/quickstart.md)
 [![Architecture](https://img.shields.io/badge/architecture-ADR%200008%20%7C%200014-green)](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 [![License](https://img.shields.io/badge/license-MIT-lightblue)](LICENSE)
@@ -354,6 +354,49 @@ net loss; network was 71 % of wall time). So the realizable split is **WAN =
 control + tool plane** (the Mac bridge) and **LAN = co-located data plane**. See
 [ADR 0014](docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md)
 for the full plan, evidence, and the served-MLX-gemma gap found during testing.
+
+## v0.5 for CUDA — Kakeya Attention on the vLLM runtime
+
+**v0.5-cuda** ships Kakeya Attention's bounded-window (S5) KV management **on top
+of the vLLM runtime**, so the three runtime components the engine needs are
+inherited unchanged — all **Apache-2.0**:
+
+| component | owner in v0.5-cuda | role |
+| --- | --- | --- |
+| **Fused MoE Triton kernel** | **vLLM** | grouped-GEMM expert kernel — the dominant ~90 % of the gemma-4-26B-A4B decode forward |
+| **CUDA graphs** | **vLLM** | fixed-shape decode capture (`enforce_eager=False`) — removes per-token launch overhead |
+| **Continuous-batching scheduler** | **vLLM** | request scheduler + paged KV-manager — drives multi-tenant throughput |
+| **Kakeya Attention (bounded window / KV)** | **Kakeya** | bounds resident sliding-layer KV to `sink + window` (S5 = 68) |
+
+This is the **KIE-v2** strategy ([ADR 0015](docs/adr/0015-kakeya-attention-and-engine-substrate.md),
+[feasibility](docs/design/kakeya-vllm-backend-feasibility.md)): rather than rebuild
+vLLM's fused-MoE + graphs + scheduler (shown blocked in the eager KIE-v1.1.z
+attempt), Kakeya Attention runs *on* vLLM and contributes the bounded-KV layer.
+
+```python
+from inference_engine.engine import KakeyaVLLM
+from vllm import SamplingParams
+
+engine = KakeyaVLLM("google/gemma-4-26b-a4b-it", sink=4, window=64, max_model_len=16384)
+out = engine.generate(prompts, SamplingParams(temperature=0.0, max_tokens=128))
+```
+
+**Scorecard** ([full report](docs/reports/kakeya-inference-engine-v0.5-cuda.md)),
+H200, gemma-4-26B-A4B, recall **1.0**:
+
+| axis | result |
+| --- | --- |
+| **Token throughput (decode)** | **≥ vLLM**: **1.15–1.23×** vs vLLM default at ctx 16k, N=1..70 (e.g. N=70 **1079 vs 894.9 tok/s**) |
+| **Parallel inference** | bounded window on vLLM measured to **N=70** @16k (recall 1.0); eager research engine reached **N=75 @62k** (≈4.8× vLLM concurrency) |
+| **Memory saving** | gemma-4 hybrid: **~7 % @ 62k** (vLLM already bounds 25/30 layers; the 5 full layers dominate both); **~6×** edge needs a **full-attention** model + the v0.6 restoration backend |
+
+> **Honest scope.** v0.5-cuda is the **gemma-4 bounded-window** instantiation
+> (gemma-4's hybrid needs **no per-token restoration** — the S5 "free lunch" —
+> delivered via vLLM `hf_overrides`). The `KakeyaVLLM` wrapper itself was validated
+> end-to-end on an H200 (CUDA graphs captured, window applied, coherent generation,
+> 777 tok/s on Qwen3-4B — the model that fit the box). The **restoration backend**
+> (f_θ + dLLM-proposer at prefill + quantized-exact attention) for **full-attention**
+> models — the large ~6× memory differentiator — is the **v0.6** roadmap item.
 
 ## v0.4 for Mac — MLX speculative-decode port (the journey to parity)
 
