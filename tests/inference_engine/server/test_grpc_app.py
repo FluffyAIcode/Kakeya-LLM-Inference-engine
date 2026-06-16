@@ -195,6 +195,34 @@ async def test_close_session_double_close_returns_not_found(grpc_pair):
     assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
 
 
+async def test_close_session_invokes_on_session_close_hook():
+    """PR-A3c: CloseSession fires the optional ``on_session_close`` hook with the
+    session id, so a per-session verifier registry can free that session's KV.
+
+    Built with its own server (the shared ``grpc_pair`` fixture wires no hook) to
+    exercise the ``self._on_session_close is not None`` branch in CloseSession.
+    """
+    store = SessionStore(capacity=4)
+    seen: list[str] = []
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, on_session_close=seen.append), server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        create_resp = await stub.CreateSession(runtime_pb2.CreateSessionRequest())
+        await stub.CloseSession(
+            runtime_pb2.CloseSessionRequest(session_id=create_resp.session_id),
+        )
+        assert seen == [create_resp.session_id]
+    finally:
+        await channel.close()
+        await server.stop(grace=0.1)
+
+
 # ---------------------------------------------------------------------------
 # GetSessionInfo
 # ---------------------------------------------------------------------------
