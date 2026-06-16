@@ -390,13 +390,18 @@ H200, gemma-4-26B-A4B, recall **1.0**:
 | **Parallel inference** | bounded window on vLLM measured to **N=70** @16k (recall 1.0); eager research engine reached **N=75 @62k** (≈4.8× vLLM concurrency) |
 | **Memory saving** | gemma-4 hybrid: **~7 % @ 62k** (vLLM already bounds 25/30 layers; the 5 full layers dominate both); **~6×** edge needs a **full-attention** model + the v0.6 restoration backend |
 
-> **Honest scope.** v0.5-cuda is the **gemma-4 bounded-window** instantiation
-> (gemma-4's hybrid needs **no per-token restoration** — the S5 "free lunch" —
-> delivered via vLLM `hf_overrides`). The `KakeyaVLLM` wrapper itself was validated
-> end-to-end on an H200 (CUDA graphs captured, window applied, coherent generation,
-> 777 tok/s on Qwen3-4B — the model that fit the box). The **restoration backend**
-> (f_θ + dLLM-proposer at prefill + quantized-exact attention) for **full-attention**
-> models — the large ~6× memory differentiator — is the **v0.6** roadmap item.
+> **Honest scope.** v0.5-cuda is the **gemma-4 bounded-window** instantiation, and
+> it works **without a trained f_θ/proposer**: gemma-4's 5/30 native full-attention
+> layers carry recall, so recall is **1.0 at `sliding_window=68` with no restoration**
+> (the S5 "free lunch"), delivered via vLLM `hf_overrides`. The gemma-4 throughput /
+> concurrency / recall numbers above are the measured KIE-v2 results. The
+> `KakeyaVLLM` wrapper *plumbing* was separately smoke-tested on an H200 (builds
+> vLLM, window→config, CUDA graphs capture, generate returns) using Qwen3-4B —
+> that is a **wrapper smoke test only, not engine validation**: Qwen3 has no
+> trained f_θ/proposer, so restoration never ran. The **restoration backend** (f_θ
+> + dLLM-proposer training + quantized-exact attention) for **full-attention**
+> models — the large ~6× memory differentiator, where a bounded window *without*
+> restoration would destroy recall — is the **v0.6** roadmap item.
 
 ## v0.4 for Mac — MLX speculative-decode port (the journey to parity)
 

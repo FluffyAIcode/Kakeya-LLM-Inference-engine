@@ -110,23 +110,40 @@ out = engine.generate(prompts, SamplingParams(temperature=0.0, max_tokens=128))
 fused-MoE on). The pure config layer (`kakeya_hf_overrides`, `KakeyaVLLMConfig`)
 is torch/vllm-free and unit-tested (`tests/inference_engine/engine/test_kakeya_vllm.py`).
 
-## 5. Verification status
+## 5. Verification status — what is and is **not** validated
+
+**The engine claim (gemma-4) — validated, and it does NOT depend on a trained
+f_θ/proposer.**
 
 - ✅ **Throughput / concurrency / recall numbers** (gemma-4-26B) above were measured
   on H200 (Vast.ai) and committed in the KIE-v2 integration
   (`scripts/research/vllm_multitenant_parallel_bench.py --sliding-window 68`;
-  commits `7ec3a03`, `48ded1e`, `e2cf137`).
-- ✅ **`KakeyaVLLM` entrypoint validated end-to-end on H200** (vLLM 0.23.0): it builds
-  the vLLM engine with **CUDA graphs captured** (PIECEWISE + FULL), the Kakeya window
-  (68) **reaches vLLM's model config** (`hf_config.sliding_window == 68`), and
-  generation is coherent (Paris / 2+2=4 / story) at **777 tok/s** (batch 3). The
-  validation used **Qwen/Qwen3-4B** — the 26B model does not fit this box's 4 GB free
-  disk, so the wrapper *mechanism* is validated here and the 26B *performance* is the
-  committed measured path above. Evidence:
+  commits `7ec3a03`, `48ded1e`, `e2cf137`). Recall **1.0 at sliding_window=68**
+  holds on gemma-4 **because its 5/30 native full-attention layers carry recall
+  with no restoration** (the "S5 free lunch") — so this instantiation genuinely
+  needs **no trained f_θ/proposer**. That is the entire reason v0.5-cuda is a
+  gemma-4 release.
+
+**The Qwen3-4B run was a wrapper PLUMBING smoke test — NOT engine/algorithm
+validation. Read this honestly:**
+
+- ✅ It proves only the **`KakeyaVLLM` Python wrapper plumbing**: it constructs a
+  vLLM engine, the override value lands in vLLM's config
+  (`hf_config.sliding_window == 68`), CUDA graphs capture, and `generate()`
+  returns coherent text (Paris / 2+2=4 / story) at 777 tok/s. It also caught a
+  real bug (`text_config` injection crashing text-only models).
+- ❌ It does **NOT** validate Kakeya Attention on Qwen3. **Qwen3-4B has no trained
+  f_θ and no trained proposer**, so **restoration never ran** — a bounded window
+  without restoration is naive truncation, not Kakeya Attention. The test prompts
+  were also `< 68` tokens (inside the window), so **nothing was even evicted**;
+  recall/memory were not exercised at all. On a **full-attention** model,
+  window=68 without trained restoration would *destroy* recall — which is exactly
+  why the full-attention path is **v0.6 (after f_θ/proposer training)**, not v0.5.
+- Evidence (clearly labelled as a wrapper smoke test):
   `kakeya_vllm_v05_h200_validation.log`.
-- ✅ The wrapper auto-detects `text_config` nesting (multimodal gemma-4 → nested;
-  text-only Qwen/Llama → flat), fixing a crash where unconditional `text_config`
-  injection broke text-only models. Config layer unit-tested (13 tests).
+
+**Bug fix:** the wrapper auto-detects `text_config` nesting (multimodal gemma-4 →
+nested; text-only Qwen/Llama → flat). Config layer unit-tested (13 tests).
 
 ## 6. What's next (v0.6)
 
