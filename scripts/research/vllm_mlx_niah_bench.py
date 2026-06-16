@@ -130,15 +130,23 @@ def _post_generate(
     primary path; chat is a fallback for instruct builds.
     """
     t0 = time.time()
+    # gemma-4-IT needs its chat template; a raw /v1/completions prompt makes the
+    # instruct model emit <end_of_turn> immediately (empty answer). So try chat
+    # first (server applies the template), then fall back to /v1/completions with
+    # the gemma turn markers wrapped manually.
+    gemma = (
+        f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+    )
     attempts = (
-        ("/v1/completions", {
-            "model": model_id, "prompt": prompt,
-            "max_tokens": int(max_new_tokens), "temperature": 0.0,
-        }),
         ("/v1/chat/completions", {
             "model": model_id,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": int(max_new_tokens), "temperature": 0.0,
+        }),
+        ("/v1/completions", {
+            "model": model_id, "prompt": gemma,
+            "max_tokens": int(max_new_tokens), "temperature": 0.0,
+            "stop": ["<end_of_turn>"],
         }),
     )
     last_err = ""
