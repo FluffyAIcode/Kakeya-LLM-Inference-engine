@@ -1,0 +1,105 @@
+{
+  "kind": "vllm_mlx_niah_parallel",
+  "schema_version": 1,
+  "status": "ok",
+  "config": {
+    "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "sessions": 8,
+    "haystack_lines": 60,
+    "max_new_tokens": 24,
+    "engine": "vllm-mlx serve --continuous-batching --use-paged-cache"
+  },
+  "vllm_mlx_version": "0.3.0",
+  "served_model_id": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "endpoint_used": "/v1/chat/completions",
+  "recall": 0.0,
+  "sessions_ok": 8,
+  "n1_decode_tps": 68.0,
+  "aggregate_decode_tps": 402.58,
+  "parallel_speedup_vs_n1": 5.921,
+  "concurrent_wall_s": 0.02,
+  "total_completion_tokens": 8,
+  "per_session": [
+    {
+      "session": 0,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "E1A7B4",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 1,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "507888",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 2,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "F58C8A",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 3,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "DA50B3",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 4,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "66314F",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 5,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "6F8C5E",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 6,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "302671",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    },
+    {
+      "session": 7,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "478076",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.018,
+      "error": ""
+    }
+  ],
+  "server_log_tail": "WARNING:vllm_mlx.mllm_scheduler:Request 734bd851-ca6c-4295-a18c-ea4f2dd0d6a3 failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request 54142129-e22d-42f8-b1fa-16e5a15bf3ad failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request 0a764457-4893-4e95-a2e9-884563ad0847 failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request 97794e94-571f-48c7-be8b-399a65ea0ead failed during preprocessing\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.02s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:     127.0.0.1:59492 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59494 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59493 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59495 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59496 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59497 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59498 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59499 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK"
+}
