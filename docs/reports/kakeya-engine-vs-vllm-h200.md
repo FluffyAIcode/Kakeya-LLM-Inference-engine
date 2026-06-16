@@ -113,6 +113,75 @@ lever past N=34 remains **quantized attention** (KIE-v1.1.y) — attend on the
 packed/int codes without materializing bf16. v1.6's contiguous packed codes are
 exactly the input that kernel would consume.
 
+## KIE-v1.1.y — quantized attention: N=60 @62k (recall 1.0), 3.9× vLLM
+
+`quantized_flash_attention` (tiled online-softmax over the int8 exact-layer
+store, dequantizing **one tile at a time** → transient `O(tile)` not `O(S)`,
+patched into gemma-4's 5 exact-layer attentions) removes the decode-time bf16
+transient that capped KIE-v1.1.x at N=34. Measured on the same H200, 62k:
+
+| N | recall | peak GPU |
+| --- | --- | --- |
+| 40 | 1.0 | 91.8 GB |
+| 52 | 1.0 | 103.8 GB |
+| **60** | **1.0** | **111.7 GB** |
+
+**N=60 fits at recall 1.0** with headroom (111.7 GB) — **≈3.9× vLLM's 15.5**.
+Concurrency went **N=24 (bf16) → N=60 (quant-attn)**, the int8 storage finally
+converted into concurrency. (Numerically the tiled attention is exact vs full
+SDPA on the same int8 K/V — validated separately.)
+
+**Decode throughput (corrected).** The eval's `aggregate_tps_e2e` includes the
+**sequential** 62k prefill of all N sessions, which dominates the wall time and
+made the e2e figure look like ~2 tok/s — that is **not** the decode rate. With
+prefill and decode timed separately (N=8, 62k): **decode-only = 25.6 tok/s
+aggregate** (8×24 tokens / 7.5 s), vs prefill 86 s (the sequential-prefill
+harness artifact, not how a server admits requests).
+
+**Honest speed caveat.** 25.6 tok/s aggregate at N=8 is **~3.2 tok/s/session** —
+well below vLLM's ~98 tok/s single-session decode at 62k. The tiled
+online-softmax runs **eager** (graph capture off) in Python over 62k × 5 exact
+layers, so the **memory/concurrency** axis is won (N=60, recall 1.0) but the
+**decode-speed** axis is still weak.
+
+## KIE-v1.1.z — throughput attempt + the decode wall (honest)
+
+- **kakeyalattice v1.6.1**: the gemma-4 head-dim 256/512 bug is fixed (per-layer
+  lazy codec); `KakeyaLatticePackedCache` now runs on gemma-4 at **recall 1.0**
+  (2.46× storage). Wired via `kv_compressor.make_packed_kv_cache`.
+- **`torch.compile` the quantized attention**: **6.62×** on the standalone kernel
+  (eager 36.4 ms → 5.5 ms at decode shape). **But end-to-end decode is unchanged**
+  (25.2 vs 25.6 tok/s). 
+- **Why (decisive):** the decode step is dominated by the **eager 26B-MoE
+  full-model forward** (~322 ms per batch-8 step); the exact-layer quantized
+  attention is a small slice, so fusing *it* 6.6× barely moves the total.
+- **Verdict — decode ≥ vLLM is a vLLM-class kernel project, not a one-pass item.**
+  Matching vLLM's ~98 tok/s/session requires graph-capturing + **fused-MoE** the
+  whole forward (vLLM's core competency). The easy route
+  (`cache_implementation="static"` auto-compile + CUDA graphs) **segfaults** with
+  this model; a bespoke fused-MoE + graph-captured decode is the real work.
+
+**Net for KIE-v1.1.z:** the **memory/concurrency** axis extends (N=60→75 with the
+quant-attention + int8/packed storage; recall 1.0), but the **decode-throughput**
+axis cannot reach vLLM parity without rebuilding the fused-MoE+graph forward —
+which is the honest boundary of what this engine reaches in-session.
+
+### Measured (62k, recall 1.0, int8 + quant-attn)
+
+| N | recall | peak GPU | decode-only tok/s (aggregate) |
+| --- | --- | --- | --- |
+| 60 | 1.0 | 111.7 GB | ~25 |
+| 70 | 1.0 | 121.7 GB | 31.2 |
+| **75** | **1.0** | **126.7 GB** | **31.3** |
+
+**Concurrency goal met: N=75 at recall 1.0** (≈4.8× vLLM's 15.5), with int8
+storage alone (kakeyalattice's 2.46× would add headroom for higher N). **Decode
+goal NOT met:** aggregate decode-only is ~**31 tok/s across all 75 sessions**
+(~0.42/session) — it barely rises with N because the **eager batched 26B-MoE
+forward** scales with batch (≈2.5 s/step at batch-75). vLLM would do the same
+cohort far faster via fused-MoE + CUDA graphs. The decode-throughput parity is
+the unfinished axis (fused-MoE + graph-captured forward = vLLM-class work).
+
 ## What v1 already delivers
 
 - **Chunked restoration prefill works**: the engine runs 62k at **recall 1.0** and

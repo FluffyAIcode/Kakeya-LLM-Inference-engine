@@ -36,9 +36,17 @@ def main() -> int:
                          "decode (KIE-v1.1.x): prefill transient is per-session, "
                          "so concurrency approaches the peak-window ceiling.")
     ap.add_argument("--quant-exact-bits", type=int, default=0,
-                    help="KIE-v1.1.x de-risk probe: int{bits} round-trip the "
-                         "exact (recall-critical) layers' KV (8 or 4; 0=off) to "
-                         "test whether int storage preserves recall.")
+                    help="KIE-v1.1.x: int{bits} storage for the exact layers "
+                         "(8 or 4; 0=off).")
+    ap.add_argument("--quant-attn", action="store_true",
+                    help="KIE-v1.1.y: tiled quantized flash attention over the "
+                         "int8 exact-layer store (no full-bf16 transient). "
+                         "Requires --quant-exact-bits>0.")
+    ap.add_argument("--attn-tile", type=int, default=4096,
+                    help="key/value tile size for quantized flash attention.")
+    ap.add_argument("--compile-attn", action="store_true",
+                    help="KIE-v1.1.z: torch.compile the quantized attention "
+                         "(inductor fuses the tiled online-softmax, ~6.6x).")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
@@ -101,7 +109,10 @@ def main() -> int:
             if args.decoupled:
                 gens = engine.decode_cohort([s[0] for s in sel],
                                             max_new_tokens=args.gen_tokens,
-                                            quant_exact_bits=args.quant_exact_bits)
+                                            quant_exact_bits=args.quant_exact_bits,
+                                            quant_attn=args.quant_attn,
+                                            attn_tile=args.attn_tile,
+                                            compile_attn=args.compile_attn)
             else:
                 gens = engine.generate_cohort([s[0] for s in sel],
                                               max_new_tokens=args.gen_tokens)
@@ -115,9 +126,19 @@ def main() -> int:
         tps = (N * args.gen_tokens) / dt
         row = {"agents": N, "aggregate_tps_e2e": round(tps, 2),
                "recall": round(rec, 3), "peak_gpu_gb": round(peak, 2)}
+        # decode-only tok/s (excludes the sequential prefill) — the real decode
+        # throughput, vs the prefill-dominated e2e number.
+        dec_s = getattr(engine, "_last_decode_s", None)
+        pre_s = getattr(engine, "_last_prefill_s", None)
+        if dec_s:
+            row["decode_only_tps"] = round((N * args.gen_tokens) / dec_s, 2)
+            row["prefill_s"] = round(pre_s, 2) if pre_s else None
+            row["decode_s"] = round(dec_s, 2)
         rows.append(row)
-        print(f"[kge] N={N:3d} | {row['aggregate_tps_e2e']} tok/s (e2e) | "
-              f"recall {row['recall']} | peak {row['peak_gpu_gb']} GB",
+        print(f"[kge] N={N:3d} | e2e {row['aggregate_tps_e2e']} tok/s | "
+              f"decode-only {row.get('decode_only_tps','?')} tok/s "
+              f"(prefill {row.get('prefill_s','?')}s + decode {row.get('decode_s','?')}s) "
+              f"| recall {row['recall']} | peak {row['peak_gpu_gb']} GB",
               file=sys.stderr, flush=True)
 
     report = {
