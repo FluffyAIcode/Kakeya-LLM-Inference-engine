@@ -1,0 +1,107 @@
+{
+  "kind": "vllm_mlx_niah_parallel",
+  "schema_version": 1,
+  "status": "ok",
+  "config": {
+    "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "sessions": 8,
+    "haystack_lines": 60,
+    "max_new_tokens": 24,
+    "engine": "vllm-mlx serve --continuous-batching --use-paged-cache"
+  },
+  "vllm_mlx_version": "0.3.0",
+  "served_model_id": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "debug_simple_chat": "{\"id\": \"chatcmpl-0204862a\", \"object\": \"chat.completion\", \"created\": 1781608994, \"model\": \"/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": null}, \"finish_reason\": \"error\"}], \"usage\": {\"prompt_tokens\": 0, \"completion_tokens\": 0, \"total_tokens\": 0}}",
+  "debug_simple_completion": "{\"id\": \"cmpl-1dafb79d\", \"object\": \"text_completion\", \"created\": 1781608994, \"model\": \"/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit\", \"choices\": [{\"index\": 0, \"text\": \"\", \"finish_reason\": \"error\"}], \"usage\": {\"prompt_tokens\": 0, \"completion_tokens\": 0, \"total_tokens\": 0}}",
+  "endpoint_used": "/v1/chat/completions",
+  "recall": 0.0,
+  "sessions_ok": 8,
+  "n1_decode_tps": 57.09,
+  "aggregate_decode_tps": 285.76,
+  "parallel_speedup_vs_n1": 5.006,
+  "concurrent_wall_s": 0.028,
+  "total_completion_tokens": 8,
+  "per_session": [
+    {
+      "session": 0,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "E1A7B4",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 1,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "507888",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 2,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "F58C8A",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 3,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "DA50B3",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 4,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "66314F",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.024,
+      "error": ""
+    },
+    {
+      "session": 5,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "6F8C5E",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 6,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "302671",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 7,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "478076",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    }
+  ],
+  "server_log_tail": "        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/lib/python3.13/site-packages/mlx_vlm/models/gemma4/language.py\", line 320, in __call__\n    h, shared_kv, offset = self.self_attn(\n                           ~~~~~~~~~~~~~~^\n        h, mask, cache, shared_kv=shared_kv, offset=offset\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\nTypeError: patch_gemma4_attention_for_batching.<locals>._patched_call() got an unexpected keyword argument 'shared_kv'\nWARNING:vllm_mlx.mllm_scheduler:Request ab3440c4-19b7-4fd7-984a-a983ba2e074d failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request 2fc7255f-2ff3-41a7-8783-3df6288984e6 failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request c0d556bc-d71a-41bc-baea-9705d4358752 failed during preprocessing\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Chat completion: 0 tokens in 0.01s (0.0 tok/s)\nINFO:     127.0.0.1:59768 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59769 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59770 - \"POST /v1/chat/completions HTTP/1.1\" 200 OK"
+}

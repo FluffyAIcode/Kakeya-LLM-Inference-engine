@@ -1,41 +1,43 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "vllm-mlx-niah",
   "params": {
-    "n_samples": "5",
-    "max_new_tokens": "64",
-    "block_size": "4"
+    "n_samples": "8",
+    "max_new_tokens": "24"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781608967-ac762c",
   "commands": [
     {
       "argv": [
         "python3",
-        "scripts/research/k3_integrated_niah_eval_mac.py",
-        "--verifier-path",
-        "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
-        "--drafter-id",
-        "z-lab/gemma-4-26B-A4B-it-DFlash",
-        "--f-theta-dir",
-        "results/research/f_theta_v5_s5_sliding",
-        "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
-        "--n-samples",
-        "5",
-        "--max-new-tokens",
-        "64",
-        "--block-size",
-        "4",
-        "--prefill-chunk-size",
-        "512",
-        "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "vllm-mlx"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 0.5,
+      "log": ".mac-bridge/logs/vllm-mlx-niah-0.log"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/research/vllm_mlx_niah_bench.py",
+        "--model-path",
+        "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+        "--sessions",
+        "8",
+        "--haystack-lines",
+        "60",
+        "--max-new-tokens",
+        "24",
+        "--output",
+        "results/research/k3_mac_bridge_vllm_mlx_niah.json"
+      ],
+      "exit_code": 0,
+      "seconds": 12.8,
+      "log": ".mac-bridge/logs/vllm-mlx-niah-1.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }

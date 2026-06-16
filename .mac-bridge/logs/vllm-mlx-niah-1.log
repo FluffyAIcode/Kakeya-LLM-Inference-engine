@@ -1,0 +1,8 @@
+[vllm-mlx-niah] vllm-mlx version: 0.3.0
+[vllm-mlx-niah] launching: vllm-mlx serve /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit --host 127.0.0.1 --port 59738 --continuous-batching --use-paged-cache --max-request-tokens 32768
+[vllm-mlx-niah] server ready (/v1/models)
+[vllm-mlx-niah] served model id: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[vllm-mlx-niah] debug_simple_chat: {"id": "chatcmpl-0204862a", "object": "chat.completion", "created": 1781608994, "model": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit", "choices": [{"index": 0, "message": {"role": "assistant", "content": null}, "finish_reason": "error"}], "usage": {"prompt_tokens": 0, "completion_tok
+[vllm-mlx-niah] debug_simple_completion: {"id": "cmpl-1dafb79d", "object": "text_completion", "created": 1781608994, "model": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit", "choices": [{"index": 0, "text": "", "finish_reason": "error"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+[vllm-mlx-niah] status=ok; wrote results/research/k3_mac_bridge_vllm_mlx_niah.json
+[vllm-mlx-niah] VERDICT: recall=0.000 (0/8), agg_decode=285.8 tok/s, N=1=57.1 tok/s, parallel=YES
