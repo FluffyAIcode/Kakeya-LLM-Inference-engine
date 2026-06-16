@@ -1,0 +1,7 @@
+[vllm-mlx-niah] vllm-mlx version: 0.3.0
+[vllm-mlx-niah] === Phase A: simple mode (single-stream control, N=1) ===
+[vllm-mlx-niah] simple serve: vllm-mlx serve /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit --host 127.0.0.1 --port 60080 --max-request-tokens 32768
+[vllm-mlx-niah] === Phase B: continuous batching, N=8 ===
+[vllm-mlx-niah] continuous serve: vllm-mlx serve /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit --host 127.0.0.1 --port 60120 --max-request-tokens 32768 --continuous-batching --use-paged-cache
+[vllm-mlx-niah] status=ok; wrote results/research/k3_mac_bridge_vllm_mlx_niah.json
+[vllm-mlx-niah] VERDICT: {"single_stream_generates": true, "batched_generates": true, "batched_recall": 0.0, "parallel_and_recall_preserving": false}
