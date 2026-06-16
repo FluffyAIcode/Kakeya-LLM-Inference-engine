@@ -109,6 +109,23 @@ makes the sliding-layer attention cheaper than vLLM's default. This validates th
 feasibility verdict with real numbers: **running on vLLM solves the decode-speed
 axis** (the eager research engine was ~25 tok/s; on vLLM it is 195–539 tok/s).
 
+**Long-context (ctx 62k, N=70) — the advantage SHRINKS on gemma-4 (not grows):**
+
+| metric (62k, N=70) | Kakeya-on-vLLM sw=68 | vLLM default sw=1024 | ratio |
+| --- | --- | --- | --- |
+| decode tok/s | 20.38 | 19.03 | 1.07× |
+| vLLM max concurrency (66k req) | 16.15× | 15.51× | 1.04× |
+
+Counter-intuitively, the bounded-window edge **falls** from ~1.15–1.23× at 16k to
+~1.07× at 62k. Reason: at long context the **5 full-attention layers hold full-ctx
+KV in both configs and dominate** the per-session footprint, so shrinking the
+sliding window (1024→68) is only a ~4–7% saving. (Both are KV-pool-limited at ~16
+concurrent 62k sessions, so N=70 is mostly queued — decode ~20 tok/s aggregate.)
+This **re-confirms** the gemma-4 caveat: its native hybrid (5 full + 25 sliding)
+means the long-context memory win is small. The large bounded-KV advantage
+requires a **full-attention** model (Qwen/Llama), where *all* layers are full and
+the bounded window + restoration cuts ~6×.
+
 Honest scope: this is the **gemma-4 bounded-window** instantiation (no restoration
 needed — S5 free lunch — delivered via vLLM config + `hf_overrides`). The deeper
 backend (f_θ/proposer **restoration** at prefill + **quantized-exact** attention,
