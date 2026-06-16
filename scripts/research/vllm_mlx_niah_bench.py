@@ -81,41 +81,78 @@ def _build_niah_items(sessions: int, haystack_lines: int) -> List[Dict[str, str]
     return items
 
 
-def _post_chat(
-    base_url: str, prompt: str, max_new_tokens: int, timeout: float,
-) -> Tuple[bool, str, int, float, str]:
-    """POST /v1/chat/completions. Returns (ok, text, completion_tokens, latency, err)."""
-    body = json.dumps({
-        "model": "default",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": int(max_new_tokens),
-        "temperature": 0.0,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{base_url}/v1/chat/completions", data=body,
-        headers={"Content-Type": "application/json"}, method="POST",
-    )
-    t0 = time.time()
+def _get_model_id(base_url: str) -> Optional[str]:
+    """Resolve the served model id from /v1/models (the MLX verifier path)."""
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:300]
-        return False, "", 0, time.time() - t0, f"HTTP {exc.code}: {detail}"
-    except Exception as exc:  # noqa: BLE001 - report any transport error
-        return False, "", 0, time.time() - t0, f"{type(exc).__name__}: {exc}"
-    latency = time.time() - t0
+        with urllib.request.urlopen(base_url + "/v1/models", timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        models = data.get("data") or []
+        if models and isinstance(models[0], dict) and models[0].get("id"):
+            return str(models[0]["id"])
+    except Exception:
+        pass
+    return None
+
+
+def _extract(payload: Dict[str, Any]) -> Tuple[str, int]:
+    """Pull text + completion_tokens from a completions OR chat-completions body."""
+    text = ""
     try:
-        text = payload["choices"][0]["message"]["content"] or ""
+        ch = payload["choices"][0]
+        text = ch.get("text") or (ch.get("message") or {}).get("content") or ""
     except Exception:
         text = ""
     ctoks = 0
     usage = payload.get("usage") or {}
     if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
         ctoks = usage["completion_tokens"]
-    if ctoks <= 0:  # fallback estimate if server omits usage
-        ctoks = max(1, len(text.split()))
-    return True, text, ctoks, latency, ""
+    if ctoks <= 0:
+        ctoks = max(1, len((text or "").split()))
+    return text or "", ctoks
+
+
+def _post(base_url: str, path: str, body: Dict[str, Any], timeout: float):
+    req = urllib.request.Request(
+        base_url + path, data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _post_generate(
+    base_url: str, model_id: str, prompt: str, max_new_tokens: int, timeout: float,
+) -> Tuple[bool, str, int, float, str, str]:
+    """Generate via /v1/completions (raw prompt), falling back to chat.
+
+    Returns (ok, text, completion_tokens, latency, err, endpoint). The MLX
+    verifier is a raw checkpoint (no chat template) so /v1/completions is the
+    primary path; chat is a fallback for instruct builds.
+    """
+    t0 = time.time()
+    attempts = (
+        ("/v1/completions", {
+            "model": model_id, "prompt": prompt,
+            "max_tokens": int(max_new_tokens), "temperature": 0.0,
+        }),
+        ("/v1/chat/completions", {
+            "model": model_id,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": int(max_new_tokens), "temperature": 0.0,
+        }),
+    )
+    last_err = ""
+    for path, body in attempts:
+        try:
+            payload = _post(base_url, path, body, timeout)
+        except urllib.error.HTTPError as exc:
+            last_err = f"{path} HTTP {exc.code}: {exc.read().decode('utf-8','replace')[:200]}"
+            continue  # try the next endpoint shape
+        except Exception as exc:  # noqa: BLE001
+            return False, "", 0, time.time() - t0, f"{path}: {type(exc).__name__}: {exc}", path
+        text, ctoks = _extract(payload)
+        return True, text, ctoks, time.time() - t0, "", path
+    return False, "", 0, time.time() - t0, last_err, "none"
 
 
 def _wait_for_server(
@@ -127,7 +164,7 @@ def _wait_for_server(
     while time.time() < deadline:
         if proc.poll() is not None:
             return False, f"server process exited early (rc={proc.returncode})"
-        for path in ("/version", "/v1/models", "/health"):
+        for path in ("/v1/models", "/version", "/health"):
             try:
                 with urllib.request.urlopen(base_url + path, timeout=5) as r:
                     if r.status == 200:
@@ -210,22 +247,31 @@ def main() -> int:
             return 0
         _log(f"server ready ({detail})")
 
+        model_id = _get_model_id(base_url) or "default"
+        report["served_model_id"] = model_id
+        _log(f"served model id: {model_id}")
+
         items = _build_niah_items(args.sessions, args.haystack_lines)
 
         # Warmup (lazy MLX graph compile) — not measured.
-        _post_chat(base_url, "Reply with the word ready.", 8, args.req_timeout)
+        _post_generate(base_url, model_id, "Reply with the word ready.",
+                       8, args.req_timeout)
 
         # N=1 baseline (single request decode tok/s).
-        ok0, text0, ct0, lat0, err0 = _post_chat(
-            base_url, items[0]["prompt"], args.max_new_tokens, args.req_timeout)
+        ok0, text0, ct0, lat0, err0, ep0 = _post_generate(
+            base_url, model_id, items[0]["prompt"], args.max_new_tokens,
+            args.req_timeout)
         n1_tps = (ct0 / lat0) if (ok0 and lat0 > 0) else 0.0
+        report["endpoint_used"] = ep0
+        if not ok0:
+            report["n1_error"] = err0
 
         # N concurrent (the parallel path — continuous batching).
-        results: List[Optional[Tuple[bool, str, int, float, str]]] = [None] * len(items)
+        results: List[Optional[Tuple[bool, str, int, float, str, str]]] = [None] * len(items)
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=len(items)) as ex:
             futs = {
-                ex.submit(_post_chat, base_url, it["prompt"],
+                ex.submit(_post_generate, base_url, model_id, it["prompt"],
                           args.max_new_tokens, args.req_timeout): k
                 for k, it in enumerate(items)
             }
@@ -234,7 +280,7 @@ def main() -> int:
                 try:
                     results[k] = fut.result()
                 except Exception as exc:  # noqa: BLE001
-                    results[k] = (False, "", 0, 0.0, f"{type(exc).__name__}: {exc}")
+                    results[k] = (False, "", 0, 0.0, f"{type(exc).__name__}: {exc}", "none")
         wall = max(time.time() - t0, 1e-6)
 
         per_session: List[Dict[str, Any]] = []
@@ -242,7 +288,7 @@ def main() -> int:
         total_ctoks = 0
         n_ok = 0
         for k, (it, res) in enumerate(zip(items, results)):
-            ok, text, ctoks, lat, err = res  # type: ignore[misc]
+            ok, text, ctoks, lat, err, _ep = res  # type: ignore[misc]
             found = ok and (it["code"] in (text or ""))
             hits += 1 if found else 0
             total_ctoks += ctoks if ok else 0
