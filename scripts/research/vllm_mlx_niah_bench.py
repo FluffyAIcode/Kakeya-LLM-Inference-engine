@@ -259,6 +259,30 @@ def main() -> int:
         report["served_model_id"] = model_id
         _log(f"served model id: {model_id}")
 
+        # DEBUG: capture the raw server response for a simple control prompt, so
+        # we can see finish_reason / structure (diagnose the empty-answer issue).
+        for dbgname, dbgbody in (
+            ("debug_simple_chat", {
+                "model": model_id,
+                "messages": [{"role": "user",
+                              "content": "What is the capital of France? Answer in one short sentence."}],
+                "max_tokens": 32, "temperature": 0.0}),
+            ("debug_simple_completion", {
+                "model": model_id,
+                "prompt": "<start_of_turn>user\nWhat is the capital of France?<end_of_turn>\n<start_of_turn>model\n",
+                "max_tokens": 32, "temperature": 0.0, "stop": ["<end_of_turn>"]}),
+        ):
+            path = ("/v1/chat/completions" if "chat" in dbgname
+                    else "/v1/completions")
+            try:
+                dbg = _post(base_url, path, dbgbody, args.req_timeout)
+                report[dbgname] = json.dumps(dbg)[:900]
+            except urllib.error.HTTPError as exc:
+                report[dbgname] = f"HTTP {exc.code}: {exc.read().decode('utf-8','replace')[:300]}"
+            except Exception as exc:  # noqa: BLE001
+                report[dbgname] = f"{type(exc).__name__}: {exc}"
+            _log(f"{dbgname}: {report[dbgname][:300]}")
+
         items = _build_niah_items(args.sessions, args.haystack_lines)
 
         # Warmup (lazy MLX graph compile) — not measured.
