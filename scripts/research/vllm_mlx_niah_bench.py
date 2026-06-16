@@ -190,6 +190,91 @@ def _tail(path: Path, n: int = 40) -> str:
         return ""
 
 
+def _serve(model_path: str, port: int, continuous: bool, log_path: Path) -> subprocess.Popen:
+    argv = ["vllm-mlx", "serve", model_path, "--host", "127.0.0.1",
+            "--port", str(port), "--max-request-tokens", "32768"]
+    if continuous:
+        argv += ["--continuous-batching", "--use-paged-cache"]
+    _log(("continuous" if continuous else "simple") + " serve: " + " ".join(argv))
+    with open(log_path, "wb") as logf:
+        return subprocess.Popen(argv, stdout=logf, stderr=subprocess.STDOUT)
+
+
+def _run_phase(
+    model_path: str, continuous: bool, sessions: int, haystack_lines: int,
+    max_new_tokens: int, server_timeout: float, req_timeout: float,
+) -> Dict[str, Any]:
+    """Launch one vLLM-MLX server (simple or continuous-batching) and run a
+    sessions-way concurrent NIAH against it. Returns a result dict."""
+    phase: Dict[str, Any] = {
+        "continuous_batching": continuous, "sessions": sessions, "status": "init",
+    }
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    log_path = Path(tempfile.gettempdir()) / f"vllm_mlx_serve_{port}.log"
+    proc: Optional[subprocess.Popen] = None
+    try:
+        proc = _serve(model_path, port, continuous, log_path)
+        ready, detail = _wait_for_server(base_url, proc, server_timeout)
+        if not ready:
+            phase.update(status="server_failed", error=detail,
+                         server_log_tail=_tail(log_path))
+            return phase
+        model_id = _get_model_id(base_url) or "default"
+        items = _build_niah_items(sessions, haystack_lines)
+        _post_generate(base_url, model_id, "Reply with the word ready.", 8, req_timeout)
+
+        results: List[Any] = [None] * len(items)
+        t0 = time.time()
+        with ThreadPoolExecutor(max_workers=max(1, len(items))) as ex:
+            futs = {ex.submit(_post_generate, base_url, model_id, it["prompt"],
+                              max_new_tokens, req_timeout): k
+                    for k, it in enumerate(items)}
+            for fut in futs:
+                k = futs[fut]
+                try:
+                    results[k] = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    results[k] = (False, "", 0, 0.0, f"{type(exc).__name__}: {exc}", "none")
+        wall = max(time.time() - t0, 1e-6)
+
+        per_session, hits, total_ctoks, n_ok = [], 0, 0, 0
+        endpoint = "none"
+        for it, res in zip(items, results):
+            ok, text, ctoks, lat, err, ep = res
+            endpoint = ep if ep != "none" else endpoint
+            found = ok and (it["code"] in (text or ""))
+            hits += 1 if found else 0
+            total_ctoks += ctoks if ok else 0
+            n_ok += 1 if ok else 0
+            per_session.append({
+                "session": it["session"], "ok": ok, "needle_found": found,
+                "expected_code": it["code"], "answer_excerpt": (text or "")[:80],
+                "completion_tokens": ctoks, "latency_s": round(lat, 3), "error": err,
+            })
+        phase.update(
+            status="ok", endpoint_used=endpoint,
+            recall=round(hits / len(items), 4) if items else 0.0,
+            sessions_ok=n_ok, total_completion_tokens=total_ctoks,
+            aggregate_decode_tps=round(total_ctoks / wall, 2),
+            wall_s=round(wall, 3), per_session=per_session,
+            server_log_tail=_tail(log_path, 12),
+        )
+        return phase
+    except Exception as exc:  # noqa: BLE001
+        phase.update(status="error", error=f"{type(exc).__name__}: {exc}",
+                     server_log_tail=_tail(log_path))
+        return phase
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=20)
+            except Exception:
+                proc.kill()
+        time.sleep(2)  # let the port/Metal context release before the next phase
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="vLLM-MLX parallel NIAH probe")
     ap.add_argument("--model-path", required=True,
@@ -232,138 +317,37 @@ def main() -> int:
         return 0
     _log(f"vllm-mlx version: {report['vllm_mlx_version']}")
 
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
-    log_path = Path(tempfile.gettempdir()) / f"vllm_mlx_serve_{port}.log"
-    serve_argv = [
-        "vllm-mlx", "serve", args.model_path,
-        "--host", "127.0.0.1", "--port", str(port),
-        "--continuous-batching", "--use-paged-cache",
-        "--max-request-tokens", "32768",
-    ]
-    _log("launching: " + " ".join(serve_argv))
-    proc: Optional[subprocess.Popen] = None
-    try:
-        with open(log_path, "wb") as logf:
-            proc = subprocess.Popen(serve_argv, stdout=logf, stderr=subprocess.STDOUT)
+    # Phase A — SIMPLE mode (no continuous batching): single-stream control. If
+    # gemma-4 generates here but fails under batching, the failure is isolated to
+    # vLLM-MLX's continuous-batching adapter, not model loading.
+    _log("=== Phase A: simple mode (single-stream control, N=1) ===")
+    simple = _run_phase(
+        args.model_path, continuous=False, sessions=1,
+        haystack_lines=args.haystack_lines, max_new_tokens=args.max_new_tokens,
+        server_timeout=args.server_timeout, req_timeout=args.req_timeout)
+    report["simple_mode"] = simple
 
-        ready, detail = _wait_for_server(base_url, proc, args.server_timeout)
-        if not ready:
-            _flush("server_failed",
-                   error=f"server not ready: {detail}",
-                   server_log_tail=_tail(log_path))
-            return 0
-        _log(f"server ready ({detail})")
+    # Phase B — CONTINUOUS BATCHING (the parallel path under test): N sessions.
+    _log(f"=== Phase B: continuous batching, N={args.sessions} ===")
+    batched = _run_phase(
+        args.model_path, continuous=True, sessions=args.sessions,
+        haystack_lines=args.haystack_lines, max_new_tokens=args.max_new_tokens,
+        server_timeout=args.server_timeout, req_timeout=args.req_timeout)
+    report["continuous_batching_mode"] = batched
 
-        model_id = _get_model_id(base_url) or "default"
-        report["served_model_id"] = model_id
-        _log(f"served model id: {model_id}")
-
-        # DEBUG: capture the raw server response for a simple control prompt, so
-        # we can see finish_reason / structure (diagnose the empty-answer issue).
-        for dbgname, dbgbody in (
-            ("debug_simple_chat", {
-                "model": model_id,
-                "messages": [{"role": "user",
-                              "content": "What is the capital of France? Answer in one short sentence."}],
-                "max_tokens": 32, "temperature": 0.0}),
-            ("debug_simple_completion", {
-                "model": model_id,
-                "prompt": "<start_of_turn>user\nWhat is the capital of France?<end_of_turn>\n<start_of_turn>model\n",
-                "max_tokens": 32, "temperature": 0.0, "stop": ["<end_of_turn>"]}),
-        ):
-            path = ("/v1/chat/completions" if "chat" in dbgname
-                    else "/v1/completions")
-            try:
-                dbg = _post(base_url, path, dbgbody, args.req_timeout)
-                report[dbgname] = json.dumps(dbg)[:900]
-            except urllib.error.HTTPError as exc:
-                report[dbgname] = f"HTTP {exc.code}: {exc.read().decode('utf-8','replace')[:300]}"
-            except Exception as exc:  # noqa: BLE001
-                report[dbgname] = f"{type(exc).__name__}: {exc}"
-            _log(f"{dbgname}: {report[dbgname][:300]}")
-
-        items = _build_niah_items(args.sessions, args.haystack_lines)
-
-        # Warmup (lazy MLX graph compile) — not measured.
-        _post_generate(base_url, model_id, "Reply with the word ready.",
-                       8, args.req_timeout)
-
-        # N=1 baseline (single request decode tok/s).
-        ok0, text0, ct0, lat0, err0, ep0 = _post_generate(
-            base_url, model_id, items[0]["prompt"], args.max_new_tokens,
-            args.req_timeout)
-        n1_tps = (ct0 / lat0) if (ok0 and lat0 > 0) else 0.0
-        report["endpoint_used"] = ep0
-        if not ok0:
-            report["n1_error"] = err0
-
-        # N concurrent (the parallel path — continuous batching).
-        results: List[Optional[Tuple[bool, str, int, float, str, str]]] = [None] * len(items)
-        t0 = time.time()
-        with ThreadPoolExecutor(max_workers=len(items)) as ex:
-            futs = {
-                ex.submit(_post_generate, base_url, model_id, it["prompt"],
-                          args.max_new_tokens, args.req_timeout): k
-                for k, it in enumerate(items)
-            }
-            for fut in futs:
-                k = futs[fut]
-                try:
-                    results[k] = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    results[k] = (False, "", 0, 0.0, f"{type(exc).__name__}: {exc}", "none")
-        wall = max(time.time() - t0, 1e-6)
-
-        per_session: List[Dict[str, Any]] = []
-        hits = 0
-        total_ctoks = 0
-        n_ok = 0
-        for k, (it, res) in enumerate(zip(items, results)):
-            ok, text, ctoks, lat, err, _ep = res  # type: ignore[misc]
-            found = ok and (it["code"] in (text or ""))
-            hits += 1 if found else 0
-            total_ctoks += ctoks if ok else 0
-            n_ok += 1 if ok else 0
-            per_session.append({
-                "session": it["session"], "ok": ok, "needle_found": found,
-                "expected_code": it["code"],
-                "answer_excerpt": (text or "")[:80], "completion_tokens": ctoks,
-                "latency_s": round(lat, 3), "error": err,
-            })
-
-        recall = hits / len(items) if items else 0.0
-        agg_tps = total_ctoks / wall
-        _flush(
-            "ok",
-            recall=round(recall, 4),
-            sessions_ok=n_ok,
-            n1_decode_tps=round(n1_tps, 2),
-            aggregate_decode_tps=round(agg_tps, 2),
-            parallel_speedup_vs_n1=round(agg_tps / n1_tps, 3) if n1_tps > 0 else None,
-            concurrent_wall_s=round(wall, 3),
-            total_completion_tokens=total_ctoks,
-            per_session=per_session,
-            server_log_tail=_tail(log_path, 20),
-        )
-        verdict = (
-            f"recall={recall:.3f} ({hits}/{len(items)}), "
-            f"agg_decode={agg_tps:.1f} tok/s, N=1={n1_tps:.1f} tok/s, "
-            f"parallel={'YES' if agg_tps > n1_tps else 'no-gain'}"
-        )
-        _log("VERDICT: " + verdict)
-        return 0
-    except Exception as exc:  # noqa: BLE001
-        _flush("error", error=f"{type(exc).__name__}: {exc}",
-               server_log_tail=_tail(log_path))
-        return 0
-    finally:
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=20)
-            except Exception:
-                proc.kill()
+    # Verdict: parallel AND recall-preserving on our config?
+    simple_gen = simple.get("status") == "ok" and simple.get("total_completion_tokens", 0) > 0
+    batched_recall = batched.get("recall", 0.0) if batched.get("status") == "ok" else 0.0
+    batched_gen = batched.get("status") == "ok" and batched.get("total_completion_tokens", 0) > 0
+    report["verdict"] = {
+        "single_stream_generates": bool(simple_gen),
+        "batched_generates": bool(batched_gen),
+        "batched_recall": batched_recall,
+        "parallel_and_recall_preserving": bool(batched_gen and batched_recall >= 0.99),
+    }
+    _flush("ok")
+    _log(f"VERDICT: {json.dumps(report['verdict'])}")
+    return 0
 
 
 if __name__ == "__main__":
