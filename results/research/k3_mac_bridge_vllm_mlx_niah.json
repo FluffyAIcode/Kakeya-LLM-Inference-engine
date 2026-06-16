@@ -1,0 +1,105 @@
+{
+  "kind": "vllm_mlx_niah_parallel",
+  "schema_version": 1,
+  "status": "ok",
+  "config": {
+    "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+    "sessions": 8,
+    "haystack_lines": 60,
+    "max_new_tokens": 24,
+    "engine": "vllm-mlx serve --continuous-batching --use-paged-cache"
+  },
+  "vllm_mlx_version": "0.3.0",
+  "served_model_id": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "endpoint_used": "/v1/completions",
+  "recall": 0.0,
+  "sessions_ok": 8,
+  "n1_decode_tps": 61.51,
+  "aggregate_decode_tps": 311.1,
+  "parallel_speedup_vs_n1": 5.058,
+  "concurrent_wall_s": 0.026,
+  "total_completion_tokens": 8,
+  "per_session": [
+    {
+      "session": 0,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "E1A7B4",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.025,
+      "error": ""
+    },
+    {
+      "session": 1,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "507888",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.024,
+      "error": ""
+    },
+    {
+      "session": 2,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "F58C8A",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.024,
+      "error": ""
+    },
+    {
+      "session": 3,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "DA50B3",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.024,
+      "error": ""
+    },
+    {
+      "session": 4,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "66314F",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.024,
+      "error": ""
+    },
+    {
+      "session": 5,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "6F8C5E",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.024,
+      "error": ""
+    },
+    {
+      "session": 6,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "302671",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.023,
+      "error": ""
+    },
+    {
+      "session": 7,
+      "ok": true,
+      "needle_found": false,
+      "expected_code": "478076",
+      "answer_excerpt": "",
+      "completion_tokens": 1,
+      "latency_s": 0.023,
+      "error": ""
+    }
+  ],
+  "server_log_tail": "WARNING:vllm_mlx.mllm_scheduler:Request d493bcb5-2360-4966-b5f7-a5fe02dd2ce4 failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request fd10dc41-c3d7-4294-a146-2f3288cd7c6c failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request 4cb7c9fc-e73a-4baa-ad89-25f6df07de31 failed during preprocessing\nWARNING:vllm_mlx.mllm_scheduler:Request e834e459-5ea0-4094-ab78-11f63e037204 failed during preprocessing\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.02s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.02s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.02s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.02s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.01s (0.0 tok/s)\nINFO:vllm_mlx.server:Completion: 0 prompt + 0 completion tokens in 0.01s (0.0 tok/s)\nINFO:     127.0.0.1:59224 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59225 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59226 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59227 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59228 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59229 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59230 - \"POST /v1/completions HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:59231 - \"POST /v1/completions HTTP/1.1\" 200 OK"
+}
