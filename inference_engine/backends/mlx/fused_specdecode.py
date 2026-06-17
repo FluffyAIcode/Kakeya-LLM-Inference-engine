@@ -713,7 +713,8 @@ def fused_specdecode_generate(
             # bonus token, so there is never a rejected tail to trim and offset
             # stays == past_len (matching the native greedy path, which stays
             # coherent past ms). Costs the speculative speedup past ms only.
-            wrap_l1 = _sliding_ring_would_wrap(adapter._cache, L)
+            wrap_l1 = _sliding_ring_would_wrap(
+                getattr(adapter, "_cache", None), L)
             if wrap_l1:
                 L = 1
             cstart = adapter._past_len
