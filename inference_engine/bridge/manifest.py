@@ -773,11 +773,14 @@ PRESETS: Dict[str, Preset] = {
         ),
         Preset(
             name="mlx-kakeya-degen-probe",
-            description="DEBUG (Phase-1): full f_θ fused engine on a LONG prompt "
-                        "(--ignore-turn-stop, default 256 tokens) to characterize "
-                        "the long-decode degeneration onset. Emits KDBG NDJSON to "
-                        "stderr (captured in the bridge log) + transcript JSON. NOT "
-                        "gated — the degeneration is the thing being measured.",
+            description="Long-decode regression probe: full f_θ fused engine on a "
+                        "LONG generation (--ignore-turn-stop) past the native "
+                        "RotatingKVCache ring wrap (max_size~1024), with a "
+                        "native-greedy control (--chat-native-ref) on the same "
+                        "prompt for an A/B coherence comparison. Guards the "
+                        "wrapped-ring trim-desync fix: at >=1300 tokens the fused "
+                        "output must stay coherent (match native), not collapse "
+                        "into a runaway repeat.",
             command_templates=(
                 (
                     "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
