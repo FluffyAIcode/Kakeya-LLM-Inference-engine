@@ -170,6 +170,68 @@ class _FakePlainKV:
         self.max_size = None
 
 
+def test_trailing_runaway_drop_detects_and_trims_loops():
+    # 1-token unit repeated 20x -> drop all but keep_reps (default 3).
+    ids = [1, 2, 3] + [9] * 20
+    drop = fsd._trailing_runaway_drop(ids)
+    assert drop == 17                                   # 20 - 3 kept
+    # multi-token unit (period 3) repeated 12x -> drop (12-3)*3 = 27.
+    ids2 = [5, 6] + [7, 8, 9] * 12
+    assert fsd._trailing_runaway_drop(ids2) == 27
+
+
+def test_trailing_runaway_drop_is_conservative():
+    # fewer than min_reps (12) back-to-back -> no trim.
+    assert fsd._trailing_runaway_drop([9] * 11) == 0
+    # legitimate non-repeating tail -> no trim.
+    assert fsd._trailing_runaway_drop(list(range(40))) == 0
+    # a period that does not tile the very tail -> no trim.
+    assert fsd._trailing_runaway_drop([1, 2] * 10 + [3]) == 0
+    # empty / short -> no trim.
+    assert fsd._trailing_runaway_drop([]) == 0
+
+
+def test_fused_loop_stops_on_runaway_repeat():
+    # Drafter keeps proposing the same token; the fake verifier's "+1" truth is
+    # defeated by making the bonus re-loop: we feed a drafter that always drafts
+    # the marker token and a verifier that greedily agrees, so the committed
+    # stream becomes a runaway single-token loop the guard must cut.
+    class _LoopAdapter(_FakeAdapter):
+        def forward_block(self, candidate):
+            # verifier greedily predicts the SAME marker token (42) forever.
+            if self._capture_aux:
+                L = len(candidate)
+                self._last_aux = [torch.zeros(L, self.hidden)]
+            return [42 for _ in candidate]
+
+    adapter = _LoopAdapter(prompt_len=5, first_token=42)
+    drafter = _FakeDrafter(drafts=[[42, 42, 42]] * 60)
+    res = fsd.fused_specdecode_generate(
+        adapter, drafter, gen_tokens=400, block_size=4, eos_ids=(),
+        allow_greedy_fallback=False, **_loop_kwargs(drafter))
+    assert res["stopped_on_runaway"] is True
+    # stopped early with a short clean tail, nowhere near the 400 budget.
+    assert len(res["tokens"]) < 40
+    assert set(res["tokens"]) == {42}
+
+
+def test_fused_loop_runaway_guard_can_be_disabled():
+    class _LoopAdapter(_FakeAdapter):
+        def forward_block(self, candidate):
+            if self._capture_aux:
+                self._last_aux = [torch.zeros(len(candidate), self.hidden)]
+            return [42 for _ in candidate]
+
+    adapter = _LoopAdapter(prompt_len=5, first_token=42)
+    drafter = _FakeDrafter(drafts=[[42, 42, 42]] * 200)
+    res = fsd.fused_specdecode_generate(
+        adapter, drafter, gen_tokens=120, block_size=4, eos_ids=(),
+        allow_greedy_fallback=False, stop_on_runaway=False,
+        **_loop_kwargs(drafter))
+    assert res["stopped_on_runaway"] is False
+    assert len(res["tokens"]) == 120                    # ran to the full budget
+
+
 def test_sliding_ring_would_wrap_detects_wrap():
     # offset + n_new >= max_size -> the rotating ring becomes non-trimmable.
     cache = [_FakeRotating(offset=1022, max_size=1024)]

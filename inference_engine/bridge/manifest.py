@@ -796,7 +796,7 @@ PRESETS: Dict[str, Preset] = {
                     "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
                     "--sink-size", "4", "--window-size", "64", "--block-size", "4",
                     "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
-                    "--chat", "--chat-native-ref",
+                    "--chat", "--chat-native-ref", "--fused-no-loop-guard",
                     "--chat-scripted-file",
                     "scripts/research/pow_codegen_longprompt.txt",
                     "--output", "results/research/codegen_degen_2815_longprompt.json",

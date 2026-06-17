@@ -185,6 +185,10 @@ def parse_args() -> argparse.Namespace:
                          "'||'-separated) scripted prompt from a UTF-8 file. Lets "
                          "a long context be a committed fixture instead of a giant "
                          "manifest argv. Overrides --chat-scripted when set.")
+    ap.add_argument("--fused-no-loop-guard", action="store_true",
+                    help="DIAGNOSTIC: disable the fused engine's runaway-loop stop "
+                         "(default ON) so a degeneration probe can observe the full "
+                         "collapse. Production chat keeps the guard enabled.")
     ap.add_argument("--chat-native-ref", action="store_true",
                     help="DIAGNOSTIC opt-in: before each chat turn, also run a "
                          "plain NATIVE greedy AR decode of the SAME prompt for "
@@ -889,25 +893,28 @@ def main() -> int:
                                              getattr(adapter, "_cache", None))}})
                 # endregion
                 t0 = time.perf_counter()
+                _guard = not args.fused_no_loop_guard
                 if mlx_drafter is not None and args.cuda_trim:
                     res = fused_specdecode_generate_mlx_trim(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                        eos_ids=chat_eos, single_fused=args.single_fused)
+                        eos_ids=chat_eos, single_fused=args.single_fused,
+                        stop_on_runaway=_guard)
                 elif mlx_drafter is not None:
                     res = fused_specdecode_generate_mlx(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                        eos_ids=chat_eos)
+                        eos_ids=chat_eos, stop_on_runaway=_guard)
                 else:
                     res = fused_specdecode_generate(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
                         eos_ids=chat_eos, argmax_fn=argmax_fn, arange_fn=arange_fn,
-                        cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False)
+                        cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False,
+                        stop_on_runaway=_guard)
                 res["decode_s"] = round(time.perf_counter() - t0, 3)
                 res["f_theta_ran"] = f_theta_ran
                 res["f_theta_layers"] = sorted(rk.keys()) if rk else []
