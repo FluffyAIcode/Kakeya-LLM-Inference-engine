@@ -181,12 +181,12 @@ def parse_args() -> argparse.Namespace:
                     help="Non-interactive chat: '||'-separated user turns "
                          "(for Mac-bridge verification); writes a transcript.")
     ap.add_argument("--chat-native-ref", action="store_true",
-                    help="DEBUG (Phase-1): before each scripted-chat turn, also "
-                         "run a plain NATIVE greedy AR decode of the SAME prompt "
-                         "for --max-new-tokens, emitting KDBG block_native/"
-                         "final_native rep metrics. This is the decisive control "
-                         "for greedy-pathology vs fused-engine degeneration: if "
-                         "the native reference degenerates at the same length, the "
+                    help="DIAGNOSTIC opt-in: before each chat turn, also run a "
+                         "plain NATIVE greedy AR decode of the SAME prompt for "
+                         "--max-new-tokens and capture it as native_ref_text in "
+                         "the turn record. This is the decisive A/B control for "
+                         "greedy-pathology vs fused-engine degeneration: if the "
+                         "native reference degenerates at the same length, the "
                          "fused engine is not the cause.")
     ap.add_argument("--force-f-theta", action="store_true",
                     help="Run f_θ restoration even under --s5-exact-full-attn "
@@ -221,7 +221,6 @@ def main() -> int:
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
         fused_specdecode_generate_mlx, fused_specdecode_generate_mlx_trim,
-        _kdbg, _kdbg_rep,  # Phase-1 degeneration instrumentation
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -771,32 +770,28 @@ def main() -> int:
                 return list(cids.tolist() if hasattr(cids, "tolist") else cids)
 
             def _gen_turn(pid: List[int]) -> Dict[str, Any]:
-                # #region agent log (Phase-1: native-greedy control on the SAME
-                # prompt — discriminates greedy pathology from fused-engine bug)
+                # Opt-in A/B control (--chat-native-ref): a plain NATIVE greedy
+                # AR decode of the SAME prompt for --max-new-tokens. Captured as
+                # res["native_ref_text"] so the fused answer can be compared
+                # against the native reference for the same turn (the decisive
+                # discriminator between greedy pathology and a fused-engine bug).
+                nref_text: Optional[str] = None
+                nref_tokens: List[int] = []
                 if args.chat_native_ref:
                     nref_cache, nref_logits = native_prefill(list(pid))
-                    nref_gen: List[int] = []
-                    while len(nref_gen) < args.max_new_tokens:
+                    while len(nref_tokens) < args.max_new_tokens:
                         tok = int(mx.argmax(nref_logits).item())
-                        nref_gen.append(tok)
+                        nref_tokens.append(tok)
                         if tok in end_ids:
                             break
                         out = mlx_model(mx.array([[tok]]), cache=nref_cache)
                         mx.eval(out)
                         nref_logits = out[0, -1]
-                        if len(nref_gen) % max(args.block_size, 1) == 0:
-                            _kdbg("block_native", ref="native_greedy",
-                                  gen=len(nref_gen), rep=_kdbg_rep(nref_gen))
                     try:
                         nref_text = tokenizer.decode(
-                            nref_gen, skip_special_tokens=True)
+                            nref_tokens, skip_special_tokens=True)
                     except TypeError:
-                        nref_text = tokenizer.decode(nref_gen)
-                    _kdbg("final_native", ref="native_greedy", n=len(nref_gen),
-                          rep_w128=_kdbg_rep(nref_gen, k=128),
-                          text=nref_text,
-                          tokens=[int(t) for t in nref_gen])
-                # #endregion
+                        nref_text = tokenizer.decode(nref_tokens)
                 rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
                 # f_θ ran iff build_restoration produced restored banks via the
                 # torch drafter+f_θ (under --force-f-theta the S5 short-circuit is
@@ -851,6 +846,9 @@ def main() -> int:
                     if idx > 0:
                         txt = txt[:idx]
                 res["text"] = txt.strip()
+                if nref_text is not None:
+                    res["native_ref_text"] = nref_text.strip()
+                    res["native_ref_tokens"] = len(nref_tokens)
                 res["resident_kv_bytes"] = int(
                     sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))
                 return res
@@ -871,14 +869,18 @@ def main() -> int:
                     history.append({"role": "assistant", "content": res["text"]})
                     tps = (res["decode_tokens"] / res["decode_s"]
                            if res["decode_s"] > 0 else 0.0)
-                    transcript.append({
+                    turn_rec = {
                         "user": u, "text": res["text"],
                         "tokens": res["decode_tokens"], "blocks": res["blocks"],
                         "mean_accept_len": res["mean_accept_len"],
                         "f_theta_ran": res["f_theta_ran"],
                         "f_theta_layers": res["f_theta_layers"],
                         "decode_s": res["decode_s"], "decode_tps": round(tps, 2),
-                        "resident_kv_bytes": res["resident_kv_bytes"]})
+                        "resident_kv_bytes": res["resident_kv_bytes"]}
+                    if "native_ref_text" in res:
+                        turn_rec["native_ref_text"] = res["native_ref_text"]
+                        turn_rec["native_ref_tokens"] = res["native_ref_tokens"]
+                    transcript.append(turn_rec)
                     print(f"[chat] USER {u!r}", file=sys.stderr, flush=True)
                     print(f"[chat] GEMMA-4 {res['text'][:200]!r} (blocks="
                           f"{res['blocks']}, accept_len={res['mean_accept_len']}, "
