@@ -29,7 +29,7 @@ BRANCH_PREFIX = "mac-bridge/"
 # bridge is for evidence runs and debugging, not for monopolizing the
 # single Mac with open-ended workloads.
 MAX_N_SAMPLES = 50
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 2048  # backstop for chat; natural EOS stops well before this
 MAX_BLOCK_SIZE = 16
 
 _ENV_PLACEHOLDER = re.compile(r"^\$\{ENV:([A-Z][A-Z0-9_]*)\}$")
@@ -648,6 +648,34 @@ PRESETS: Dict[str, Preset] = {
                 "max_new_tokens": ("int:max_new_tokens", "48"),
                 "block_size": ("int:block_size", "4"),
             },
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-kakeya-chat-smoke",
+            description="Run gemma-4 on the Kakeya-for-Mac (MLX) engine via the "
+                        "interactive chat CLI in NON-interactive --scripted mode: "
+                        "single-stream generation over the Kakeya S5 bounded "
+                        "sink+window cache (sliding layers bounded; full-attn "
+                        "layers full). Writes a transcript JSON so we can verify "
+                        "gemma-4 responds coherently on the engine; the operator "
+                        "runs the same script without --scripted for a real "
+                        "interactive REPL on the Mac.",
+            command_templates=(
+                (
+                    "python3", "scripts/chat_mlx_kakeya.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sink", "4", "--window", "64",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--scripted",
+                    "What is the capital of France? Answer in one short sentence."
+                    "||Explain how proof-of-work works, step by step."
+                    "||Name three primary colors.",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_kakeya_chat.json",
+                ),
+            ),
+            timeout_minutes=45,
+            params={"max_new_tokens": ("int:max_new_tokens", "64")},
             validate_reports=False,
         ),
     )
