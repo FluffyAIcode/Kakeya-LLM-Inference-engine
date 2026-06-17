@@ -808,6 +808,13 @@ def main() -> int:
                     txt = tokenizer.decode(res["tokens"])
                 for marker in ("<turn|>", "<end_of_turn>", "<eos>"):
                     txt = txt.replace(marker, "")
+                # gemma-4 sometimes bleeds its reasoning channel after the answer
+                # (e.g. a trailing "\nthought ...") — cut at the first channel
+                # marker so the chat shows only the natural-language answer.
+                for cut in ("<|channel", "<channel", "\nthought", "\nthink"):
+                    idx = txt.find(cut)
+                    if idx > 0:
+                        txt = txt[:idx]
                 res["text"] = txt.strip()
                 res["resident_kv_bytes"] = int(
                     sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))

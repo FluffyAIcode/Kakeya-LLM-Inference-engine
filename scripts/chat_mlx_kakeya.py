@@ -192,8 +192,14 @@ def main() -> int:
                 stop_reason = "loop"
                 break
         dt = max(time.time() - t0, 1e-9)
+        _txt = tok.decode(toks, skip_special_tokens=True)
+        # gemma-4 sometimes bleeds its reasoning channel after the answer; cut it.
+        for _cut in ("<|channel", "<channel", "\nthought", "\nthink"):
+            _i = _txt.find(_cut)
+            if _i > 0:
+                _txt = _txt[:_i]
         return {
-            "text": tok.decode(toks, skip_special_tokens=True),
+            "text": _txt.strip(),
             "n_tokens": len(toks),
             "stop_reason": stop_reason,
             "decode_tps": round(len(toks) / dt, 2),
