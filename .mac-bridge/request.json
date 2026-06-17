@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-kakeya-launcher-smoke",
+  "params": {
+    "max_new_tokens": "64"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781687887-9aa149"
+}
