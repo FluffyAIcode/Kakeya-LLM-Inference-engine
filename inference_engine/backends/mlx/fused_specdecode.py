@@ -35,6 +35,88 @@ from inference_engine.backends.mlx.cross_model_dlm_verifier import (
     restored_prefill_cache,
 )
 
+# #region agent log (Phase-1 long-gen degeneration debug; remove after fix)
+import json as _kjson
+import sys as _ksys
+
+
+def _kdbg(ev: str, **kw: Any) -> None:
+    """Emit one compact NDJSON line to stderr (captured by the git-bus bridge)."""
+    try:
+        rec = {"ev": ev, **kw}
+        _ksys.stderr.write("KDBG " + _kjson.dumps(rec, separators=(",", ":")) + "\n")
+        _ksys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _kdbg_rep(toks: List[int], k: int = 32) -> Dict[str, Any]:
+    """Cheap degeneration signal over the last ``k`` generated tokens:
+    unique fraction + longest single-token run (repetition collapse spikes it)."""
+    w = toks[-k:]
+    if not w:
+        return {"win": 0}
+    n = len(w)
+    uniq = len(set(w))
+    run = best = 1
+    for a, b in zip(w, w[1:]):
+        run = run + 1 if a == b else 1
+        if run > best:
+            best = run
+    return {"win": n, "uniq_frac": round(uniq / n, 3),
+            "rep_frac": round(1.0 - uniq / n, 3), "max_run": best}
+
+
+def _kdbg_cache(cache: Any) -> Dict[str, Any]:
+    """Summarize per-layer cache state: pick the first sliding (RotatingKVCache)
+    and first full (KVCache) layer and report global offset, physical resident
+    seq-len, max_size and keep (sink) so we can correlate window-eviction with
+    the restored-coverage boundary. Also returns layer-class counts."""
+    sliding = full = None
+    counts: Dict[str, int] = {}
+    for c in (cache or []):
+        cls = type(c).__name__
+        counts[cls] = counts.get(cls, 0) + 1
+        keys = getattr(c, "keys", None)
+        info = {
+            "cls": cls,
+            "off": int(getattr(c, "offset", 0)),
+            "phys": int(keys.shape[2]) if keys is not None else 0,
+            "ms": (int(getattr(c, "max_size")) if getattr(c, "max_size", None) is not None else None),
+            "keep": (int(getattr(c, "keep")) if getattr(c, "keep", None) is not None else None),
+        }
+        if "Rotating" in cls and sliding is None:
+            sliding = info
+        elif "Rotating" not in cls and full is None:
+            full = info
+    return {"counts": counts, "sliding": sliding, "full": full}
+
+
+def _kdbg_lost(cache: Any, restored: Any, prompt_len: int) -> Optional[Dict[str, Any]]:
+    """Phase-1 Q2: count sliding-layer positions evicted DURING decode that have
+    NO restored K/V. For the first RotatingKVCache: positions [keep, evict_hi)
+    are no longer resident, where evict_hi = offset - (max_size - keep). Of those,
+    any not in the (prompt-only) restored coverage are 'lost' (no K/V anywhere)."""
+    for c in (cache or []):
+        if "Rotating" not in type(c).__name__:
+            continue
+        ms = getattr(c, "max_size", None)
+        if ms is None:
+            return None
+        off = int(getattr(c, "offset", 0))
+        keep = int(getattr(c, "keep", 0) or 0)
+        ms = int(ms)
+        evict_hi = off - (ms - keep)          # exclusive upper bound of evicted region
+        evicted_n = max(0, evict_hi - keep)
+        rset = restored if isinstance(restored, set) else set()
+        lost = sum(1 for p in range(keep, evict_hi) if p not in rset)
+        return {"off": off, "ms": ms, "keep": keep, "evict_hi": evict_hi,
+                "evicted_n": evicted_n, "restored_in_evicted": evicted_n - lost,
+                "lost": lost, "prompt_len": int(prompt_len),
+                "window_slid_off_prompt": bool(evict_hi > prompt_len)}
+    return None
+# #endregion
+
 
 # --------------------------------------------------------------------------- #
 # Component A: capture verifier aux-layer hidden states (no transformers
@@ -193,6 +275,27 @@ class MLXRestoredIncrementalVerifier:
             cache_factory=factory,
         )
         self._past_len = len(prompt_ids)
+        # #region agent log (Phase-1)
+        try:
+            ev = sorted(int(p) for p in evicted_positions)
+            rk_layers = sorted(int(k) for k in restored_k_per_layer.keys())
+            # Stash restored coverage for the decode loop's lost-position check.
+            self._dbg_restored_positions = set(ev)
+            self._dbg_prompt_len = int(len(prompt_ids))
+            _kdbg(
+                "prefill",
+                prompt_len=len(prompt_ids),
+                evicted_count=len(ev),
+                evicted_lo=(ev[0] if ev else None),
+                evicted_hi=(ev[-1] if ev else None),
+                restored_layers=rk_layers,
+                restored_layer_count=len(rk_layers),
+                full_kv=bool(self._full_kv),
+                cache=_kdbg_cache(self._cache),
+            )
+        except Exception:
+            pass
+        # #endregion
 
     def forward_block(self, tokens: Sequence[int]) -> Any:
         """Incremental verify of ``tokens`` against the restored cache. Returns
@@ -402,6 +505,7 @@ def fused_specdecode_generate_mlx_trim(
     ctx_len = C
     try:
         while len(generated) < gen_tokens:
+            _kblk_t0 = time.perf_counter()  # agent log (Phase-1)
             L = min(block_size, gen_tokens - len(generated))
             base = adapter._past_len
             t_build = time.perf_counter()
@@ -440,6 +544,23 @@ def fused_specdecode_generate_mlx_trim(
             commit = check[:accepted]
             generated += commit
             accepts.append(accepted)
+            # #region agent log (Phase-1)
+            _kdbg(
+                "block",
+                loop="mlx_trim",
+                blk=len(accepts) - 1,
+                gen=len(generated),
+                past_len=adapter._past_len,
+                accepted=accepted,
+                L=int(check_ids.shape[0]),
+                dt_ms=round((time.perf_counter() - _kblk_t0) * 1e3, 1),
+                rep=_kdbg_rep(generated),
+                lost=_kdbg_lost(adapter._cache,
+                                getattr(adapter, "_dbg_restored_positions", set()),
+                                getattr(adapter, "_dbg_prompt_len", 0)),
+                cache=_kdbg_cache(adapter._cache),
+            )
+            # #endregion
             adapter.next_token_logits = next_row
             aux_rows = adapter._last_aux_mx
             # KEEP accepted (positions base..base+accepted-1), TRIM rejected.
@@ -675,6 +796,7 @@ def fused_specdecode_generate(
     fallback_to_greedy = False
     try:
         while len(generated) < gen_tokens:
+            _kblk_t0 = time.perf_counter()  # agent log (Phase-1)
             L = min(block_size, gen_tokens - len(generated))
             cstart = adapter._past_len
             bonus = int(argmax_fn(adapter.next_token_logits))
@@ -731,6 +853,24 @@ def fused_specdecode_generate(
                 commit = candidate[:accepted] + [correction]
             generated += commit
             accepts.append(accepted)
+            # #region agent log (Phase-1)
+            _kdbg(
+                "block",
+                loop="torch_ftheta",
+                blk=len(accepts) - 1,
+                gen=len(generated),
+                gen_since_prompt=len(generated),
+                past_len=adapter._past_len,
+                accepted=accepted,
+                L=len(candidate),
+                dt_ms=round((time.perf_counter() - _kblk_t0) * 1e3, 1),
+                rep=_kdbg_rep(generated),
+                lost=_kdbg_lost(adapter._cache,
+                                getattr(adapter, "_dbg_restored_positions", set()),
+                                getattr(adapter, "_dbg_prompt_len", 0)),
+                cache=_kdbg_cache(adapter._cache),
+            )
+            # #endregion
             if any(t in eos for t in commit):
                 break
             if (allow_greedy_fallback and len(accepts) >= 2
