@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-kakeya-chat-smoke",
+  "params": {
+    "max_new_tokens": "80"
+  },
+  "ref": "HEAD",
+  "requested_by": "kakeya-mac-cli",
+  "nonce": "1781673882-da475f"
+}
