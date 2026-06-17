@@ -1,0 +1,37 @@
+{
+  "kind": "mac_gemma4_kakeya_fused_chat",
+  "schema_version": 1,
+  "engine": "Kakeya-for-Mac fused spec-decode (gemma-4 verifier + DFlash proposer + S5 bounded KV; f_\u03b8 restoration bypassed on gemma-4 via S5 native exact-layer prefill \u2014 the free lunch \u2014 and load-bearing on full-attention models)",
+  "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+  "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+  "sink": 4,
+  "window": 64,
+  "block_size": 4,
+  "exact_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "chat_eos": [
+    1,
+    50,
+    106
+  ],
+  "turns": [
+    {
+      "user": "What is the capital of France? Answer in one short sentence.",
+      "text": "The capital of France is Paris.",
+      "tokens": 8,
+      "blocks": 2,
+      "mean_accept_len": 4.0,
+      "f_theta_ran": false,
+      "f_theta_layers": [],
+      "decode_s": 0.529,
+      "decode_tps": 15.12,
+      "resident_kv_bytes": 57671680
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[run-kakeya-mac] mode    : FAST (verifier + proposer + S5 bounded KV; f_θ BYPASSED)
+[run-kakeya-mac] verifier: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[run-kakeya-mac] drafter : z-lab/gemma-4-26B-A4B-it-DFlash
+[run-kakeya-mac] f_theta : results/research/f_theta_v5_s5_sliding
+[run-kakeya-mac] params  : sink=4 window=64 block=4 max_new=64
+[run-kakeya-mac] starting... (type a message, blank line / Ctrl-D to quit)
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading ALL-MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[mac] 10 samples, prompt len min=4406 max=5810
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[chat] FULL fused engine: verifier=/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit drafter=z-lab/gemma-4-26B-A4B-it-DFlash f_theta=results/research/f_theta_v5_s5_sliding S5 sink=4 window=64 block=4 | chat_eos=[1, 50, 106]
+[chat] USER 'What is the capital of France? Answer in one short sentence.'
+[chat] GEMMA-4 'The capital of France is Paris.' (blocks=2, accept_len=4.0, f_theta_ran=False layers=[], 15.12 tok/s, kv=57.7MB)
+[chat] wrote transcript -> results/research/k3_mac_bridge_launcher_smoke.json
