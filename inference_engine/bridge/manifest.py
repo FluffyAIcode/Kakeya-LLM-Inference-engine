@@ -749,6 +749,28 @@ PRESETS: Dict[str, Preset] = {
             },
             validate_reports=False,
         ),
+        Preset(
+            name="mlx-kakeya-launcher-smoke",
+            description="Verify the one-command local launcher "
+                        "scripts/run_kakeya_mac.sh runs the engine end-to-end on "
+                        "the Mac: invokes it in --fast scripted mode (all-MLX "
+                        "proposer path) with a fixed prompt and writes a "
+                        "transcript. Proves launcher → harness → engine wiring + "
+                        "env resolution + preflight on the real machine.",
+            command_templates=(
+                (
+                    "bash", "scripts/run_kakeya_mac.sh", "--fast",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--chat-scripted",
+                    "What is the capital of France? Answer in one short sentence.",
+                    "--output",
+                    "results/research/k3_mac_bridge_launcher_smoke.json",
+                ),
+            ),
+            timeout_minutes=45,
+            params={"max_new_tokens": ("int:max_new_tokens", "64")},
+            validate_reports=False,
+        ),
     )
 }
 

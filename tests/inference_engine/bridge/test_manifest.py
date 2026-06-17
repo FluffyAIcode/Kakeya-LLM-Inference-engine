@@ -83,6 +83,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-kakeya-chat-smoke",
         "mlx-kakeya-fused-chat-ftheta",
         "mlx-kakeya-fused-chat-smoke",
+        "mlx-kakeya-launcher-smoke",
         "mlx-multitenant-pressure",
         "mlx-upgrade",
         "mlx-upstream-batch-probe",
@@ -148,6 +149,17 @@ def test_mlx_kakeya_chat_smoke_preset_resolves():
     assert argv[argv.index("--max-new-tokens") + 1] == "64"
     assert not [t for t in argv if t.startswith("${ENV:")]
     assert not [t for t in argv if t.startswith("{") and t.endswith("}")]
+
+
+def test_mlx_kakeya_launcher_smoke_preset_invokes_launcher():
+    request = parse_manifest(_manifest(
+        preset="mlx-kakeya-launcher-smoke", params={"max_new_tokens": "64"}))
+    (argv,) = build_commands(request, {})
+    assert argv[0] == "bash"
+    assert argv[1].endswith("run_kakeya_mac.sh")
+    assert "--fast" in argv
+    assert "--chat-scripted" in argv
+    assert argv[argv.index("--max-new-tokens") + 1] == "64"
 
 
 def test_mlx_kakeya_fused_chat_ftheta_preset_runs_f_theta_path():
