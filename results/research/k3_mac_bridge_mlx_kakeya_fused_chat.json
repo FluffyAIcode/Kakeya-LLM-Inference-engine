@@ -1,0 +1,45 @@
+{
+  "kind": "mac_gemma4_kakeya_fused_chat",
+  "schema_version": 1,
+  "engine": "Kakeya-for-Mac FULL fused spec-decode (verifier + DFlash proposer + f_\u03b8 + S5 bounded KV)",
+  "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "drafter_id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+  "f_theta_dir": "results/research/f_theta_v5_s5_sliding",
+  "sink": 4,
+  "window": 64,
+  "block_size": 4,
+  "exact_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "chat_eos": [
+    1,
+    50,
+    106
+  ],
+  "turns": [
+    {
+      "user": "What is the capital of France? Answer in one short sentence.",
+      "text": "The capital of France is Paris.<turn|>",
+      "tokens": 8,
+      "blocks": 2,
+      "mean_accept_len": 4.0,
+      "decode_s": 0.882,
+      "decode_tps": 9.07,
+      "resident_kv_bytes": 57671680
+    },
+    {
+      "user": "Name three primary colors.",
+      "text": "The three primary colors are red, yellow, and blue.<turn|>\n",
+      "tokens": 14,
+      "blocks": 4,
+      "mean_accept_len": 3.5,
+      "decode_s": 0.545,
+      "decode_tps": 25.69,
+      "resident_kv_bytes": 57671680
+    }
+  ]
+}
