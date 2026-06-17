@@ -787,8 +787,14 @@ def main() -> int:
                         if len(nref_gen) % max(args.block_size, 1) == 0:
                             _kdbg("block_native", ref="native_greedy",
                                   gen=len(nref_gen), rep=_kdbg_rep(nref_gen))
+                    try:
+                        nref_text = tokenizer.decode(
+                            nref_gen, skip_special_tokens=True)
+                    except TypeError:
+                        nref_text = tokenizer.decode(nref_gen)
                     _kdbg("final_native", ref="native_greedy", n=len(nref_gen),
                           rep_w128=_kdbg_rep(nref_gen, k=128),
+                          text=nref_text,
                           tokens=[int(t) for t in nref_gen])
                 # #endregion
                 rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
