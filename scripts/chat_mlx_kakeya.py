@@ -76,6 +76,8 @@ def main() -> int:
                     help="Resident window for the full-attention (exact) layers "
                          "— large = effectively full context (S5 recall carrier).")
     ap.add_argument("--max-new-tokens", type=int, default=256)
+    ap.add_argument("--repetition-penalty", type=float, default=1.3,
+                    help="Penalize repeated tokens to stop greedy loops (1.0 = off).")
     ap.add_argument("--thinking", action="store_true",
                     help="Allow gemma-4's reasoning channel (default: direct answers).")
     ap.add_argument("--system", default=None, help="Optional system prompt.")
@@ -107,6 +109,16 @@ def main() -> int:
     _log("Kakeya Attention: sliding layers bounded to sink+window; "
          "exact layers keep full context (S5).")
 
+    logits_processors = None
+    if args.repetition_penalty and args.repetition_penalty != 1.0:
+        try:
+            from mlx_lm.sample_utils import make_logits_processors  # type: ignore
+            logits_processors = make_logits_processors(
+                repetition_penalty=args.repetition_penalty)
+            _log(f"repetition_penalty={args.repetition_penalty} enabled")
+        except Exception as exc:  # noqa: BLE001
+            _log(f"repetition penalty unavailable ({exc}); greedy")
+
     def new_cache() -> list:
         # S5 hybrid: exact (full-attn) layers get a large window (≈full context,
         # the recall carrier); sliding layers get the tight Kakeya window.
@@ -127,10 +139,22 @@ def main() -> int:
         toks: List[int] = []
         shown = ""
         t0 = time.time()
-        for tok_id, _ in generate_step(
-            mx.array(prompt_ids), model, prompt_cache=cache,
-            max_tokens=args.max_new_tokens,
-        ):
+        gkw: Dict[str, Any] = dict(prompt_cache=cache, max_tokens=args.max_new_tokens)
+        if logits_processors is not None:
+            gkw["logits_processors"] = logits_processors
+        try:
+            stream = generate_step(mx.array(prompt_ids), model, **gkw)
+            first = next(stream)
+        except TypeError:  # older mlx_lm without logits_processors kwarg
+            gkw.pop("logits_processors", None)
+            stream = generate_step(mx.array(prompt_ids), model, **gkw)
+            first = next(stream)
+
+        def _iter():
+            yield first
+            yield from stream
+
+        for tok_id, _ in _iter():
             t = int(tok_id)
             if t in eos:
                 break
