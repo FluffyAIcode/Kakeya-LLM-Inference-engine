@@ -37,18 +37,28 @@ def _log(msg: str) -> None:
 
 
 def _resolve_eos(tok) -> set:
-    """gemma stops a turn on <end_of_turn>; also honor the tokenizer EOS."""
-    eos = set()
+    """All token ids that end gemma's turn — so generation stops NATURALLY (the
+    user must never tune output length). gemma ends a turn on ``<end_of_turn>``
+    (and ``<eos>``); the previous code used ``encode()`` + a single-token check
+    which silently DROPPED ``<end_of_turn>`` (it's a special token), so the model
+    ran past its turn (verbose echoes) until the max-tokens cap — the real bug."""
+    eos: set = set()
+    # mlx_lm's TokenizerWrapper exposes the authoritative stop set when present.
+    ids = getattr(tok, "eos_token_ids", None)
+    if ids:
+        eos |= {int(i) for i in ids}
     if getattr(tok, "eos_token_id", None) is not None:
         eos.add(int(tok.eos_token_id))
+    # convert_tokens_to_ids is the reliable lookup for a KNOWN special token
+    # (unlike encode(), which may split it or add specials).
+    unk = getattr(tok, "unk_token_id", None)
     for marker in ("<end_of_turn>", "<eos>"):
         try:
-            ids = tok.encode(marker, add_special_tokens=False)
-            ids = ids.tolist() if hasattr(ids, "tolist") else list(ids)
-            if len(ids) == 1:
-                eos.add(int(ids[0]))
+            tid = tok.convert_tokens_to_ids(marker)
         except Exception:
-            pass
+            tid = None
+        if isinstance(tid, int) and tid >= 0 and tid != unk:
+            eos.add(int(tid))
     return eos
 
 
@@ -206,15 +216,17 @@ def main() -> int:
             history.append({"role": "assistant", "content": info["text"]})
             transcript.append({"user": user, **info})
             _log(f"USER: {user!r}")
-            _log(f"GEMMA-4: {info['text'][:200]!r}  "
-                 f"({info['n_tokens']} tok, {info['decode_tps']} tok/s, "
-                 f"resident_kv={info['resident_kv_bytes']/1e6:.1f}MB)")
+            _log(f"GEMMA-4: {info['text'][:160]!r}  "
+                 f"({info['n_tokens']} tok, stop={info['stop_reason']}, "
+                 f"{info['decode_tps']} tok/s, resident_kv={info['resident_kv_bytes']/1e6:.1f}MB)")
         report = {
             "kind": "mac_gemma4_kakeya_chat", "schema_version": 1,
             "model_path": args.verifier_path,
             "engine": "Kakeya-for-Mac (MLX, S5 bounded sink+window, single-stream)",
             "sink": args.sink, "window": args.window, "full_window": args.full_window,
             "exact_layers": sorted(full_idx), "n_layers": n_layers,
+            "eos_token_ids": sorted(eos),
+            "max_new_tokens_cap": args.max_new_tokens,
             "turns": transcript,
         }
         if args.output:

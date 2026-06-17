@@ -668,7 +668,7 @@ PRESETS: Dict[str, Preset] = {
                     "--max-new-tokens", "{max_new_tokens}",
                     "--scripted",
                     "What is the capital of France? Answer in one short sentence."
-                    "||Now multiply 6 by 7 and give only the number."
+                    "||Explain how proof-of-work works, step by step."
                     "||Name three primary colors.",
                     "--output",
                     "results/research/k3_mac_bridge_mlx_kakeya_chat.json",
