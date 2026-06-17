@@ -678,6 +678,41 @@ PRESETS: Dict[str, Preset] = {
             params={"max_new_tokens": ("int:max_new_tokens", "64")},
             validate_reports=False,
         ),
+        Preset(
+            name="mlx-kakeya-fused-chat-smoke",
+            description="Run gemma-4 on the FULL Kakeya fused engine (verifier + "
+                        "DFlash proposer + f_θ + S5 bounded KV) via the harness "
+                        "--chat --chat-scripted mode — NOT verifier-only. Verifies "
+                        "the proposer is live (blocks>0, mean_accept_len>0) AND the "
+                        "answer is correct AND KV is bounded, per turn. Writes a "
+                        "transcript JSON.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode",
+                    "--all-mlx-drafter", "--cuda-trim",
+                    "--sink-size", "4", "--window-size", "64",
+                    "--block-size", "{block_size}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--prefill-chunk-size", "512",
+                    "--chat",
+                    "--chat-scripted",
+                    "What is the capital of France? Answer in one short sentence."
+                    "||Name three primary colors.",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_kakeya_fused_chat.json",
+                ),
+            ),
+            timeout_minutes=60,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "64"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
     )
 }
 
