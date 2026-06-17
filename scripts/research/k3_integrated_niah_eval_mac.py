@@ -756,7 +756,13 @@ def main() -> int:
                     gen_tokens=args.max_new_tokens, block_size=args.block_size,
                     eos_ids=chat_eos, single_fused=args.single_fused)
                 res["decode_s"] = round(time.perf_counter() - t0, 3)
-                res["text"] = tokenizer.decode(res["tokens"])
+                try:
+                    txt = tokenizer.decode(res["tokens"], skip_special_tokens=True)
+                except TypeError:
+                    txt = tokenizer.decode(res["tokens"])
+                for marker in ("<turn|>", "<end_of_turn>", "<eos>"):
+                    txt = txt.replace(marker, "")
+                res["text"] = txt.strip()
                 res["resident_kv_bytes"] = int(
                     sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))
                 return res
