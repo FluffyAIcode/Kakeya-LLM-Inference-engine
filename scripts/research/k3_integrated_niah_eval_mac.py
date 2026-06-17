@@ -704,9 +704,11 @@ def main() -> int:
             """Interactive/scripted chat on the FULL fused engine — reuses the
             EXACT per-turn sequence of the eval loop below (build_restoration →
             S5 prefill → aux capture → fused_specdecode_generate_mlx_trim), so the
-            verifier + DFlash proposer + f_θ + S5 bounded KV are all live. This is
-            NOT verifier-only: each turn drafts blocks and reports blocks /
-            mean_accept_len to prove the proposer ran."""
+            gemma-4 verifier + DFlash proposer + S5 bounded KV are all live. NOT
+            verifier-only: each turn the proposer drafts blocks the verifier
+            accepts (reports blocks / mean_accept_len). On gemma-4 f_θ restoration
+            is bypassed via S5 native exact-layer prefill (the free lunch);
+            f_θ is load-bearing on full-attention models."""
             if not (args.force_fused_specdecode and mlx_drafter is not None
                     and args.cuda_trim):
                 raise SystemExit(
@@ -796,8 +798,11 @@ def main() -> int:
                           file=sys.stderr, flush=True)
                 report = {
                     "kind": "mac_gemma4_kakeya_fused_chat", "schema_version": 1,
-                    "engine": ("Kakeya-for-Mac FULL fused spec-decode "
-                               "(verifier + DFlash proposer + f_θ + S5 bounded KV)"),
+                    "engine": ("Kakeya-for-Mac fused spec-decode (gemma-4 verifier "
+                               "+ DFlash proposer + S5 bounded KV; f_θ restoration "
+                               "bypassed on gemma-4 via S5 native exact-layer "
+                               "prefill — the free lunch — and load-bearing on "
+                               "full-attention models)"),
                     "model_path": args.verifier_path, "drafter_id": args.drafter_id,
                     "f_theta_dir": args.f_theta_dir, "sink": args.sink_size,
                     "window": args.window_size, "block_size": args.block_size,
