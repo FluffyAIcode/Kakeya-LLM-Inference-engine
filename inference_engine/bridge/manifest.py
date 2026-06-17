@@ -711,7 +711,7 @@ PRESETS: Dict[str, Preset] = {
                 "max_new_tokens": ("int:max_new_tokens", "64"),
                 "block_size": ("int:block_size", "4"),
             },
-            validate_reports=False,
+            validate_reports=True,  # §4 liveness gate on-device (proposer/f_θ/fallback)
         ),
         Preset(
             name="mlx-kakeya-fused-chat-ftheta",
@@ -747,7 +747,7 @@ PRESETS: Dict[str, Preset] = {
                 "max_new_tokens": ("int:max_new_tokens", "32"),
                 "block_size": ("int:block_size", "4"),
             },
-            validate_reports=False,
+            validate_reports=True,  # §4 liveness gate: asserts f_theta_ran on-device
         ),
         Preset(
             name="mlx-kakeya-launcher-smoke",
@@ -769,7 +769,7 @@ PRESETS: Dict[str, Preset] = {
             ),
             timeout_minutes=45,
             params={"max_new_tokens": ("int:max_new_tokens", "64")},
-            validate_reports=False,
+            validate_reports=True,  # §4 liveness gate on-device
         ),
     )
 }

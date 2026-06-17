@@ -19,20 +19,106 @@ import pytest
 from inference_engine.bench.k3_report_gate import (
     CLAIM_ORACLE_DECODE_LOOP,
     GATED_SCHEMA_VERSION,
+    LIVENESS_REPORT_KINDS,
     MAC_REPORT_KIND,
     MAX_PREFILL_SPREAD,
     MIN_MEDIAN_DECODE_TOKENS,
     MIN_PERF_SAMPLES,
     NATIVE_BASELINE_LABEL,
     GateViolation,
+    assert_liveness,
     decode_only_block,
     is_gated_report,
     is_legacy_report,
+    is_liveness_report,
     prefill_spread,
     row_prefill_seconds,
     summarize_violations,
     validate_report,
 )
+
+
+# ---------------------------------------------------------------------------
+# §4 liveness contract (proposer / f_θ / no-fallback)
+# ---------------------------------------------------------------------------
+
+
+def _live_report(**over: Any) -> Dict[str, Any]:
+    """A fused-chat liveness report that passes the §4 contract."""
+    rep = {
+        "kind": next(iter(LIVENESS_REPORT_KINDS)),
+        "schema_version": 1,
+        "f_theta_intended": True,
+        "fallbacks_taken": [],
+        "turns": [
+            {"user": "q1", "blocks": 2, "mean_accept_len": 4.0,
+             "f_theta_ran": True, "fallbacks_taken": []},
+            {"user": "q2", "blocks": 4, "mean_accept_len": 3.5,
+             "f_theta_ran": True, "fallbacks_taken": []},
+        ],
+    }
+    rep.update(over)
+    return rep
+
+
+def test_liveness_report_detection_and_pass():
+    rep = _live_report()
+    assert is_liveness_report(rep) and not is_gated_report(rep)
+    assert validate_report(rep) == []      # dispatches to assert_liveness
+    assert assert_liveness(rep) == []
+
+
+def test_liveness_missing_turns_is_invalid():
+    codes = {v.code for v in assert_liveness(_live_report(turns=[]))}
+    assert codes == {"MISSING_LIVENESS"}
+
+
+def test_liveness_proposer_never_ran():
+    rep = _live_report(turns=[
+        {"blocks": 0, "f_theta_ran": True}, {"blocks": 0, "f_theta_ran": True}])
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "PROPOSER_NEVER_RAN" in codes
+
+
+def test_liveness_missing_blocks_field():
+    rep = _live_report(turns=[{"f_theta_ran": True}])  # no 'blocks'
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "MISSING_LIVENESS" in codes
+
+
+def test_liveness_bool_blocks_not_counted_as_int():
+    # True is an int subclass — must NOT be accepted as a block count.
+    rep = _live_report(turns=[{"blocks": True, "f_theta_ran": True}])
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "MISSING_LIVENESS" in codes
+
+
+def test_liveness_ftheta_not_run_when_intended():
+    rep = _live_report(turns=[
+        {"blocks": 2, "f_theta_ran": True}, {"blocks": 2, "f_theta_ran": False}])
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "FTHETA_NOT_RUN" in codes
+
+
+def test_liveness_ftheta_missing_flag_when_intended():
+    rep = _live_report(turns=[{"blocks": 2}])  # f_theta_intended True but no flag
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "MISSING_LIVENESS" in codes
+
+
+def test_liveness_ftheta_not_required_when_not_intended():
+    # all-MLX fast path: f_θ bypassed by design → no FTHETA_NOT_RUN.
+    rep = _live_report(f_theta_intended=False, turns=[
+        {"blocks": 2, "f_theta_ran": False}, {"blocks": 3, "f_theta_ran": False}])
+    assert assert_liveness(rep) == []
+
+
+def test_liveness_silent_fallback_report_and_turn_level():
+    rep = _live_report(fallbacks_taken=["proposer->ar"])
+    assert any(v.code == "SILENT_FALLBACK" for v in assert_liveness(rep))
+    rep2 = _live_report(turns=[
+        {"blocks": 2, "f_theta_ran": True, "fallbacks_taken": ["f_theta->identity"]}])
+    assert any(v.code == "SILENT_FALLBACK" for v in assert_liveness(rep2))
 
 
 def _valid_report(n: int = MIN_PERF_SAMPLES) -> Dict[str, Any]:

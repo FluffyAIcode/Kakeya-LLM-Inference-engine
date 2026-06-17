@@ -103,6 +103,9 @@ def test_harness_presets_validate_reports_others_do_not():
     assert gated == {
         "k3-step1-incremental", "k3-step2-fused", "k3-native-baseline",
         "k3-step2-fused-allmlx",
+        # §4 liveness gate runs on-device for the fused-chat presets too:
+        "mlx-kakeya-fused-chat-smoke", "mlx-kakeya-fused-chat-ftheta",
+        "mlx-kakeya-launcher-smoke",
     }
 
 
