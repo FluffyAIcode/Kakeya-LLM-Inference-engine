@@ -128,6 +128,40 @@ def test_fused_loop_stops_on_eos():
 
 
 # =========================================================================== #
+# 1b) Sliding-ring wrap detector (H2 >ms degeneration fix). Pure-Python; no MLX.
+# =========================================================================== #
+class _FakeRotating:
+    """Minimal stand-in for ``mlx_lm`` ``RotatingKVCache`` (name match only)."""
+    def __init__(self, offset, max_size):
+        self.offset = offset
+        self.max_size = max_size
+
+
+class _FakePlainKV:
+    def __init__(self, offset):
+        self.offset = offset
+        self.max_size = None
+
+
+def test_sliding_ring_would_wrap_detects_wrap():
+    # offset + n_new >= max_size -> the rotating ring becomes non-trimmable.
+    cache = [_FakeRotating(offset=1022, max_size=1024)]
+    assert fsd._sliding_ring_would_wrap(cache, 4) is True
+    assert fsd._sliding_ring_would_wrap(cache, 1) is False  # 1023 < 1024
+
+
+def test_sliding_ring_would_wrap_ignores_non_rotating_and_missing_max():
+    # A plain (non-Rotating) layer never triggers the wrap guard.
+    assert fsd._sliding_ring_would_wrap([_FakePlainKV(offset=5000)], 8) is False
+    # A Rotating layer without a usable max_size is skipped, not crashed.
+    assert fsd._sliding_ring_would_wrap(
+        [_FakeRotating(offset=5000, max_size=None)], 8) is False
+    # Empty / None cache is safe.
+    assert fsd._sliding_ring_would_wrap(None, 4) is False
+    assert fsd._sliding_ring_would_wrap([], 4) is False
+
+
+# =========================================================================== #
 # 2) MLX-touching wrappers with fake mlx / mlx_lm.
 # =========================================================================== #
 class _Out:

@@ -187,8 +187,18 @@ def assert_liveness(report: Dict[str, Any]) -> List[GateViolation]:
 
 def _looks_degenerate(text: Any) -> bool:
     """True when text has collapsed into a runaway repeat — the long-decode
-    failure mode (e.g. many identical short lines like ``*   *   *``). Strict:
-    >= 8 consecutive identical stripped non-empty lines of <= 12 chars."""
+    failure mode. Two independent, conservative detectors:
+
+    1. Line-level: >= 8 consecutive identical stripped non-empty lines of
+       <= 12 chars (e.g. ``*   *   *`` walls).
+    2. Char-level (``_has_runaway_substring``): a short unit (1..8 chars) tiled
+       >= 8 times consecutively at the tail with no line breaks — the exact
+       ``由于由于由于…`` collapse observed past the KV-cache ring wrap, which the
+       line detector misses because it has no newlines.
+
+    Both require a long, unambiguous run so legitimate templated/parallel text
+    (numbered lists, ``矿工 A / 矿工 B`` enumerations) does NOT trip the gate.
+    """
     if not isinstance(text, str):
         return False
     run = 0
@@ -204,39 +214,64 @@ def _looks_degenerate(text: Any) -> bool:
         else:
             run = 0
             prev = line
+    return _has_runaway_substring(text)
+
+
+def _has_runaway_substring(text: Any) -> bool:
+    """True when the tail is a short unit repeated many times consecutively
+    (e.g. ``"由于" * 100``). Conservative: requires a 1..8 char unit (with at
+    least one non-space char) tiled >= 8 times AND spanning >= 16 chars at the
+    very end of the (stripped) text. Coherent prose — even heavily templated —
+    never repeats a short unit 8+ times back-to-back, so this does not
+    false-positive on parallel enumerations."""
+    if not isinstance(text, str):
+        return False
+    s = text.strip()
+    if len(s) < 16:
+        return False
+    # ``s`` is stripped, so the tail always ends in a non-whitespace char and a
+    # whitespace-only unit is impossible; no need to guard against it.
+    tail = s[-256:]
+    n = len(tail)
+    for p in range(1, 9):
+        unit = tail[n - p:]
+        k = 0
+        idx = n
+        while idx - p >= 0 and tail[idx - p:idx] == unit:
+            k += 1
+            idx -= p
+        if k >= 8 and p * k >= 16:
+            return True
     return False
 
 
 def assert_quality(report: Dict[str, Any]) -> List[GateViolation]:
-    """§2.4/§2.5 contract — prove the run did not lose intelligence or throughput.
+    """§2.4/§2.5 contract — prove the run did not lose intelligence.
 
     Catches the long-decode failure the liveness gate cannot see (proposer/f_θ
-    ran, yet the output is garbage + throughput collapsed):
-      * RESTORATION_COVERAGE — a restored run generated more tokens than the
-        resident window, beyond which the prefill-amortized restoration does NOT
-        cover the evicted positions (outputs become unrestored/degenerate),
+    ran, yet the output is garbage):
       * OUTPUT_DEGENERATE — a turn's text collapsed into a runaway repeat.
+
+    NOTE on the removed RESTORATION_COVERAGE rule: an earlier version fired when
+    a restored run generated more tokens than the S5 sliding ``window`` (=64),
+    on the theory that decode-time evicted positions are "unrestored" and the
+    output beyond the window must be degenerate. Mac runtime evidence DISPROVED
+    that theory: (a) the decode cache is the model's native hybrid cache
+    (sliding ``RotatingKVCache`` with ``max_size``≈1024, not the S5 window), so
+    nothing is evicted until ~1024 tokens; and (b) a 1300-token run with 332
+    evicted-unrestored positions stayed fully COHERENT once the real bug — a
+    ``trim_prompt_cache`` offset desync on the wrapped ring — was fixed
+    (single-token commits past the wrap). So "tokens > window" and even
+    "evicted positions > 0" are NOT degeneration signals. The only trustworthy
+    quality gate is the empirical one: did the text actually collapse?
     """
     violations: List[GateViolation] = []
     turns = report.get("turns")
     if not isinstance(turns, list) or not turns:
         return violations
-    window = report.get("window")
-    restored = report.get("f_theta_intended") is True
     for i, t in enumerate(turns):
         if not isinstance(t, dict):
             continue
-        toks = t.get("tokens")
-        if (restored and isinstance(window, int) and window > 0
-                and isinstance(toks, (int, float)) and not isinstance(toks, bool)
-                and int(toks) > window):
-            violations.append(GateViolation(
-                "RESTORATION_COVERAGE",
-                f"turn {i} generated {int(toks)} tokens > resident window "
-                f"{window}: the prefill-amortized restoration covers only "
-                "<= window decode tokens; positions evicted during decode are "
-                "UNRESTORED, so the output beyond the window is degenerate",
-            ))
         if _looks_degenerate(t.get("text")):
             violations.append(GateViolation(
                 "OUTPUT_DEGENERATE",

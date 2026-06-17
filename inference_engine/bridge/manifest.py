@@ -771,6 +771,34 @@ PRESETS: Dict[str, Preset] = {
             params={"max_new_tokens": ("int:max_new_tokens", "64")},
             validate_reports=True,  # §4 liveness gate on-device
         ),
+        Preset(
+            name="mlx-kakeya-degen-probe",
+            description="Long-decode regression probe: full f_θ fused engine on a "
+                        "LONG generation (--ignore-turn-stop) past the native "
+                        "RotatingKVCache ring wrap (max_size~1024), with a "
+                        "native-greedy control (--chat-native-ref) on the same "
+                        "prompt for an A/B coherence comparison. Guards the "
+                        "wrapped-ring trim-desync fix: at >=1300 tokens the fused "
+                        "output must stay coherent (match native), not collapse "
+                        "into a runaway repeat.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat", "--chat-native-ref",
+                    "--chat-scripted", "请详细解释POW的工作原理",
+                    "--output", "results/research/phase1_degeneration_chat.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "256")},
+            validate_reports=False,
+        ),
     )
 }
 

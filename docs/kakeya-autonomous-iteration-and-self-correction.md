@@ -34,7 +34,7 @@ How it slipped through — the **silent-fallback anti-pattern**, in its observed
 | B | f_θ bypassed under S5 ("free lunch" smoke opt) | "restoration engine" | `build_restoration` returns `{}`; no f_θ forward |
 | C | a proxy/plumbing run | "engine validated" | wrong model (Qwen3-4B), no trained f_θ/proposer, prompt inside window |
 | D | a simpler component shipped | "the engine" | verifier-only AR chat presented as the product |
-| E | long-decode degeneration | "the engine works (smoke passed)" | restoration covers only ≤ window decode tokens; a real long answer (780 tok ≫ 64) degenerated to garbage + throughput collapse (0.31 tok/s) — masked because every smoke answer was ≤ window |
+| E | long-decode degeneration | "the engine works (smoke passed)" | a long answer (>1024 tok) degenerated to a `由于由于…` loop — masked because every smoke answer was short. **Root cause (confirmed by debug loop, not the initial guess):** the fused spec-decode rollback's `trim_prompt_cache` silently fails once the native `RotatingKVCache` ring wraps at `max_size`≈1024, desyncing `cache.offset` from `past_len`. Fixed via single-token commits past the wrap. The *initial* hypothesis ("restoration only covers ≤ window=64") was disproved by runtime evidence — see §4b. |
 
 Common root cause: an agent (or optimization) chose the **easy/robust path** and
 **relabeled it as the hard one**, and no automated check asserted the intended
@@ -146,12 +146,26 @@ the output was garbage and throughput collapsed. So the gate **also** asserts th
 
 | Invariant | Manifest field | Gate assertion | Code |
 | --- | --- | --- | --- |
-| restoration covers the generation | `window`, per-turn `tokens` | restored run: `tokens <= window` (beyond it, evicted-during-decode positions are unrestored) | `RESTORATION_COVERAGE` |
-| output is not degenerate | per-turn `text` | no runaway repeat (≥8 identical short lines) | `OUTPUT_DEGENERATE` |
+| output is not degenerate | per-turn `text` | no runaway repeat — ≥8 identical short lines **or** a 1–8 char unit tiled ≥8× at the tail (catches the newline-free `由于由于…` collapse) | `OUTPUT_DEGENERATE` |
 
-Verified: a PoW-style report (`tokens=780 > window=64`, repeated `*   *   *`) now
-**fails** the walker (CI + on-device) with both codes. **Liveness proves the
-components ran; quality proves they produced a valid result — the gate needs both.**
+Verified: a PoW-style report (repeated `*   *   *` lines, or `"由于"×120` with no
+line breaks) **fails** the walker (CI + on-device); the real coherent long answer
+and templated `矿工 A/B/C` enumerations **pass**. **Liveness proves the components
+ran; quality proves they produced a valid result — the gate needs both.**
+
+**Correction (2026-06-17) — `RESTORATION_COVERAGE` removed.** An earlier gate
+fired when a restored run generated more tokens than the S5 `window` (=64), on the
+theory that decode-time evicted positions are "unrestored" and the output beyond
+the window must degenerate. **Mac runtime evidence disproved that theory** (see
+the §"long-decode degeneration" root-cause below): the decode cache is the model's
+native hybrid cache (sliding `RotatingKVCache` with `max_size`≈1024, not the S5
+window), so nothing is evicted until ~1024 tokens; and a 1300-token run with **332
+evicted-unrestored positions stayed fully coherent** once the *actual* bug was
+fixed. "tokens > window" and even "evicted > 0" are not degeneration signals, so
+the rule was a pure false-positive (it would have failed every coherent answer
+> 64 tokens). The only trustworthy quality gate is the **empirical** one:
+`OUTPUT_DEGENERATE`. This is itself an instance of the North-Star discipline —
+*verify against runtime, never trust a plausible code comment/hypothesis.*
 
 ---
 
@@ -208,18 +222,48 @@ proposer live (`blocks=2/4`, `accept_len=4.0/3.5`), f_θ live by default
 (`f_theta_ran=TRUE`, 25 sliding layers), correct answers, bounded KV, natural EOS
 stop. One-command launcher: `scripts/run_kakeya_mac.sh`. (PR #144 + this PR.)
 
-**Known limitation (anti-pattern E, found 2026-06-17):** the Mac fused engine's
-restoration is **prefill-amortized for the prompt only** — it covers ≤ `window`
-decode tokens (code comment, `k3_integrated_niah_eval_mac.py` §"Per-sample
-restoration"). Generations longer than the window degenerate (garbage + throughput
-collapse + KV growth). The §4b gate now **fails loud** on it; the *fix* is
-**continuous decode-time restoration** (re-restore positions evicted during decode,
-as the CUDA engine does) — the real open engineering work, not a gate matter.
+**Long-decode degeneration — root cause found and FIXED (2026-06-17).** The
+originally-hypothesised cause (anti-pattern E: "restoration covers only ≤ `window`
+decode tokens") was **wrong**, and the debug loop disproved it with runtime
+evidence — a textbook case of *verify, don't trust the comment*:
 
-**Open / next:** (1) continuous decode-time restoration so long generations don't
-degenerate (the engine fix); (2) full-attention model (Qwen/Llama) where f_θ is
-load-bearing for the large memory win. The gate (§4/§4b) now prevents silent
-regression to verifier-only AND silent long-decode degeneration.
+1. **Characterization (128 → 800 → 1300 tokens, Mac M4, prompt "请详细解释POW的工作原理"):**
+   - The decode cache is the model's **native hybrid cache** — sliding layers are
+     `RotatingKVCache` (`max_size`=1024, `keep`=0), full layers are `KVCache`. The
+     S5 `--window-size 64` only feeds the analytical memory math; it does **not**
+     bound the decode cache. So nothing is evicted until ~1024 tokens.
+   - At 128 and 800 tokens the fused output was **fully coherent** (`max_run=1`);
+     `lost=0`; the hypothesis predicted failure at 64 — disproved.
+   - At **1300 tokens** the fused engine **degenerated** into a `由于由于…` loop
+     (`cyc_frac=1.0`) starting at gen≈1064 — *only after the ring wrapped at
+     gen≈1017*. The **native-greedy control on the same prompt stayed coherent**
+     past the wrap (terminated cleanly at gen 1247), proving the model handles
+     >1024 fine and the **fused engine** was at fault.
+2. **Root cause:** once the sliding `RotatingKVCache` ring wraps (`offset ≥ max_size`),
+   `mlx_lm.trim_prompt_cache` is **all-or-nothing and refuses** (a rotating layer is
+   `is_trimmable` only while `offset < max_size`). The fused speculative loop's
+   rejected-draft rollback then silently fails — 15 `trim short:true` events — so
+   `cache.offset` ran **+8 ahead of the committed `past_len`** on every post-wrap
+   block, misaligning RoPE/causal masking → logit corruption → collapse.
+3. **Fix (`fused_specdecode.py`, `_sliding_ring_would_wrap` + `if wrap_l1: L=1`):**
+   detect the impending wrap and commit **single-token blocks** past it. With L=1
+   the bonus token is always accepted (it *is* `argmax(next_token_logits)`), so
+   there is never a rejected tail to trim and `offset` stays `== past_len`.
+4. **Validated (re-run, 1300 tokens):** `trim short:true` 15→0; post-wrap
+   offset-desync 76/76→0; post-wrap `cyc_frac` 1.0→0.158; fused output **coherent**,
+   clean termination at gen 1241 — matching the native control. (Cost: spec-decode
+   speedup is forgone past `max_size`; correctness-first.)
+
+So eviction past `max_size` is **normal and harmless** (it is gemma's native
+sliding-window behavior); "continuous decode-time restoration" is **not** required
+for ≤-context coherence. The §4b gate now keys purely on the empirical
+`OUTPUT_DEGENERATE` signal (above).
+
+**Open / next:** (1) optional perf: a sound *wrapped-ring rollback* (snapshot/restore
+of the rotating cache) to keep speculative speedup past `max_size` — pure throughput,
+not correctness; (2) full-attention model (Qwen/Llama) where f_θ is load-bearing for
+the large memory win. The gate (§4/§4b) prevents silent regression to verifier-only
+AND silent long-decode degeneration.
 
 > Maintenance: append to §7 every iteration; update §4 if new components/
 > invariants appear; never delete the §1 failure record — it is the reason for §0.

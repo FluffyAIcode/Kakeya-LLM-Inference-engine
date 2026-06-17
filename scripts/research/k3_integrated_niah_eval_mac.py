@@ -180,6 +180,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--chat-scripted", default=None,
                     help="Non-interactive chat: '||'-separated user turns "
                          "(for Mac-bridge verification); writes a transcript.")
+    ap.add_argument("--chat-native-ref", action="store_true",
+                    help="DIAGNOSTIC opt-in: before each chat turn, also run a "
+                         "plain NATIVE greedy AR decode of the SAME prompt for "
+                         "--max-new-tokens and capture it as native_ref_text in "
+                         "the turn record. This is the decisive A/B control for "
+                         "greedy-pathology vs fused-engine degeneration: if the "
+                         "native reference degenerates at the same length, the "
+                         "fused engine is not the cause.")
     ap.add_argument("--force-f-theta", action="store_true",
                     help="Run f_θ restoration even under --s5-exact-full-attn "
                          "(bypass the S5 native-prefill short-circuit). On gemma-4 "
@@ -762,6 +770,28 @@ def main() -> int:
                 return list(cids.tolist() if hasattr(cids, "tolist") else cids)
 
             def _gen_turn(pid: List[int]) -> Dict[str, Any]:
+                # Opt-in A/B control (--chat-native-ref): a plain NATIVE greedy
+                # AR decode of the SAME prompt for --max-new-tokens. Captured as
+                # res["native_ref_text"] so the fused answer can be compared
+                # against the native reference for the same turn (the decisive
+                # discriminator between greedy pathology and a fused-engine bug).
+                nref_text: Optional[str] = None
+                nref_tokens: List[int] = []
+                if args.chat_native_ref:
+                    nref_cache, nref_logits = native_prefill(list(pid))
+                    while len(nref_tokens) < args.max_new_tokens:
+                        tok = int(mx.argmax(nref_logits).item())
+                        nref_tokens.append(tok)
+                        if tok in end_ids:
+                            break
+                        out = mlx_model(mx.array([[tok]]), cache=nref_cache)
+                        mx.eval(out)
+                        nref_logits = out[0, -1]
+                    try:
+                        nref_text = tokenizer.decode(
+                            nref_tokens, skip_special_tokens=True)
+                    except TypeError:
+                        nref_text = tokenizer.decode(nref_tokens)
                 rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
                 # f_θ ran iff build_restoration produced restored banks via the
                 # torch drafter+f_θ (under --force-f-theta the S5 short-circuit is
@@ -816,6 +846,9 @@ def main() -> int:
                     if idx > 0:
                         txt = txt[:idx]
                 res["text"] = txt.strip()
+                if nref_text is not None:
+                    res["native_ref_text"] = nref_text.strip()
+                    res["native_ref_tokens"] = len(nref_tokens)
                 res["resident_kv_bytes"] = int(
                     sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))
                 return res
@@ -836,14 +869,18 @@ def main() -> int:
                     history.append({"role": "assistant", "content": res["text"]})
                     tps = (res["decode_tokens"] / res["decode_s"]
                            if res["decode_s"] > 0 else 0.0)
-                    transcript.append({
+                    turn_rec = {
                         "user": u, "text": res["text"],
                         "tokens": res["decode_tokens"], "blocks": res["blocks"],
                         "mean_accept_len": res["mean_accept_len"],
                         "f_theta_ran": res["f_theta_ran"],
                         "f_theta_layers": res["f_theta_layers"],
                         "decode_s": res["decode_s"], "decode_tps": round(tps, 2),
-                        "resident_kv_bytes": res["resident_kv_bytes"]})
+                        "resident_kv_bytes": res["resident_kv_bytes"]}
+                    if "native_ref_text" in res:
+                        turn_rec["native_ref_text"] = res["native_ref_text"]
+                        turn_rec["native_ref_tokens"] = res["native_ref_tokens"]
+                    transcript.append(turn_rec)
                     print(f"[chat] USER {u!r}", file=sys.stderr, flush=True)
                     print(f"[chat] GEMMA-4 {res['text'][:200]!r} (blocks="
                           f"{res['blocks']}, accept_len={res['mean_accept_len']}, "

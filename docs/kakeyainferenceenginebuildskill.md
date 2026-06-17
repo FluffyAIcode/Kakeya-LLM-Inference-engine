@@ -7,8 +7,9 @@ v0.5-cuda) into: what the engine is, where the code lives, how to run/benchmark
 it, the milestone roadmap, the hard-won bugs+fixes, and — most important — the
 **validation honesty standards** (the rules that keep claims defensible).
 
-> If you only read one section, read **§7 Validation & honesty standards**. The
-> most expensive mistakes in this project were *overclaims*, not bugs.
+> If you only read one section, read **§8 Validation & honesty standards**. The
+> most expensive mistakes in this project were *overclaims*, not bugs. For the
+> debugging method, **§7 is a reusable worked template.**
 
 ---
 
@@ -142,7 +143,7 @@ Port lessons: `docs/mlx-port-lessons.md`.
 | **KIE-v1.1.z** (#139) | throughput + N=75 | **N=75 MET** (recall 1.0, 126.7 GB, ~4.8× vLLM; ~31 tok/s aggregate); **decode ≥ vLLM NOT met** (eager 26B-MoE wall) |
 | **KIE-v1.1.z2** | rebuild fused-MoE + graph forward | **abandoned** — superseded by KIE-v2 (run *on* vLLM) |
 | **KIE-v2** (#140) | **Kakeya Attention on vLLM** | decode **≥ vLLM (1.15–1.23×)** @16k, recall 1.0, measured to N=70 — inherits vLLM runtime |
-| **v0.5-cuda** (#141) | release `KakeyaVLLM` + consolidated reports | done (gemma-4 instantiation). Product concurrency claim = **`KakeyaVLLM` N→70 @16k** on vLLM; the **N=75 @62k is the *eager* `KakeyaEngine` substrate**, not the v0.5 product path — do not conflate. See §7 for exact validation scope |
+| **v0.5-cuda** (#141) | release `KakeyaVLLM` + consolidated reports | done (gemma-4 instantiation). Product concurrency claim = **`KakeyaVLLM` N→70 @16k** on vLLM; the **N=75 @62k is the *eager* `KakeyaEngine` substrate**, not the v0.5 product path — do not conflate. See §8 for exact validation scope |
 | **v0.6** (= ADR 0015 KIE-v1.2) | **restoration backend on full-attention models** (Qwen/Llama): train f_θ/proposer + inject restoration at vLLM prefill + graph-capturable quantized-exact kernel | **planned — the real memory differentiator (~6×)** |
 
 > **N=16 vs N=24 (KIE-v1.1 precaution).** The evicting StaticCache alone at the
@@ -168,6 +169,7 @@ Port lessons: `docs/mlx-port-lessons.md`.
 | `torch.compile` attention 6.6× but **0% e2e decode gain** | decode dominated by **eager 26B-MoE full-model forward**, not attention | need fused-MoE + full-forward graph capture → that's vLLM's job → **KIE-v2** |
 | fused-MoE port blocked | HF `kernels` incompatible w/ transformers 5.12; vLLM `fused_moe` cross-venv surgery; from-scratch = multi-week | **run Kakeya ON vLLM** instead of rebuilding it (KIE-v2) |
 | `KakeyaVLLM` crash on text-only model | unconditional `text_config` nesting (gemma multimodal) breaks Qwen/Llama (`num_attention_heads` missing) | **auto-detect** `text_config` via `AutoConfig`: nested for gemma-4, flat for Qwen/Llama |
+| MLX fused engine **long-decode degeneration** (`由于由于…` runaway past ~1024 tok, throughput collapse) | once the native sliding `RotatingKVCache` ring **wraps** (`offset ≥ max_size`≈1024), `mlx_lm.trim_prompt_cache` refuses the spec-decode rejected-draft rollback (all-or-nothing; `is_trimmable` needs `offset < max_size`) → un-trimmed rejects leave `cache.offset` **+8 ahead of `past_len`** → RoPE/mask desync → logit corruption | detect the impending wrap (`_sliding_ring_would_wrap`) and commit **single-token blocks** past it (`L=1`): the bonus is always accepted, so there's no rejected tail to trim and `offset` stays `== past_len`. **Full worked template in §7.** |
 
 ---
 
@@ -189,12 +191,96 @@ Port lessons: `docs/mlx-port-lessons.md`.
 
 ---
 
-## 7. Validation & honesty standards (READ THIS)
+## 7. Worked case study: debugging the long-decode degeneration (a TEMPLATE)
+
+This is the **model example** of how to debug a non-obvious runtime bug in this
+project. Reuse the *shape* of this process for any "it works in smoke tests but
+breaks in the real workload" bug. The actual fix is the `RotatingKVCache`-wrap
+row in §5; what follows is the **method**, written so it transfers.
+
+### 7.A The symptom
+Mac (MLX) fused spec-decode engine produced **garbage on long answers**: a long
+reply (e.g. "请详细解释POW的工作原理") started coherent, then collapsed into a runaway
+repeat (`由于由于由于…`) with throughput falling off. Short answers were fine, so it
+had slipped through every smoke test.
+
+### 7.B The process (the reusable template)
+
+> **Golden rule (this project's §6 principle made concrete): never fix from code
+> alone. Reproduce → instrument → measure → let runtime evidence pick the
+> hypothesis. Be ready to have your first hypothesis killed by the data.**
+
+1. **Write down the initial hypothesis — then try to disprove it, not confirm it.**
+   Initial guess (from a code comment): "restoration only covers ≤ `window`=64
+   decode tokens, so output past 64 is unrestored → degenerate." Plausible, and
+   **wrong**. Treat plausible hypotheses as suspects, not conclusions.
+2. **Reproduce at increasing scale, on the real device, with one fixed prompt.**
+   Drive the Mac M4 via the bridge (`mlx-kakeya-degen-probe` preset). Sweep the
+   one variable that matters (generation length):
+
+   | run | length | result | inference |
+   | --- | --- | --- | --- |
+   | 1 | 128 tok | coherent | kills "fails at window=64"; also reveals the decode cache is the model's **native `RotatingKVCache` (`max_size`≈1024)**, *not* the S5 window |
+   | 2 | 800 tok | coherent | failure is past 800 → keep going |
+   | 3 | 1300 tok | **degenerates** at gen≈1064 | reproduced; onset is right after the ring **wraps** at gen≈1017 |
+
+3. **Add a discriminating control (the single highest-value step).** In run 3,
+   also decode the **same prompt with a plain native-greedy loop** (`--chat-native-ref`)
+   as an A/B. Native stayed **fully coherent** past the wrap (clean stop @ 1247) →
+   *the model handles >1024 fine; the fused engine corrupts it.* A control that
+   isolates "your code" from "the model/library" is worth more than ten more logs.
+4. **Instrument the exact mechanism the data now points at.** NDJSON per-block
+   logs of cache `offset` vs committed `past_len`, and of every `trim_prompt_cache`
+   call. Smoking gun: after the wrap, `offset` ran **+8 ahead of `past_len`** on
+   every block, with **15 "trim refused" events** — only post-wrap.
+5. **State the root cause mechanistically** (see §5 row): wrapped ring →
+   `trim_prompt_cache` refuses → rejected drafts linger → offset/`past_len` desync
+   → RoPE/mask misalignment → logit corruption.
+6. **Fix correctness-first**, then re-run the *identical* probe and show the
+   metrics move the right way:
+
+   | signal | before | after |
+   | --- | --- | --- |
+   | "trim refused" events | 15 | **0** |
+   | post-wrap offset desync | 76/76 blocks | **0/225** |
+   | repetition `cyc_frac` | 1.0 (collapse) | **0.158** |
+   | final text | `由于…` runaway | **coherent**, clean stop @ 1241 (= native) |
+
+### 7.C Two lessons that generalize (the "样板" payload)
+
+- **L1 — runtime evidence overrides plausible hypotheses (and code comments).**
+  The comment-derived "≤ window restoration coverage" theory was disproved by run 1
+  (128 tok coherent) and run 3's native control (332 evicted-yet-coherent tokens).
+  Eviction past `max_size` is *normal* (native sliding-window behavior), not a
+  degeneration cause. **Always verify the assumption against a run before building
+  on it.**
+- **L2 — a gate built on a wrong hypothesis is a false-positive factory.** A
+  `RESTORATION_COVERAGE` quality gate had shipped that fired on `tokens > window`.
+  Once L1 disproved the theory, that gate was shown to flag **every** coherent
+  answer > 64 tokens. It was removed; the quality gate now keys only on the
+  **empirical** signal (did the text actually collapse? — `_has_runaway_substring`
+  catches the newline-free `由于…` case, and is conservative enough to *not* trip on
+  legitimate templated text like `矿工 A/B/C` enumerations). **Gate on observed
+  outcomes, not on theorized proxies.**
+
+### 7.D Pointers
+- Fix + control flag: `inference_engine/backends/mlx/fused_specdecode.py`
+  (`_sliding_ring_would_wrap`), `scripts/research/k3_integrated_niah_eval_mac.py`
+  (`--chat-native-ref`).
+- Corrected gate: `inference_engine/bench/k3_report_gate.py`
+  (`assert_quality`, `_has_runaway_substring`).
+- Full narrative + the disproved-hypothesis timeline:
+  `docs/kakeya-autonomous-iteration-and-self-correction.md` (§"long-decode
+  degeneration"). PR #146.
+
+---
+
+## 8. Validation & honesty standards (READ THIS)
 
 The single most damaging error pattern in this project is **overclaiming a
 validation**. Follow these rules rigidly.
 
-### 7.1 What counts as validating "the engine" vs "the plumbing"
+### 8.1 What counts as validating "the engine" vs "the plumbing"
 
 - **Engine/algorithm validation** = the actual claim (recall, memory, throughput)
   measured **on the release model, through the release code path, exercising the
@@ -203,9 +289,9 @@ validation**. Follow these rules rigidly.
   generates" — proves the code runs, proves **nothing** about the algorithm.
 - **Label every artifact as one or the other.** Never let a smoke test masquerade
   as engine validation. (Case study: a Qwen3-4B run of `KakeyaVLLM` was wrongly
-  presented as "end-to-end validation". It was plumbing-only — see §7.3.)
+  presented as "end-to-end validation". It was plumbing-only — see §8.3.)
 
-### 7.2 The Gemma-4 "S5 free lunch" — and why it does NOT generalize
+### 8.2 The Gemma-4 "S5 free lunch" — and why it does NOT generalize
 
 - On **gemma-4-26B-A4B**, recall is **1.0 at `sliding_window=68` with NO
   restoration**, because **5 of 30 layers are native full-attention and carry
@@ -218,7 +304,7 @@ validation**. Follow these rules rigidly.
   recall** — so restoration is the *only* way to bound memory at full recall, and
   vLLM (no restoration) must keep full KV.
 
-### 7.3 HARD RULE: never validate Kakeya Attention on a model without trained f_θ/proposer
+### 8.3 HARD RULE: never validate Kakeya Attention on a model without trained f_θ/proposer
 
 A bounded window **without** trained restoration is **naive truncation, not Kakeya
 Attention.** On a full-attention model with no trained f_θ/proposer:
@@ -228,9 +314,9 @@ Attention.** On a full-attention model with no trained f_θ/proposer:
 
 So you **cannot** demonstrate the engine on such a model. The v0.6 work is exactly
 "train f_θ/proposer for a full-attention model **then** validate". Until then, the
-only defensible engine evidence is gemma-4 (§7.2).
+only defensible engine evidence is gemma-4 (§8.2).
 
-### 7.4 Decode-speed honesty
+### 8.4 Decode-speed honesty
 
 - The **eager `KakeyaEngine`** wins memory/concurrency but is slow at decode
   (~25–31 tok/s aggregate; the eager 26B-MoE forward dominates). Report decode-only
@@ -241,7 +327,7 @@ only defensible engine evidence is gemma-4 (§7.2).
   inherits vLLM's fused-MoE + CUDA graphs + scheduler. Don't claim product decode
   speed from the eager engine.
 
-### 7.5 Checklist before writing "validated" anywhere
+### 8.5 Checklist before writing "validated" anywhere
 
 1. Did the **release code path** run (not a side script that approximates it)?
 2. Was the claim's **mechanism actually exercised** (restoration ran? eviction
@@ -257,7 +343,7 @@ If any answer is "no", write the weaker, true claim.
 
 ---
 
-## 8. Pointers
+## 9. Pointers
 
 - North star + algorithm + milestones: `docs/adr/0015-kakeya-attention-and-engine-substrate.md`
 - Engine architecture: `docs/design/kakeya-inference-engine-architecture.md`

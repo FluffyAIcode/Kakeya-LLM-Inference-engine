@@ -125,7 +125,8 @@ def test_liveness_silent_fallback_report_and_turn_level():
 # §2.4/§2.5 quality contract (degeneration / restoration coverage)
 # ---------------------------------------------------------------------------
 
-from inference_engine.bench.k3_report_gate import assert_quality, _looks_degenerate
+from inference_engine.bench.k3_report_gate import (
+    assert_quality, _looks_degenerate, _has_runaway_substring)
 
 
 def _quality_report(turns, window=64, restored=True):
@@ -141,35 +142,42 @@ def test_quality_passes_clean_short_turn():
     assert assert_quality(rep) == []
 
 
-def test_quality_restoration_coverage_exceeded():
-    # the PoW failure: restored run generated way past the window
-    rep = _quality_report([{"tokens": 780, "text": "ok"}], window=64, restored=True)
-    codes = {v.code for v in assert_quality(rep)}
-    assert "RESTORATION_COVERAGE" in codes
-    # and it surfaces through validate_report (dispatch wires assert_quality)
-    assert any(v.code == "RESTORATION_COVERAGE" for v in validate_report(rep))
+def test_quality_long_coherent_run_does_not_fire():
+    # Runtime evidence (Mac, 1300 tokens, 332 evicted-unrestored positions) shows
+    # a restored run far past the S5 window stays coherent once the trim-desync
+    # bug is fixed. The gate must NOT fire on token count / eviction alone.
+    long_text = ("Proof of Work is a consensus mechanism. " * 60).strip()
+    rep = _quality_report([{"tokens": 1300, "text": long_text}],
+                          window=64, restored=True)
+    assert assert_quality(rep) == []
 
 
-def test_quality_no_coverage_check_when_not_restored():
-    # all-MLX path (f_θ bypassed): no restoration to exceed.
-    rep = _quality_report([{"tokens": 780, "text": "ok"}], window=64, restored=False)
-    assert all(v.code != "RESTORATION_COVERAGE" for v in assert_quality(rep))
-
-
-def test_quality_coverage_skipped_without_window():
-    rep = _quality_report([{"tokens": 780, "text": "ok"}], window=None)
-    assert all(v.code != "RESTORATION_COVERAGE" for v in assert_quality(rep))
-
-
-def test_quality_bool_tokens_not_counted():
-    rep = _quality_report([{"tokens": True, "text": "ok"}], window=64)
-    assert all(v.code != "RESTORATION_COVERAGE" for v in assert_quality(rep))
-
-
-def test_quality_output_degenerate_detected():
+def test_quality_output_degenerate_line_wall():
     garbage = "Answer:\n" + "\n".join(["*   *   *"] * 12)
     rep = _quality_report([{"tokens": 50, "text": garbage}])
     assert any(v.code == "OUTPUT_DEGENERATE" for v in assert_quality(rep))
+    # and it surfaces through validate_report (dispatch wires assert_quality)
+    assert any(v.code == "OUTPUT_DEGENERATE" for v in validate_report(rep))
+
+
+def test_quality_output_degenerate_runaway_substring_no_newlines():
+    # the exact >ms-wrap collapse: a short unit repeated with no line breaks,
+    # which the line-level detector cannot see.
+    garbage = "PoW 的核心是" + "由于" * 120
+    rep = _quality_report([{"tokens": 1300, "text": garbage}])
+    assert any(v.code == "OUTPUT_DEGENERATE" for v in assert_quality(rep))
+
+
+def test_quality_templated_enumeration_does_not_fire():
+    # the real PoW answer's templated section (矿工 A/B/C with DIFFERENT nonces)
+    # has high autocorrelation but must NOT be flagged as degenerate.
+    templated = (
+        "矿工 A 尝试：Hash(数据 + 1) = 0xabc (不符合要求)\n"
+        "矿工 B 尝试：Hash(数据 + 2) = 0xdef (不符合要求)\n"
+        "矿工 C 运气好：Hash(数据 + 999) = 0x000 (符合要求！)\n"
+        "一旦有人找到了满足条件的哈希值，他就挖到了矿。")
+    rep = _quality_report([{"tokens": 200, "text": templated}])
+    assert assert_quality(rep) == []
 
 
 def test_quality_empty_and_nondict_turns():
@@ -189,6 +197,18 @@ def test_looks_degenerate_helper():
     assert _looks_degenerate("\n".join(["this line is definitely longer than twelve"] * 10)) is False
     # blank lines are skipped; a short line then different lines resets the run
     assert _looks_degenerate("x\n\ny\nz\nw\nq\nr\ns") is False
+
+
+def test_has_runaway_substring_helper():
+    assert _has_runaway_substring("由于" * 50) is True          # 2-char unit x50
+    assert _has_runaway_substring("ok " + "a" * 40) is True     # 1-char unit
+    assert _has_runaway_substring(123) is False
+    assert _has_runaway_substring("short") is False             # < 16 chars
+    # coherent prose ending differently is not flagged
+    assert _has_runaway_substring(
+        "Proof of Work secures the chain through energy expenditure.") is False
+    # only ~5 repeats (< 8) of a multi-char unit does not trip
+    assert _has_runaway_substring("prefix " + "ab" * 5) is False
 
 
 def _valid_report(n: int = MIN_PERF_SAMPLES) -> Dict[str, Any]:
