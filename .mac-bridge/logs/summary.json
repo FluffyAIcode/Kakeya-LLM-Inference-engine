@@ -1,41 +1,31 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "mlx-kakeya-chat-smoke",
   "params": {
-    "n_samples": "5",
-    "max_new_tokens": "64",
-    "block_size": "4"
+    "max_new_tokens": "96"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781674560-0032d8",
   "commands": [
     {
       "argv": [
         "python3",
-        "scripts/research/k3_integrated_niah_eval_mac.py",
+        "scripts/chat_mlx_kakeya.py",
         "--verifier-path",
         "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
-        "--drafter-id",
-        "z-lab/gemma-4-26B-A4B-it-DFlash",
-        "--f-theta-dir",
-        "results/research/f_theta_v5_s5_sliding",
-        "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
-        "--n-samples",
-        "5",
-        "--max-new-tokens",
-        "64",
-        "--block-size",
+        "--sink",
         "4",
-        "--prefill-chunk-size",
-        "512",
+        "--window",
+        "64",
+        "--max-new-tokens",
+        "96",
+        "--scripted",
+        "What is the capital of France? Answer in one short sentence.||Now multiply 6 by 7 and give only the number.||Name three primary colors.",
         "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "results/research/k3_mac_bridge_mlx_kakeya_chat.json"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 23.1,
+      "log": ".mac-bridge/logs/mlx-kakeya-chat-smoke-0.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }
