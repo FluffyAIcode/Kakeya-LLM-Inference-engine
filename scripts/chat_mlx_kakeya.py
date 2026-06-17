@@ -95,9 +95,9 @@ def main() -> int:
     ap.add_argument("--full-window", type=int, default=8192,
                     help="Resident window for the full-attention (exact) layers "
                          "— large = effectively full context (S5 recall carrier).")
-    ap.add_argument("--max-new-tokens", type=int, default=1024,
-                    help="Generation cap. Long explanations can need 1500+; raise "
-                         "this if answers get cut off ('断掉').")
+    ap.add_argument("--max-new-tokens", type=int, default=2048,
+                    help="Backstop cap ONLY — generation stops naturally at gemma's "
+                         "<end_of_turn>, so you should not need to tune this.")
     ap.add_argument("--repetition-penalty", type=float, default=1.3,
                     help="Penalize repeated tokens to stop greedy loops (1.0 = off).")
     ap.add_argument("--thinking", action="store_true",
