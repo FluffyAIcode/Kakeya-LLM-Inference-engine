@@ -221,6 +221,7 @@ def main() -> int:
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
         fused_specdecode_generate_mlx, fused_specdecode_generate_mlx_trim,
+        _sliding_ring_would_wrap,  # region agent log (fused-codegen-degeneration-2815)
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -769,6 +770,54 @@ def main() -> int:
                         history, add_generation_prompt=True)
                 return list(cids.tolist() if hasattr(cids, "tolist") else cids)
 
+            # region agent log (fused-codegen-degeneration-2815 prefill probe)
+            import os as _kos_chat
+            _KDBG_CHAT = bool(_kos_chat.environ.get("KAKEYA_KDBG"))
+
+            def _kdbg_emit(rec: Dict[str, Any]) -> None:
+                try:
+                    sys.stderr.write("KDBG " + json.dumps(rec, ensure_ascii=False) + "\n")
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                try:
+                    with open("/opt/cursor/logs/debug.log", "a") as _f:
+                        _f.write(json.dumps(rec) + "\n")
+                except Exception:
+                    pass
+
+            def _kdbg_cache_summary(cache: Any) -> Dict[str, Any]:
+                """rot/full offset+max_size rollup + wrap/trimmable flags. The
+                decisive prefill signal: is the sliding RotatingKVCache already
+                wrapped (off>=max_size) BEFORE decode starts, and does full-attn
+                off == prompt_len? A pre-wrapped ring at prefill means the very
+                first speculative block's trim is refused (offset desync)."""
+                rot_off = rot_ms = full_off = None
+                any_wrapped = False
+                all_trimmable = True
+                n = 0
+                for c in (cache or []):
+                    n += 1
+                    nm = type(c).__name__
+                    off = int(getattr(c, "offset", -1))
+                    ms = getattr(c, "max_size", None)
+                    ms = int(ms) if ms is not None else None
+                    is_rot = "Rotating" in nm
+                    if is_rot and ms is not None and off >= ms:
+                        any_wrapped = True
+                    trim_fn = getattr(c, "is_trimmable", None)
+                    trim = bool(trim_fn()) if callable(trim_fn) else None
+                    if trim is False:
+                        all_trimmable = False
+                    if is_rot and rot_off is None:
+                        rot_off, rot_ms = off, ms
+                    if (not is_rot) and full_off is None:
+                        full_off = off
+                return {"n_layers": n, "rot_off": rot_off, "rot_ms": rot_ms,
+                        "full_off": full_off, "any_wrapped": any_wrapped,
+                        "all_trimmable": all_trimmable}
+            # endregion
+
             def _gen_turn(pid: List[int]) -> Dict[str, Any]:
                 # Opt-in A/B control (--chat-native-ref): a plain NATIVE greedy
                 # AR decode of the SAME prompt for --max-new-tokens. Captured as
@@ -779,6 +828,14 @@ def main() -> int:
                 nref_tokens: List[int] = []
                 if args.chat_native_ref:
                     nref_cache, nref_logits = native_prefill(list(pid))
+                    # region agent log (fused-codegen-degeneration-2815 prefill probe)
+                    if _KDBG_CHAT:
+                        _turn = sum(1 for h in history if h.get("role") == "user")
+                        _kdbg_emit({"hypothesisId": "AE",
+                                    "message": "prefill_state_native",
+                                    "data": {"turn": _turn, "prompt_len": len(pid),
+                                             "cache": _kdbg_cache_summary(nref_cache)}})
+                    # endregion
                     while len(nref_tokens) < args.max_new_tokens:
                         tok = int(mx.argmax(nref_logits).item())
                         nref_tokens.append(tok)
@@ -809,6 +866,23 @@ def main() -> int:
                     restored_v_per_layer=_pad(rv, tsrc, T),
                     evicted_positions=evicted,
                     prefill_chunk_size=args.prefill_chunk_size, full_kv=args.cuda_trim)
+                # region agent log (fused-codegen-degeneration-2815 prefill probe)
+                if _KDBG_CHAT:
+                    _turn = sum(1 for h in history if h.get("role") == "user")
+                    _kdbg_emit({"hypothesisId": "AE",
+                                "message": "prefill_state_fused",
+                                "data": {"turn": _turn, "prompt_len": T,
+                                         "evicted_count": len(evicted),
+                                         "block_size": int(args.block_size),
+                                         "would_wrap_block0": bool(
+                                             _sliding_ring_would_wrap(
+                                                 getattr(adapter, "_cache", None),
+                                                 int(args.block_size))),
+                                         "past_len": int(adapter._past_len),
+                                         "f_theta_ran": bool(f_theta_ran),
+                                         "cache": _kdbg_cache_summary(
+                                             getattr(adapter, "_cache", None))}})
+                # endregion
                 t0 = time.perf_counter()
                 if mlx_drafter is not None and args.cuda_trim:
                     res = fused_specdecode_generate_mlx_trim(
@@ -873,6 +947,7 @@ def main() -> int:
                         "hypothesisId": "AC",
                         "message": "turn_compare_fused_vs_native",
                         "data": {
+                            "turn": sum(1 for h in history if h.get("role") == "user"),
                             "fused_n": len(ftoks), "native_n": len(ntoks),
                             "first_divergence_idx": div,
                             "fused_div_ctx": ftoks[max(0, div - 8):div + 16],
