@@ -29,7 +29,7 @@ BRANCH_PREFIX = "mac-bridge/"
 # bridge is for evidence runs and debugging, not for monopolizing the
 # single Mac with open-ended workloads.
 MAX_N_SAMPLES = 50
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 2048  # backstop for chat; natural EOS stops well before this
 MAX_BLOCK_SIZE = 16
 
 _ENV_PLACEHOLDER = re.compile(r"^\$\{ENV:([A-Z][A-Z0-9_]*)\}$")
