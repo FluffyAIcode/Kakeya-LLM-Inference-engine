@@ -1,11 +1,9 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "mlx-kakeya-degen-probe",
   "params": {
-    "n_samples": "5",
-    "max_new_tokens": "64",
-    "block_size": "4"
+    "max_new_tokens": "1300"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781701509-0f51c3",
   "commands": [
     {
       "argv": [
@@ -18,24 +16,28 @@
         "--f-theta-dir",
         "results/research/f_theta_v5_s5_sliding",
         "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
-        "--n-samples",
-        "5",
-        "--max-new-tokens",
+        "--fused-specdecode",
+        "--force-f-theta",
+        "--sink-size",
+        "4",
+        "--window-size",
         "64",
         "--block-size",
         "4",
-        "--prefill-chunk-size",
-        "512",
+        "--max-new-tokens",
+        "1300",
+        "--ignore-turn-stop",
+        "--chat",
+        "--chat-native-ref",
+        "--chat-scripted",
+        "\u8bf7\u8be6\u7ec6\u89e3\u91caPOW\u7684\u5de5\u4f5c\u539f\u7406",
         "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "results/research/phase1_degeneration_chat.json"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 490.5,
+      "log": ".mac-bridge/logs/mlx-kakeya-degen-probe-0.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }
