@@ -1,0 +1,46 @@
+{
+  "kind": "mac_gemma4_kakeya_chat",
+  "schema_version": 1,
+  "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "engine": "Kakeya-for-Mac (MLX, S5 bounded sink+window, single-stream)",
+  "sink": 4,
+  "window": 64,
+  "full_window": 8192,
+  "exact_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "n_layers": 30,
+  "turns": [
+    {
+      "user": "What is the capital of France? Answer in one short sentence.",
+      "text": "The capital of France is Paris.thought\nThe capital of France is Paris.thought\nThe capital of France is Paris.thought\nThe capital of France is Paris.thought\nThe capital of France is Paris.thought\nThe capital of France is Paris.",
+      "n_tokens": 64,
+      "decode_tps": 6.12,
+      "resident_kv_bytes": 15892480,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 32
+    },
+    {
+      "user": "Now multiply 6 by 7 and give only the number.",
+      "text": "42",
+      "n_tokens": 4,
+      "decode_tps": 6.09,
+      "resident_kv_bytes": 16220160,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 107
+    },
+    {
+      "user": "Name three primary colors.",
+      "text": "Red, yellow, and blue.\nthought\nThe user is asking for \"three primary colors\".\nIn the context of traditional pigment/art (RYB), they are Red, Yellow, and Blue.\nIn the context of light (RGB), they are Red, Green, and Blue.\nIn",
+      "n_tokens": 64,
+      "decode_tps": 21.3,
+      "resident_kv_bytes": 17776640,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 124
+    }
+  ]
+}
