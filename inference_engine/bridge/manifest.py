@@ -650,6 +650,34 @@ PRESETS: Dict[str, Preset] = {
             },
             validate_reports=False,
         ),
+        Preset(
+            name="mlx-kakeya-chat-smoke",
+            description="Run gemma-4 on the Kakeya-for-Mac (MLX) engine via the "
+                        "interactive chat CLI in NON-interactive --scripted mode: "
+                        "single-stream generation over the Kakeya S5 bounded "
+                        "sink+window cache (sliding layers bounded; full-attn "
+                        "layers full). Writes a transcript JSON so we can verify "
+                        "gemma-4 responds coherently on the engine; the operator "
+                        "runs the same script without --scripted for a real "
+                        "interactive REPL on the Mac.",
+            command_templates=(
+                (
+                    "python3", "scripts/chat_mlx_kakeya.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--sink", "4", "--window", "64",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--scripted",
+                    "What is the capital of France? Answer in one short sentence."
+                    "||Now multiply 6 by 7 and give only the number."
+                    "||Name three primary colors.",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_kakeya_chat.json",
+                ),
+            ),
+            timeout_minutes=45,
+            params={"max_new_tokens": ("int:max_new_tokens", "64")},
+            validate_reports=False,
+        ),
     )
 }
 

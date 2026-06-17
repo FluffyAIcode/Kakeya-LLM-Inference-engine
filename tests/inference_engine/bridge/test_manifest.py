@@ -80,6 +80,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-multitenant",
         "mlx-batched-pad-decode",
         "mlx-env-probe",
+        "mlx-kakeya-chat-smoke",
         "mlx-multitenant-pressure",
         "mlx-upgrade",
         "mlx-upstream-batch-probe",
@@ -133,6 +134,18 @@ def test_pad_decode_preset_carries_flag_and_forces_trimmable_cache():
     assert argv[1].endswith("mlx_batched_multitenant_bench.py")
     assert "--pad-decode" in argv
     assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in argv
+
+
+def test_mlx_kakeya_chat_smoke_preset_resolves():
+    request = parse_manifest(_manifest(
+        preset="mlx-kakeya-chat-smoke", params={"max_new_tokens": "64"}))
+    (argv,) = build_commands(request, HARNESS_ENV)
+    assert argv[1].endswith("chat_mlx_kakeya.py")
+    assert HARNESS_ENV["KAKEYA_MAC_VERIFIER_PATH"] in argv
+    assert "--scripted" in argv
+    assert argv[argv.index("--max-new-tokens") + 1] == "64"
+    assert not [t for t in argv if t.startswith("${ENV:")]
+    assert not [t for t in argv if t.startswith("{") and t.endswith("}")]
 
 
 def test_drafter_parity_preset_resolves():
