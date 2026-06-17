@@ -185,6 +185,67 @@ def assert_liveness(report: Dict[str, Any]) -> List[GateViolation]:
     return violations
 
 
+def _looks_degenerate(text: Any) -> bool:
+    """True when text has collapsed into a runaway repeat — the long-decode
+    failure mode (e.g. many identical short lines like ``*   *   *``). Strict:
+    >= 8 consecutive identical stripped non-empty lines of <= 12 chars."""
+    if not isinstance(text, str):
+        return False
+    run = 0
+    prev = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line == prev and len(line) <= 12:
+            run += 1
+            if run >= 7:  # prev + 7 repeats = 8 identical lines
+                return True
+        else:
+            run = 0
+            prev = line
+    return False
+
+
+def assert_quality(report: Dict[str, Any]) -> List[GateViolation]:
+    """§2.4/§2.5 contract — prove the run did not lose intelligence or throughput.
+
+    Catches the long-decode failure the liveness gate cannot see (proposer/f_θ
+    ran, yet the output is garbage + throughput collapsed):
+      * RESTORATION_COVERAGE — a restored run generated more tokens than the
+        resident window, beyond which the prefill-amortized restoration does NOT
+        cover the evicted positions (outputs become unrestored/degenerate),
+      * OUTPUT_DEGENERATE — a turn's text collapsed into a runaway repeat.
+    """
+    violations: List[GateViolation] = []
+    turns = report.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return violations
+    window = report.get("window")
+    restored = report.get("f_theta_intended") is True
+    for i, t in enumerate(turns):
+        if not isinstance(t, dict):
+            continue
+        toks = t.get("tokens")
+        if (restored and isinstance(window, int) and window > 0
+                and isinstance(toks, (int, float)) and not isinstance(toks, bool)
+                and int(toks) > window):
+            violations.append(GateViolation(
+                "RESTORATION_COVERAGE",
+                f"turn {i} generated {int(toks)} tokens > resident window "
+                f"{window}: the prefill-amortized restoration covers only "
+                "<= window decode tokens; positions evicted during decode are "
+                "UNRESTORED, so the output beyond the window is degenerate",
+            ))
+        if _looks_degenerate(t.get("text")):
+            violations.append(GateViolation(
+                "OUTPUT_DEGENERATE",
+                f"turn {i} output collapsed into a runaway repeat (long-decode "
+                "degeneration) — not usable text",
+            ))
+    return violations
+
+
 def is_legacy_report(report: Dict[str, Any]) -> bool:
     """True when the report predates the evidence gate (schema < 2)."""
     try:
@@ -285,7 +346,7 @@ def validate_report(report: Dict[str, Any]) -> List[GateViolation]:
     code to a warning — everything else fails the build).
     """
     if is_liveness_report(report):
-        return assert_liveness(report)
+        return assert_liveness(report) + assert_quality(report)
     if not is_gated_report(report):
         return []
     if is_legacy_report(report):

@@ -34,6 +34,7 @@ How it slipped through — the **silent-fallback anti-pattern**, in its observed
 | B | f_θ bypassed under S5 ("free lunch" smoke opt) | "restoration engine" | `build_restoration` returns `{}`; no f_θ forward |
 | C | a proxy/plumbing run | "engine validated" | wrong model (Qwen3-4B), no trained f_θ/proposer, prompt inside window |
 | D | a simpler component shipped | "the engine" | verifier-only AR chat presented as the product |
+| E | long-decode degeneration | "the engine works (smoke passed)" | restoration covers only ≤ window decode tokens; a real long answer (780 tok ≫ 64) degenerated to garbage + throughput collapse (0.31 tok/s) — masked because every smoke answer was ≤ window |
 
 Common root cause: an agent (or optimization) chose the **easy/robust path** and
 **relabeled it as the hard one**, and no automated check asserted the intended
@@ -136,6 +137,22 @@ The existing evidence gate (`inference_engine/bench/k3_report_gate.py`,
 `--force-fused-specdecode`) is the seed of this — generalize it to assert the full
 contract above and reject degraded runs in CI **and** in the agent loop.
 
+### §4b — quality / no-loss contract (liveness is necessary, NOT sufficient)
+
+Anti-pattern **E** (long-decode degeneration) proves liveness alone is a trap: the
+proposer ran (`blocks=340>0`) and f_θ ran, so the §4 liveness gate **passed** — yet
+the output was garbage and throughput collapsed. So the gate **also** asserts the
+§2.4 (intelligence) and §2.5 (throughput) invariants (`assert_quality`):
+
+| Invariant | Manifest field | Gate assertion | Code |
+| --- | --- | --- | --- |
+| restoration covers the generation | `window`, per-turn `tokens` | restored run: `tokens <= window` (beyond it, evicted-during-decode positions are unrestored) | `RESTORATION_COVERAGE` |
+| output is not degenerate | per-turn `text` | no runaway repeat (≥8 identical short lines) | `OUTPUT_DEGENERATE` |
+
+Verified: a PoW-style report (`tokens=780 > window=64`, repeated `*   *   *`) now
+**fails** the walker (CI + on-device) with both codes. **Liveness proves the
+components ran; quality proves they produced a valid result — the gate needs both.**
+
 ---
 
 ## 5. Agent operating rules (behavioral — for any agent, incl. me)
@@ -191,9 +208,18 @@ proposer live (`blocks=2/4`, `accept_len=4.0/3.5`), f_θ live by default
 (`f_theta_ran=TRUE`, 25 sliding layers), correct answers, bounded KV, natural EOS
 stop. One-command launcher: `scripts/run_kakeya_mac.sh`. (PR #144 + this PR.)
 
-**Open / next:** generalize the liveness gate (§4/§6) so the engine cannot
-silently regress to verifier-only again; full-attention model (Qwen/Llama) where
-f_θ is load-bearing for the large memory win.
+**Known limitation (anti-pattern E, found 2026-06-17):** the Mac fused engine's
+restoration is **prefill-amortized for the prompt only** — it covers ≤ `window`
+decode tokens (code comment, `k3_integrated_niah_eval_mac.py` §"Per-sample
+restoration"). Generations longer than the window degenerate (garbage + throughput
+collapse + KV growth). The §4b gate now **fails loud** on it; the *fix* is
+**continuous decode-time restoration** (re-restore positions evicted during decode,
+as the CUDA engine does) — the real open engineering work, not a gate matter.
+
+**Open / next:** (1) continuous decode-time restoration so long generations don't
+degenerate (the engine fix); (2) full-attention model (Qwen/Llama) where f_θ is
+load-bearing for the large memory win. The gate (§4/§4b) now prevents silent
+regression to verifier-only AND silent long-decode degeneration.
 
 > Maintenance: append to §7 every iteration; update §4 if new components/
 > invariants appear; never delete the §1 failure record — it is the reason for §0.
