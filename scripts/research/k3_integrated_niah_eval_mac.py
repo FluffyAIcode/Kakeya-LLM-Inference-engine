@@ -170,6 +170,24 @@ def parse_args() -> argparse.Namespace:
                          "long-context one-shot forward OOM path. Set <=0 to "
                          "use a single full prompt forward.")
     ap.add_argument("--output", default=None)
+    # ---- interactive chat on the FULL fused engine (verifier+proposer+f_θ+S5) ----
+    ap.add_argument("--chat", action="store_true",
+                    help="Interactive REPL on the FULL fused spec-decode engine "
+                         "(verifier + DFlash proposer + f_θ + S5 bounded KV) — "
+                         "NOT verifier-only. Requires the fused flags "
+                         "(--fused-specdecode --force-fused-specdecode "
+                         "--all-mlx-drafter --s5-exact-full-attn --cuda-trim).")
+    ap.add_argument("--chat-scripted", default=None,
+                    help="Non-interactive chat: '||'-separated user turns "
+                         "(for Mac-bridge verification); writes a transcript.")
+    ap.add_argument("--force-f-theta", action="store_true",
+                    help="Run f_θ restoration even under --s5-exact-full-attn "
+                         "(bypass the S5 native-prefill short-circuit). On gemma-4 "
+                         "the restored sliding-layer K/V are recall-irrelevant "
+                         "(the exact layers carry recall), but f_θ EXECUTES and "
+                         "its output is injected — exercising the full verifier/"
+                         "proposer/f_θ pipeline. Requires the torch drafter+f_θ "
+                         "(do NOT combine with --all-mlx-drafter).")
     return ap.parse_args()
 
 
@@ -244,6 +262,15 @@ def main() -> int:
         args.fused_specdecode = True
         args.force_fused_specdecode = True
     adaptive_s5_native = args.native_baseline_bypass
+    # Interactive chat runs the FULL verifier/proposer/f_θ pipeline by DEFAULT:
+    # f_θ executes each turn (torch drafter + f_θ) unless the fast all-MLX path
+    # (--all-mlx-drafter, f_θ bypassed) or the native baseline is explicitly chosen.
+    if args.chat and not args.all_mlx_drafter and not args.native_baseline_bypass:
+        if not args.force_f_theta:
+            print("[chat] f_θ default-ON for interactive chat (torch drafter + f_θ); "
+                  "pass --all-mlx-drafter for the fast f_θ-bypassed path.",
+                  file=sys.stderr, flush=True)
+        args.force_f_theta = True
     if args.all_mlx_drafter and not args.s5_exact_full_attn:
         raise SystemExit(
             "--all-mlx-drafter requires --s5-exact-full-attn: the all-MLX "
@@ -357,7 +384,8 @@ def main() -> int:
         restored bank for those layers lets mlx_lm store their own post-RoPE
         cache directly and avoids the extra clean verifier forward.
         """
-        if prefill_native_s5 and args.s5_exact_full_attn and not args.identity_restore:
+        if (prefill_native_s5 and args.s5_exact_full_attn
+                and not args.identity_restore and not args.force_f_theta):
             return {}, {}, len(prompt_ids)
         if drafter is None or f_theta is None or fcfg is None:
             raise RuntimeError("drafter/f_theta are required for this restoration mode")
@@ -689,6 +717,187 @@ def main() -> int:
         adapter = MLXRestoredIncrementalVerifier(
             mlx_model, embed_scale=embed_scale, aux_layer_ids=aux_layer_ids,
             bridge_to_torch=bridge)
+
+        def _run_fused_chat() -> Tuple[List[str], List[float], List[int]]:
+            """Interactive/scripted chat on the FULL fused engine — reuses the
+            EXACT per-turn sequence of the eval loop below (build_restoration →
+            S5 prefill → aux capture → fused_specdecode_generate_mlx_trim), so the
+            gemma-4 verifier + DFlash proposer + S5 bounded KV are all live. NOT
+            verifier-only: each turn the proposer drafts blocks the verifier
+            accepts (reports blocks / mean_accept_len). On gemma-4 f_θ restoration
+            is bypassed via S5 native exact-layer prefill (the free lunch);
+            f_θ is load-bearing on full-attention models."""
+            _allmlx_ok = mlx_drafter is not None and args.cuda_trim
+            _torch_ftheta_ok = drafter is not None and f_theta is not None
+            if not (args.force_fused_specdecode and (_allmlx_ok or _torch_ftheta_ok)):
+                raise SystemExit(
+                    "--chat needs the FULL fused engine. Either:\n"
+                    "  (a) --fused-specdecode --all-mlx-drafter --s5-exact-full-attn "
+                    "--cuda-trim  (verifier + proposer; f_θ bypassed on gemma-4 "
+                    "via S5), or\n"
+                    "  (b) --fused-specdecode --force-f-theta  (torch DFlash drafter "
+                    "+ f_θ that ACTUALLY RUNS; do NOT pass --all-mlx-drafter).")
+            # Stop at gemma's natural turn end: <end_of_turn> + eos
+            # (convert_tokens_to_ids is the reliable special-token lookup).
+            chat_eos = set(end_ids)
+            unk = getattr(tokenizer, "unk_token_id", None)
+            native = getattr(tokenizer, "eos_token_ids", None)
+            if native:
+                chat_eos |= {int(x) for x in native}
+            for m in ("<end_of_turn>", "<eos>"):
+                try:
+                    tid = tokenizer.convert_tokens_to_ids(m)
+                except Exception:
+                    tid = None
+                if isinstance(tid, int) and tid >= 0 and tid != unk:
+                    chat_eos.add(int(tid))
+
+            def _encode_chat(history: List[Dict[str, str]]) -> List[int]:
+                try:
+                    cids = tokenizer.apply_chat_template(
+                        history, add_generation_prompt=True, enable_thinking=False)
+                except TypeError:
+                    cids = tokenizer.apply_chat_template(
+                        history, add_generation_prompt=True)
+                return list(cids.tolist() if hasattr(cids, "tolist") else cids)
+
+            def _gen_turn(pid: List[int]) -> Dict[str, Any]:
+                rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
+                # f_θ ran iff build_restoration produced restored banks via the
+                # torch drafter+f_θ (under --force-f-theta the S5 short-circuit is
+                # bypassed → rk holds f_θ-projected sliding-layer K/V).
+                f_theta_ran = bool(rk) and (drafter is not None and f_theta is not None)
+                T = len(pid)
+                evicted = compute_evicted_positions(
+                    T, args.sink_size, args.window_size)
+                aux_prompt_mx = capture_aux_hidden(
+                    mlx_model, pid, aux_layer_ids, embed_scale=embed_scale)
+                aux_prompt = (aux_prompt_mx if bridge is None
+                              else [bridge(a) for a in aux_prompt_mx])
+                adapter.prefill(
+                    pid, restored_k_per_layer=_pad(rk, tsrc, T),
+                    restored_v_per_layer=_pad(rv, tsrc, T),
+                    evicted_positions=evicted,
+                    prefill_chunk_size=args.prefill_chunk_size, full_kv=args.cuda_trim)
+                t0 = time.perf_counter()
+                if mlx_drafter is not None and args.cuda_trim:
+                    res = fused_specdecode_generate_mlx_trim(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=chat_eos, single_fused=args.single_fused)
+                elif mlx_drafter is not None:
+                    res = fused_specdecode_generate_mlx(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=chat_eos)
+                else:
+                    res = fused_specdecode_generate(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=chat_eos, argmax_fn=argmax_fn, arange_fn=arange_fn,
+                        cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False)
+                res["decode_s"] = round(time.perf_counter() - t0, 3)
+                res["f_theta_ran"] = f_theta_ran
+                res["f_theta_layers"] = sorted(rk.keys()) if rk else []
+                try:
+                    txt = tokenizer.decode(res["tokens"], skip_special_tokens=True)
+                except TypeError:
+                    txt = tokenizer.decode(res["tokens"])
+                for marker in ("<turn|>", "<end_of_turn>", "<eos>"):
+                    txt = txt.replace(marker, "")
+                # gemma-4 sometimes bleeds its reasoning channel after the answer
+                # (e.g. a trailing "\nthought ...") — cut at the first channel
+                # marker so the chat shows only the natural-language answer.
+                for cut in ("<|channel", "<channel", "\nthought", "\nthink"):
+                    idx = txt.find(cut)
+                    if idx > 0:
+                        txt = txt[:idx]
+                res["text"] = txt.strip()
+                res["resident_kv_bytes"] = int(
+                    sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))
+                return res
+
+            print(f"[chat] FULL fused engine: verifier={args.verifier_path} "
+                  f"drafter={args.drafter_id} f_theta={args.f_theta_dir} "
+                  f"S5 sink={args.sink_size} window={args.window_size} "
+                  f"block={args.block_size} | chat_eos={sorted(chat_eos)}",
+                  file=sys.stderr, flush=True)
+
+            history: List[Dict[str, str]] = []
+            if args.chat_scripted is not None:
+                turns = [t for t in args.chat_scripted.split("||") if t.strip()]
+                transcript = []
+                for u in turns:
+                    history.append({"role": "user", "content": u})
+                    res = _gen_turn(_encode_chat(history))
+                    history.append({"role": "assistant", "content": res["text"]})
+                    tps = (res["decode_tokens"] / res["decode_s"]
+                           if res["decode_s"] > 0 else 0.0)
+                    transcript.append({
+                        "user": u, "text": res["text"],
+                        "tokens": res["decode_tokens"], "blocks": res["blocks"],
+                        "mean_accept_len": res["mean_accept_len"],
+                        "f_theta_ran": res["f_theta_ran"],
+                        "f_theta_layers": res["f_theta_layers"],
+                        "decode_s": res["decode_s"], "decode_tps": round(tps, 2),
+                        "resident_kv_bytes": res["resident_kv_bytes"]})
+                    print(f"[chat] USER {u!r}", file=sys.stderr, flush=True)
+                    print(f"[chat] GEMMA-4 {res['text'][:200]!r} (blocks="
+                          f"{res['blocks']}, accept_len={res['mean_accept_len']}, "
+                          f"f_theta_ran={res['f_theta_ran']} "
+                          f"layers={res['f_theta_layers']}, "
+                          f"{round(tps,2)} tok/s, kv={res['resident_kv_bytes']/1e6:.1f}MB)",
+                          file=sys.stderr, flush=True)
+                report = {
+                    "kind": "mac_gemma4_kakeya_fused_chat", "schema_version": 1,
+                    "engine": ("Kakeya-for-Mac fused spec-decode (gemma-4 verifier "
+                               "+ DFlash proposer + S5 bounded KV; f_θ restoration "
+                               "bypassed on gemma-4 via S5 native exact-layer "
+                               "prefill — the free lunch — and load-bearing on "
+                               "full-attention models)"),
+                    "model_path": args.verifier_path, "drafter_id": args.drafter_id,
+                    "f_theta_dir": args.f_theta_dir, "sink": args.sink_size,
+                    "window": args.window_size, "block_size": args.block_size,
+                    "exact_layers": full_attn_idx, "chat_eos": sorted(chat_eos),
+                    "turns": transcript}
+                if args.output:
+                    op = Path(args.output)
+                    op.parent.mkdir(parents=True, exist_ok=True)
+                    op.write_text(json.dumps(report, indent=2), encoding="utf-8")
+                    print(f"[chat] wrote transcript -> {op}", file=sys.stderr)
+                else:
+                    print(json.dumps(report, indent=2))
+                raise SystemExit(0)
+
+            print("[chat] ready. Type a message; blank line / Ctrl-D quits.",
+                  file=sys.stderr, flush=True)
+            while True:
+                if sys.stdin.isatty():
+                    sys.stderr.write("\nyou> "); sys.stderr.flush()
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                u = line.strip()
+                if not u:
+                    break
+                history.append({"role": "user", "content": u})
+                res = _gen_turn(_encode_chat(history))
+                history.append({"role": "assistant", "content": res["text"]})
+                tps = (res["decode_tokens"] / res["decode_s"]
+                       if res["decode_s"] > 0 else 0.0)
+                sys.stdout.write("gemma-4> " + res["text"] + "\n")
+                sys.stdout.flush()
+                print(f"[chat] blocks={res['blocks']} accept_len="
+                      f"{res['mean_accept_len']} {round(tps,2)} tok/s "
+                      f"bounded-KV {res['resident_kv_bytes']/1e6:.1f}MB",
+                      file=sys.stderr, flush=True)
+            raise SystemExit(0)
+
+        if args.chat:
+            _run_fused_chat()
 
         decoded, lats, toks = [], [], []
         rows = []

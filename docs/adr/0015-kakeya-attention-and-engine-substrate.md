@@ -93,6 +93,41 @@ full-attention fraction:
   *only* way to bound memory at full recall — and vLLM, having no restoration,
   **must keep full KV and cannot match it**. This is the engine's target regime.
 
+## Mac (MLX) interactive engine — full verifier/proposer/f_θ pipeline, f_θ default-ON
+
+The Apple-Silicon interactive CLI (`scripts/research/k3_integrated_niah_eval_mac.py
+--chat`) runs the **full Kakeya engine** — gemma-4 verifier (MLX) + **DFlash
+proposer** (fused spec-decode) + **f_θ K/V restoration** + **S5 bounded KV** — not
+verifier-only. It reuses the validated `fused_specdecode_generate_mlx_trim`
+per-turn sequence; the NIAH evidence loop is untouched.
+
+- **f_θ runs by default in chat.** `--force-f-theta` is auto-enabled in `--chat`
+  unless the fast all-MLX path (`--all-mlx-drafter`, f_θ bypassed) is explicitly
+  chosen. It bypasses the S5 native-prefill short-circuit so f_θ **executes** each
+  turn: it projects the proposer's hidden states → verifier K/V for the **25
+  sliding layers** and injects them.
+- **gemma-4 caveat (honest).** On gemma-4 those restored sliding-layer K/V are
+  **recall-irrelevant** — the 5 exact full-attention layers carry recall (the "S5
+  free lunch"), so f_θ's output is effectively *discarded by the recall path*. We
+  still run f_θ by default so the **full verifier/proposer/f_θ pipeline is
+  exercised end-to-end**; on **full-attention models** the same f_θ path is
+  load-bearing (it is the only way to bound memory at full recall).
+- **Forensic — when f_θ stopped running.** f_θ was silently bypassed under
+  `--s5-exact-full-attn` on **2026-06-12** by the *"Optimize MLX adaptive S5
+  native smoke path"* commits (`b3a04d0` / `1f6e58c`), which made
+  `build_restoration` short-circuit to `{}` under S5; the same *"adaptive S5
+  native"* path also let the proposer go to `blocks=0` while keeping the fused
+  label — caught by the evidence gate (`0a6fb19`, *"enforce PR #109 review
+  constraints"*) which added `--force-fused-specdecode`. Both squashed into main
+  via #117. f_θ remained S5-bypassed until `--force-f-theta` (this ADR's change)
+  made it default-on in the interactive chat.
+- **Measured (Mac M4, via the git-bus bridge).** Both chat turns:
+  **`f_theta_ran=TRUE`** restoring the **25 sliding layers** + **proposer
+  `blocks=2/4`, `mean_accept_len=4.0/3.5`** + correct answers ("Paris"; "red,
+  yellow, and blue") + natural `<end_of_turn>` stop + bounded resident KV
+  (12–18 MB). Torch-bridge path is slow (~0.5–6 tok/s); the all-MLX path
+  (proposer-only) is the fast option.
+
 ## Feasibility probes so far (informed the design — NOT the product)
 
 These ran on the eager-transformers research bench; they validate correctness and
