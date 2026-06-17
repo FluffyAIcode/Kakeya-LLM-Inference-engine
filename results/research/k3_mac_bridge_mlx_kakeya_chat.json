@@ -1,0 +1,46 @@
+{
+  "kind": "mac_gemma4_kakeya_chat",
+  "schema_version": 1,
+  "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "engine": "Kakeya-for-Mac (MLX, S5 bounded sink+window, single-stream)",
+  "sink": 4,
+  "window": 64,
+  "full_window": 8192,
+  "exact_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "n_layers": 30,
+  "turns": [
+    {
+      "user": "What is the capital of France? Answer in one short sentence.",
+      "text": "The capital of France is Paris.\n```json\n{\n  \"answer\": \"The capital of France is Paris.\"\n}\n``````json\n{\n  \"answer\": \"The capital of France is Paris.\"\n}\n``````json\n{\n  \"answer\": \"The",
+      "n_tokens": 64,
+      "decode_tps": 8.47,
+      "resident_kv_bytes": 15769600,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 26
+    },
+    {
+      "user": "Now multiply 6 by 7 and give only the number.",
+      "text": "42```json\n{\n  \"answer\": \"42\"\n}\n```thought\n42```json\n{\n  \"answer\": \"42\"\n}\n```",
+      "n_tokens": 47,
+      "decode_tps": 19.77,
+      "resident_kv_bytes": 17203200,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 112
+    },
+    {
+      "user": "Name three primary colors.",
+      "text": "The three primary colors are red, yellow, and blue.```json\n{\n  \"answer\": \"The three primary colors are red, yellow, and blue.\"\n}\n``````json\n{\n  \"answer\": \"The three primary colors are red, yellow, and blue.\"\n}",
+      "n_tokens": 64,
+      "decode_tps": 20.5,
+      "resident_kv_bytes": 18657280,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 167
+    }
+  ]
+}
