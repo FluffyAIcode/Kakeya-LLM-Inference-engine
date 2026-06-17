@@ -771,6 +771,30 @@ PRESETS: Dict[str, Preset] = {
             params={"max_new_tokens": ("int:max_new_tokens", "64")},
             validate_reports=True,  # §4 liveness gate on-device
         ),
+        Preset(
+            name="mlx-kakeya-degen-probe",
+            description="DEBUG (Phase-1): full f_θ fused engine on a LONG prompt "
+                        "(--ignore-turn-stop, default 256 tokens) to characterize "
+                        "the long-decode degeneration onset. Emits KDBG NDJSON to "
+                        "stderr (captured in the bridge log) + transcript JSON. NOT "
+                        "gated — the degeneration is the thing being measured.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat", "--chat-scripted", "请详细解释POW的工作原理",
+                    "--output", "results/research/phase1_degeneration_chat.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "256")},
+            validate_reports=False,
+        ),
     )
 }
 
