@@ -52,6 +52,18 @@ def _resolve_eos(tok) -> set:
     return eos
 
 
+def _trim_loop(s: str, win: int = 24) -> str:
+    """If the text degenerated into a repeated block (greedy loop), keep only up
+    to the end of the first occurrence of the repeating unit."""
+    if len(s) < win * 3:
+        return s
+    tail = s[-win:]
+    first = s.find(tail)
+    if 0 <= first < len(s) - win:
+        return s[: first + win].rstrip()
+    return s
+
+
 def _apply_template(tok, history, *, thinking: bool) -> List[int]:
     """Encode the chat history. gemma-4 has a reasoning ("thought") channel; the
     clean way to get direct answers is the template's ``enable_thinking`` flag
@@ -164,9 +176,12 @@ def main() -> int:
             if delta and on_delta is not None:
                 on_delta(delta)
             shown = full
+            # greedy loop guard: a 24-char tail recurring 3+ times = degenerate
+            if len(full) > 96 and full.count(full[-24:]) >= 3:
+                break
         dt = max(time.time() - t0, 1e-9)
         return {
-            "text": tok.decode(toks, skip_special_tokens=True),
+            "text": _trim_loop(tok.decode(toks, skip_special_tokens=True)),
             "n_tokens": len(toks),
             "decode_tps": round(len(toks) / dt, 2),
             "resident_kv_bytes": int(total_kv_bytes(cache)),
