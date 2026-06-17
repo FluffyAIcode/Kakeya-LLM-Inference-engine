@@ -262,6 +262,15 @@ def main() -> int:
         args.fused_specdecode = True
         args.force_fused_specdecode = True
     adaptive_s5_native = args.native_baseline_bypass
+    # Interactive chat runs the FULL verifier/proposer/f_θ pipeline by DEFAULT:
+    # f_θ executes each turn (torch drafter + f_θ) unless the fast all-MLX path
+    # (--all-mlx-drafter, f_θ bypassed) or the native baseline is explicitly chosen.
+    if args.chat and not args.all_mlx_drafter and not args.native_baseline_bypass:
+        if not args.force_f_theta:
+            print("[chat] f_θ default-ON for interactive chat (torch drafter + f_θ); "
+                  "pass --all-mlx-drafter for the fast f_θ-bypassed path.",
+                  file=sys.stderr, flush=True)
+        args.force_f_theta = True
     if args.all_mlx_drafter and not args.s5_exact_full_attn:
         raise SystemExit(
             "--all-mlx-drafter requires --s5-exact-full-attn: the all-MLX "

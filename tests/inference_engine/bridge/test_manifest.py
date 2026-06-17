@@ -156,8 +156,9 @@ def test_mlx_kakeya_fused_chat_ftheta_preset_runs_f_theta_path():
         params={"max_new_tokens": "32", "block_size": "4"}))
     (argv,) = build_commands(request, HARNESS_ENV)
     assert argv[1].endswith("k3_integrated_niah_eval_mac.py")
-    # torch drafter + f_θ path: --force-f-theta, and NOT --all-mlx-drafter
-    assert "--force-f-theta" in argv
+    # torch drafter + f_θ path: --chat WITHOUT --all-mlx-drafter → f_θ default-ON
+    # (no explicit --force-f-theta needed; the harness enables it for chat).
+    assert "--chat" in argv
     assert "--fused-specdecode" in argv
     assert "--all-mlx-drafter" not in argv
     assert HARNESS_ENV["KAKEYA_MAC_FTHETA_DIR"] in argv

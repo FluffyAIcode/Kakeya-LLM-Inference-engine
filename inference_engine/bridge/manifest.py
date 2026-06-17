@@ -729,7 +729,7 @@ PRESETS: Dict[str, Preset] = {
                     "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
                     "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
                     "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
-                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--s5-exact-full-attn", "--fused-specdecode",
                     "--sink-size", "4", "--window-size", "64",
                     "--block-size", "{block_size}",
                     "--max-new-tokens", "{max_new_tokens}",
