@@ -81,6 +81,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-pad-decode",
         "mlx-env-probe",
         "mlx-kakeya-chat-smoke",
+        "mlx-kakeya-codegen-degen-probe",
         "mlx-kakeya-degen-probe",
         "mlx-kakeya-fused-chat-ftheta",
         "mlx-kakeya-fused-chat-smoke",

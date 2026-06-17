@@ -772,6 +772,33 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=True,  # §4 liveness gate on-device
         ),
         Preset(
+            name="mlx-kakeya-codegen-degen-probe",
+            description="DEBUG: full f_θ fused engine on a CODE prompt (write PoW "
+                        "in C) that triggers an early high-acceptance markdown-"
+                        "marker loop (**/.2/* wall), with KAKEYA_KDBG per-block "
+                        "logging + native-greedy control (--chat-native-ref). The "
+                        "decisive signal is fused-vs-native divergence: if native "
+                        "also loops, it is greedy pathology the engine must guard.",
+            command_templates=(
+                (
+                    "env", "KAKEYA_KDBG=1",
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat", "--chat-native-ref",
+                    "--chat-scripted", "实现一个PoW的代码，用c语言完成",
+                    "--output", "results/research/codegen_degen_2815_chat.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "800")},
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-kakeya-degen-probe",
             description="Long-decode regression probe: full f_θ fused engine on a "
                         "LONG generation (--ignore-turn-stop) past the native "

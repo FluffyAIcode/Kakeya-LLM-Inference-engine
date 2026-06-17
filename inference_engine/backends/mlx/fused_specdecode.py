@@ -35,6 +35,68 @@ from inference_engine.backends.mlx.cross_model_dlm_verifier import (
     restored_prefill_cache,
 )
 
+# region agent log (fused-codegen-degeneration-2815 probe; strip after fix)
+import os as _kdbg_os
+import sys as _kdbg_sys
+import json as _kdbg_json
+
+_KDBG = bool(_kdbg_os.environ.get("KAKEYA_KDBG"))
+
+
+def _kdbg(hyp: str, msg: str, **data: Any) -> None:
+    """Emit one NDJSON probe line to stderr (prefix ``KDBG ``) and, best-effort,
+    to /opt/cursor/logs/debug.log. No-op unless ``KAKEYA_KDBG`` is set, so
+    production behaviour is unchanged."""
+    if not _KDBG:
+        return
+    rec = {"hypothesisId": hyp, "location": "fused_specdecode.py",
+           "message": msg, "data": data}
+    try:
+        _kdbg_sys.stderr.write("KDBG " + _kdbg_json.dumps(rec, ensure_ascii=False) + "\n")
+        _kdbg_sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        with open("/opt/cursor/logs/debug.log", "a") as _f:
+            _f.write(_kdbg_json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def _kdbg_cycle(ids: Sequence[int], window: int = 80) -> Tuple[float, int]:
+    """Short-unit cycle metric on the tail of ``ids``: returns
+    ``(cyc_frac, cyc_p)`` where ``cyc_p`` is the period (1..window//3) whose
+    back-to-back repetition covers the largest fraction ``cyc_frac`` of the
+    trailing ``window`` tokens. ~1.0 => the tail is a tight repeating loop."""
+    w = list(ids[-window:])
+    n = len(w)
+    if n < 6:
+        return 0.0, 0
+    best_frac, best_p = 0.0, 0
+    for p in range(1, n // 3 + 1):
+        run, i = 0, n - 1
+        while i - p >= 0 and w[i] == w[i - p]:
+            run += 1
+            i -= 1
+        if run > 0:
+            frac = (run + p) / n
+            if frac > best_frac:
+                best_frac, best_p = frac, p
+    return round(best_frac, 3), best_p
+
+
+def _kdbg_cache_offsets(cache: Any) -> Tuple[Optional[int], Optional[int]]:
+    """(first full-attn KVCache offset, first sliding RotatingKVCache offset)."""
+    off_full = off_rot = None
+    for c in (cache or []):
+        nm = type(c).__name__
+        if off_rot is None and "Rotating" in nm:
+            off_rot = int(getattr(c, "offset", -1))
+        elif off_full is None and "Rotating" not in nm:
+            off_full = int(getattr(c, "offset", -1))
+    return off_full, off_rot
+# endregion
+
 
 # --------------------------------------------------------------------------- #
 # Component A: capture verifier aux-layer hidden states (no transformers
@@ -772,6 +834,22 @@ def fused_specdecode_generate(
                 commit = candidate[:accepted] + [correction]
             generated += commit
             accepts.append(accepted)
+            # region agent log (fused-codegen-degeneration-2815 probe)
+            if _KDBG:
+                off_full, off_rot = _kdbg_cache_offsets(getattr(adapter, "_cache", None))
+                cyc_frac, cyc_p = _kdbg_cycle(generated)
+                # H-D: cache.offset must track committed length (past_len).
+                # off_rot lags by the sliding window (bounded), off_full == past_len.
+                _kdbg("AD", "block",
+                      blk=len(accepts) - 1, base=cstart,
+                      past_len=int(adapter._past_len), gen=len(generated),
+                      off_full=off_full, off_rot=off_rot,
+                      bonus=int(bonus), cand=[int(x) for x in candidate],
+                      n_cand=len(candidate), accepted=int(accepted),
+                      commit=[int(x) for x in commit],
+                      next_argmax=int(argmax_fn(adapter.next_token_logits)),
+                      cyc_frac=cyc_frac, cyc_p=cyc_p)
+            # endregion
             if any(t in eos for t in commit):
                 break
             if (allow_greedy_fallback and len(accepts) >= 2

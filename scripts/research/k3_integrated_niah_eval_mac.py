@@ -851,6 +851,44 @@ def main() -> int:
                     res["native_ref_tokens"] = len(nref_tokens)
                 res["resident_kv_bytes"] = int(
                     sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))
+                # region agent log (fused-codegen-degeneration-2815 probe)
+                import os as _kos
+                if _kos.environ.get("KAKEYA_KDBG"):
+                    ftoks = [int(t) for t in res.get("tokens", [])]
+                    ntoks = [int(t) for t in nref_tokens]
+                    div = None
+                    for j, (a, b) in enumerate(zip(ftoks, ntoks)):
+                        if a != b:
+                            div = j
+                            break
+                    if div is None:
+                        div = min(len(ftoks), len(ntoks))
+
+                    def _dec(seq):
+                        try:
+                            return tokenizer.decode(seq, skip_special_tokens=True)
+                        except TypeError:
+                            return tokenizer.decode(seq)
+                    rec = {
+                        "hypothesisId": "AC",
+                        "message": "turn_compare_fused_vs_native",
+                        "data": {
+                            "fused_n": len(ftoks), "native_n": len(ntoks),
+                            "first_divergence_idx": div,
+                            "fused_div_ctx": ftoks[max(0, div - 8):div + 16],
+                            "native_div_ctx": ntoks[max(0, div - 8):div + 16],
+                            "fused_div_text": _dec(ftoks[max(0, div - 8):div + 16]),
+                            "native_div_text": _dec(ntoks[max(0, div - 8):div + 16]),
+                            "fused_tail": ftoks[-48:],
+                            "native_tail": ntoks[-48:],
+                            "fused_tail_text": _dec(ftoks[-48:]),
+                            "native_tail_text": _dec(ntoks[-48:]),
+                        },
+                    }
+                    sys.stderr.write(
+                        "KDBG " + json.dumps(rec, ensure_ascii=False) + "\n")
+                    sys.stderr.flush()
+                # endregion
                 return res
 
             print(f"[chat] FULL fused engine: verifier={args.verifier_path} "
