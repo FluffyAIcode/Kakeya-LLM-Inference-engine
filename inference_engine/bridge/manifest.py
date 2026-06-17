@@ -772,6 +772,29 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=True,  # §4 liveness gate on-device
         ),
         Preset(
+            name="mlx-kakeya-launcher-full",
+            description="Validate scripts/run_kakeya_mac.sh in FULL mode (f_θ "
+                        "verifier+proposer+f_θ, default path) on a LONG scripted "
+                        "answer that crosses the ~1024 native-cache ring wrap. "
+                        "Guards the launcher's full pipeline + the PR #146 "
+                        "wrapped-ring fix end-to-end: the report must pass the §4 "
+                        "liveness gate AND the quality gate (coherent, no runaway "
+                        "repeat) past the wrap.",
+            command_templates=(
+                (
+                    "bash", "scripts/run_kakeya_mac.sh",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--ignore-turn-stop",
+                    "--chat-scripted", "请详细解释POW的工作原理",
+                    "--output",
+                    "results/research/k3_mac_bridge_launcher_full.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "1300")},
+            validate_reports=True,  # §4 liveness + §2.4 quality gate on-device
+        ),
+        Preset(
             name="mlx-kakeya-degen-probe",
             description="Long-decode regression probe: full f_θ fused engine on a "
                         "LONG generation (--ignore-turn-stop) past the native "

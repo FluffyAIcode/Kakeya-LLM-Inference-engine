@@ -8,6 +8,13 @@
 # the all-MLX proposer path (f_θ bypassed via S5 native prefill — much faster on
 # Mac, but the f_θ projection does not execute).
 #
+# LONG ANSWERS ARE SAFE (PR #146). The full path runs on gemma-4's native hybrid
+# cache (sliding RotatingKVCache, max_size≈1024). Past that ring wrap the engine
+# automatically commits single tokens (no speculative rollback to mis-trim on the
+# wrapped ring), so generations stay coherent well beyond ~1024 tokens — they
+# just lose the spec-decode speedup past the wrap. So the default budget below is
+# generous; you no longer need to keep answers under the window.
+#
 # Model facts come from env vars (set on the kakeya-mac-m4 runner), with sane
 # fallbacks; override on the CLI if needed:
 #   KAKEYA_MAC_VERIFIER_PATH   local MLX gemma-4 dir
@@ -17,7 +24,7 @@
 # Usage:
 #   bash scripts/run_kakeya_mac.sh                 # full engine (f_θ on), interactive
 #   bash scripts/run_kakeya_mac.sh --fast          # proposer-only (f_θ bypassed), faster
-#   bash scripts/run_kakeya_mac.sh --max-new-tokens 2048 --window 128
+#   bash scripts/run_kakeya_mac.sh --max-new-tokens 4096 --window 128
 #   bash scripts/run_kakeya_mac.sh --dry-run       # print the command, run nothing
 #   echo 'Explain proof-of-work.' | bash scripts/run_kakeya_mac.sh   # one-shot via stdin
 set -euo pipefail
@@ -31,7 +38,9 @@ FTHETA="${KAKEYA_MAC_FTHETA_DIR:-results/research/f_theta_v5_s5_sliding}"
 SINK="${KAKEYA_SINK:-4}"
 WINDOW="${KAKEYA_WINDOW:-64}"
 BLOCK="${KAKEYA_BLOCK_SIZE:-4}"
-MAX_NEW="${KAKEYA_MAX_NEW_TOKENS:-1024}"
+# Default budget reaches past the ~1024 native-cache wrap; coherent there since
+# PR #146 (single-token commits past the wrap). Raise/lower freely.
+MAX_NEW="${KAKEYA_MAX_NEW_TOKENS:-2048}"
 
 FAST=0
 DRY_RUN=0
@@ -47,7 +56,7 @@ while [[ $# -gt 0 ]]; do
     --window)          shift; WINDOW="${1:?}" ;;
     --sink)            shift; SINK="${1:?}" ;;
     --block-size)      shift; BLOCK="${1:?}" ;;
-    -h|--help)         sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,29p' "$0"; exit 0 ;;
     *)                 EXTRA+=("$1") ;;   # pass-through (e.g. --chat-scripted ...)
   esac
   shift
@@ -70,8 +79,9 @@ if [[ "$FAST" == "1" ]]; then
   MODE="FAST (verifier + proposer + S5 bounded KV; f_θ BYPASSED)"
 else
   # torch drafter + f_θ: the harness auto-enables --force-f-theta in --chat, so
-  # f_θ projection ACTUALLY RUNS each turn (the full pipeline).
-  MODE="FULL (verifier + proposer + f_θ + S5 bounded KV; f_θ runs)"
+  # f_θ projection ACTUALLY RUNS each turn (the full pipeline). Coherent past the
+  # ~1024 native-cache wrap (PR #146: single-token commits once the ring wraps).
+  MODE="FULL (verifier + proposer + f_θ + S5 bounded KV; f_θ runs; long-answer safe)"
 fi
 
 log "mode    : $MODE"
