@@ -1,0 +1,11 @@
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading ALL-MLX drafter z-lab/gemma-4-26B-A4B-it-DFlash
+[mac] 10 samples, prompt len min=4406 max=5810
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[chat] FULL fused engine: verifier=/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit drafter=z-lab/gemma-4-26B-A4B-it-DFlash f_theta=results/research/f_theta_v5_s5_sliding S5 sink=4 window=64 block=4 | chat_eos=[1, 50, 106]
+[chat] USER 'What is the capital of France? Answer in one short sentence.'
+[chat] GEMMA-4 'The capital of France is Paris.' (blocks=2, accept_len=4.0, 14.6 tok/s, kv=57.7MB)
+[chat] USER 'Name three primary colors.'
+[chat] GEMMA-4 'The three primary colors are red, yellow, and blue.' (blocks=4, accept_len=3.5, 27.08 tok/s, kv=57.7MB)
+[chat] wrote transcript -> results/research/k3_mac_bridge_mlx_kakeya_fused_chat.json
