@@ -1,0 +1,55 @@
+{
+  "kind": "mac_gemma4_kakeya_chat",
+  "schema_version": 1,
+  "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "engine": "Kakeya-for-Mac (MLX, S5 bounded sink+window, single-stream)",
+  "sink": 4,
+  "window": 64,
+  "full_window": 8192,
+  "exact_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "n_layers": 30,
+  "eos_token_ids": [
+    1,
+    50,
+    106
+  ],
+  "max_new_tokens_cap": 512,
+  "turns": [
+    {
+      "user": "What is the capital of France? Answer in one short sentence.",
+      "text": "The capital of France is Paris.",
+      "n_tokens": 7,
+      "stop_reason": "eos",
+      "decode_tps": 1.29,
+      "resident_kv_bytes": 7659520,
+      "resident_kv_seq_len_first_layer": 34,
+      "prompt_tokens": 26
+    },
+    {
+      "user": "Explain how proof-of-work works, step by step.",
+      "text": "Proof-of-Work (PoW) is a consensus mechanism used to secure blockchains by requiring participants to expend computational effort to solve complex mathematical puzzles. This process ensures that adding new blocks is difficult, making it nearly impossible for attackers to manipulate the ledger.\n\nHere is a step-by-step breakdown of how it works:\n\n### 1. Transaction Bundling\nWhen users send cryptocurrency, those transactions are broadcast to a network of computers (nodes). These nodes collect pending transactions and group them into a \"block.\"\n\n### 2. The Mathematical Puzzle (The Work)\nTo prevent anyone from easily adding blocks to the chain, the network sets a difficulty level. Miners (or validators) must use their hardware to solve a complex mathematical problem called a **hash function**.\n*   The goal is to find a specific number (called a *nonce*) that, when combined with the block data, produces a hash starting with a certain number of zeros.\n*   This is essentially \"guessing\" trillions of times until you hit the jackpot.\n\n### 3. The Chain (The \"Block-Chain\")\nOnce a miner finds the correct hash, they broadcast it to the network. Other nodes can easily verify that the solution is correct (it's hard to solve, but easy to check). \n\nThe new block contains:\n*   **A list of transactions.**\n*   **Its own unique hash.**\n*   **The hash of the previous block.**\n\nThis \"chaining\" ensures that if someone tries to change a transaction in an old block, the hash changes, breaking all subsequent blocks. This makes the history immutable.\n\n***\n\n###  enough mass-energy- nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness nothingness",
+      "n_tokens": 512,
+      "stop_reason": "max",
+      "decode_tps": 24.57,
+      "resident_kv_bytes": 25559040,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 56
+    },
+    {
+      "user": "Name three primary colors.",
+      "text": "The three primary colors are red, yellow, and blue.",
+      "n_tokens": 12,
+      "stop_reason": "eos",
+      "decode_tps": 5.51,
+      "resident_kv_bytes": 26132480,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 583
+    }
+  ]
+}
