@@ -1,0 +1,11 @@
+[kakeya-chat] loading MLX model: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[kakeya-chat] loaded in 6.4s | layers=30 exact(full-attn)=[5, 11, 17, 23, 29] sink=4 window=64 eos=[1]
+[kakeya-chat] Kakeya Attention: sliding layers bounded to sink+window; exact layers keep full context (S5).
+[kakeya-chat] repetition_penalty=1.3 enabled
+[kakeya-chat] USER: 'What is the capital of France? Answer in one short sentence.'
+[kakeya-chat] GEMMA-4: 'The capital of France is'  (46 tok, 4.52 tok/s, resident_kv=15.4MB)
+[kakeya-chat] USER: 'Now multiply 6 by 7 and give only the number.'
+[kakeya-chat] GEMMA-4: "42 way to go! You're doing great. Keep it up and you'll be a pro in no time!\nthought\n42"  (38 tok, 20.22 tok/s, resident_kv=15.8MB)
+[kakeya-chat] USER: 'Name three primary colors.'
+[kakeya-chat] GEMMA-4: 'The three primary colors are red, yellow, and blue.```json\n{\n  "primary_colors": [\n    "red",\n    "yellow",\n    "blue"\n  ]\n}'  (80 tok, 23.17 tok/s, resident_kv=17.6MB)
+[kakeya-chat] wrote transcript -> results/research/k3_mac_bridge_mlx_kakeya_chat.json

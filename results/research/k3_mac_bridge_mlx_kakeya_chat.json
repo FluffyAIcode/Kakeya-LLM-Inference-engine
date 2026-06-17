@@ -1,0 +1,46 @@
+{
+  "kind": "mac_gemma4_kakeya_chat",
+  "schema_version": 1,
+  "model_path": "/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit",
+  "engine": "Kakeya-for-Mac (MLX, S5 bounded sink+window, single-stream)",
+  "sink": 4,
+  "window": 64,
+  "full_window": 8192,
+  "exact_layers": [
+    5,
+    11,
+    17,
+    23,
+    29
+  ],
+  "n_layers": 30,
+  "turns": [
+    {
+      "user": "What is the capital of France? Answer in one short sentence.",
+      "text": "The capital of France is",
+      "n_tokens": 46,
+      "decode_tps": 4.52,
+      "resident_kv_bytes": 15400960,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 26
+    },
+    {
+      "user": "Now multiply 6 by 7 and give only the number.",
+      "text": "42 way to go! You're doing great. Keep it up and you'll be a pro in no time!\nthought\n42",
+      "n_tokens": 38,
+      "decode_tps": 20.22,
+      "resident_kv_bytes": 15831040,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 54
+    },
+    {
+      "user": "Name three primary colors.",
+      "text": "The three primary colors are red, yellow, and blue.```json\n{\n  \"primary_colors\": [\n    \"red\",\n    \"yellow\",\n    \"blue\"\n  ]\n}",
+      "n_tokens": 80,
+      "decode_tps": 23.17,
+      "resident_kv_bytes": 17612800,
+      "resident_kv_seq_len_first_layer": 68,
+      "prompt_tokens": 100
+    }
+  ]
+}
