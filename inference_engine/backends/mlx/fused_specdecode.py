@@ -797,6 +797,33 @@ def fused_specdecode_generate_mlx(
 
 
 # --------------------------------------------------------------------------- #
+# H2 wrap fix: detect when the sliding RotatingKVCache is at/over its ring
+# capacity so the caller can avoid the unsound (refused) speculative trim.
+# --------------------------------------------------------------------------- #
+def _sliding_ring_would_wrap(cache: Any, n_new: int) -> bool:
+    """True if appending ``n_new`` tokens leaves a sliding ``RotatingKVCache``
+    non-trimmable (``offset + n_new >= max_size``).
+
+    ``mlx_lm.trim_prompt_cache`` is all-or-nothing across the hybrid cache: it
+    trims only when EVERY layer is trimmable, and a ``RotatingKVCache`` reports
+    ``is_trimmable`` only while ``offset < max_size``. Once the ring is at/over
+    ``max_size`` the rejected-draft rollback is REFUSED on every layer (sliding
+    AND full alike), so the un-trimmed rejected K/V linger and ``cache.offset``
+    runs ahead of the committed length — desyncing RoPE/causal alignment and
+    corrupting all subsequent logits (the >ms degeneration). Detecting this lets
+    the loop fall back to single-token commits, which never produce a rejected
+    tail to trim, so ``offset`` stays == committed ``past_len``."""
+    for c in (cache or []):
+        if "Rotating" in type(c).__name__:
+            ms = getattr(c, "max_size", None)
+            if ms is None:
+                continue
+            if int(getattr(c, "offset", 0)) + int(n_new) >= int(ms):
+                return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # The fused spec-decode loop (control flow; MLX/torch ops via injected fns).
 # --------------------------------------------------------------------------- #
 def fused_specdecode_generate(
@@ -845,6 +872,19 @@ def fused_specdecode_generate(
         while len(generated) < gen_tokens:
             _kblk_t0 = time.perf_counter()  # agent log (Phase-1)
             L = min(block_size, gen_tokens - len(generated))
+            # H2 wrap fix (correctness-first): once the sliding RotatingKVCache
+            # would wrap, a multi-token speculative block can leave rejected
+            # draft K/V in the now-non-trimmable ring (trim_prompt_cache refuses
+            # on the wrapped hybrid cache), desyncing cache.offset from the
+            # committed _past_len and corrupting every subsequent step's
+            # RoPE/causal alignment -> degeneration past ms. Forcing L=1 past the
+            # wrap point makes each block commit exactly its always-accepted
+            # bonus token, so there is never a rejected tail to trim and offset
+            # stays == past_len (matching the native greedy path, which stays
+            # coherent past ms). Costs the speculative speedup past ms only.
+            _wrap_l1 = _sliding_ring_would_wrap(adapter._cache, L)
+            if _wrap_l1:
+                L = 1
             cstart = adapter._past_len
             bonus = int(argmax_fn(adapter.next_token_logits))
             t_draft = time.perf_counter()
@@ -910,6 +950,7 @@ def fused_specdecode_generate(
                 past_len=adapter._past_len,
                 accepted=accepted,
                 L=len(candidate),
+                wrap_l1=bool(_wrap_l1),
                 commit_ids=[int(t) for t in commit],
                 dt_ms=round((time.perf_counter() - _kblk_t0) * 1e3, 1),
                 rep=_kdbg_rep(generated),
