@@ -31,6 +31,7 @@ from pathlib import Path
 from inference_engine.bench.k3_report_gate import (
     is_gated_report,
     is_legacy_report,
+    is_liveness_report,
     summarize_violations,
     validate_report,
 )
@@ -47,9 +48,13 @@ def main(argv: list) -> int:
             report = json.loads(path.read_text())
         except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             continue
-        if not is_gated_report(report):
+        gated = is_gated_report(report)
+        live = is_liveness_report(report)
+        if not (gated or live):
             continue
-        if is_legacy_report(report):
+        # The schema-2 legacy grandfather applies only to the NIAH acceptance
+        # report; liveness reports (§4 contract) are always asserted.
+        if gated and is_legacy_report(report):
             legacy += 1
             print(f"[legacy] {path}: schema<2 — grandfathered, NON-EVIDENCE "
                   "(rerun with the hardened harness to make claims)")

@@ -862,6 +862,11 @@ def main() -> int:
                     "f_theta_dir": args.f_theta_dir, "sink": args.sink_size,
                     "window": args.window_size, "block_size": args.block_size,
                     "exact_layers": full_attn_idx, "chat_eos": sorted(chat_eos),
+                    # §4 liveness contract: f_θ is INTENDED on the torch path
+                    # (not --all-mlx-drafter); the evidence gate asserts
+                    # f_theta_ran on every turn when this is true.
+                    "f_theta_intended": mlx_drafter is None,
+                    "fallbacks_taken": [],
                     "turns": transcript}
                 if args.output:
                     op = Path(args.output)

@@ -89,6 +89,12 @@ CLAIM_ORACLE_DECODE_LOOP = "generate_step"
 
 NATIVE_BASELINE_LABEL = "native_ar_baseline"
 
+# §4 liveness contract (docs/kakeya-autonomous-iteration-and-self-correction.md):
+# report kinds that carry per-turn component-liveness signals. The gate proves
+# the INTENDED components actually ran — the antidote to silent fallback /
+# simplification (proposer→AR, f_θ→bypass) that kept the "fused" label.
+LIVENESS_REPORT_KINDS = frozenset({"mac_gemma4_kakeya_fused_chat"})
+
 
 @dataclass(frozen=True)
 class GateViolation:
@@ -101,6 +107,143 @@ class GateViolation:
 def is_gated_report(report: Any) -> bool:
     """True when ``report`` is a K3 Mac acceptance report (any schema)."""
     return isinstance(report, dict) and report.get("kind") == MAC_REPORT_KIND
+
+
+def is_liveness_report(report: Any) -> bool:
+    """True when ``report`` carries the §4 component-liveness contract."""
+    return isinstance(report, dict) and report.get("kind") in LIVENESS_REPORT_KINDS
+
+
+def assert_liveness(report: Dict[str, Any]) -> List[GateViolation]:
+    """§4 liveness contract — prove the intended components actually executed.
+
+    Asserts, from RUNTIME signals (never from flags passed in):
+      * proposer ran      — total proposer ``blocks`` across turns > 0,
+      * f_θ ran           — when ``f_theta_intended`` is true, every turn has
+                            ``f_theta_ran == true``,
+      * no silent fallback — ``fallbacks_taken`` (report- and turn-level) empty.
+    A missing liveness field is itself a violation (absence = "we don't know it
+    ran" = invalid), not a skip.
+    """
+    violations: List[GateViolation] = []
+    turns = report.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return [GateViolation(
+            "MISSING_LIVENESS",
+            "liveness report has no 'turns'; component liveness cannot be "
+            "asserted (absence of evidence = invalid run)",
+        )]
+
+    # --- proposer liveness: blocks > 0 (else it silently fell back to AR) ---
+    total_blocks = 0
+    missing_blocks = False
+    for t in turns:
+        b = t.get("blocks") if isinstance(t, dict) else None
+        if isinstance(b, (int, float)) and not isinstance(b, bool):
+            total_blocks += int(b)
+        else:
+            missing_blocks = True
+    if missing_blocks:
+        violations.append(GateViolation(
+            "MISSING_LIVENESS",
+            "a turn lacks numeric 'blocks'; proposer liveness unknown",
+        ))
+    elif total_blocks <= 0:
+        violations.append(GateViolation(
+            "PROPOSER_NEVER_RAN",
+            "fused chat executed 0 proposer blocks across all turns — the "
+            "proposer silently fell back to native AR (verifier-only)",
+        ))
+
+    # --- f_θ liveness: if intended, it must run on every turn ---
+    if report.get("f_theta_intended") is True:
+        ran = [t.get("f_theta_ran") if isinstance(t, dict) else None for t in turns]
+        if any(r is None for r in ran):
+            violations.append(GateViolation(
+                "MISSING_LIVENESS",
+                "f_theta_intended=true but a turn lacks 'f_theta_ran'",
+            ))
+        elif not all(bool(r) for r in ran):
+            violations.append(GateViolation(
+                "FTHETA_NOT_RUN",
+                "f_theta_intended=true but f_theta_ran is false on >=1 turn — "
+                "f_θ restoration was silently bypassed",
+            ))
+
+    # --- no silent fallback: declared fallbacks (report- + turn-level) empty ---
+    fallbacks: List[str] = [str(x) for x in (report.get("fallbacks_taken") or [])]
+    for t in turns:
+        if isinstance(t, dict):
+            fallbacks += [str(x) for x in (t.get("fallbacks_taken") or [])]
+    if fallbacks:
+        violations.append(GateViolation(
+            "SILENT_FALLBACK",
+            f"fallbacks_taken is non-empty: {sorted(set(fallbacks))} — a "
+            "component degraded to a fallback; the system under test is not "
+            "the intended one",
+        ))
+    return violations
+
+
+def _looks_degenerate(text: Any) -> bool:
+    """True when text has collapsed into a runaway repeat — the long-decode
+    failure mode (e.g. many identical short lines like ``*   *   *``). Strict:
+    >= 8 consecutive identical stripped non-empty lines of <= 12 chars."""
+    if not isinstance(text, str):
+        return False
+    run = 0
+    prev = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line == prev and len(line) <= 12:
+            run += 1
+            if run >= 7:  # prev + 7 repeats = 8 identical lines
+                return True
+        else:
+            run = 0
+            prev = line
+    return False
+
+
+def assert_quality(report: Dict[str, Any]) -> List[GateViolation]:
+    """§2.4/§2.5 contract — prove the run did not lose intelligence or throughput.
+
+    Catches the long-decode failure the liveness gate cannot see (proposer/f_θ
+    ran, yet the output is garbage + throughput collapsed):
+      * RESTORATION_COVERAGE — a restored run generated more tokens than the
+        resident window, beyond which the prefill-amortized restoration does NOT
+        cover the evicted positions (outputs become unrestored/degenerate),
+      * OUTPUT_DEGENERATE — a turn's text collapsed into a runaway repeat.
+    """
+    violations: List[GateViolation] = []
+    turns = report.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return violations
+    window = report.get("window")
+    restored = report.get("f_theta_intended") is True
+    for i, t in enumerate(turns):
+        if not isinstance(t, dict):
+            continue
+        toks = t.get("tokens")
+        if (restored and isinstance(window, int) and window > 0
+                and isinstance(toks, (int, float)) and not isinstance(toks, bool)
+                and int(toks) > window):
+            violations.append(GateViolation(
+                "RESTORATION_COVERAGE",
+                f"turn {i} generated {int(toks)} tokens > resident window "
+                f"{window}: the prefill-amortized restoration covers only "
+                "<= window decode tokens; positions evicted during decode are "
+                "UNRESTORED, so the output beyond the window is degenerate",
+            ))
+        if _looks_degenerate(t.get("text")):
+            violations.append(GateViolation(
+                "OUTPUT_DEGENERATE",
+                f"turn {i} output collapsed into a runaway repeat (long-decode "
+                "degeneration) — not usable text",
+            ))
+    return violations
 
 
 def is_legacy_report(report: Dict[str, Any]) -> bool:
@@ -202,6 +345,8 @@ def validate_report(report: Dict[str, Any]) -> List[GateViolation]:
     one ``LEGACY_SCHEMA`` violation (the CI walker downgrades that one
     code to a warning — everything else fails the build).
     """
+    if is_liveness_report(report):
+        return assert_liveness(report) + assert_quality(report)
     if not is_gated_report(report):
         return []
     if is_legacy_report(report):

@@ -19,20 +19,176 @@ import pytest
 from inference_engine.bench.k3_report_gate import (
     CLAIM_ORACLE_DECODE_LOOP,
     GATED_SCHEMA_VERSION,
+    LIVENESS_REPORT_KINDS,
     MAC_REPORT_KIND,
     MAX_PREFILL_SPREAD,
     MIN_MEDIAN_DECODE_TOKENS,
     MIN_PERF_SAMPLES,
     NATIVE_BASELINE_LABEL,
     GateViolation,
+    assert_liveness,
     decode_only_block,
     is_gated_report,
     is_legacy_report,
+    is_liveness_report,
     prefill_spread,
     row_prefill_seconds,
     summarize_violations,
     validate_report,
 )
+
+
+# ---------------------------------------------------------------------------
+# §4 liveness contract (proposer / f_θ / no-fallback)
+# ---------------------------------------------------------------------------
+
+
+def _live_report(**over: Any) -> Dict[str, Any]:
+    """A fused-chat liveness report that passes the §4 contract."""
+    rep = {
+        "kind": next(iter(LIVENESS_REPORT_KINDS)),
+        "schema_version": 1,
+        "f_theta_intended": True,
+        "fallbacks_taken": [],
+        "turns": [
+            {"user": "q1", "blocks": 2, "mean_accept_len": 4.0,
+             "f_theta_ran": True, "fallbacks_taken": []},
+            {"user": "q2", "blocks": 4, "mean_accept_len": 3.5,
+             "f_theta_ran": True, "fallbacks_taken": []},
+        ],
+    }
+    rep.update(over)
+    return rep
+
+
+def test_liveness_report_detection_and_pass():
+    rep = _live_report()
+    assert is_liveness_report(rep) and not is_gated_report(rep)
+    assert validate_report(rep) == []      # dispatches to assert_liveness
+    assert assert_liveness(rep) == []
+
+
+def test_liveness_missing_turns_is_invalid():
+    codes = {v.code for v in assert_liveness(_live_report(turns=[]))}
+    assert codes == {"MISSING_LIVENESS"}
+
+
+def test_liveness_proposer_never_ran():
+    rep = _live_report(turns=[
+        {"blocks": 0, "f_theta_ran": True}, {"blocks": 0, "f_theta_ran": True}])
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "PROPOSER_NEVER_RAN" in codes
+
+
+def test_liveness_missing_blocks_field():
+    rep = _live_report(turns=[{"f_theta_ran": True}])  # no 'blocks'
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "MISSING_LIVENESS" in codes
+
+
+def test_liveness_bool_blocks_not_counted_as_int():
+    # True is an int subclass — must NOT be accepted as a block count.
+    rep = _live_report(turns=[{"blocks": True, "f_theta_ran": True}])
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "MISSING_LIVENESS" in codes
+
+
+def test_liveness_ftheta_not_run_when_intended():
+    rep = _live_report(turns=[
+        {"blocks": 2, "f_theta_ran": True}, {"blocks": 2, "f_theta_ran": False}])
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "FTHETA_NOT_RUN" in codes
+
+
+def test_liveness_ftheta_missing_flag_when_intended():
+    rep = _live_report(turns=[{"blocks": 2}])  # f_theta_intended True but no flag
+    codes = {v.code for v in assert_liveness(rep)}
+    assert "MISSING_LIVENESS" in codes
+
+
+def test_liveness_ftheta_not_required_when_not_intended():
+    # all-MLX fast path: f_θ bypassed by design → no FTHETA_NOT_RUN.
+    rep = _live_report(f_theta_intended=False, turns=[
+        {"blocks": 2, "f_theta_ran": False}, {"blocks": 3, "f_theta_ran": False}])
+    assert assert_liveness(rep) == []
+
+
+def test_liveness_silent_fallback_report_and_turn_level():
+    rep = _live_report(fallbacks_taken=["proposer->ar"])
+    assert any(v.code == "SILENT_FALLBACK" for v in assert_liveness(rep))
+    rep2 = _live_report(turns=[
+        {"blocks": 2, "f_theta_ran": True, "fallbacks_taken": ["f_theta->identity"]}])
+    assert any(v.code == "SILENT_FALLBACK" for v in assert_liveness(rep2))
+
+
+# ---------------------------------------------------------------------------
+# §2.4/§2.5 quality contract (degeneration / restoration coverage)
+# ---------------------------------------------------------------------------
+
+from inference_engine.bench.k3_report_gate import assert_quality, _looks_degenerate
+
+
+def _quality_report(turns, window=64, restored=True):
+    return {
+        "kind": next(iter(LIVENESS_REPORT_KINDS)), "schema_version": 1,
+        "f_theta_intended": restored, "window": window,
+        "fallbacks_taken": [], "turns": turns,
+    }
+
+
+def test_quality_passes_clean_short_turn():
+    rep = _quality_report([{"tokens": 12, "text": "The capital of France is Paris."}])
+    assert assert_quality(rep) == []
+
+
+def test_quality_restoration_coverage_exceeded():
+    # the PoW failure: restored run generated way past the window
+    rep = _quality_report([{"tokens": 780, "text": "ok"}], window=64, restored=True)
+    codes = {v.code for v in assert_quality(rep)}
+    assert "RESTORATION_COVERAGE" in codes
+    # and it surfaces through validate_report (dispatch wires assert_quality)
+    assert any(v.code == "RESTORATION_COVERAGE" for v in validate_report(rep))
+
+
+def test_quality_no_coverage_check_when_not_restored():
+    # all-MLX path (f_θ bypassed): no restoration to exceed.
+    rep = _quality_report([{"tokens": 780, "text": "ok"}], window=64, restored=False)
+    assert all(v.code != "RESTORATION_COVERAGE" for v in assert_quality(rep))
+
+
+def test_quality_coverage_skipped_without_window():
+    rep = _quality_report([{"tokens": 780, "text": "ok"}], window=None)
+    assert all(v.code != "RESTORATION_COVERAGE" for v in assert_quality(rep))
+
+
+def test_quality_bool_tokens_not_counted():
+    rep = _quality_report([{"tokens": True, "text": "ok"}], window=64)
+    assert all(v.code != "RESTORATION_COVERAGE" for v in assert_quality(rep))
+
+
+def test_quality_output_degenerate_detected():
+    garbage = "Answer:\n" + "\n".join(["*   *   *"] * 12)
+    rep = _quality_report([{"tokens": 50, "text": garbage}])
+    assert any(v.code == "OUTPUT_DEGENERATE" for v in assert_quality(rep))
+
+
+def test_quality_empty_and_nondict_turns():
+    assert assert_quality(_quality_report([])) == []
+    assert assert_quality({"kind": next(iter(LIVENESS_REPORT_KINDS)),
+                           "turns": "nope"}) == []
+    # a non-dict turn element is skipped without error
+    assert assert_quality(_quality_report(["not-a-dict",
+                                           {"tokens": 5, "text": "fine"}])) == []
+
+
+def test_looks_degenerate_helper():
+    assert _looks_degenerate("\n".join(["*   *   *"] * 10)) is True
+    assert _looks_degenerate("a normal coherent sentence about proof of work") is False
+    assert _looks_degenerate(123) is False
+    # long repeated lines (>12 chars) are NOT flagged (could be legit content)
+    assert _looks_degenerate("\n".join(["this line is definitely longer than twelve"] * 10)) is False
+    # blank lines are skipped; a short line then different lines resets the run
+    assert _looks_degenerate("x\n\ny\nz\nw\nq\nr\ns") is False
 
 
 def _valid_report(n: int = MIN_PERF_SAMPLES) -> Dict[str, Any]:
