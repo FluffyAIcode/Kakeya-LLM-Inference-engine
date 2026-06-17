@@ -85,7 +85,9 @@ def main() -> int:
     ap.add_argument("--full-window", type=int, default=8192,
                     help="Resident window for the full-attention (exact) layers "
                          "— large = effectively full context (S5 recall carrier).")
-    ap.add_argument("--max-new-tokens", type=int, default=256)
+    ap.add_argument("--max-new-tokens", type=int, default=1024,
+                    help="Generation cap. Long explanations can need 1500+; raise "
+                         "this if answers get cut off ('断掉').")
     ap.add_argument("--repetition-penalty", type=float, default=1.3,
                     help="Penalize repeated tokens to stop greedy loops (1.0 = off).")
     ap.add_argument("--thinking", action="store_true",
@@ -164,9 +166,11 @@ def main() -> int:
             yield first
             yield from stream
 
+        stop_reason = "max"  # generator exhausts at max_tokens unless we break
         for tok_id, _ in _iter():
             t = int(tok_id)
             if t in eos:
+                stop_reason = "eos"
                 break
             toks.append(t)
             full = tok.decode(toks, skip_special_tokens=True)
@@ -175,11 +179,13 @@ def main() -> int:
                 on_delta(delta)
             shown = full
             if _is_degenerate_loop(full):  # true back-to-back repeat → stop
+                stop_reason = "loop"
                 break
         dt = max(time.time() - t0, 1e-9)
         return {
             "text": tok.decode(toks, skip_special_tokens=True),
             "n_tokens": len(toks),
+            "stop_reason": stop_reason,
             "decode_tps": round(len(toks) / dt, 2),
             "resident_kv_bytes": int(total_kv_bytes(cache)),
             "resident_kv_seq_len_first_layer": int(cache_seq_length(cache)),
@@ -246,9 +252,11 @@ def main() -> int:
         sys.stdout.write("\n")
         sys.stdout.flush()
         history.append({"role": "assistant", "content": info["text"]})
+        warn = ("  [WARN: hit --max-new-tokens; raise it for longer answers]"
+                if info["stop_reason"] == "max" else f"  [stopped: {info['stop_reason']}]")
         _log(f"{info['n_tokens']} tok, {info['decode_tps']} tok/s, "
              f"resident bounded-KV {info['resident_kv_bytes']/1e6:.1f} MB "
-             f"(sliding layers capped at sink+window={args.sink}+{args.window})")
+             f"(sliding capped at sink+window={args.sink}+{args.window}){warn}")
     return 0
 
 
