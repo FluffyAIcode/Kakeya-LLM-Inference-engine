@@ -773,20 +773,19 @@ PRESETS: Dict[str, Preset] = {
         ),
         Preset(
             name="mlx-kakeya-codegen-degen-probe",
-            description="DEBUG: full f_θ fused engine on a MULTI-TURN chat whose "
-                        "turn-1 PoW explanation makes the turn-2 code prompt's "
-                        "prefill exceed the sliding window / native RotatingKVCache "
-                        "(ring pre-wrapped before decode). Single-turn ruled OUT an "
-                        "engine bug (token-identical to native); this probe targets "
-                        "the long-prompt prefill regime. KAKEYA_KDBG logs per-turn "
-                        "prefill state (prompt_len, evicted_count, rot/full cache "
-                        "offsets, any_wrapped, would_wrap_block0) + per-block offsets "
-                        "+ a turn_compare_fused_vs_native record (first_divergence_idx "
-                        "+ tails). Native-greedy control (--chat-native-ref) decodes "
-                        "the SAME per-turn prompt (history-inclusive) so the decisive "
-                        "signal stays fused-vs-native: native coherent + fused garbled "
-                        "from turn-2 start ⇒ long-prompt prefill corrupts logits "
-                        "(engine); both loop identically ⇒ greedy pathology.",
+            description="DEBUG: full f_θ fused engine on a LONG single-turn prompt "
+                        "(~2k-char PoW explanation + a 'write C code' request, from "
+                        "the committed fixture pow_codegen_longprompt.txt) so the "
+                        "native RotatingKVCache ring is ALREADY WRAPPED at prefill "
+                        "(would_wrap_block0). Short single-turn prompts were proven "
+                        "token-identical to native & coherent; this isolates the "
+                        "long-prompt-prefill regime cheaply (tiny 192-tok budget). "
+                        "KAKEYA_KDBG logs prefill state (prompt_len, any_wrapped, "
+                        "would_wrap_block0, rot/full offsets) + per-block offsets + "
+                        "turn_compare_fused_vs_native. Native-greedy control "
+                        "(--chat-native-ref): native coherent + fused garbled ⇒ "
+                        "long-prompt prefill corrupts logits (engine bug); both "
+                        "degenerate ⇒ bounded-greedy pathology the engine must guard.",
             command_templates=(
                 (
                     "env", "KAKEYA_KDBG=1",
@@ -798,13 +797,13 @@ PRESETS: Dict[str, Preset] = {
                     "--sink-size", "4", "--window-size", "64", "--block-size", "4",
                     "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
                     "--chat", "--chat-native-ref",
-                    "--chat-scripted",
-                    "请详细解释POW的工作原理||实现一个PoW的代码，用c语言完成",
-                    "--output", "results/research/codegen_degen_2815_chat.json",
+                    "--chat-scripted-file",
+                    "scripts/research/pow_codegen_longprompt.txt",
+                    "--output", "results/research/codegen_degen_2815_longprompt.json",
                 ),
             ),
-            timeout_minutes=120,
-            params={"max_new_tokens": ("int:max_new_tokens", "1200")},
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "192")},
             validate_reports=False,
         ),
         Preset(
