@@ -1,0 +1,11 @@
+[kakeya-chat] loading MLX model: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[kakeya-chat] loaded in 6.6s | layers=30 exact(full-attn)=[5, 11, 17, 23, 29] sink=4 window=64 eos=[1, 50, 106]
+[kakeya-chat] Kakeya Attention: sliding layers bounded to sink+window; exact layers keep full context (S5).
+[kakeya-chat] repetition_penalty=1.3 enabled
+[kakeya-chat] USER: 'What is the capital of France? Answer in one short sentence.'
+[kakeya-chat] GEMMA-4: 'The capital of France is Paris.'  (7 tok, stop=eos, 0.94 tok/s, resident_kv=7.7MB)
+[kakeya-chat] USER: 'Explain how proof-of-work works, step by step.'
+[kakeya-chat] GEMMA-4: 'Proof-of-Work (PoW) is a consensus mechanism used to secure blockchains by requiring participants to expend computational effort to solve complex mathematical p'  (960 tok, stop=eos, 24.66 tok/s, resident_kv=34.8MB)
+[kakeya-chat] USER: 'Name three primary colors.'
+[kakeya-chat] GEMMA-4: 'The three primary colors are red, yellow, and blue.'  (12 tok, stop=eos, 3.52 tok/s, resident_kv=35.3MB)
+[kakeya-chat] wrote transcript -> results/research/k3_mac_bridge_mlx_kakeya_chat.json
