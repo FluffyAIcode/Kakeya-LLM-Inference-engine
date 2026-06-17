@@ -1,0 +1,16 @@
+[run-kakeya-mac] mode    : FULL (verifier + proposer + f_θ + S5 bounded KV; f_θ runs; long-answer safe)
+[run-kakeya-mac] verifier: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[run-kakeya-mac] drafter : z-lab/gemma-4-26B-A4B-it-DFlash
+[run-kakeya-mac] f_theta : results/research/f_theta_v5_s5_sliding
+[run-kakeya-mac] params  : sink=4 window=64 block=4 max_new=1300
+[run-kakeya-mac] starting... (type a message, blank line / Ctrl-D to quit)
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[chat] f_θ default-ON for interactive chat (torch drafter + f_θ); pass --all-mlx-drafter for the fast f_θ-bypassed path.
+[mac] loading drafter z-lab/gemma-4-26B-A4B-it-DFlash on cpu
+[mac] 10 samples, prompt len min=4406 max=5810
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[chat] FULL fused engine: verifier=/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit drafter=z-lab/gemma-4-26B-A4B-it-DFlash f_theta=results/research/f_theta_v5_s5_sliding S5 sink=4 window=64 block=4 | chat_eos=[1, 50, 106]
+[chat] USER '请详细解释POW的工作原理'
+[chat] GEMMA-4 '**PoW (Proof of Work，工作量证明)** 是区块链技术中最核心的共识机制之一。它的核心目的是：**在没有中心化机构（如银行）的情况下，让分布在世界各地的计算机能够达成一致，决定谁有权记账，并防止有人通过伪造数据来欺骗网络。**\n\n为了深入理解，我们可以从“核心逻辑”、“工作流程”、“数学原理”和“经济博弈”四个维度来详细解释。\n\n---\n\n### 1. 核心逻辑：用“算力”换取“' (blocks=607, accept_len=1.526, f_theta_ran=True layers=[0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28], 3.81 tok/s, kv=235.7MB)
+[chat] wrote transcript -> results/research/k3_mac_bridge_launcher_full.json
