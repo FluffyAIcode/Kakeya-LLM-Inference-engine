@@ -52,13 +52,16 @@ def _resolve_eos(tok) -> set:
     return eos
 
 
-def _content_marker(tok) -> List[int]:
-    """gemma-4 emits a <|channel>thought ... reasoning preamble by default; this
-    marker nudges it straight to the content channel for direct chat answers."""
+def _apply_template(tok, history, *, thinking: bool) -> List[int]:
+    """Encode the chat history. gemma-4 has a reasoning ("thought") channel; the
+    clean way to get direct answers is the template's ``enable_thinking`` flag
+    (NOT injecting a raw channel marker, which leaks 'thought' text and loops).
+    Falls back gracefully if the template doesn't accept the kwarg."""
     try:
-        ids = tok.encode("<|channel>content\n<channel|>", add_special_tokens=False)
+        ids = tok.apply_chat_template(
+            history, add_generation_prompt=True, enable_thinking=thinking)
     except TypeError:
-        ids = tok.encode("<|channel>content\n<channel|>")
+        ids = tok.apply_chat_template(history, add_generation_prompt=True)
     return ids.tolist() if hasattr(ids, "tolist") else list(ids)
 
 
@@ -98,7 +101,6 @@ def main() -> int:
     n_layers = len(text_model.layers)
     full_idx = set(mlx_full_attention_layer_indices(text_model))
     eos = _resolve_eos(tok)
-    marker = [] if args.thinking else _content_marker(tok)
     _log(f"loaded in {time.time()-t_load:.1f}s | layers={n_layers} "
          f"exact(full-attn)={sorted(full_idx)} sink={args.sink} window={args.window} "
          f"eos={sorted(eos)}")
@@ -117,8 +119,7 @@ def main() -> int:
         ]
 
     def build_prompt_ids(history: List[Dict[str, str]]) -> List[int]:
-        ids = list(tok.apply_chat_template(history, add_generation_prompt=True))
-        return ids + list(marker)
+        return _apply_template(tok, history, thinking=args.thinking)
 
     def generate_turn(prompt_ids: List[int], on_delta=None) -> Dict[str, Any]:
         """Single-stream greedy decode over a FRESH Kakeya bounded cache."""
