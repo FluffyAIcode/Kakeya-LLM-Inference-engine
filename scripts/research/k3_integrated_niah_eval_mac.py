@@ -180,6 +180,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--chat-scripted", default=None,
                     help="Non-interactive chat: '||'-separated user turns "
                          "(for Mac-bridge verification); writes a transcript.")
+    ap.add_argument("--chat-native-ref", action="store_true",
+                    help="DEBUG (Phase-1): before each scripted-chat turn, also "
+                         "run a plain NATIVE greedy AR decode of the SAME prompt "
+                         "for --max-new-tokens, emitting KDBG block_native/"
+                         "final_native rep metrics. This is the decisive control "
+                         "for greedy-pathology vs fused-engine degeneration: if "
+                         "the native reference degenerates at the same length, the "
+                         "fused engine is not the cause.")
     ap.add_argument("--force-f-theta", action="store_true",
                     help="Run f_θ restoration even under --s5-exact-full-attn "
                          "(bypass the S5 native-prefill short-circuit). On gemma-4 "
@@ -213,6 +221,7 @@ def main() -> int:
         MLXRestoredIncrementalVerifier, capture_aux_hidden,
         make_bridge_embed_lm_head, fused_specdecode_generate,
         fused_specdecode_generate_mlx, fused_specdecode_generate_mlx_trim,
+        _kdbg, _kdbg_rep,  # Phase-1 degeneration instrumentation
     )
     from inference_engine.v04.kv_compressor import make_default_compressor
     from inference_engine.bench.k3_report_gate import (
@@ -762,6 +771,26 @@ def main() -> int:
                 return list(cids.tolist() if hasattr(cids, "tolist") else cids)
 
             def _gen_turn(pid: List[int]) -> Dict[str, Any]:
+                # #region agent log (Phase-1: native-greedy control on the SAME
+                # prompt — discriminates greedy pathology from fused-engine bug)
+                if args.chat_native_ref:
+                    nref_cache, nref_logits = native_prefill(list(pid))
+                    nref_gen: List[int] = []
+                    while len(nref_gen) < args.max_new_tokens:
+                        tok = int(mx.argmax(nref_logits).item())
+                        nref_gen.append(tok)
+                        if tok in end_ids:
+                            break
+                        out = mlx_model(mx.array([[tok]]), cache=nref_cache)
+                        mx.eval(out)
+                        nref_logits = out[0, -1]
+                        if len(nref_gen) % max(args.block_size, 1) == 0:
+                            _kdbg("block_native", ref="native_greedy",
+                                  gen=len(nref_gen), rep=_kdbg_rep(nref_gen))
+                    _kdbg("final_native", ref="native_greedy", n=len(nref_gen),
+                          rep_w128=_kdbg_rep(nref_gen, k=128),
+                          tokens=[int(t) for t in nref_gen])
+                # #endregion
                 rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
                 # f_θ ran iff build_restoration produced restored banks via the
                 # torch drafter+f_θ (under --force-f-theta the S5 short-circuit is

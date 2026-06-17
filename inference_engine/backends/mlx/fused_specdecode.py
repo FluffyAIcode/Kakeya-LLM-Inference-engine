@@ -50,9 +50,16 @@ def _kdbg(ev: str, **kw: Any) -> None:
         pass
 
 
-def _kdbg_rep(toks: List[int], k: int = 32) -> Dict[str, Any]:
-    """Cheap degeneration signal over the last ``k`` generated tokens:
-    unique fraction + longest single-token run (repetition collapse spikes it)."""
+def _kdbg_rep(toks: List[int], k: int = 64) -> Dict[str, Any]:
+    """Degeneration signal over the last ``k`` generated tokens.
+
+    Phase-1 widened the window (32→64) AND added phrase-level cycle detection:
+    ``max_run`` only sees single-token runs, so a structural repeat loop
+    ("### 1. ...### 1. ...") reads ``max_run:1`` yet is fully degenerate. We
+    also scan for the period ``p`` in ``[1, n//2]`` that maximises the fraction
+    of positions equal to the token ``p`` steps back (``cyc_frac`` near 1.0 with
+    ``cyc_p>1`` ⇒ phrase/sentence-level repetition the run-length metric misses).
+    """
     w = toks[-k:]
     if not w:
         return {"win": 0}
@@ -63,8 +70,36 @@ def _kdbg_rep(toks: List[int], k: int = 32) -> Dict[str, Any]:
         run = run + 1 if a == b else 1
         if run > best:
             best = run
+    cyc_p, cyc_frac = 0, 0.0
+    for p in range(1, n // 2 + 1):
+        m = sum(1 for i in range(p, n) if w[i] == w[i - p])
+        frac = m / (n - p)
+        if frac > cyc_frac:
+            cyc_frac, cyc_p = frac, p
     return {"win": n, "uniq_frac": round(uniq / n, 3),
-            "rep_frac": round(1.0 - uniq / n, 3), "max_run": best}
+            "rep_frac": round(1.0 - uniq / n, 3), "max_run": best,
+            "cyc_p": cyc_p, "cyc_frac": round(cyc_frac, 3)}
+
+
+def _kdbg_sync(cache: Any, past_len: int) -> Dict[str, Any]:
+    """Phase-1 H2: surface cache desync. The torch_ftheta loop rolls rejections
+    back with ``trim_prompt_cache`` on the NATIVE hybrid cache. If the sliding
+    ``RotatingKVCache`` and the full ``KVCache`` trim by different amounts (or
+    one is non-trimmable after the ring wraps), their ``offset`` diverges from
+    ``_past_len`` and from each other — the position misalignment that would
+    corrupt subsequent logits. Compare both offsets to ``past_len``."""
+    sl = fu = None
+    for c in (cache or []):
+        off = int(getattr(c, "offset", 0))
+        if "Rotating" in type(c).__name__:
+            if sl is None:
+                sl = off
+        elif fu is None:
+            fu = off
+    return {"past_len": int(past_len), "sliding_off": sl, "full_off": fu,
+            "sliding_eq": (sl == past_len) if sl is not None else None,
+            "full_eq": (fu == past_len) if fu is not None else None,
+            "sliding_minus_full": (sl - fu) if (sl is not None and fu is not None) else None}
 
 
 def _kdbg_cache(cache: Any) -> Dict[str, Any]:
@@ -394,7 +429,19 @@ class MLXRestoredIncrementalVerifier:
         drop = forwarded - accepted
         if drop > 0 and self._cache is not None:
             from mlx_lm.models.cache import trim_prompt_cache  # type: ignore
-            trim_prompt_cache(self._cache, drop)
+            # #region agent log (Phase-1 H2: unsound trim on the hybrid cache)
+            _before = _kdbg_cache(self._cache)
+            trimmed = trim_prompt_cache(self._cache, drop)
+            _kdbg(
+                "trim",
+                drop=int(drop),
+                trimmed=(int(trimmed) if trimmed is not None else None),
+                short=(trimmed is not None and int(trimmed) < int(drop)),
+                past_len=int(self._past_len),
+                before=_before,
+                after=_kdbg_cache(self._cache),
+            )
+            # #endregion
         self._past_len += accepted
 
     def append_token(self, token_id: int) -> Any:
@@ -863,8 +910,10 @@ def fused_specdecode_generate(
                 past_len=adapter._past_len,
                 accepted=accepted,
                 L=len(candidate),
+                commit_ids=[int(t) for t in commit],
                 dt_ms=round((time.perf_counter() - _kblk_t0) * 1e3, 1),
                 rep=_kdbg_rep(generated),
+                sync=_kdbg_sync(adapter._cache, adapter._past_len),
                 lost=_kdbg_lost(adapter._cache,
                                 getattr(adapter, "_dbg_restored_positions", set()),
                                 getattr(adapter, "_dbg_prompt_len", 0)),
@@ -894,6 +943,14 @@ def fused_specdecode_generate(
     finally:
         adapter._capture_aux = False
     generated = generated[:gen_tokens]
+    # #region agent log (Phase-1: full token dump for offline fused-vs-native
+    # divergence comparison + final wide-window degeneration summary)
+    _kdbg("final", loop="torch_ftheta", n=len(generated),
+          blocks=len(accepts),
+          mean_accept_len=(round(sum(accepts) / len(accepts), 3) if accepts else 0.0),
+          rep_w128=_kdbg_rep(generated, k=128),
+          tokens=[int(t) for t in generated])
+    # #endregion
     return {
         "tokens": generated,
         "blocks": len(accepts),
