@@ -81,6 +81,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-pad-decode",
         "mlx-env-probe",
         "mlx-kakeya-chat-smoke",
+        "mlx-kakeya-fused-chat-ftheta",
         "mlx-kakeya-fused-chat-smoke",
         "mlx-multitenant-pressure",
         "mlx-upgrade",
@@ -147,6 +148,20 @@ def test_mlx_kakeya_chat_smoke_preset_resolves():
     assert argv[argv.index("--max-new-tokens") + 1] == "64"
     assert not [t for t in argv if t.startswith("${ENV:")]
     assert not [t for t in argv if t.startswith("{") and t.endswith("}")]
+
+
+def test_mlx_kakeya_fused_chat_ftheta_preset_runs_f_theta_path():
+    request = parse_manifest(_manifest(
+        preset="mlx-kakeya-fused-chat-ftheta",
+        params={"max_new_tokens": "32", "block_size": "4"}))
+    (argv,) = build_commands(request, HARNESS_ENV)
+    assert argv[1].endswith("k3_integrated_niah_eval_mac.py")
+    # torch drafter + f_θ path: --force-f-theta, and NOT --all-mlx-drafter
+    assert "--force-f-theta" in argv
+    assert "--fused-specdecode" in argv
+    assert "--all-mlx-drafter" not in argv
+    assert HARNESS_ENV["KAKEYA_MAC_FTHETA_DIR"] in argv
+    assert HARNESS_ENV["KAKEYA_MAC_DRAFTER_ID"] in argv
 
 
 def test_mlx_kakeya_fused_chat_smoke_preset_resolves():

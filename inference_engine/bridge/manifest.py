@@ -713,6 +713,42 @@ PRESETS: Dict[str, Preset] = {
             },
             validate_reports=False,
         ),
+        Preset(
+            name="mlx-kakeya-fused-chat-ftheta",
+            description="Like mlx-kakeya-fused-chat-smoke but on the TORCH drafter "
+                        "+ f_θ path with --force-f-theta: f_θ restoration ACTUALLY "
+                        "RUNS each turn (projects proposer hidden → verifier K/V, "
+                        "injected into the sliding layers) even though on gemma-4 "
+                        "those K/V are recall-irrelevant (the exact layers carry "
+                        "recall). Verifies the FULL verifier/proposer/f_θ pipeline: "
+                        "report shows f_theta_ran=true + blocks>0. (No "
+                        "--all-mlx-drafter; torch bridge path is slower.)",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64",
+                    "--block-size", "{block_size}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--prefill-chunk-size", "512",
+                    "--chat",
+                    "--chat-scripted",
+                    "What is the capital of France? Answer in one short sentence."
+                    "||Name three primary colors.",
+                    "--output",
+                    "results/research/k3_mac_bridge_mlx_kakeya_fused_chat_ftheta.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "32"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
     )
 }
 

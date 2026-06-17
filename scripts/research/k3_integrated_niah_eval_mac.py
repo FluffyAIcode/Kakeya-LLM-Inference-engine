@@ -180,6 +180,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--chat-scripted", default=None,
                     help="Non-interactive chat: '||'-separated user turns "
                          "(for Mac-bridge verification); writes a transcript.")
+    ap.add_argument("--force-f-theta", action="store_true",
+                    help="Run f_θ restoration even under --s5-exact-full-attn "
+                         "(bypass the S5 native-prefill short-circuit). On gemma-4 "
+                         "the restored sliding-layer K/V are recall-irrelevant "
+                         "(the exact layers carry recall), but f_θ EXECUTES and "
+                         "its output is injected — exercising the full verifier/"
+                         "proposer/f_θ pipeline. Requires the torch drafter+f_θ "
+                         "(do NOT combine with --all-mlx-drafter).")
     return ap.parse_args()
 
 
@@ -367,7 +375,8 @@ def main() -> int:
         restored bank for those layers lets mlx_lm store their own post-RoPE
         cache directly and avoids the extra clean verifier forward.
         """
-        if prefill_native_s5 and args.s5_exact_full_attn and not args.identity_restore:
+        if (prefill_native_s5 and args.s5_exact_full_attn
+                and not args.identity_restore and not args.force_f_theta):
             return {}, {}, len(prompt_ids)
         if drafter is None or f_theta is None or fcfg is None:
             raise RuntimeError("drafter/f_theta are required for this restoration mode")
@@ -709,12 +718,16 @@ def main() -> int:
             accepts (reports blocks / mean_accept_len). On gemma-4 f_θ restoration
             is bypassed via S5 native exact-layer prefill (the free lunch);
             f_θ is load-bearing on full-attention models."""
-            if not (args.force_fused_specdecode and mlx_drafter is not None
-                    and args.cuda_trim):
+            _allmlx_ok = mlx_drafter is not None and args.cuda_trim
+            _torch_ftheta_ok = drafter is not None and f_theta is not None
+            if not (args.force_fused_specdecode and (_allmlx_ok or _torch_ftheta_ok)):
                 raise SystemExit(
-                    "--chat needs the FULL fused engine flags: --fused-specdecode "
-                    "--force-fused-specdecode --all-mlx-drafter --s5-exact-full-attn "
-                    "--cuda-trim")
+                    "--chat needs the FULL fused engine. Either:\n"
+                    "  (a) --fused-specdecode --all-mlx-drafter --s5-exact-full-attn "
+                    "--cuda-trim  (verifier + proposer; f_θ bypassed on gemma-4 "
+                    "via S5), or\n"
+                    "  (b) --fused-specdecode --force-f-theta  (torch DFlash drafter "
+                    "+ f_θ that ACTUALLY RUNS; do NOT pass --all-mlx-drafter).")
             # Stop at gemma's natural turn end: <end_of_turn> + eos
             # (convert_tokens_to_ids is the reliable special-token lookup).
             chat_eos = set(end_ids)
@@ -741,23 +754,45 @@ def main() -> int:
 
             def _gen_turn(pid: List[int]) -> Dict[str, Any]:
                 rk, rv, tsrc = build_restoration(pid, prefill_native_s5=True)
+                # f_θ ran iff build_restoration produced restored banks via the
+                # torch drafter+f_θ (under --force-f-theta the S5 short-circuit is
+                # bypassed → rk holds f_θ-projected sliding-layer K/V).
+                f_theta_ran = bool(rk) and (drafter is not None and f_theta is not None)
                 T = len(pid)
                 evicted = compute_evicted_positions(
                     T, args.sink_size, args.window_size)
-                aux_prompt = capture_aux_hidden(
+                aux_prompt_mx = capture_aux_hidden(
                     mlx_model, pid, aux_layer_ids, embed_scale=embed_scale)
+                aux_prompt = (aux_prompt_mx if bridge is None
+                              else [bridge(a) for a in aux_prompt_mx])
                 adapter.prefill(
                     pid, restored_k_per_layer=_pad(rk, tsrc, T),
                     restored_v_per_layer=_pad(rv, tsrc, T),
                     evicted_positions=evicted,
-                    prefill_chunk_size=args.prefill_chunk_size, full_kv=True)
+                    prefill_chunk_size=args.prefill_chunk_size, full_kv=args.cuda_trim)
                 t0 = time.perf_counter()
-                res = fused_specdecode_generate_mlx_trim(
-                    adapter, active_drafter, aux_prompt=aux_prompt,
-                    embed_fn=embed_fn, lm_head_fn=lm_head_fn,
-                    gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                    eos_ids=chat_eos, single_fused=args.single_fused)
+                if mlx_drafter is not None and args.cuda_trim:
+                    res = fused_specdecode_generate_mlx_trim(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=chat_eos, single_fused=args.single_fused)
+                elif mlx_drafter is not None:
+                    res = fused_specdecode_generate_mlx(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=chat_eos)
+                else:
+                    res = fused_specdecode_generate(
+                        adapter, active_drafter, aux_prompt=aux_prompt,
+                        embed_fn=embed_fn, lm_head_fn=lm_head_fn,
+                        gen_tokens=args.max_new_tokens, block_size=args.block_size,
+                        eos_ids=chat_eos, argmax_fn=argmax_fn, arange_fn=arange_fn,
+                        cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False)
                 res["decode_s"] = round(time.perf_counter() - t0, 3)
+                res["f_theta_ran"] = f_theta_ran
+                res["f_theta_layers"] = sorted(rk.keys()) if rk else []
                 try:
                     txt = tokenizer.decode(res["tokens"], skip_special_tokens=True)
                 except TypeError:
@@ -789,11 +824,15 @@ def main() -> int:
                         "user": u, "text": res["text"],
                         "tokens": res["decode_tokens"], "blocks": res["blocks"],
                         "mean_accept_len": res["mean_accept_len"],
+                        "f_theta_ran": res["f_theta_ran"],
+                        "f_theta_layers": res["f_theta_layers"],
                         "decode_s": res["decode_s"], "decode_tps": round(tps, 2),
                         "resident_kv_bytes": res["resident_kv_bytes"]})
                     print(f"[chat] USER {u!r}", file=sys.stderr, flush=True)
                     print(f"[chat] GEMMA-4 {res['text'][:200]!r} (blocks="
                           f"{res['blocks']}, accept_len={res['mean_accept_len']}, "
+                          f"f_theta_ran={res['f_theta_ran']} "
+                          f"layers={res['f_theta_layers']}, "
                           f"{round(tps,2)} tok/s, kv={res['resident_kv_bytes']/1e6:.1f}MB)",
                           file=sys.stderr, flush=True)
                 report = {
