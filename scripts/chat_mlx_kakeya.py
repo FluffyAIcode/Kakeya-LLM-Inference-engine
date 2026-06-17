@@ -52,16 +52,14 @@ def _resolve_eos(tok) -> set:
     return eos
 
 
-def _trim_loop(s: str, win: int = 24) -> str:
-    """If the text degenerated into a repeated block (greedy loop), keep only up
-    to the end of the first occurrence of the repeating unit."""
-    if len(s) < win * 3:
-        return s
-    tail = s[-win:]
-    first = s.find(tail)
-    if 0 <= first < len(s) - win:
-        return s[: first + win].rstrip()
-    return s
+def _is_degenerate_loop(s: str, unit: int = 16) -> bool:
+    """True only on a TRUE consecutive loop: the same ``unit``-char block
+    repeated 3x back-to-back at the tail. (Deliberately strict so an answer that
+    merely echoes itself once — e.g. text + a json wrapper — is NOT cut.)"""
+    if len(s) < unit * 3:
+        return False
+    a, b, c = s[-unit:], s[-2 * unit:-unit], s[-3 * unit:-2 * unit]
+    return a == b == c and a.strip() != ""
 
 
 def _apply_template(tok, history, *, thinking: bool) -> List[int]:
@@ -176,12 +174,11 @@ def main() -> int:
             if delta and on_delta is not None:
                 on_delta(delta)
             shown = full
-            # greedy loop guard: a 24-char tail recurring 3+ times = degenerate
-            if len(full) > 96 and full.count(full[-24:]) >= 3:
+            if _is_degenerate_loop(full):  # true back-to-back repeat → stop
                 break
         dt = max(time.time() - t0, 1e-9)
         return {
-            "text": _trim_loop(tok.decode(toks, skip_special_tokens=True)),
+            "text": tok.decode(toks, skip_special_tokens=True),
             "n_tokens": len(toks),
             "decode_tps": round(len(toks) / dt, 2),
             "resident_kv_bytes": int(total_kv_bytes(cache)),
