@@ -836,6 +836,63 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=True,  # §4 liveness + §2.4 quality gate on-device
         ),
         Preset(
+            name="mlx-kakeya-codegen-degen-probe",
+            description="Regression probe (guard DISABLED): full f_θ fused engine "
+                        "on the multi-turn 'explain PoW || write PoW in C' chat "
+                        "that originally degenerated, with --fused-no-loop-guard so "
+                        "any greedy markdown-marker collapse is observable. Pairs "
+                        "with mlx-kakeya-codegen-guard-validate (guard ENABLED) to "
+                        "show the guard is what keeps the answer clean. On current "
+                        "code (post wrap-fix) both turns stay coherent.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat", "--fused-no-loop-guard",
+                    "--chat-scripted",
+                    "请详细解释POW的工作原理||实现一个PoW的代码，用c语言完成",
+                    "--output", "results/research/codegen_degen_2815_longprompt.json",
+                ),
+            ),
+            timeout_minutes=120,
+            params={"max_new_tokens": ("int:max_new_tokens", "900")},
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-kakeya-codegen-guard-validate",
+            description="Validate the runaway-loop guard end-to-end: full f_θ fused "
+                        "engine on the multi-turn 'explain PoW || write PoW in C' "
+                        "chat with the guard ENABLED (production default). The "
+                        "answer must stay coherent and never collapse into a marker "
+                        "wall — if a runaway starts, the guard stops it "
+                        "(stopped_on_runaway) leaving a clean tail. Confirmed "
+                        "coherent on current code; byte-identical to the guard-off "
+                        "probe (the guard is inert on healthy output).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat",
+                    "--chat-scripted",
+                    "请详细解释POW的工作原理||实现一个PoW的代码，用c语言完成",
+                    "--output", "results/research/codegen_guard_validate_2815.json",
+                ),
+            ),
+            timeout_minutes=120,
+            params={"max_new_tokens": ("int:max_new_tokens", "900")},
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-kakeya-degen-probe",
             description="Long-decode regression probe: full f_θ fused engine on a "
                         "LONG generation (--ignore-turn-stop) past the native "

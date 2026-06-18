@@ -185,6 +185,15 @@ def parse_args() -> argparse.Namespace:
                          "stdout (as the interactive CLI does) instead of the "
                          "per-block [stream] timing lines — lets a non-tty bridge "
                          "run capture the exact live output format.")
+    ap.add_argument("--chat-scripted-file", default=None,
+                    help="Like --chat-scripted but reads the (possibly long, "
+                         "'||'-separated) scripted prompt from a UTF-8 file. Lets "
+                         "a long context be a committed fixture instead of a giant "
+                         "manifest argv. Overrides --chat-scripted when set.")
+    ap.add_argument("--fused-no-loop-guard", action="store_true",
+                    help="DIAGNOSTIC: disable the fused engine's runaway-loop stop "
+                         "(default ON) so a degeneration probe can observe the full "
+                         "collapse. Production chat keeps the guard enabled.")
     ap.add_argument("--chat-native-ref", action="store_true",
                     help="DIAGNOSTIC opt-in: before each chat turn, also run a "
                          "plain NATIVE greedy AR decode of the SAME prompt for "
@@ -815,19 +824,21 @@ def main() -> int:
                     evicted_positions=evicted,
                     prefill_chunk_size=args.prefill_chunk_size, full_kv=args.cuda_trim)
                 t0 = time.perf_counter()
+                _guard = not args.fused_no_loop_guard
                 if mlx_drafter is not None and args.cuda_trim:
                     res = fused_specdecode_generate_mlx_trim(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
                         eos_ids=chat_eos, single_fused=args.single_fused,
-                        on_commit=on_commit)
+                        on_commit=on_commit, stop_on_runaway=_guard)
                 elif mlx_drafter is not None:
                     res = fused_specdecode_generate_mlx(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                        eos_ids=chat_eos, on_commit=on_commit)
+                        eos_ids=chat_eos, on_commit=on_commit,
+                        stop_on_runaway=_guard)
                 else:
                     res = fused_specdecode_generate(
                         adapter, active_drafter, aux_prompt=aux_prompt,
@@ -835,7 +846,7 @@ def main() -> int:
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
                         eos_ids=chat_eos, argmax_fn=argmax_fn, arange_fn=arange_fn,
                         cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False,
-                        on_commit=on_commit)
+                        on_commit=on_commit, stop_on_runaway=_guard)
                 res["decode_s"] = round(time.perf_counter() - t0, 3)
                 res["f_theta_ran"] = f_theta_ran
                 res["f_theta_layers"] = sorted(rk.keys()) if rk else []
@@ -899,8 +910,12 @@ def main() -> int:
                   file=sys.stderr, flush=True)
 
             history: List[Dict[str, str]] = []
-            if args.chat_scripted is not None:
-                turns = [t for t in args.chat_scripted.split("||") if t.strip()]
+            scripted = args.chat_scripted
+            if args.chat_scripted_file is not None:
+                with open(args.chat_scripted_file, encoding="utf-8") as _f:
+                    scripted = _f.read()
+            if scripted is not None:
+                turns = [t for t in scripted.split("||") if t.strip()]
                 transcript = []
                 for u in turns:
                     history.append({"role": "user", "content": u})

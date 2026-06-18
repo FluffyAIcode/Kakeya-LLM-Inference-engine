@@ -35,7 +35,6 @@ from inference_engine.backends.mlx.cross_model_dlm_verifier import (
     restored_prefill_cache,
 )
 
-
 # --------------------------------------------------------------------------- #
 # Component A: capture verifier aux-layer hidden states (no transformers
 # `output_hidden_states` on MLX → patch the decoder-layer __call__).
@@ -387,6 +386,7 @@ def fused_specdecode_generate_mlx_trim(
     eos_ids: Sequence[int] = (),
     single_fused: bool = False,
     on_commit: Optional[Callable[[List[int]], None]] = None,
+    stop_on_runaway: bool = True,
 ) -> Dict[str, Any]:
     """CUDA-parity fused spec decode: KEEP accepted K/V, TRIM only the rejected
     tail (no rollback, no carry re-forward). Requires the adapter to be
@@ -412,6 +412,7 @@ def fused_specdecode_generate_mlx_trim(
     generated: List[int] = []
     accepts: List[int] = []
     block_evals: List[float] = []
+    stopped_on_runaway = False
     ctx_len = C
     try:
         while len(generated) < gen_tokens:
@@ -474,6 +475,12 @@ def fused_specdecode_generate_mlx_trim(
                 timing["extend_s"] += time.perf_counter() - t_extend
             if any(t in eos for t in commit):
                 break
+            if stop_on_runaway:
+                drop = _trailing_runaway_drop(generated)
+                if drop > 0:
+                    del generated[len(generated) - drop:]
+                    stopped_on_runaway = True
+                    break
     finally:
         adapter._capture_aux = False
     generated = generated[:gen_tokens]
@@ -483,6 +490,7 @@ def fused_specdecode_generate_mlx_trim(
         "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
                             if accepts else 0.0),
         "decode_tokens": len(generated),
+        "stopped_on_runaway": stopped_on_runaway,
         "loop": ("mlx_trim_single_fused_probe" if single_fused
                  else "mlx_trim_keep_accepted_cuda_parity"),
         "single_fused": bool(single_fused),
@@ -505,6 +513,7 @@ def fused_specdecode_generate_mlx(
     block_size: int,
     eos_ids: Sequence[int] = (),
     on_commit: Optional[Callable[[List[int]], None]] = None,
+    stop_on_runaway: bool = True,
 ) -> Dict[str, Any]:
     """All-MLX fused spec decode with ONE host sync per block.
 
@@ -546,6 +555,7 @@ def fused_specdecode_generate_mlx(
 
     generated: List[int] = []
     accepts: List[int] = []
+    stopped_on_runaway = False
     # Rollback-carry state: rejected blocks roll the WHOLE forward back
     # (rollback_block — see its docstring for why trim is unsound on the
     # wrapped sliding ring) and carry the stream-committed-but-not-cached
@@ -630,6 +640,12 @@ def fused_specdecode_generate_mlx(
                 timing["extend_s"] += time.perf_counter() - t_extend
             if any(t in eos for t in commit):
                 break
+            if stop_on_runaway:
+                drop = _trailing_runaway_drop(generated)
+                if drop > 0:
+                    del generated[len(generated) - drop:]
+                    stopped_on_runaway = True
+                    break
     finally:
         adapter._capture_aux = False
     generated = generated[:gen_tokens]
@@ -639,6 +655,7 @@ def fused_specdecode_generate_mlx(
         "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
                             if accepts else 0.0),
         "decode_tokens": len(generated),
+        "stopped_on_runaway": stopped_on_runaway,
         "loop": "mlx_rollback_carry_v3",
         "time_breakdown_s": {k: round(v, 3) for k, v in timing.items()},
     }
@@ -671,6 +688,40 @@ def _sliding_ring_would_wrap(cache: Any, n_new: int) -> bool:
     return False
 
 
+def _trailing_runaway_drop(
+    ids: Sequence[int],
+    *,
+    max_period: int = 8,
+    min_reps: int = 12,
+    keep_reps: int = 3,
+) -> int:
+    """Return how many TRAILING tokens to drop if ``ids`` ends in a runaway
+    short-period loop, else 0.
+
+    A runaway loop is a unit of ``1..max_period`` tokens repeated ``>= min_reps``
+    times back-to-back at the tail (e.g. the ``**``/``.2``/``*`` markdown-marker
+    collapse greedy decoding falls into on code prompts). When found, we keep
+    ``keep_reps`` instances and drop the rest, so callers can stop generation
+    with a clean tail instead of emitting an unbounded wall of repeats.
+
+    Deliberately CONSERVATIVE (>= 12 back-to-back repeats of a <= 8-token unit)
+    so legitimately repetitive text — numbered lists, ``矿工 A/B/C`` enumerations,
+    structured code — is never trimmed. Returns 0 when no runaway is present."""
+    n = len(ids)
+    for p in range(1, max_period + 1):
+        if n < p * min_reps:
+            continue
+        unit = list(ids[n - p:])
+        reps = 0
+        i = n
+        while i - p >= 0 and list(ids[i - p:i]) == unit:
+            reps += 1
+            i -= p
+        if reps >= min_reps:
+            return max((reps - keep_reps) * p, 0)
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # The fused spec-decode loop (control flow; MLX/torch ops via injected fns).
 # --------------------------------------------------------------------------- #
@@ -689,6 +740,7 @@ def fused_specdecode_generate(
     cat_aux_fn: Callable[[Sequence[Any]], Any],
     allow_greedy_fallback: bool = True,
     on_commit: Optional[Callable[[List[int]], None]] = None,
+    stop_on_runaway: bool = True,
 ) -> Dict[str, Any]:
     """Run the fused engine. ``adapter`` must already be prefilled. Per block:
     draft from the cached drafter context (B), verify+capture-aux incrementally
@@ -717,6 +769,7 @@ def fused_specdecode_generate(
     generated: List[int] = []
     accepts: List[int] = []
     fallback_to_greedy = False
+    stopped_on_runaway = False
     try:
         while len(generated) < gen_tokens:
             L = min(block_size, gen_tokens - len(generated))
@@ -792,6 +845,17 @@ def fused_specdecode_generate(
             _emit(on_commit, generated)
             if any(t in eos for t in commit):
                 break
+            # Greedy decoding can collapse into a runaway short-period loop (e.g.
+            # the **/.2/* markdown-marker wall on code prompts); the drafter then
+            # trivially predicts the repeats and the greedy verifier accepts them,
+            # so acceptance stays HIGH while the output is garbage. Stop on it
+            # instead of emitting an unbounded wall (keeps a short clean tail).
+            if stop_on_runaway:
+                drop = _trailing_runaway_drop(generated)
+                if drop > 0:
+                    del generated[len(generated) - drop:]
+                    stopped_on_runaway = True
+                    break
             if (allow_greedy_fallback and len(accepts) >= 2
                     and (sum(accepts) / len(accepts)) < 1.5):
                 fallback_to_greedy = True
@@ -810,6 +874,12 @@ def fused_specdecode_generate(
                 _emit(on_commit, generated)
                 if tok in eos:
                     break
+                if stop_on_runaway:
+                    drop = _trailing_runaway_drop(generated)
+                    if drop > 0:
+                        del generated[len(generated) - drop:]
+                        stopped_on_runaway = True
+                        break
             timing["fallback_greedy_s"] += time.perf_counter() - t_fb
     finally:
         adapter._capture_aux = False
@@ -820,5 +890,6 @@ def fused_specdecode_generate(
         "mean_accept_len": (round(sum(accepts) / len(accepts), 3)
                             if accepts else 0.0),
         "decode_tokens": len(generated),
+        "stopped_on_runaway": stopped_on_runaway,
         "time_breakdown_s": {k: round(v, 3) for k, v in timing.items()},
     }
