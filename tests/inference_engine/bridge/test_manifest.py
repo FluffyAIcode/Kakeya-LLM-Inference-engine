@@ -89,6 +89,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-upgrade",
         "mlx-upstream-batch-probe",
         "omlx-env-probe",
+        "omlx-parallel-bench",
         "pytest-path",
     ]
 
