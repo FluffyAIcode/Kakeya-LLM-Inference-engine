@@ -799,6 +799,20 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=True,  # §4 liveness gate on-device
         ),
         Preset(
+            name="mlx-kakeya-launcher-dryrun-bash32",
+            description="Guard the launcher against the macOS bash-3.2 "
+                        "'unbound variable' bug: run scripts/run_kakeya_mac.sh "
+                        "--dry-run under /bin/bash (Apple's frozen bash 3.2) with "
+                        "NO pass-through args, so the empty EXTRA array is expanded "
+                        "under set -u. Must exit 0 and print the command (pre-fix it "
+                        "died with 'EXTRA[@]: unbound variable'). Fast; no model load.",
+            command_templates=(
+                ("/bin/bash", "scripts/run_kakeya_mac.sh", "--dry-run"),
+            ),
+            timeout_minutes=10,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-kakeya-degen-probe",
             description="Long-decode regression probe: full f_θ fused engine on a "
                         "LONG generation (--ignore-turn-stop) past the native "
