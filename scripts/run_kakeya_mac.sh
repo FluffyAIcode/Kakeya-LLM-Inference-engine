@@ -55,6 +55,11 @@ done
 
 log() { echo "[run-kakeya-mac] $*" >&2; }
 
+# Pinned interpreter (Layer B): prefer KAKEYA_MAC_PYTHON (the venv python with
+# mlx_lm/torch/transformers) over a bare python3 that a host reboot may have
+# repointed. See docs/skills/pin-selfhosted-runner-python-env-skill.md.
+PYBIN="${KAKEYA_MAC_PYTHON:-python3}"
+
 # ---- argv for the full-engine harness chat ----
 args=(
   --verifier-path "$VERIFIER"
@@ -80,7 +85,7 @@ log "drafter : $DRAFTER"
 log "f_theta : $FTHETA"
 log "params  : sink=$SINK window=$WINDOW block=$BLOCK max_new=$MAX_NEW"
 
-cmd=( python3 scripts/research/k3_integrated_niah_eval_mac.py "${args[@]}" "${EXTRA[@]}" )
+cmd=( "$PYBIN" scripts/research/k3_integrated_niah_eval_mac.py "${args[@]}" "${EXTRA[@]}" )
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "PYTHONPATH=.:sdks/python ${cmd[*]}"
@@ -88,9 +93,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 # ---- preflight (Apple Silicon + MLX + model) ----
-command -v python3 >/dev/null || { log "python3 not found"; exit 1; }
-python3 -c "import mlx.core" 2>/dev/null \
-  || { log "MLX not importable — this needs Apple Silicon + 'pip install mlx mlx-lm'"; exit 2; }
+command -v "$PYBIN" >/dev/null 2>&1 || { log "interpreter not found: $PYBIN (set KAKEYA_MAC_PYTHON)"; exit 1; }
+"$PYBIN" -c "import mlx.core, mlx_lm" 2>/dev/null \
+  || { log "mlx/mlx_lm not importable by $PYBIN — Apple Silicon + a venv with 'mlx mlx-lm'; set KAKEYA_MAC_PYTHON. See docs/skills/pin-selfhosted-runner-python-env-skill.md"; exit 2; }
 [[ -d "$VERIFIER" ]] \
   || { log "verifier model dir not found: $VERIFIER (set KAKEYA_MAC_VERIFIER_PATH)"; exit 3; }
 if [[ "$FAST" != "1" && ! -e "$FTHETA" ]]; then
