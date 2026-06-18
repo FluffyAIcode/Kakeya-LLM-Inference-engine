@@ -173,6 +173,13 @@ else
     ok "skipped (rerun with --with-tailscale to enable M2 interactive SSH)"
 fi
 
+step "Runner auto-recover module (reboot self-heal)"
+chmod +x scripts/mac_bridge/recover_runner_after_reboot.sh \
+          scripts/mac_bridge/install_autorecover_launchagent.sh
+bash scripts/mac_bridge/install_autorecover_launchagent.sh \
+    || die "failed to install launchagent auto-recover module"
+ok "launchagent auto-recover installed (checks runner every 60s + RunAtLoad)"
+
 printf '\n\033[1m\033[32mMac bridge ready.\033[0m Any push to mac-bridge/** (or AgentMemory/mac-bridge-*) now executes here.\n'
 printf 'Smoke it from any clone with push rights:\n'
 printf '  PYTHONPATH=.:sdks/python python3 scripts/mac_bridge/kakeya_mac.py run --preset mlx-env-probe --wait 600\n'

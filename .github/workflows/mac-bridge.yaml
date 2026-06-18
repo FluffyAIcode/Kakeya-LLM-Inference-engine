@@ -95,6 +95,10 @@ jobs:
       - name: Run preset (allowlist-validated executor)
         env:
           PYTHONPATH: .:sdks/python
+          # Pin the interpreter used by the bridge executor so runner
+          # reboots/PATH drift cannot silently fall back to a python
+          # without mlx/mlx_lm.
+          KAKEYA_MAC_PYTHON: ${{ vars.KAKEYA_MAC_PYTHON || '/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3' }}
           # Machine-local model locations come from the runner env,
           # never from the manifest (docs/ops/mac-m4-runner-setup.md).
           # Precedence: repo Actions variable > ~/kakeya-models/<name>
@@ -114,7 +118,9 @@ jobs:
           export KAKEYA_MAC_DRAFTER_ID="${KAKEYA_MAC_DRAFTER_ID_VAR:-z-lab/gemma-4-26B-A4B-it-DFlash}"
           export KAKEYA_MAC_FTHETA_DIR="${KAKEYA_MAC_FTHETA_DIR_VAR:-results/research/f_theta_v5_s5_sliding}"
           echo "verifier=$KAKEYA_MAC_VERIFIER_PATH"
-          python3 scripts/mac_bridge/run_preset.py \
+          "${KAKEYA_MAC_PYTHON}" --version
+          "${KAKEYA_MAC_PYTHON}" -c "import mlx_lm"
+          "${KAKEYA_MAC_PYTHON}" scripts/mac_bridge/run_preset.py \
             --manifest .mac-bridge/request.json
 
       - name: Commit results back to the request branch
