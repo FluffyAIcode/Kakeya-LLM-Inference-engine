@@ -32,8 +32,27 @@ from inference_engine.bridge.manifest import (
     build_commands,
     parse_manifest_text,
 )
+from inference_engine.bridge.runner_python import (
+    GATE_MODULE,
+    gate_error_message,
+    preset_requires_gate,
+    resolve_workload_python,
+    substitute_python,
+    workload_python_candidates,
+)
 
 LOG_DIR = Path(".mac-bridge/logs")
+
+
+def _can_import_gate_module(pybin: str) -> bool:
+    """True iff interpreter ``pybin`` can import the gate module (mlx_lm)."""
+    try:
+        return subprocess.run(
+            [pybin, "-c", f"import {GATE_MODULE}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    except OSError:
+        return False
 
 
 def main() -> int:
@@ -59,6 +78,23 @@ def main() -> int:
             print(json.dumps(argv))
         return 0
 
+    # Layer B — resolve a PINNED workload interpreter instead of trusting the
+    # bare ``python3`` on PATH (which a reboot can repoint to a python without
+    # mlx_lm). Layer C — gate: mlx-/k3- engine presets fail fast with a clear
+    # message when no mlx_lm-capable interpreter exists.
+    pinned = os.environ.get("KAKEYA_MAC_PYTHON")
+    candidates = workload_python_candidates(os.environ)
+    resolved = resolve_workload_python(
+        candidates, _can_import_gate_module, pinned=pinned)
+    pybin = resolved.path if resolved else "python3"
+    gate_ok = bool(resolved and resolved.gate_module_ok)
+    print(f"[mac-bridge] workload python={pybin} {GATE_MODULE}_ok={gate_ok} "
+          f"pinned={pinned!r} candidates={candidates}", file=sys.stderr)
+    if preset_requires_gate(request.preset.name) and not gate_ok:
+        print(f"::error::{gate_error_message(request.preset.name, pybin)}",
+              file=sys.stderr)
+        return 90
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     summary = {
         "preset": request.preset.name,
@@ -66,13 +102,19 @@ def main() -> int:
         "nonce": request.nonce,
         "commands": [],
     }
+    # Make the resolved interpreter authoritative for BOTH bare-``python3``
+    # commands (rewritten here) and the launcher (which reads KAKEYA_MAC_PYTHON).
+    sub_env = dict(os.environ)
+    sub_env["KAKEYA_MAC_PYTHON"] = pybin
     rc = 0
     for idx, argv in enumerate(commands):
+        argv = substitute_python(argv, pybin)
         log_path = LOG_DIR / f"{request.preset.name}-{idx}.log"
         print(f"[mac-bridge] exec[{idx}]: {argv}", file=sys.stderr)
         t0 = time.perf_counter()
         with log_path.open("wb") as log:
-            proc = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT)
+            proc = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT,
+                                  env=sub_env)
         elapsed = time.perf_counter() - t0
         summary["commands"].append({
             "argv": argv,
