@@ -115,6 +115,45 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=10,
         ),
         Preset(
+            name="omlx-parallel-bench",
+            description="Benchmark oMLX continuous-batching PARALLEL inference on "
+                        "an ALREADY-RUNNING oMLX OpenAI server (set OMLX_BASE_URL "
+                        "+ OMLX_MODEL on the runner; load a Gemma-4 model). Fires "
+                        "N unique-needle requests serially then concurrently and "
+                        "reports errors / per-request correctness / wall speedup — "
+                        "the exact parallel case vllm-mlx crashed on (shared_kv).",
+            command_templates=(
+                (
+                    "python3", "scripts/research/omlx_parallel_bench.py",
+                    "--base-url", "${ENV:OMLX_BASE_URL}",
+                    "--model", "${ENV:OMLX_MODEL}",
+                    "--concurrency", "{n_samples}",
+                    "--max-tokens", "{max_new_tokens}",
+                    "--output", "results/research/omlx_parallel_bench.json",
+                ),
+            ),
+            timeout_minutes=60,
+            params={
+                "n_samples": ("int:n_samples", "8"),
+                "max_new_tokens": ("int:max_new_tokens", "16"),
+            },
+        ),
+        Preset(
+            name="omlx-env-probe",
+            description="READ-ONLY: detect whether oMLX (jundot/omlx) is installed "
+                        "and headlessly launchable on the runner (CLI on PATH, app "
+                        "bundle, brew/pip provenance) and capture its --help / "
+                        "serve|launch CLI — the prerequisite for benchmarking oMLX "
+                        "continuous-batching parallel inference on Gemma-4 (the case "
+                        "vllm-mlx could not fix). Starts no server; changes nothing.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/omlx_env_probe.py",
+                ),
+            ),
+            timeout_minutes=10,
+        ),
+        Preset(
             name="mlx-upgrade",
             description="Upgrade mlx + mlx-lm to the latest release on the Mac "
                         "runner, then re-probe the batch>1 L=1 quantized-decode "
