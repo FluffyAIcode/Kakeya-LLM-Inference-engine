@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-kakeya-launcher-dryrun-bash32",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1781789868-6f4cbf"
+}
