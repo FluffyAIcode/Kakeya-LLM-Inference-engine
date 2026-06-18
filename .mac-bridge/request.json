@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-kakeya-codegen-guard-validate",
+  "params": {
+    "max_new_tokens": "900"
+  },
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1781762348-4f8c99"
+}
