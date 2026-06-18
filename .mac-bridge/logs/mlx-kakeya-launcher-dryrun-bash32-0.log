@@ -1,0 +1,6 @@
+[run-kakeya-mac] mode    : FULL (verifier + proposer + f_θ + S5 bounded KV; f_θ runs)
+[run-kakeya-mac] verifier: /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[run-kakeya-mac] drafter : z-lab/gemma-4-26B-A4B-it-DFlash
+[run-kakeya-mac] f_theta : results/research/f_theta_v5_s5_sliding
+[run-kakeya-mac] params  : sink=4 window=64 block=4 max_new=1024
+PYTHONPATH=.:sdks/python python3 scripts/research/k3_integrated_niah_eval_mac.py --verifier-path /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit --drafter-id z-lab/gemma-4-26B-A4B-it-DFlash --f-theta-dir results/research/f_theta_v5_s5_sliding --s5-exact-full-attn --fused-specdecode --sink-size 4 --window-size 64 --block-size 4 --max-new-tokens 1024 --chat
