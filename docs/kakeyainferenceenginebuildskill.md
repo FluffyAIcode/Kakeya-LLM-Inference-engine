@@ -351,5 +351,6 @@ If any answer is "no", write the weaker, true claim.
 - v0.5-cuda scorecard (+ honest §5): `docs/reports/kakeya-inference-engine-v0.5-cuda.md`
 - Engine vs vLLM long-context journey: `docs/reports/kakeya-engine-vs-vllm-h200.md`, `docs/reports/kakeya-vs-vllm-longcontext-h200.md`
 - MLX port lessons: `docs/mlx-port-lessons.md`
+- Self-hosted runner Python pinning (reboot-proof mlx_lm/torch/transformers): `docs/skills/pin-selfhosted-runner-python-env-skill.md`
 - f_θ training pipeline: `docs/design/k3-f-theta-training-pipeline.md`
 - Session capacity / cross-host: `docs/adr/0014-agent-connection-capacity-and-cross-host-topology-tests.md`
