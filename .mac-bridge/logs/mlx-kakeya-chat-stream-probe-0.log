@@ -1,0 +1,81 @@
+[mac] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[mac] verifier layers=30 full_attn=[5, 11, 17, 23, 29]
+[mac] loading drafter z-lab/gemma-4-26B-A4B-it-DFlash on cpu
+[mac] 10 samples, prompt len min=4406 max=5810
+[mac] running restored cross-model verifier (s5, free_gen_fused_specdecode)
+[chat] FULL fused engine: verifier=/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit drafter=z-lab/gemma-4-26B-A4B-it-DFlash f_theta=results/research/f_theta_v5_s5_sliding S5 sink=4 window=64 block=4 | chat_eos=[1, 50, 106]
+[stream] blk=1 tok=2 t=8.4s
+[stream] blk=2 tok=4 t=8.8s
+[stream] blk=3 tok=8 t=9.2s
+[stream] blk=4 tok=10 t=9.8s
+[stream] blk=5 tok=12 t=10.2s
+[stream] blk=6 tok=16 t=10.7s
+[stream] blk=7 tok=18 t=11.1s
+[stream] blk=8 tok=21 t=11.5s
+[stream] blk=9 tok=23 t=11.9s
+[stream] blk=10 tok=25 t=12.4s
+[stream] blk=11 tok=27 t=12.8s
+[stream] blk=12 tok=29 t=13.1s
+[stream] blk=13 tok=31 t=13.5s
+[stream] blk=14 tok=33 t=13.8s
+[stream] blk=15 tok=35 t=14.2s
+[stream] blk=16 tok=37 t=14.5s
+[stream] blk=17 tok=41 t=15.0s
+[stream] blk=18 tok=44 t=15.4s
+[stream] blk=19 tok=47 t=15.9s
+[stream] blk=20 tok=51 t=16.4s
+[stream] blk=21 tok=55 t=17.0s
+[stream] blk=22 tok=58 t=17.7s
+[stream] blk=23 tok=60 t=18.1s
+[stream] blk=24 tok=62 t=18.5s
+[stream] blk=25 tok=64 t=19.0s
+[stream] blk=26 tok=68 t=19.4s
+[stream] blk=27 tok=71 t=19.8s
+[stream] blk=28 tok=73 t=20.4s
+[stream] blk=29 tok=77 t=20.9s
+[stream] blk=30 tok=81 t=21.2s
+[stream] blk=31 tok=83 t=21.6s
+[stream] blk=32 tok=85 t=22.0s
+[stream] blk=33 tok=88 t=22.6s
+[stream] blk=34 tok=92 t=23.1s
+[stream] blk=35 tok=96 t=23.5s
+[stream] blk=36 tok=98 t=23.8s
+[stream] blk=37 tok=100 t=24.2s
+[stream] blk=38 tok=102 t=24.5s
+[stream] blk=39 tok=104 t=25.2s
+[stream] blk=40 tok=106 t=25.9s
+[stream] blk=41 tok=109 t=26.3s
+[stream] blk=42 tok=112 t=27.0s
+[stream] blk=43 tok=114 t=27.6s
+[stream] blk=44 tok=116 t=28.1s
+[stream] blk=45 tok=119 t=28.7s
+[stream] blk=46 tok=121 t=29.1s
+[stream] blk=47 tok=124 t=29.5s
+[stream] blk=48 tok=126 t=30.1s
+[stream] blk=49 tok=128 t=30.5s
+[stream] blk=50 tok=131 t=30.9s
+[stream] blk=51 tok=133 t=31.3s
+[stream] blk=52 tok=135 t=31.7s
+[stream] blk=53 tok=137 t=32.2s
+[stream] blk=54 tok=139 t=32.6s
+[stream] blk=55 tok=142 t=33.0s
+[stream] blk=56 tok=144 t=33.5s
+[stream] blk=57 tok=147 t=33.9s
+[stream] blk=58 tok=150 t=34.3s
+[stream] blk=59 tok=153 t=34.7s
+[stream] blk=60 tok=155 t=35.0s
+[stream] blk=61 tok=158 t=35.4s
+[stream] blk=62 tok=160 t=35.7s
+[stream] blk=63 tok=164 t=36.1s
+[stream] blk=64 tok=168 t=36.7s
+[stream] blk=65 tok=172 t=37.2s
+[stream] blk=66 tok=176 t=37.6s
+[stream] blk=67 tok=180 t=38.0s
+[stream] blk=68 tok=184 t=38.5s
+[stream] blk=69 tok=188 t=39.0s
+[stream] blk=70 tok=192 t=39.4s
+[stream] blk=71 tok=196 t=39.8s
+[stream] blk=72 tok=200 t=40.4s
+[chat] USER '根据pow的机制，给出完整的c代码实现'
+[chat] GEMMA-4 '在计算机科学中，实现 `pow(base, exp)` 函数通常有两种主要的机制：**快速幂算法（Binary Exponentiation）** 和 **对数/指数转换法（Logarithmic/Exponential method）**。\n\n1.  **快速幂算法**：适用于整数指数，时间复杂度 $O(\\log n)$，精度极高。\n2.  **对数法 ($e^{exp \\cdot \\ln(ba' (blocks=72, accept_len=1.958, f_theta_ran=True layers=[0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28], 5.98 tok/s, kv=50.9MB)
+[chat] wrote transcript -> results/research/chat_stream_probe_2815.json
