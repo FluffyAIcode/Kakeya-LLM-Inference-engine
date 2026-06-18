@@ -773,19 +773,13 @@ PRESETS: Dict[str, Preset] = {
         ),
         Preset(
             name="mlx-kakeya-codegen-degen-probe",
-            description="DEBUG: full f_θ fused engine on a LONG single-turn prompt "
-                        "(~2k-char PoW explanation + a 'write C code' request, from "
-                        "the committed fixture pow_codegen_longprompt.txt) so the "
-                        "native RotatingKVCache ring is ALREADY WRAPPED at prefill "
-                        "(would_wrap_block0). Short single-turn prompts were proven "
-                        "token-identical to native & coherent; this isolates the "
-                        "long-prompt-prefill regime cheaply (tiny 192-tok budget). "
-                        "KAKEYA_KDBG logs prefill state (prompt_len, any_wrapped, "
-                        "would_wrap_block0, rot/full offsets) + per-block offsets + "
-                        "turn_compare_fused_vs_native. Native-greedy control "
-                        "(--chat-native-ref): native coherent + fused garbled ⇒ "
-                        "long-prompt prefill corrupts logits (engine bug); both "
-                        "degenerate ⇒ bounded-greedy pathology the engine must guard.",
+            description="Regression probe (guard DISABLED): full f_θ fused engine "
+                        "on the multi-turn 'explain PoW || write PoW in C' chat "
+                        "that originally degenerated, with --fused-no-loop-guard so "
+                        "any greedy markdown-marker collapse is observable. Pairs "
+                        "with mlx-kakeya-codegen-guard-validate (guard ENABLED) to "
+                        "show the guard is what keeps the answer clean. On current "
+                        "code (post wrap-fix) both turns stay coherent.",
             command_templates=(
                 (
                     "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
@@ -808,12 +802,13 @@ PRESETS: Dict[str, Preset] = {
         Preset(
             name="mlx-kakeya-codegen-guard-validate",
             description="Validate the runaway-loop guard end-to-end: full f_θ fused "
-                        "engine on the same long code prompt (pow_codegen_longprompt"
-                        ".txt) with the guard ENABLED (default). The fused answer "
-                        "must NOT collapse into a marker wall — the guard stops the "
-                        "runaway (stopped_on_runaway) leaving a clean tail — while "
-                        "the native-greedy control (no guard) degenerates, proving "
-                        "the guard is what saves the engine from greedy pathology.",
+                        "engine on the multi-turn 'explain PoW || write PoW in C' "
+                        "chat with the guard ENABLED (production default). The "
+                        "answer must stay coherent and never collapse into a marker "
+                        "wall — if a runaway starts, the guard stops it "
+                        "(stopped_on_runaway) leaving a clean tail. Confirmed "
+                        "coherent on current code; byte-identical to the guard-off "
+                        "probe (the guard is inert on healthy output).",
             command_templates=(
                 (
                     "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
