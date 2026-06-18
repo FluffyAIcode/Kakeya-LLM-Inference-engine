@@ -115,6 +115,21 @@ PRESETS: Dict[str, Preset] = {
             timeout_minutes=10,
         ),
         Preset(
+            name="omlx-env-probe",
+            description="READ-ONLY: detect whether oMLX (jundot/omlx) is installed "
+                        "and headlessly launchable on the runner (CLI on PATH, app "
+                        "bundle, brew/pip provenance) and capture its --help / "
+                        "serve|launch CLI — the prerequisite for benchmarking oMLX "
+                        "continuous-batching parallel inference on Gemma-4 (the case "
+                        "vllm-mlx could not fix). Starts no server; changes nothing.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/omlx_env_probe.py",
+                ),
+            ),
+            timeout_minutes=10,
+        ),
+        Preset(
             name="mlx-upgrade",
             description="Upgrade mlx + mlx-lm to the latest release on the Mac "
                         "runner, then re-probe the batch>1 L=1 quantized-decode "

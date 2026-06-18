@@ -88,6 +88,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-multitenant-pressure",
         "mlx-upgrade",
         "mlx-upstream-batch-probe",
+        "omlx-env-probe",
         "pytest-path",
     ]
 
