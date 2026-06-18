@@ -1,11 +1,9 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "mlx-kakeya-chat-stream-probe",
   "params": {
-    "n_samples": "5",
-    "max_new_tokens": "64",
-    "block_size": "4"
+    "max_new_tokens": "200"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781780824-1f2f01",
   "commands": [
     {
       "argv": [
@@ -18,24 +16,28 @@
         "--f-theta-dir",
         "results/research/f_theta_v5_s5_sliding",
         "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
-        "--n-samples",
-        "5",
-        "--max-new-tokens",
+        "--fused-specdecode",
+        "--force-f-theta",
+        "--sink-size",
+        "4",
+        "--window-size",
         "64",
         "--block-size",
         "4",
-        "--prefill-chunk-size",
-        "512",
+        "--max-new-tokens",
+        "200",
+        "--ignore-turn-stop",
+        "--chat",
+        "--chat-stream-stdout",
+        "--chat-scripted",
+        "\u6839\u636epow\u7684\u673a\u5236\uff0c\u7ed9\u51fa\u5b8c\u6574\u7684c\u4ee3\u7801\u5b9e\u73b0",
         "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "results/research/chat_stream_probe_2815.json"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 125.2,
+      "log": ".mac-bridge/logs/mlx-kakeya-chat-stream-probe-0.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }
