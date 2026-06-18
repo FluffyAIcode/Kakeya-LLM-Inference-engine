@@ -1,11 +1,9 @@
 {
-  "preset": "k3-step1-incremental",
+  "preset": "mlx-kakeya-codegen-guard-validate",
   "params": {
-    "n_samples": "5",
-    "max_new_tokens": "64",
-    "block_size": "4"
+    "max_new_tokens": "900"
   },
-  "nonce": "1781268308-dc400e",
+  "nonce": "1781762348-4f8c99",
   "commands": [
     {
       "argv": [
@@ -18,24 +16,27 @@
         "--f-theta-dir",
         "results/research/f_theta_v5_s5_sliding",
         "--s5-exact-full-attn",
-        "--incremental",
-        "--ignore-turn-stop",
-        "--n-samples",
-        "5",
-        "--max-new-tokens",
+        "--fused-specdecode",
+        "--force-f-theta",
+        "--sink-size",
+        "4",
+        "--window-size",
         "64",
         "--block-size",
         "4",
-        "--prefill-chunk-size",
-        "512",
+        "--max-new-tokens",
+        "900",
+        "--ignore-turn-stop",
+        "--chat",
+        "--chat-scripted",
+        "\u8bf7\u8be6\u7ec6\u89e3\u91caPOW\u7684\u5de5\u4f5c\u539f\u7406||\u5b9e\u73b0\u4e00\u4e2aPoW\u7684\u4ee3\u7801\uff0c\u7528c\u8bed\u8a00\u5b8c\u6210",
         "--output",
-        "results/research/k3_mac_bridge_k3_step1_incremental.json"
+        "results/research/codegen_guard_validate_2815.json"
       ],
       "exit_code": 0,
-      "seconds": 370.5,
-      "log": ".mac-bridge/logs/k3-step1-incremental-0.log"
+      "seconds": 554.2,
+      "log": ".mac-bridge/logs/mlx-kakeya-codegen-guard-validate-0.log"
     }
   ],
-  "evidence_gate_exit_code": 0,
   "exit_code": 0
 }
