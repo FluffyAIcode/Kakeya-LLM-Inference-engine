@@ -86,6 +86,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-kakeya-degen-probe",
         "mlx-kakeya-fused-chat-ftheta",
         "mlx-kakeya-fused-chat-smoke",
+        "mlx-kakeya-launcher-full",
         "mlx-kakeya-launcher-smoke",
         "mlx-multitenant-pressure",
         "mlx-upgrade",
@@ -108,7 +109,7 @@ def test_harness_presets_validate_reports_others_do_not():
         "k3-step2-fused-allmlx",
         # §4 liveness gate runs on-device for the fused-chat presets too:
         "mlx-kakeya-fused-chat-smoke", "mlx-kakeya-fused-chat-ftheta",
-        "mlx-kakeya-launcher-smoke",
+        "mlx-kakeya-launcher-smoke", "mlx-kakeya-launcher-full",
     }
 
 
@@ -166,6 +167,20 @@ def test_mlx_kakeya_launcher_smoke_preset_invokes_launcher():
     assert "--fast" in argv
     assert "--chat-scripted" in argv
     assert argv[argv.index("--max-new-tokens") + 1] == "64"
+
+
+def test_mlx_kakeya_launcher_full_preset_runs_full_mode_past_wrap():
+    request = parse_manifest(_manifest(
+        preset="mlx-kakeya-launcher-full", params={"max_new_tokens": "1300"}))
+    (argv,) = build_commands(request, {})
+    assert argv[0] == "bash"
+    assert argv[1].endswith("run_kakeya_mac.sh")
+    # FULL mode: NO --fast (f_θ verifier+proposer+f_θ path).
+    assert "--fast" not in argv
+    assert "--chat-scripted" in argv
+    assert "--ignore-turn-stop" in argv
+    # budget crosses the ~1024 native-cache ring wrap.
+    assert int(argv[argv.index("--max-new-tokens") + 1]) > 1024
 
 
 def test_mlx_kakeya_fused_chat_ftheta_preset_runs_f_theta_path():
