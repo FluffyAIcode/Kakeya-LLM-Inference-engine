@@ -788,7 +788,6 @@ PRESETS: Dict[str, Preset] = {
                         "degenerate ⇒ bounded-greedy pathology the engine must guard.",
             command_templates=(
                 (
-                    "env", "KAKEYA_KDBG=1",
                     "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
                     "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
                     "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
@@ -804,6 +803,34 @@ PRESETS: Dict[str, Preset] = {
             ),
             timeout_minutes=90,
             params={"max_new_tokens": ("int:max_new_tokens", "192")},
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-kakeya-codegen-guard-validate",
+            description="Validate the runaway-loop guard end-to-end: full f_θ fused "
+                        "engine on the same long code prompt (pow_codegen_longprompt"
+                        ".txt) with the guard ENABLED (default). The fused answer "
+                        "must NOT collapse into a marker wall — the guard stops the "
+                        "runaway (stopped_on_runaway) leaving a clean tail — while "
+                        "the native-greedy control (no guard) degenerates, proving "
+                        "the guard is what saves the engine from greedy pathology.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat", "--chat-native-ref",
+                    "--chat-scripted-file",
+                    "scripts/research/pow_codegen_longprompt.txt",
+                    "--output", "results/research/codegen_guard_validate_2815.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "256")},
             validate_reports=False,
         ),
         Preset(
