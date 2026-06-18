@@ -1,0 +1,18 @@
+{
+  "preset": "mlx-env-probe",
+  "params": {},
+  "nonce": "1781757418-cbfc4f",
+  "commands": [
+    {
+      "argv": [
+        "python3",
+        "-c",
+        "from inference_engine.backends.mlx.env import probe_environment; print(probe_environment().render())"
+      ],
+      "exit_code": 0,
+      "seconds": 0.1,
+      "log": ".mac-bridge/logs/mlx-env-probe-0.log"
+    }
+  ],
+  "exit_code": 0
+}
