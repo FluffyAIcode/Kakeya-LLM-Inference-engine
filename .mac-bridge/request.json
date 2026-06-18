@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-env-probe",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1781765523-e57140"
+}
