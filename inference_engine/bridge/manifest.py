@@ -750,6 +750,32 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=True,  # §4 liveness gate: asserts f_theta_ran on-device
         ),
         Preset(
+            name="mlx-kakeya-chat-stream-probe",
+            description="Reproduce + validate the 'CLI looks frozen on a code "
+                        "prompt' report: full f_θ chat on the user's exact prompt "
+                        "(根据pow的机制，给出完整的c代码实现). With token streaming the log "
+                        "shows incremental '[stream] blk=.. t=..s' lines as tokens "
+                        "commit (proving the engine is generating, not deadlocked) "
+                        "and the answer text builds up over time rather than after "
+                        "a long silence.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_integrated_niah_eval_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--s5-exact-full-attn", "--fused-specdecode", "--force-f-theta",
+                    "--sink-size", "4", "--window-size", "64", "--block-size", "4",
+                    "--max-new-tokens", "{max_new_tokens}", "--ignore-turn-stop",
+                    "--chat", "--chat-scripted", "根据pow的机制，给出完整的c代码实现",
+                    "--output", "results/research/chat_stream_probe_2815.json",
+                ),
+            ),
+            timeout_minutes=90,
+            params={"max_new_tokens": ("int:max_new_tokens", "200")},
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-kakeya-launcher-smoke",
             description="Verify the one-command local launcher "
                         "scripts/run_kakeya_mac.sh runs the engine end-to-end on "

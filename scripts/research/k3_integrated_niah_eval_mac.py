@@ -769,7 +769,7 @@ def main() -> int:
                         history, add_generation_prompt=True)
                 return list(cids.tolist() if hasattr(cids, "tolist") else cids)
 
-            def _gen_turn(pid: List[int]) -> Dict[str, Any]:
+            def _gen_turn(pid: List[int], on_commit=None) -> Dict[str, Any]:
                 # Opt-in A/B control (--chat-native-ref): a plain NATIVE greedy
                 # AR decode of the SAME prompt for --max-new-tokens. Captured as
                 # res["native_ref_text"] so the fused answer can be compared
@@ -815,20 +815,22 @@ def main() -> int:
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                        eos_ids=chat_eos, single_fused=args.single_fused)
+                        eos_ids=chat_eos, single_fused=args.single_fused,
+                        on_commit=on_commit)
                 elif mlx_drafter is not None:
                     res = fused_specdecode_generate_mlx(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
-                        eos_ids=chat_eos)
+                        eos_ids=chat_eos, on_commit=on_commit)
                 else:
                     res = fused_specdecode_generate(
                         adapter, active_drafter, aux_prompt=aux_prompt,
                         embed_fn=embed_fn, lm_head_fn=lm_head_fn,
                         gen_tokens=args.max_new_tokens, block_size=args.block_size,
                         eos_ids=chat_eos, argmax_fn=argmax_fn, arange_fn=arange_fn,
-                        cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False)
+                        cat_aux_fn=cat_aux_fn, allow_greedy_fallback=False,
+                        on_commit=on_commit)
                 res["decode_s"] = round(time.perf_counter() - t0, 3)
                 res["f_theta_ran"] = f_theta_ran
                 res["f_theta_layers"] = sorted(rk.keys()) if rk else []
@@ -853,6 +855,32 @@ def main() -> int:
                     sum(int(getattr(c, "nbytes", 0)) for c in (adapter._cache or [])))
                 return res
 
+            def _make_stream_cb(to_stdout: bool):
+                """on_commit callback: incrementally decode the committed tokens
+                and (interactive) print the new delta to stdout so the user sees
+                the answer build LIVE instead of waiting for the whole generation.
+                Always logs a per-block timing line to stderr (proves streaming /
+                rules out a hang)."""
+                st = {"chars": 0, "blk": 0, "t0": time.perf_counter()}
+
+                def cb(toks: List[int]) -> None:
+                    st["blk"] += 1
+                    try:
+                        txt = tokenizer.decode(toks, skip_special_tokens=True)
+                    except TypeError:
+                        txt = tokenizer.decode(toks)
+                    if to_stdout:
+                        delta = txt[st["chars"]:]
+                        if delta:
+                            sys.stdout.write(delta)
+                            sys.stdout.flush()
+                            st["chars"] = len(txt)
+                    sys.stderr.write(
+                        f"[stream] blk={st['blk']} tok={len(toks)} "
+                        f"t={time.perf_counter() - st['t0']:.1f}s\n")
+                    sys.stderr.flush()
+                return cb
+
             print(f"[chat] FULL fused engine: verifier={args.verifier_path} "
                   f"drafter={args.drafter_id} f_theta={args.f_theta_dir} "
                   f"S5 sink={args.sink_size} window={args.window_size} "
@@ -865,7 +893,8 @@ def main() -> int:
                 transcript = []
                 for u in turns:
                     history.append({"role": "user", "content": u})
-                    res = _gen_turn(_encode_chat(history))
+                    res = _gen_turn(_encode_chat(history),
+                                    on_commit=_make_stream_cb(to_stdout=False))
                     history.append({"role": "assistant", "content": res["text"]})
                     tps = (res["decode_tokens"] / res["decode_s"]
                            if res["decode_s"] > 0 else 0.0)
@@ -926,11 +955,17 @@ def main() -> int:
                 if not u:
                     break
                 history.append({"role": "user", "content": u})
-                res = _gen_turn(_encode_chat(history))
+                # Stream the answer LIVE so the terminal shows progress as tokens
+                # commit (the f_θ path is slow; without this the CLI looks frozen
+                # for minutes on long answers like code generation).
+                sys.stdout.write("gemma-4> ")
+                sys.stdout.flush()
+                res = _gen_turn(_encode_chat(history),
+                                on_commit=_make_stream_cb(to_stdout=True))
                 history.append({"role": "assistant", "content": res["text"]})
                 tps = (res["decode_tokens"] / res["decode_s"]
                        if res["decode_s"] > 0 else 0.0)
-                sys.stdout.write("gemma-4> " + res["text"] + "\n")
+                sys.stdout.write("\n")
                 sys.stdout.flush()
                 print(f"[chat] blocks={res['blocks']} accept_len="
                       f"{res['mean_accept_len']} {round(tps,2)} tok/s "

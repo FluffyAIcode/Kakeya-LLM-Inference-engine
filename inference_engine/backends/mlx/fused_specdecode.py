@@ -363,6 +363,18 @@ def make_full_kv_prompt_cache(mlx_model: Any) -> List[Any]:
     return [KVCache() for _ in range(n)]
 
 
+def _emit(on_commit: Optional[Callable[[List[int]], None]],
+          generated: List[int]) -> None:
+    """Invoke a streaming callback with the tokens committed so far, swallowing
+    any error so token streaming can never break generation."""
+    if on_commit is None:
+        return
+    try:
+        on_commit(list(generated))
+    except Exception:  # pragma: no cover - streaming must never break decode
+        pass
+
+
 def fused_specdecode_generate_mlx_trim(
     adapter: "MLXRestoredIncrementalVerifier",
     drafter: Any,
@@ -374,6 +386,7 @@ def fused_specdecode_generate_mlx_trim(
     block_size: int,
     eos_ids: Sequence[int] = (),
     single_fused: bool = False,
+    on_commit: Optional[Callable[[List[int]], None]] = None,
 ) -> Dict[str, Any]:
     """CUDA-parity fused spec decode: KEEP accepted K/V, TRIM only the rejected
     tail (no rollback, no carry re-forward). Requires the adapter to be
@@ -440,6 +453,7 @@ def fused_specdecode_generate_mlx_trim(
             commit = check[:accepted]
             generated += commit
             accepts.append(accepted)
+            _emit(on_commit, generated)
             adapter.next_token_logits = next_row
             aux_rows = adapter._last_aux_mx
             # KEEP accepted (positions base..base+accepted-1), TRIM rejected.
@@ -490,6 +504,7 @@ def fused_specdecode_generate_mlx(
     gen_tokens: int,
     block_size: int,
     eos_ids: Sequence[int] = (),
+    on_commit: Optional[Callable[[List[int]], None]] = None,
 ) -> Dict[str, Any]:
     """All-MLX fused spec decode with ONE host sync per block.
 
@@ -587,6 +602,7 @@ def fused_specdecode_generate_mlx(
             commit = check[:accepted]
             generated += commit
             accepts.append(accepted)
+            _emit(on_commit, generated)
             tail_logits = next_row
             adapter.next_token_logits = next_row
             aux_rows = adapter._last_aux_mx   # rows for positions base_fwd..base_fwd+k+L
@@ -672,6 +688,7 @@ def fused_specdecode_generate(
     arange_fn: Callable[[int, int], Any],
     cat_aux_fn: Callable[[Sequence[Any]], Any],
     allow_greedy_fallback: bool = True,
+    on_commit: Optional[Callable[[List[int]], None]] = None,
 ) -> Dict[str, Any]:
     """Run the fused engine. ``adapter`` must already be prefilled. Per block:
     draft from the cached drafter context (B), verify+capture-aux incrementally
@@ -772,6 +789,7 @@ def fused_specdecode_generate(
                 commit = candidate[:accepted] + [correction]
             generated += commit
             accepts.append(accepted)
+            _emit(on_commit, generated)
             if any(t in eos for t in commit):
                 break
             if (allow_greedy_fallback and len(accepts) >= 2
@@ -789,6 +807,7 @@ def fused_specdecode_generate(
                 tok = int(argmax_fn(adapter.next_token_logits))
                 adapter.append_token(tok)
                 generated.append(tok)
+                _emit(on_commit, generated)
                 if tok in eos:
                     break
             timing["fallback_greedy_s"] += time.perf_counter() - t_fb
