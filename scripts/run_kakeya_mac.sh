@@ -80,7 +80,11 @@ log "drafter : $DRAFTER"
 log "f_theta : $FTHETA"
 log "params  : sink=$SINK window=$WINDOW block=$BLOCK max_new=$MAX_NEW"
 
-cmd=( python3 scripts/research/k3_integrated_niah_eval_mac.py "${args[@]}" "${EXTRA[@]}" )
+# NOTE: ``${EXTRA[@]+"${EXTRA[@]}"}`` (not a bare ``"${EXTRA[@]}"``) — under
+# ``set -u`` macOS's default bash 3.2 treats expanding an EMPTY array as an
+# "unbound variable" error; the ``+`` form expands to nothing when EXTRA is
+# empty and to the quoted elements otherwise.
+cmd=( python3 scripts/research/k3_integrated_niah_eval_mac.py "${args[@]}" ${EXTRA[@]+"${EXTRA[@]}"} )
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "PYTHONPATH=.:sdks/python ${cmd[*]}"

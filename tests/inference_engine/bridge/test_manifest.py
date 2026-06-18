@@ -85,6 +85,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-kakeya-degen-probe",
         "mlx-kakeya-fused-chat-ftheta",
         "mlx-kakeya-fused-chat-smoke",
+        "mlx-kakeya-launcher-dryrun-bash32",
         "mlx-kakeya-launcher-smoke",
         "mlx-multitenant-pressure",
         "mlx-upgrade",
