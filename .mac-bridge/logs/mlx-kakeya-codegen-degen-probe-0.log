@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/k3_integrated_niah_eval_mac.py", line 1487, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/k3_integrated_niah_eval_mac.py", line 215, in main
+    import mlx_lm  # type: ignore
+    ^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'mlx_lm'
