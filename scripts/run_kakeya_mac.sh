@@ -64,10 +64,33 @@ done
 
 log() { echo "[run-kakeya-mac] $*" >&2; }
 
-# Pinned interpreter (Layer B): prefer KAKEYA_MAC_PYTHON (the venv python with
-# mlx_lm/torch/transformers) over a bare python3 that a host reboot may have
-# repointed. See docs/skills/pin-selfhosted-runner-python-env-skill.md.
-PYBIN="${KAKEYA_MAC_PYTHON:-python3}"
+# Pinned interpreter (Layer B): AUTO-DISCOVER the venv python that actually has
+# mlx_lm (a bare `python3` is often the system/pyenv one without it, especially
+# after a reboot or in a fresh shell). Try KAKEYA_MAC_PYTHON first, then common
+# venv locations, then PATH pythons; pick the first that can `import mlx_lm`.
+# Set KAKEYA_MAC_PYTHON to override. See
+# docs/skills/pin-selfhosted-runner-python-env-skill.md.
+_can_import_mlx_lm() { [ -n "${1:-}" ] && "$1" -c 'import mlx_lm' >/dev/null 2>&1; }
+_resolve_pybin() {
+  local c
+  for c in \
+      "${KAKEYA_MAC_PYTHON:-}" \
+      "$repo_root/.venv-mac/bin/python3.13" \
+      "$repo_root/.venv-mac/bin/python" \
+      "$repo_root/.venv/bin/python" \
+      "$HOME/kakeya-venv/bin/python" \
+      "$HOME/.venv/bin/python" \
+      "$(command -v python3.13 2>/dev/null || true)" \
+      "$(command -v python3 2>/dev/null || true)"; do
+    if _can_import_mlx_lm "$c"; then printf '%s' "$c"; return 0; fi
+  done
+  # Nothing with mlx_lm — fall back to a sensible value so dry-run/preflight can
+  # still report a clear error.
+  printf '%s' "${KAKEYA_MAC_PYTHON:-python3}"
+  return 1
+}
+PYBIN="$(_resolve_pybin)" || true
+log "python  : $PYBIN$([ -n "${KAKEYA_MAC_PYTHON:-}" ] && echo ' (KAKEYA_MAC_PYTHON)')"
 
 # ---- argv for the full-engine harness chat ----
 args=(
@@ -107,9 +130,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 # ---- preflight (Apple Silicon + MLX + model) ----
-command -v "$PYBIN" >/dev/null 2>&1 || { log "interpreter not found: $PYBIN (set KAKEYA_MAC_PYTHON)"; exit 1; }
 "$PYBIN" -c "import mlx.core, mlx_lm" 2>/dev/null \
-  || { log "mlx/mlx_lm not importable by $PYBIN — Apple Silicon + a venv with 'mlx mlx-lm'; set KAKEYA_MAC_PYTHON. See docs/skills/pin-selfhosted-runner-python-env-skill.md"; exit 2; }
+  || { log "no Python with mlx_lm found (auto-searched KAKEYA_MAC_PYTHON, "\
+"$repo_root/.venv-mac, ~/kakeya-venv, ~/.venv, python3.13, python3; tried '$PYBIN'). "\
+"Activate your MLX venv or set KAKEYA_MAC_PYTHON=/path/to/venv/bin/python "\
+"(needs 'mlx mlx-lm torch transformers'). See docs/skills/pin-selfhosted-runner-python-env-skill.md"; exit 2; }
 [[ -d "$VERIFIER" ]] \
   || { log "verifier model dir not found: $VERIFIER (set KAKEYA_MAC_VERIFIER_PATH)"; exit 3; }
 if [[ "$FAST" != "1" && ! -e "$FTHETA" ]]; then
