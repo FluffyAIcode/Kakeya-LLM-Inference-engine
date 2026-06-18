@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-kakeya-codegen-degen-probe",
+  "params": {
+    "max_new_tokens": "192"
+  },
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1781756645-afb59c"
+}
