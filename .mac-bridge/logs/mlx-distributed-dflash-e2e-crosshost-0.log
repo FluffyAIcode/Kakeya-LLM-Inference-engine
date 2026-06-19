@@ -1,0 +1,16 @@
+[e2e] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[e2e] REMOTE proposer at localhost:50070 (aux_layer_ids=(2, 7, 12, 18, 23, 28))
+[e2e] prompt=28 tok, max_new=64, block=4
+[e2e] greedy baseline (block=1): 64 tok in 61.94s (1.03 tok/s)
+[e2e] distributed (block=4): 64 tok in 17.29s (3.70 tok/s) blocks=17 acceptance=0.863 (44/51)
+[e2e] RTT/payload per RPC: restore: n=1 mean=3189.20ms p50=3189.20ms bytes=11.47MB | seed_context: n=1 mean=411.62ms p50=411.62ms bytes=1.89MB | draft_block: n=17 mean=322.73ms p50=268.21ms | extend_context: n=17 mean=338.76ms p50=316.32ms bytes=4.33MB
+[e2e] output text:
+<|channel>thought
+*   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+    *   Fact: The capital of France is Paris.
+
+    *   Option 1: The capital of France is Paris.
+    *   Option 2:
+[e2e] PASS byte-identical-to-greedy (64 tok, acceptance=0.863, baseline=1.03 tok/s, dist=3.70 tok/s)
