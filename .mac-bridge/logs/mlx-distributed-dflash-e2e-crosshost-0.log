@@ -1,0 +1,46 @@
+[e2e] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[e2e] REMOTE proposer at localhost:50070 (aux_layer_ids=(2, 7, 12, 18, 23, 28))
+[e2e] prompt=28 tok, max_new=48, block=4
+Traceback (most recent call last):
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/inference_engine/distributed/dflash_service.py", line 224, in _call
+    return method(request, timeout=self.timeout_s)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/lib/python3.13/site-packages/grpc/_channel.py", line 1159, in __call__
+    return _end_unary_response_blocking(state, call, False, None)
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/lib/python3.13/site-packages/grpc/_channel.py", line 990, in _end_unary_response_blocking
+    raise _InactiveRpcError(state)  # pytype: disable=not-instantiable
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50070: Failed to connect to remote host: Connection refused"
+	debug_error_string = "UNAVAILABLE:failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50070: Failed to connect to remote host: Connection refused"
+>
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/k3_distributed_dflash_e2e_mac.py", line 233, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/k3_distributed_dflash_e2e_mac.py", line 178, in main
+    base_res, base_s, _ = run(1, "base")
+                          ~~~^^^^^^^^^^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/k3_distributed_dflash_e2e_mac.py", line 173, in run
+    res = dec.generate(prompt_ids, args.max_new_tokens)
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/inference_engine/distributed/fused_decode.py", line 125, in generate
+    restore = self.remote.restore(
+        prompt_ids, sink=self.sink, window=self.window,
+        s5_exact_full_attn=self.s5_exact_full_attn,
+    )
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/research/k3_distributed_dflash_e2e_mac.py", line 43, in restore
+    r = self.inner.restore(prompt_ids, **kw)
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/inference_engine/distributed/dflash_service.py", line 235, in restore
+    resp = self._call("Restore", self._stub.Restore, distributed_pb2.RestoreRequest(
+        session_id=self.session_id, prompt_ids=list(prompt_ids),
+        sink=sink, window=window, s5_exact_full_attn=s5_exact_full_attn,
+        model_id=self.model_id,
+    ))
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/inference_engine/distributed/dflash_service.py", line 226, in _call
+    raise DFlashProposerError(
+    ...<2 lines>...
+    ) from exc
+inference_engine.distributed.dflash_service.DFlashProposerError: Restore to localhost:50070 failed: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50070: Failed to connect to remote host: Connection refused
