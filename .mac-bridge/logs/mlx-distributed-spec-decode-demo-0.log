@@ -1,0 +1,43 @@
+[dist-demo] python=/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3.13 verifier=Qwen/Qwen3-0.6B max_new=48
+2026-06-19 18:36:33,023 kakeya.demo.distributed INFO verifier node node-a serving CapabilityService on 127.0.0.1:50060
+2026-06-19 18:36:33,028 kakeya.demo.distributed INFO loading verifier Qwen/Qwen3-0.6B (cpu)
+[demo] fleet view after one gossip round (2 node(s)):
+  - node-a @ 127.0.0.1:50060 models=[('Qwen/Qwen3-0.6B', 'VERIFIER')]
+  - node-b @ 127.0.0.1:50061 models=[('ngram', 'PROPOSER')]
+[demo] placement: verifier=Qwen/Qwen3-0.6B@node-a(127.0.0.1:50060) proposer=ngram@node-b(127.0.0.1:50061) colocated=False
+Traceback (most recent call last):
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/demo_distributed_spec_decode.py", line 259, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/demo_distributed_spec_decode.py", line 255, in main
+    return asyncio.run(_run_verifier_node(args))
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/demo_distributed_spec_decode.py", line 185, in _run_verifier_node
+    baseline = _greedy_baseline(verifier, prompt_ids, args.max_new_tokens)
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/scripts/demo_distributed_spec_decode.py", line 115, in _greedy_baseline
+    verifier.prefill(prompt_ids)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/lib/python3.13/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/fluffy314/actions-runner/_work/Kakeya-LLM-Inference-engine/Kakeya-LLM-Inference-engine/kv_cache_proposer/verifier.py", line 139, in prefill
+    input_ids = torch.tensor(prompt_ids, dtype=torch.long, device=device).unsqueeze(0)
+                ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'str' object cannot be interpreted as an integer
+Exception ignored in: <function Server.__del__ at 0x101f6e020>
+Traceback (most recent call last):
+  File "/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/lib/python3.13/site-packages/grpc/aio/_server.py", line 204, in __del__
+  File "src/python/grpcio/grpc/_cython/_cygrpc/aio/common.pyx.pxi", line 121, in grpc._cython.cygrpc.schedule_coro_threadsafe
+  File "src/python/grpcio/grpc/_cython/_cygrpc/aio/common.pyx.pxi", line 113, in grpc._cython.cygrpc.schedule_coro_threadsafe
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/base_events.py", line 466, in create_task
+  File "/Users/fluffy314/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/base_events.py", line 556, in _check_closed
+RuntimeError: Event loop is closed
+<sys>:0: RuntimeWarning: coroutine 'AioServer.shutdown' was never awaited
