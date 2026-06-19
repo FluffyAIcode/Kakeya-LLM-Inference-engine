@@ -155,8 +155,10 @@ class DistributedFusedDecoder:
             self.remote.extend_context(commit.aux, commit.positions)
 
             # Respect max_new_tokens even if a block committed extra (correction).
+            # Defensive: L=min(block_size, remaining) caps commit at `remaining`,
+            # so this guard only fires for a misbehaving verifier.
             for tok in commit.tokens:
-                if len(result.output_token_ids) >= max_new_tokens:
+                if len(result.output_token_ids) >= max_new_tokens:  # pragma: no cover - defensive
                     break
                 result.output_token_ids.append(tok)
                 if tok in self.eos_ids:

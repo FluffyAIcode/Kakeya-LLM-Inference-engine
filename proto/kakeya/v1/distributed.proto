@@ -260,7 +260,7 @@ service DFlashProposerService {
   rpc ExtendContext(ExtendContextRequest) returns (ExtendContextResponse);
 
   // CloseSession releases host-B per-session state. Idempotent.
-  rpc CloseSession(CloseDFlashSessionRequest) returns (CloseDFlashSessionResponse);
+  rpc CloseSession(DFlashProposerServiceCloseSessionRequest) returns (DFlashProposerServiceCloseSessionResponse);
 }
 
 message RestoreRequest {
@@ -315,6 +315,6 @@ message ExtendContextRequest {
 
 message ExtendContextResponse { uint32 context_len = 1; }
 
-message CloseDFlashSessionRequest { string session_id = 1; }
+message DFlashProposerServiceCloseSessionRequest { string session_id = 1; }
 
-message CloseDFlashSessionResponse {}
+message DFlashProposerServiceCloseSessionResponse {}

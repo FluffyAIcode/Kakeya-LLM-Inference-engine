@@ -291,8 +291,8 @@ class DFlashProposerServiceStub:
                 _registered_method=True)
         self.CloseSession = channel.unary_unary(
                 '/kakeya.v1.DFlashProposerService/CloseSession',
-                request_serializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionRequest.SerializeToString,
-                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionResponse.FromString,
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.DFlashProposerServiceCloseSessionRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.DFlashProposerServiceCloseSessionResponse.FromString,
                 _registered_method=True)
 
 
@@ -371,8 +371,8 @@ def add_DFlashProposerServiceServicer_to_server(servicer, server):
             ),
             'CloseSession': grpc.unary_unary_rpc_method_handler(
                     servicer.CloseSession,
-                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionRequest.FromString,
-                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionResponse.SerializeToString,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.DFlashProposerServiceCloseSessionRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.DFlashProposerServiceCloseSessionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -513,8 +513,8 @@ class DFlashProposerService:
             request,
             target,
             '/kakeya.v1.DFlashProposerService/CloseSession',
-            kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionRequest.SerializeToString,
-            kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionResponse.FromString,
+            kakeya_dot_v1_dot_distributed__pb2.DFlashProposerServiceCloseSessionRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.DFlashProposerServiceCloseSessionResponse.FromString,
             options,
             channel_credentials,
             insecure,

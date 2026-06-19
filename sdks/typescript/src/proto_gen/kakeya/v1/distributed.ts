@@ -289,11 +289,11 @@ export interface ExtendContextResponse {
   contextLen: number;
 }
 
-export interface CloseDFlashSessionRequest {
+export interface DFlashProposerServiceCloseSessionRequest {
   sessionId: string;
 }
 
-export interface CloseDFlashSessionResponse {
+export interface DFlashProposerServiceCloseSessionResponse {
 }
 
 function createBaseModelCapability(): ModelCapability {
@@ -2207,22 +2207,22 @@ export const ExtendContextResponse: MessageFns<ExtendContextResponse> = {
   },
 };
 
-function createBaseCloseDFlashSessionRequest(): CloseDFlashSessionRequest {
+function createBaseDFlashProposerServiceCloseSessionRequest(): DFlashProposerServiceCloseSessionRequest {
   return { sessionId: "" };
 }
 
-export const CloseDFlashSessionRequest: MessageFns<CloseDFlashSessionRequest> = {
-  encode(message: CloseDFlashSessionRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const DFlashProposerServiceCloseSessionRequest: MessageFns<DFlashProposerServiceCloseSessionRequest> = {
+  encode(message: DFlashProposerServiceCloseSessionRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.sessionId !== "") {
       writer.uint32(10).string(message.sessionId);
     }
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): CloseDFlashSessionRequest {
+  decode(input: BinaryReader | Uint8Array, length?: number): DFlashProposerServiceCloseSessionRequest {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCloseDFlashSessionRequest();
+    const message = createBaseDFlashProposerServiceCloseSessionRequest();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -2243,7 +2243,7 @@ export const CloseDFlashSessionRequest: MessageFns<CloseDFlashSessionRequest> = 
     return message;
   },
 
-  fromJSON(object: any): CloseDFlashSessionRequest {
+  fromJSON(object: any): DFlashProposerServiceCloseSessionRequest {
     return {
       sessionId: isSet(object.sessionId)
         ? globalThis.String(object.sessionId)
@@ -2253,7 +2253,7 @@ export const CloseDFlashSessionRequest: MessageFns<CloseDFlashSessionRequest> = 
     };
   },
 
-  toJSON(message: CloseDFlashSessionRequest): unknown {
+  toJSON(message: DFlashProposerServiceCloseSessionRequest): unknown {
     const obj: any = {};
     if (message.sessionId !== "") {
       obj.sessionId = message.sessionId;
@@ -2261,29 +2261,33 @@ export const CloseDFlashSessionRequest: MessageFns<CloseDFlashSessionRequest> = 
     return obj;
   },
 
-  create<I extends Exact<DeepPartial<CloseDFlashSessionRequest>, I>>(base?: I): CloseDFlashSessionRequest {
-    return CloseDFlashSessionRequest.fromPartial(base ?? ({} as any));
+  create<I extends Exact<DeepPartial<DFlashProposerServiceCloseSessionRequest>, I>>(
+    base?: I,
+  ): DFlashProposerServiceCloseSessionRequest {
+    return DFlashProposerServiceCloseSessionRequest.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<CloseDFlashSessionRequest>, I>>(object: I): CloseDFlashSessionRequest {
-    const message = createBaseCloseDFlashSessionRequest();
+  fromPartial<I extends Exact<DeepPartial<DFlashProposerServiceCloseSessionRequest>, I>>(
+    object: I,
+  ): DFlashProposerServiceCloseSessionRequest {
+    const message = createBaseDFlashProposerServiceCloseSessionRequest();
     message.sessionId = object.sessionId ?? "";
     return message;
   },
 };
 
-function createBaseCloseDFlashSessionResponse(): CloseDFlashSessionResponse {
+function createBaseDFlashProposerServiceCloseSessionResponse(): DFlashProposerServiceCloseSessionResponse {
   return {};
 }
 
-export const CloseDFlashSessionResponse: MessageFns<CloseDFlashSessionResponse> = {
-  encode(_: CloseDFlashSessionResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const DFlashProposerServiceCloseSessionResponse: MessageFns<DFlashProposerServiceCloseSessionResponse> = {
+  encode(_: DFlashProposerServiceCloseSessionResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): CloseDFlashSessionResponse {
+  decode(input: BinaryReader | Uint8Array, length?: number): DFlashProposerServiceCloseSessionResponse {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseCloseDFlashSessionResponse();
+    const message = createBaseDFlashProposerServiceCloseSessionResponse();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -2296,20 +2300,24 @@ export const CloseDFlashSessionResponse: MessageFns<CloseDFlashSessionResponse> 
     return message;
   },
 
-  fromJSON(_: any): CloseDFlashSessionResponse {
+  fromJSON(_: any): DFlashProposerServiceCloseSessionResponse {
     return {};
   },
 
-  toJSON(_: CloseDFlashSessionResponse): unknown {
+  toJSON(_: DFlashProposerServiceCloseSessionResponse): unknown {
     const obj: any = {};
     return obj;
   },
 
-  create<I extends Exact<DeepPartial<CloseDFlashSessionResponse>, I>>(base?: I): CloseDFlashSessionResponse {
-    return CloseDFlashSessionResponse.fromPartial(base ?? ({} as any));
+  create<I extends Exact<DeepPartial<DFlashProposerServiceCloseSessionResponse>, I>>(
+    base?: I,
+  ): DFlashProposerServiceCloseSessionResponse {
+    return DFlashProposerServiceCloseSessionResponse.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<CloseDFlashSessionResponse>, I>>(_: I): CloseDFlashSessionResponse {
-    const message = createBaseCloseDFlashSessionResponse();
+  fromPartial<I extends Exact<DeepPartial<DFlashProposerServiceCloseSessionResponse>, I>>(
+    _: I,
+  ): DFlashProposerServiceCloseSessionResponse {
+    const message = createBaseDFlashProposerServiceCloseSessionResponse();
     return message;
   },
 };
@@ -2569,12 +2577,14 @@ export const DFlashProposerServiceService = {
     path: "/kakeya.v1.DFlashProposerService/CloseSession" as const,
     requestStream: false as const,
     responseStream: false as const,
-    requestSerialize: (value: CloseDFlashSessionRequest): Buffer =>
-      Buffer.from(CloseDFlashSessionRequest.encode(value).finish()),
-    requestDeserialize: (value: Buffer): CloseDFlashSessionRequest => CloseDFlashSessionRequest.decode(value),
-    responseSerialize: (value: CloseDFlashSessionResponse): Buffer =>
-      Buffer.from(CloseDFlashSessionResponse.encode(value).finish()),
-    responseDeserialize: (value: Buffer): CloseDFlashSessionResponse => CloseDFlashSessionResponse.decode(value),
+    requestSerialize: (value: DFlashProposerServiceCloseSessionRequest): Buffer =>
+      Buffer.from(DFlashProposerServiceCloseSessionRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): DFlashProposerServiceCloseSessionRequest =>
+      DFlashProposerServiceCloseSessionRequest.decode(value),
+    responseSerialize: (value: DFlashProposerServiceCloseSessionResponse): Buffer =>
+      Buffer.from(DFlashProposerServiceCloseSessionResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): DFlashProposerServiceCloseSessionResponse =>
+      DFlashProposerServiceCloseSessionResponse.decode(value),
   },
 } as const;
 
@@ -2603,7 +2613,7 @@ export interface DFlashProposerServiceServer extends UntypedServiceImplementatio
    */
   extendContext: handleUnaryCall<ExtendContextRequest, ExtendContextResponse>;
   /** CloseSession releases host-B per-session state. Idempotent. */
-  closeSession: handleUnaryCall<CloseDFlashSessionRequest, CloseDFlashSessionResponse>;
+  closeSession: handleUnaryCall<DFlashProposerServiceCloseSessionRequest, DFlashProposerServiceCloseSessionResponse>;
 }
 
 export interface DFlashProposerServiceClient extends Client {
@@ -2688,19 +2698,19 @@ export interface DFlashProposerServiceClient extends Client {
   ): ClientUnaryCall;
   /** CloseSession releases host-B per-session state. Idempotent. */
   closeSession(
-    request: CloseDFlashSessionRequest,
-    callback: (error: ServiceError | null, response: CloseDFlashSessionResponse) => void,
+    request: DFlashProposerServiceCloseSessionRequest,
+    callback: (error: ServiceError | null, response: DFlashProposerServiceCloseSessionResponse) => void,
   ): ClientUnaryCall;
   closeSession(
-    request: CloseDFlashSessionRequest,
+    request: DFlashProposerServiceCloseSessionRequest,
     metadata: Metadata,
-    callback: (error: ServiceError | null, response: CloseDFlashSessionResponse) => void,
+    callback: (error: ServiceError | null, response: DFlashProposerServiceCloseSessionResponse) => void,
   ): ClientUnaryCall;
   closeSession(
-    request: CloseDFlashSessionRequest,
+    request: DFlashProposerServiceCloseSessionRequest,
     metadata: Metadata,
     options: Partial<CallOptions>,
-    callback: (error: ServiceError | null, response: CloseDFlashSessionResponse) => void,
+    callback: (error: ServiceError | null, response: DFlashProposerServiceCloseSessionResponse) => void,
   ): ClientUnaryCall;
 }
 

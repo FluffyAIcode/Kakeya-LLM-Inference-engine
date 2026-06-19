@@ -200,12 +200,12 @@ class ExtendContextResponse(_message.Message):
     context_len: int
     def __init__(self, context_len: _Optional[int] = ...) -> None: ...
 
-class CloseDFlashSessionRequest(_message.Message):
+class DFlashProposerServiceCloseSessionRequest(_message.Message):
     __slots__ = ("session_id",)
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     def __init__(self, session_id: _Optional[str] = ...) -> None: ...
 
-class CloseDFlashSessionResponse(_message.Message):
+class DFlashProposerServiceCloseSessionResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...

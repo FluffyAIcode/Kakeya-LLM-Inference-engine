@@ -159,7 +159,7 @@ class DFlashProposerServicer(distributed_pb2_grpc.DFlashProposerServiceServicer)
 
     async def CloseSession(self, request, context):  # noqa: N802
         self._engine.close_session(request.session_id)
-        return distributed_pb2.CloseDFlashSessionResponse()
+        return distributed_pb2.DFlashProposerServiceCloseSessionResponse()
 
 
 class _grpc_errors:
@@ -285,7 +285,7 @@ class RemoteDFlashProposer:
         # channel mask the real error in the caller's `finally`.
         try:
             self._call("CloseSession", self._stub.CloseSession,
-                       distributed_pb2.CloseDFlashSessionRequest(session_id=self.session_id))
+                       distributed_pb2.DFlashProposerServiceCloseSessionRequest(session_id=self.session_id))
         except DFlashProposerError:
             pass
         finally:
