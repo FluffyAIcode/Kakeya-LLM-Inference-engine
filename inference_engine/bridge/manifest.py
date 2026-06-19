@@ -103,6 +103,25 @@ PRESETS: Dict[str, Preset] = {
     p.name: p
     for p in (
         Preset(
+            name="mlx-distributed-spec-decode-demo",
+            description="ADR 0009 distributed spec-decode, on-device: two local "
+                        "processes (n-gram ProposerService + Qwen3-0.6B verifier) "
+                        "over real gRPC sockets — capability gossip, placement, "
+                        "remote drafts + LOCAL greedy verify, asserting the output "
+                        "is byte-identical to local greedy. Validates the "
+                        "distributed engine on the Mac.",
+            command_templates=(
+                (
+                    "bash", "scripts/run_distributed_demo.sh",
+                    "--verifier-id", "Qwen/Qwen3-0.6B",
+                    "--max-new-tokens", "{max_new_tokens}",
+                ),
+            ),
+            timeout_minutes=45,
+            params={"max_new_tokens": ("int:max_new_tokens", "48")},
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-env-probe",
             description="Probe Metal/MLX + mlx.distributed availability.",
             command_templates=(
