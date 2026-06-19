@@ -85,7 +85,11 @@ jobs:
           # The runner is expected to have a long-lived venv.
           # If a per-run venv is preferred, swap to ``python3 -m venv .venv``.
           python3 -m pip install --upgrade pip
-          python3 -m pip install -e .
+          # The repo runs via PYTHONPATH (see ci.yaml) — it is NOT a pip package
+          # (no setup.py/pyproject.toml), so install runtime deps from
+          # requirements.txt rather than an editable `-e .` (which errors with
+          # "does not appear to be a Python project").
+          python3 -m pip install -r requirements.txt
           python3 -m pip install pytest pytest-asyncio pytest-timeout coverage
 
       - name: Run integration suite
