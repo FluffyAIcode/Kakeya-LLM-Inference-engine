@@ -157,8 +157,9 @@ PRESETS: Dict[str, Preset] = {
         Preset(
             name="mlx-distributed-dflash-e2e-crosshost",
             description="TRUE cross-host: gemma-4 mlx-4bit verifier on THIS Mac ↔ a "
-                        "remote torch DFlash+f_θ DFlashProposerService on a GPU "
-                        "(107.206.71.138:43032, the vast map of the H200's :6006). "
+                        "remote torch DFlash+f_θ DFlashProposerService on the H200, "
+                        "reached at localhost:6006 via an SSH -L tunnel "
+                        "(ssh -p 43350 root@107.206.71.138 -L 6006:localhost:6006). "
                         "Runs greedy (block=1) + distributed (block=N) over the wire "
                         "and asserts byte-identical, reporting real cross-host RTT.",
             command_templates=(
@@ -166,7 +167,7 @@ PRESETS: Dict[str, Preset] = {
                     "python3", "scripts/research/k3_distributed_dflash_e2e_mac.py",
                     "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
                     "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
-                    "--remote-addr", "107.206.71.138:43032",
+                    "--remote-addr", "localhost:6006",
                     "--max-new-tokens", "{max_new_tokens}",
                     "--block-size", "{block_size}",
                 ),
