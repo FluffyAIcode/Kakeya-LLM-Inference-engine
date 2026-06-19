@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-distributed-dflash-e2e-inproc",
+  "params": {
+    "max_new_tokens": "48",
+    "block_size": "4"
+  },
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1781874546-f5b0ce"
+}
