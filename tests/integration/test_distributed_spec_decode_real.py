@@ -71,9 +71,14 @@ def verifier() -> SinkWindowVerifier:
 
 @pytest.fixture(scope="module")
 def prompt_ids(verifier) -> List[int]:
+    # transformers 5.x returns a dict by default with tokenize=True; request the
+    # legacy flat list-of-ids shape so it matches on 4.x and 5.x (same convention
+    # as kv_cache_proposer.proposer.encode_chat).
     return verifier.tokenizer.apply_chat_template(
         [{"role": "user", "content": PROMPT}],
         add_generation_prompt=True,
+        tokenize=True,
+        return_dict=False,
     )
 
 

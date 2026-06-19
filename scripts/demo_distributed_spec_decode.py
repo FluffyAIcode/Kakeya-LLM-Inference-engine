@@ -174,24 +174,17 @@ async def _run_verifier_node(args: argparse.Namespace) -> int:
     # Echo-style answers are where the n-gram proposer shines; Qwen3's thinking
     # preamble is novel text the lookup cannot draft. Templates without the
     # variable ignore it harmlessly.
-    # transformers 4.x returns token ids from apply_chat_template(tokenize=True);
-    # 5.x can return a string (or a BatchEncoding) — coerce to a flat List[int]
-    # so this works across both (the Mac engine needs transformers 5.x).
-    _templated = verifier.tokenizer.apply_chat_template(
+    # transformers 5.x returns a dict by default with tokenize=True; request the
+    # legacy flat list-of-ids shape (return_dict=False) so this works on both
+    # 4.x and 5.x — same convention as kv_cache_proposer.proposer.encode_chat
+    # (the Mac engine runs transformers 5.x).
+    prompt_ids = verifier.tokenizer.apply_chat_template(
         [{"role": "user", "content": args.prompt}],
-        add_generation_prompt=True, tokenize=True,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=False,
         enable_thinking=args.enable_thinking,
     )
-    if isinstance(_templated, str):
-        prompt_ids = list(verifier.tokenizer.encode(_templated))
-    else:
-        if hasattr(_templated, "input_ids"):
-            _templated = _templated.input_ids
-        if hasattr(_templated, "tolist"):
-            _templated = _templated.tolist()
-        if _templated and isinstance(_templated[0], (list, tuple)):
-            _templated = _templated[0]
-        prompt_ids = [int(x) for x in _templated]
 
     # --- 4. Greedy baseline (same verifier, local only) --------------
     t0 = time.perf_counter()
