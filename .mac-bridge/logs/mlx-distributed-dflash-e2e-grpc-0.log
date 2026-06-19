@@ -1,0 +1,14 @@
+[e2e] loading MLX verifier /Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
+[e2e] loading drafter z-lab/gemma-4-26B-A4B-it-DFlash + f_θ results/research/f_theta_v5_s5_sliding on cpu
+[e2e] prompt_ids=28 tokens, max_new=48, block=4
+[e2e] greedy baseline: 48 tok in 2.56s (18.74 tok/s)
+[e2e] distributed: 48 tok in 6.71s (7.16 tok/s) blocks=13 acceptance=0.892 (33/37)
+[e2e] output text:
+<|channel>thought
+*   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+    *   Fact: The capital of France is Paris.
+
+    *   Option 1
+[e2e] PASS byte-identical-to-greedy (48 tokens, acceptance=0.892, baseline=18.74 tok/s, dist=7.16 tok/s)
