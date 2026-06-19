@@ -196,3 +196,125 @@ message ProposeBlockResponse {
   uint32 forward_passes = 3;
   uint64 peak_activation_bytes = 4;
 }
+
+// -----------------------------------------------------------------------------
+// F3 bulk-tensor data plane: remote DFlash + f_θ proposer (ADR 0009 §4 item F3).
+// -----------------------------------------------------------------------------
+//
+// The production Kakeya config splits the engine across hosts: the gemma-4
+// verifier (sink+window restored KV) runs on host A (e.g. a Mac mini, MLX),
+// while the EAGLE-style DFlash drafter + the f_θ K/V projection run on host B
+// (e.g. a GPU). DFlashProposerService is the stateful contract for that split.
+//
+// Unlike ProposerService (token-ids-only), DFlash is EAGLE-style: it needs the
+// verifier's aux-layer hidden states to build its context K/V, and f_θ projects
+// the drafter's K/V into the verifier's K/V space for sink+window restoration.
+// Those are real tensors, carried via the framework-neutral Tensor message
+// (see inference_engine/distributed/tensor_codec).
+//
+// Correctness containment is UNCHANGED: every emitted token is decided by the
+// verifier's local greedy verify; a wrong/stale remote draft can only lower the
+// acceptance rate, never change the output. A session ties host B's incremental
+// drafter context K/V to host A's verifier session for its lifetime.
+
+// Tensor is a framework-neutral dense tensor: a numpy-style dtype string, an
+// int64 shape, and the little-endian raw buffer (numpy.tobytes). bfloat16 has
+// no numpy scalar, so it travels as the logical dtype "bfloat16" over a uint16
+// bit buffer and is rebuilt by the torch/mlx bridge at the endpoint.
+message Tensor {
+  string dtype = 1;        // float32|float16|bfloat16|int32|int64|uint32|bool
+  repeated int64 shape = 2;
+  bytes data = 3;
+}
+
+// LayerKV is one verifier layer's restored K and V banks.
+message LayerKV {
+  int32 layer = 1;         // verifier layer index this K/V belongs to
+  Tensor k = 2;
+  Tensor v = 3;
+}
+
+// DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
+// Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext
+// (verifier aux hidden -> drafter context K/V). Per decode block: DraftBlock
+// (bonus + context_len -> draft tokens) then ExtendContext (committed aux ->
+// grow drafter context). CloseSession frees host-B state.
+service DFlashProposerService {
+  // Restore drafts the f_θ-projected verifier K/V banks for the prompt: host B
+  // embeds prompt_ids (verifier embedding), runs the DFlash drafter, and maps
+  // its K/V through f_θ into verifier K/V space. With s5_exact_full_attn the
+  // full-attention layers are omitted (the verifier's native cache owns them);
+  // only sliding-layer banks are returned. Opens the session.
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+
+  // SeedContext builds host B's drafter context K/V from the verifier's aux
+  // hidden states over the prompt (host A computed these during its prefill).
+  rpc SeedContext(SeedContextRequest) returns (SeedContextResponse);
+
+  // DraftBlock returns exactly block_size draft tokens for the upcoming block,
+  // conditioned on the verifier's bonus token + the session's context K/V.
+  rpc DraftBlock(DraftBlockRequest) returns (DraftBlockResponse);
+
+  // ExtendContext appends the aux hidden of the just-committed tokens to host
+  // B's drafter context K/V (O(block_size), not O(prefix)).
+  rpc ExtendContext(ExtendContextRequest) returns (ExtendContextResponse);
+
+  // CloseSession releases host-B per-session state. Idempotent.
+  rpc CloseSession(CloseDFlashSessionRequest) returns (CloseDFlashSessionResponse);
+}
+
+message RestoreRequest {
+  string session_id = 1;
+  repeated uint32 prompt_ids = 2;
+  uint32 sink = 3;
+  uint32 window = 4;
+  // When true, full-attention (exact) layers are omitted from the response;
+  // the verifier's native cache holds them (the S5 free lunch on gemma-4).
+  bool s5_exact_full_attn = 5;
+  string model_id = 6;
+}
+
+message RestoreResponse {
+  // f_θ-projected verifier K/V for the layers the verifier must restore.
+  repeated LayerKV restored = 1;
+  // Middle positions evicted from the sink+window (outside [sink, T-window)).
+  repeated int32 evicted_positions = 2;
+  uint32 prompt_len = 3;
+}
+
+message SeedContextRequest {
+  string session_id = 1;
+  // num_aux tensors, each [1, T, hidden]: verifier aux-layer hidden over prompt.
+  repeated Tensor aux = 2;
+  repeated int32 positions = 3;
+}
+
+message SeedContextResponse { uint32 context_len = 1; }
+
+message DraftBlockRequest {
+  string session_id = 1;
+  uint32 bonus_token_id = 2;
+  uint32 context_len = 3;
+  // Number of draft tokens to return (L-1 in the fused loop; the bonus is the
+  // verifier's guaranteed-correct first token, handled caller-side).
+  uint32 block_size = 4;
+}
+
+message DraftBlockResponse {
+  repeated uint32 draft_token_ids = 1;  // exactly block_size drafts
+  uint32 forward_passes = 2;
+  uint64 peak_activation_bytes = 3;
+}
+
+message ExtendContextRequest {
+  string session_id = 1;
+  // num_aux tensors, each [1, k, hidden] for the k newly committed positions.
+  repeated Tensor aux = 2;
+  repeated int32 positions = 3;
+}
+
+message ExtendContextResponse { uint32 context_len = 1; }
+
+message CloseDFlashSessionRequest { string session_id = 1; }
+
+message CloseDFlashSessionResponse {}

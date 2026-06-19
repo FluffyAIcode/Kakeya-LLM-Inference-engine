@@ -253,3 +253,274 @@ class ProposerService:
             timeout,
             metadata,
             _registered_method=True)
+
+
+class DFlashProposerServiceStub:
+    """DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
+    Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext
+    (verifier aux hidden -> drafter context K/V). Per decode block: DraftBlock
+    (bonus + context_len -> draft tokens) then ExtendContext (committed aux ->
+    grow drafter context). CloseSession frees host-B state.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.Restore = channel.unary_unary(
+                '/kakeya.v1.DFlashProposerService/Restore',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.RestoreRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.RestoreResponse.FromString,
+                _registered_method=True)
+        self.SeedContext = channel.unary_unary(
+                '/kakeya.v1.DFlashProposerService/SeedContext',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.SeedContextRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.SeedContextResponse.FromString,
+                _registered_method=True)
+        self.DraftBlock = channel.unary_unary(
+                '/kakeya.v1.DFlashProposerService/DraftBlock',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.DraftBlockRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.DraftBlockResponse.FromString,
+                _registered_method=True)
+        self.ExtendContext = channel.unary_unary(
+                '/kakeya.v1.DFlashProposerService/ExtendContext',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.ExtendContextRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.ExtendContextResponse.FromString,
+                _registered_method=True)
+        self.CloseSession = channel.unary_unary(
+                '/kakeya.v1.DFlashProposerService/CloseSession',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionResponse.FromString,
+                _registered_method=True)
+
+
+class DFlashProposerServiceServicer:
+    """DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
+    Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext
+    (verifier aux hidden -> drafter context K/V). Per decode block: DraftBlock
+    (bonus + context_len -> draft tokens) then ExtendContext (committed aux ->
+    grow drafter context). CloseSession frees host-B state.
+    """
+
+    def Restore(self, request, context):
+        """Restore drafts the f_θ-projected verifier K/V banks for the prompt: host B
+        embeds prompt_ids (verifier embedding), runs the DFlash drafter, and maps
+        its K/V through f_θ into verifier K/V space. With s5_exact_full_attn the
+        full-attention layers are omitted (the verifier's native cache owns them);
+        only sliding-layer banks are returned. Opens the session.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SeedContext(self, request, context):
+        """SeedContext builds host B's drafter context K/V from the verifier's aux
+        hidden states over the prompt (host A computed these during its prefill).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DraftBlock(self, request, context):
+        """DraftBlock returns exactly block_size draft tokens for the upcoming block,
+        conditioned on the verifier's bonus token + the session's context K/V.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ExtendContext(self, request, context):
+        """ExtendContext appends the aux hidden of the just-committed tokens to host
+        B's drafter context K/V (O(block_size), not O(prefix)).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CloseSession(self, request, context):
+        """CloseSession releases host-B per-session state. Idempotent.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_DFlashProposerServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'Restore': grpc.unary_unary_rpc_method_handler(
+                    servicer.Restore,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.RestoreRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.RestoreResponse.SerializeToString,
+            ),
+            'SeedContext': grpc.unary_unary_rpc_method_handler(
+                    servicer.SeedContext,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.SeedContextRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.SeedContextResponse.SerializeToString,
+            ),
+            'DraftBlock': grpc.unary_unary_rpc_method_handler(
+                    servicer.DraftBlock,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.DraftBlockRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.DraftBlockResponse.SerializeToString,
+            ),
+            'ExtendContext': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExtendContext,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.ExtendContextRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.ExtendContextResponse.SerializeToString,
+            ),
+            'CloseSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.CloseSession,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'kakeya.v1.DFlashProposerService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('kakeya.v1.DFlashProposerService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class DFlashProposerService:
+    """DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
+    Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext
+    (verifier aux hidden -> drafter context K/V). Per decode block: DraftBlock
+    (bonus + context_len -> draft tokens) then ExtendContext (committed aux ->
+    grow drafter context). CloseSession frees host-B state.
+    """
+
+    @staticmethod
+    def Restore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.DFlashProposerService/Restore',
+            kakeya_dot_v1_dot_distributed__pb2.RestoreRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.RestoreResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SeedContext(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.DFlashProposerService/SeedContext',
+            kakeya_dot_v1_dot_distributed__pb2.SeedContextRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.SeedContextResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DraftBlock(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.DFlashProposerService/DraftBlock',
+            kakeya_dot_v1_dot_distributed__pb2.DraftBlockRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.DraftBlockResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExtendContext(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.DFlashProposerService/ExtendContext',
+            kakeya_dot_v1_dot_distributed__pb2.ExtendContextRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.ExtendContextResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CloseSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.DFlashProposerService/CloseSession',
+            kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.CloseDFlashSessionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

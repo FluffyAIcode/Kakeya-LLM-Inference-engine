@@ -24,15 +24,15 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1bkakeya/v1/distributed.proto\x12\tkakeya.v1\"}\n\x0fModelCapability\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\'\n\x04role\x18\x02 \x01(\x0e\x32\x19.kakeya.v1.CapabilityRole\x12\x14\n\x0cquantization\x18\x03 \x01(\t\x12\x19\n\x11tokens_per_second\x18\x04 \x01(\x01\"\xee\x01\n\x0eNodeCapability\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x14\n\x0cgrpc_address\x18\x02 \x01(\t\x12\x10\n\x08platform\x18\x03 \x01(\t\x12\x1c\n\x14unified_memory_bytes\x18\x04 \x01(\x04\x12\x13\n\x0bmlx_version\x18\x05 \x01(\t\x12*\n\x06models\x18\x06 \x03(\x0b\x32\x1a.kakeya.v1.ModelCapability\x12\x19\n\x11\x61nnounced_at_unix\x18\x07 \x01(\x01\x12\x13\n\x0bttl_seconds\x18\x08 \x01(\x01\x12\x14\n\x0cring_address\x18\t \x01(\t\"M\n\x1b\x45xchangeCapabilitiesRequest\x12.\n\x0bknown_nodes\x18\x01 \x03(\x0b\x32\x19.kakeya.v1.NodeCapability\"N\n\x1c\x45xchangeCapabilitiesResponse\x12.\n\x0bknown_nodes\x18\x01 \x03(\x0b\x32\x19.kakeya.v1.NodeCapability\"\x1a\n\x18GetNodeCapabilityRequest\"D\n\x19GetNodeCapabilityResponse\x12\'\n\x04node\x18\x01 \x01(\x0b\x32\x19.kakeya.v1.NodeCapability\"k\n\x13ProposeBlockRequest\x12\x1b\n\x13\x63ommitted_token_ids\x18\x01 \x03(\r\x12\x12\n\nblock_size\x18\x02 \x01(\r\x12\x11\n\tnum_steps\x18\x03 \x01(\r\x12\x10\n\x08model_id\x18\x04 \x01(\t\"y\n\x14ProposeBlockResponse\x12\x11\n\ttoken_ids\x18\x01 \x03(\r\x12\x17\n\x0f\x64iffusion_steps\x18\x02 \x01(\r\x12\x16\n\x0e\x66orward_passes\x18\x03 \x01(\r\x12\x1d\n\x15peak_activation_bytes\x18\x04 \x01(\x04*\xa5\x01\n\x0e\x43\x61pabilityRole\x12\x1f\n\x1b\x43\x41PABILITY_ROLE_UNSPECIFIED\x10\x00\x12\x1c\n\x18\x43\x41PABILITY_ROLE_VERIFIER\x10\x01\x12\x1c\n\x18\x43\x41PABILITY_ROLE_PROPOSER\x10\x02\x12\x1c\n\x18\x43\x41PABILITY_ROLE_EMBEDDER\x10\x03\x12\x18\n\x14\x43\x41PABILITY_ROLE_TOOL\x10\x04\x32\xdc\x01\n\x11\x43\x61pabilityService\x12g\n\x14\x45xchangeCapabilities\x12&.kakeya.v1.ExchangeCapabilitiesRequest\x1a\'.kakeya.v1.ExchangeCapabilitiesResponse\x12^\n\x11GetNodeCapability\x12#.kakeya.v1.GetNodeCapabilityRequest\x1a$.kakeya.v1.GetNodeCapabilityResponse2b\n\x0fProposerService\x12O\n\x0cProposeBlock\x12\x1e.kakeya.v1.ProposeBlockRequest\x1a\x1f.kakeya.v1.ProposeBlockResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1bkakeya/v1/distributed.proto\x12\tkakeya.v1\"}\n\x0fModelCapability\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\'\n\x04role\x18\x02 \x01(\x0e\x32\x19.kakeya.v1.CapabilityRole\x12\x14\n\x0cquantization\x18\x03 \x01(\t\x12\x19\n\x11tokens_per_second\x18\x04 \x01(\x01\"\xee\x01\n\x0eNodeCapability\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x14\n\x0cgrpc_address\x18\x02 \x01(\t\x12\x10\n\x08platform\x18\x03 \x01(\t\x12\x1c\n\x14unified_memory_bytes\x18\x04 \x01(\x04\x12\x13\n\x0bmlx_version\x18\x05 \x01(\t\x12*\n\x06models\x18\x06 \x03(\x0b\x32\x1a.kakeya.v1.ModelCapability\x12\x19\n\x11\x61nnounced_at_unix\x18\x07 \x01(\x01\x12\x13\n\x0bttl_seconds\x18\x08 \x01(\x01\x12\x14\n\x0cring_address\x18\t \x01(\t\"M\n\x1b\x45xchangeCapabilitiesRequest\x12.\n\x0bknown_nodes\x18\x01 \x03(\x0b\x32\x19.kakeya.v1.NodeCapability\"N\n\x1c\x45xchangeCapabilitiesResponse\x12.\n\x0bknown_nodes\x18\x01 \x03(\x0b\x32\x19.kakeya.v1.NodeCapability\"\x1a\n\x18GetNodeCapabilityRequest\"D\n\x19GetNodeCapabilityResponse\x12\'\n\x04node\x18\x01 \x01(\x0b\x32\x19.kakeya.v1.NodeCapability\"k\n\x13ProposeBlockRequest\x12\x1b\n\x13\x63ommitted_token_ids\x18\x01 \x03(\r\x12\x12\n\nblock_size\x18\x02 \x01(\r\x12\x11\n\tnum_steps\x18\x03 \x01(\r\x12\x10\n\x08model_id\x18\x04 \x01(\t\"y\n\x14ProposeBlockResponse\x12\x11\n\ttoken_ids\x18\x01 \x03(\r\x12\x17\n\x0f\x64iffusion_steps\x18\x02 \x01(\r\x12\x16\n\x0e\x66orward_passes\x18\x03 \x01(\r\x12\x1d\n\x15peak_activation_bytes\x18\x04 \x01(\x04\"4\n\x06Tensor\x12\r\n\x05\x64type\x18\x01 \x01(\t\x12\r\n\x05shape\x18\x02 \x03(\x03\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\"T\n\x07LayerKV\x12\r\n\x05layer\x18\x01 \x01(\x05\x12\x1c\n\x01k\x18\x02 \x01(\x0b\x32\x11.kakeya.v1.Tensor\x12\x1c\n\x01v\x18\x03 \x01(\x0b\x32\x11.kakeya.v1.Tensor\"\x84\x01\n\x0eRestoreRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nprompt_ids\x18\x02 \x03(\r\x12\x0c\n\x04sink\x18\x03 \x01(\r\x12\x0e\n\x06window\x18\x04 \x01(\r\x12\x1a\n\x12s5_exact_full_attn\x18\x05 \x01(\x08\x12\x10\n\x08model_id\x18\x06 \x01(\t\"f\n\x0fRestoreResponse\x12$\n\x08restored\x18\x01 \x03(\x0b\x32\x12.kakeya.v1.LayerKV\x12\x19\n\x11\x65victed_positions\x18\x02 \x03(\x05\x12\x12\n\nprompt_len\x18\x03 \x01(\r\"[\n\x12SeedContextRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x1e\n\x03\x61ux\x18\x02 \x03(\x0b\x32\x11.kakeya.v1.Tensor\x12\x11\n\tpositions\x18\x03 \x03(\x05\"*\n\x13SeedContextResponse\x12\x13\n\x0b\x63ontext_len\x18\x01 \x01(\r\"h\n\x11\x44raftBlockRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x16\n\x0e\x62onus_token_id\x18\x02 \x01(\r\x12\x13\n\x0b\x63ontext_len\x18\x03 \x01(\r\x12\x12\n\nblock_size\x18\x04 \x01(\r\"d\n\x12\x44raftBlockResponse\x12\x17\n\x0f\x64raft_token_ids\x18\x01 \x03(\r\x12\x16\n\x0e\x66orward_passes\x18\x02 \x01(\r\x12\x1d\n\x15peak_activation_bytes\x18\x03 \x01(\x04\"]\n\x14\x45xtendContextRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x1e\n\x03\x61ux\x18\x02 \x03(\x0b\x32\x11.kakeya.v1.Tensor\x12\x11\n\tpositions\x18\x03 \x03(\x05\",\n\x15\x45xtendContextResponse\x12\x13\n\x0b\x63ontext_len\x18\x01 \x01(\r\"/\n\x19\x43loseDFlashSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"\x1c\n\x1a\x43loseDFlashSessionResponse*\xa5\x01\n\x0e\x43\x61pabilityRole\x12\x1f\n\x1b\x43\x41PABILITY_ROLE_UNSPECIFIED\x10\x00\x12\x1c\n\x18\x43\x41PABILITY_ROLE_VERIFIER\x10\x01\x12\x1c\n\x18\x43\x41PABILITY_ROLE_PROPOSER\x10\x02\x12\x1c\n\x18\x43\x41PABILITY_ROLE_EMBEDDER\x10\x03\x12\x18\n\x14\x43\x41PABILITY_ROLE_TOOL\x10\x04\x32\xdc\x01\n\x11\x43\x61pabilityService\x12g\n\x14\x45xchangeCapabilities\x12&.kakeya.v1.ExchangeCapabilitiesRequest\x1a\'.kakeya.v1.ExchangeCapabilitiesResponse\x12^\n\x11GetNodeCapability\x12#.kakeya.v1.GetNodeCapabilityRequest\x1a$.kakeya.v1.GetNodeCapabilityResponse2b\n\x0fProposerService\x12O\n\x0cProposeBlock\x12\x1e.kakeya.v1.ProposeBlockRequest\x1a\x1f.kakeya.v1.ProposeBlockResponse2\xa3\x03\n\x15\x44\x46lashProposerService\x12@\n\x07Restore\x12\x19.kakeya.v1.RestoreRequest\x1a\x1a.kakeya.v1.RestoreResponse\x12L\n\x0bSeedContext\x12\x1d.kakeya.v1.SeedContextRequest\x1a\x1e.kakeya.v1.SeedContextResponse\x12I\n\nDraftBlock\x12\x1c.kakeya.v1.DraftBlockRequest\x1a\x1d.kakeya.v1.DraftBlockResponse\x12R\n\rExtendContext\x12\x1f.kakeya.v1.ExtendContextRequest\x1a .kakeya.v1.ExtendContextResponse\x12[\n\x0c\x43loseSession\x12$.kakeya.v1.CloseDFlashSessionRequest\x1a%.kakeya.v1.CloseDFlashSessionResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'kakeya.v1.distributed_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_CAPABILITYROLE']._serialized_start=900
-  _globals['_CAPABILITYROLE']._serialized_end=1065
+  _globals['_CAPABILITYROLE']._serialized_start=1844
+  _globals['_CAPABILITYROLE']._serialized_end=2009
   _globals['_MODELCAPABILITY']._serialized_start=42
   _globals['_MODELCAPABILITY']._serialized_end=167
   _globals['_NODECAPABILITY']._serialized_start=170
@@ -49,8 +49,34 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PROPOSEBLOCKREQUEST']._serialized_end=774
   _globals['_PROPOSEBLOCKRESPONSE']._serialized_start=776
   _globals['_PROPOSEBLOCKRESPONSE']._serialized_end=897
-  _globals['_CAPABILITYSERVICE']._serialized_start=1068
-  _globals['_CAPABILITYSERVICE']._serialized_end=1288
-  _globals['_PROPOSERSERVICE']._serialized_start=1290
-  _globals['_PROPOSERSERVICE']._serialized_end=1388
+  _globals['_TENSOR']._serialized_start=899
+  _globals['_TENSOR']._serialized_end=951
+  _globals['_LAYERKV']._serialized_start=953
+  _globals['_LAYERKV']._serialized_end=1037
+  _globals['_RESTOREREQUEST']._serialized_start=1040
+  _globals['_RESTOREREQUEST']._serialized_end=1172
+  _globals['_RESTORERESPONSE']._serialized_start=1174
+  _globals['_RESTORERESPONSE']._serialized_end=1276
+  _globals['_SEEDCONTEXTREQUEST']._serialized_start=1278
+  _globals['_SEEDCONTEXTREQUEST']._serialized_end=1369
+  _globals['_SEEDCONTEXTRESPONSE']._serialized_start=1371
+  _globals['_SEEDCONTEXTRESPONSE']._serialized_end=1413
+  _globals['_DRAFTBLOCKREQUEST']._serialized_start=1415
+  _globals['_DRAFTBLOCKREQUEST']._serialized_end=1519
+  _globals['_DRAFTBLOCKRESPONSE']._serialized_start=1521
+  _globals['_DRAFTBLOCKRESPONSE']._serialized_end=1621
+  _globals['_EXTENDCONTEXTREQUEST']._serialized_start=1623
+  _globals['_EXTENDCONTEXTREQUEST']._serialized_end=1716
+  _globals['_EXTENDCONTEXTRESPONSE']._serialized_start=1718
+  _globals['_EXTENDCONTEXTRESPONSE']._serialized_end=1762
+  _globals['_CLOSEDFLASHSESSIONREQUEST']._serialized_start=1764
+  _globals['_CLOSEDFLASHSESSIONREQUEST']._serialized_end=1811
+  _globals['_CLOSEDFLASHSESSIONRESPONSE']._serialized_start=1813
+  _globals['_CLOSEDFLASHSESSIONRESPONSE']._serialized_end=1841
+  _globals['_CAPABILITYSERVICE']._serialized_start=2012
+  _globals['_CAPABILITYSERVICE']._serialized_end=2232
+  _globals['_PROPOSERSERVICE']._serialized_start=2234
+  _globals['_PROPOSERSERVICE']._serialized_end=2332
+  _globals['_DFLASHPROPOSERSERVICE']._serialized_start=2335
+  _globals['_DFLASHPROPOSERSERVICE']._serialized_end=2754
 # @@protoc_insertion_point(module_scope)

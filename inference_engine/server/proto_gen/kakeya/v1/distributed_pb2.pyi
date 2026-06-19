@@ -99,3 +99,113 @@ class ProposeBlockResponse(_message.Message):
     forward_passes: int
     peak_activation_bytes: int
     def __init__(self, token_ids: _Optional[_Iterable[int]] = ..., diffusion_steps: _Optional[int] = ..., forward_passes: _Optional[int] = ..., peak_activation_bytes: _Optional[int] = ...) -> None: ...
+
+class Tensor(_message.Message):
+    __slots__ = ("dtype", "shape", "data")
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    dtype: str
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    data: bytes
+    def __init__(self, dtype: _Optional[str] = ..., shape: _Optional[_Iterable[int]] = ..., data: _Optional[bytes] = ...) -> None: ...
+
+class LayerKV(_message.Message):
+    __slots__ = ("layer", "k", "v")
+    LAYER_FIELD_NUMBER: _ClassVar[int]
+    K_FIELD_NUMBER: _ClassVar[int]
+    V_FIELD_NUMBER: _ClassVar[int]
+    layer: int
+    k: Tensor
+    v: Tensor
+    def __init__(self, layer: _Optional[int] = ..., k: _Optional[_Union[Tensor, _Mapping]] = ..., v: _Optional[_Union[Tensor, _Mapping]] = ...) -> None: ...
+
+class RestoreRequest(_message.Message):
+    __slots__ = ("session_id", "prompt_ids", "sink", "window", "s5_exact_full_attn", "model_id")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    PROMPT_IDS_FIELD_NUMBER: _ClassVar[int]
+    SINK_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_FIELD_NUMBER: _ClassVar[int]
+    S5_EXACT_FULL_ATTN_FIELD_NUMBER: _ClassVar[int]
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    prompt_ids: _containers.RepeatedScalarFieldContainer[int]
+    sink: int
+    window: int
+    s5_exact_full_attn: bool
+    model_id: str
+    def __init__(self, session_id: _Optional[str] = ..., prompt_ids: _Optional[_Iterable[int]] = ..., sink: _Optional[int] = ..., window: _Optional[int] = ..., s5_exact_full_attn: _Optional[bool] = ..., model_id: _Optional[str] = ...) -> None: ...
+
+class RestoreResponse(_message.Message):
+    __slots__ = ("restored", "evicted_positions", "prompt_len")
+    RESTORED_FIELD_NUMBER: _ClassVar[int]
+    EVICTED_POSITIONS_FIELD_NUMBER: _ClassVar[int]
+    PROMPT_LEN_FIELD_NUMBER: _ClassVar[int]
+    restored: _containers.RepeatedCompositeFieldContainer[LayerKV]
+    evicted_positions: _containers.RepeatedScalarFieldContainer[int]
+    prompt_len: int
+    def __init__(self, restored: _Optional[_Iterable[_Union[LayerKV, _Mapping]]] = ..., evicted_positions: _Optional[_Iterable[int]] = ..., prompt_len: _Optional[int] = ...) -> None: ...
+
+class SeedContextRequest(_message.Message):
+    __slots__ = ("session_id", "aux", "positions")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    AUX_FIELD_NUMBER: _ClassVar[int]
+    POSITIONS_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    aux: _containers.RepeatedCompositeFieldContainer[Tensor]
+    positions: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, session_id: _Optional[str] = ..., aux: _Optional[_Iterable[_Union[Tensor, _Mapping]]] = ..., positions: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class SeedContextResponse(_message.Message):
+    __slots__ = ("context_len",)
+    CONTEXT_LEN_FIELD_NUMBER: _ClassVar[int]
+    context_len: int
+    def __init__(self, context_len: _Optional[int] = ...) -> None: ...
+
+class DraftBlockRequest(_message.Message):
+    __slots__ = ("session_id", "bonus_token_id", "context_len", "block_size")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    BONUS_TOKEN_ID_FIELD_NUMBER: _ClassVar[int]
+    CONTEXT_LEN_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_SIZE_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    bonus_token_id: int
+    context_len: int
+    block_size: int
+    def __init__(self, session_id: _Optional[str] = ..., bonus_token_id: _Optional[int] = ..., context_len: _Optional[int] = ..., block_size: _Optional[int] = ...) -> None: ...
+
+class DraftBlockResponse(_message.Message):
+    __slots__ = ("draft_token_ids", "forward_passes", "peak_activation_bytes")
+    DRAFT_TOKEN_IDS_FIELD_NUMBER: _ClassVar[int]
+    FORWARD_PASSES_FIELD_NUMBER: _ClassVar[int]
+    PEAK_ACTIVATION_BYTES_FIELD_NUMBER: _ClassVar[int]
+    draft_token_ids: _containers.RepeatedScalarFieldContainer[int]
+    forward_passes: int
+    peak_activation_bytes: int
+    def __init__(self, draft_token_ids: _Optional[_Iterable[int]] = ..., forward_passes: _Optional[int] = ..., peak_activation_bytes: _Optional[int] = ...) -> None: ...
+
+class ExtendContextRequest(_message.Message):
+    __slots__ = ("session_id", "aux", "positions")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    AUX_FIELD_NUMBER: _ClassVar[int]
+    POSITIONS_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    aux: _containers.RepeatedCompositeFieldContainer[Tensor]
+    positions: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, session_id: _Optional[str] = ..., aux: _Optional[_Iterable[_Union[Tensor, _Mapping]]] = ..., positions: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class ExtendContextResponse(_message.Message):
+    __slots__ = ("context_len",)
+    CONTEXT_LEN_FIELD_NUMBER: _ClassVar[int]
+    context_len: int
+    def __init__(self, context_len: _Optional[int] = ...) -> None: ...
+
+class CloseDFlashSessionRequest(_message.Message):
+    __slots__ = ("session_id",)
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    def __init__(self, session_id: _Optional[str] = ...) -> None: ...
+
+class CloseDFlashSessionResponse(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
