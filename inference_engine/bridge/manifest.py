@@ -122,6 +122,28 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="mlx-distributed-spec-decode-bench",
+            description="ADR 0009 distributed spec-decode perf bench, on-device: "
+                        "token throughput (local greedy vs distributed), bounded-KV "
+                        "footprint (constant in context length), and gRPC RTT "
+                        "(localhost ProposeBlock round-trip). Starts a local "
+                        "ProposerService and benches against it.",
+            command_templates=(
+                (
+                    "bash", "scripts/run_distributed_bench.sh",
+                    "--label", "Mac-localhost",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--rtt-samples", "{rtt_samples}",
+                ),
+            ),
+            timeout_minutes=45,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "rtt_samples": ("int:rtt_samples", "300"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-env-probe",
             description="Probe Metal/MLX + mlx.distributed availability.",
             command_templates=(

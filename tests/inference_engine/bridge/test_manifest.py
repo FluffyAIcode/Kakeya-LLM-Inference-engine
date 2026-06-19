@@ -79,6 +79,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-manual-sdpa",
         "mlx-batched-multitenant",
         "mlx-batched-pad-decode",
+        "mlx-distributed-spec-decode-bench",
         "mlx-distributed-spec-decode-demo",
         "mlx-env-probe",
         "mlx-kakeya-chat-smoke",
