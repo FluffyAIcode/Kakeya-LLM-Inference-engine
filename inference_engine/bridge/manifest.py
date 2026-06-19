@@ -29,6 +29,7 @@ BRANCH_PREFIX = "mac-bridge/"
 # bridge is for evidence runs and debugging, not for monopolizing the
 # single Mac with open-ended workloads.
 MAX_N_SAMPLES = 50
+MAX_RTT_SAMPLES = 5000  # gRPC RTT bench: enough samples for a stable p99
 MAX_NEW_TOKENS = 2048  # backstop for chat; natural EOS stops well before this
 MAX_BLOCK_SIZE = 16
 
@@ -56,7 +57,8 @@ class Preset:
     description: str
     command_templates: Tuple[Tuple[str, ...], ...]
     timeout_minutes: int
-    # name -> (kind, default). kind ∈ {"int:n_samples", "int:max_new_tokens",
+    # name -> (kind, default). kind ∈ {"int:n_samples", "int:rtt_samples",
+    #   "int:max_new_tokens",
     # "int:block_size", "path:tests"}; None default = required.
     params: Mapping[str, Tuple[str, Optional[str]]] = field(default_factory=dict)
     # Run the K3 evidence gate over results/research after the commands.
@@ -998,6 +1000,7 @@ def _validate_param(name: str, kind: str, raw: str) -> str:
             raise ManifestError(f"param {name}={raw!r} is not an integer")
         bound = {
             "int:n_samples": MAX_N_SAMPLES,
+            "int:rtt_samples": MAX_RTT_SAMPLES,
             "int:max_new_tokens": MAX_NEW_TOKENS,
             "int:block_size": MAX_BLOCK_SIZE,
         }[kind]
