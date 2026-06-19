@@ -222,14 +222,14 @@ message ProposeBlockResponse {
 // no numpy scalar, so it travels as the logical dtype "bfloat16" over a uint16
 // bit buffer and is rebuilt by the torch/mlx bridge at the endpoint.
 message Tensor {
-  string dtype = 1;        // float32|float16|bfloat16|int32|int64|uint32|bool
+  string dtype = 1; // float32|float16|bfloat16|int32|int64|uint32|bool
   repeated int64 shape = 2;
   bytes data = 3;
 }
 
 // LayerKV is one verifier layer's restored K and V banks.
 message LayerKV {
-  int32 layer = 1;         // verifier layer index this K/V belongs to
+  int32 layer = 1; // verifier layer index this K/V belongs to
   Tensor k = 2;
   Tensor v = 3;
 }
@@ -289,7 +289,9 @@ message SeedContextRequest {
   repeated int32 positions = 3;
 }
 
-message SeedContextResponse { uint32 context_len = 1; }
+message SeedContextResponse {
+  uint32 context_len = 1;
+}
 
 message DraftBlockRequest {
   string session_id = 1;
@@ -301,7 +303,7 @@ message DraftBlockRequest {
 }
 
 message DraftBlockResponse {
-  repeated uint32 draft_token_ids = 1;  // exactly block_size drafts
+  repeated uint32 draft_token_ids = 1; // exactly block_size drafts
   uint32 forward_passes = 2;
   uint64 peak_activation_bytes = 3;
 }
@@ -313,8 +315,12 @@ message ExtendContextRequest {
   repeated int32 positions = 3;
 }
 
-message ExtendContextResponse { uint32 context_len = 1; }
+message ExtendContextResponse {
+  uint32 context_len = 1;
+}
 
-message DFlashProposerServiceCloseSessionRequest { string session_id = 1; }
+message DFlashProposerServiceCloseSessionRequest {
+  string session_id = 1;
+}
 
 message DFlashProposerServiceCloseSessionResponse {}
