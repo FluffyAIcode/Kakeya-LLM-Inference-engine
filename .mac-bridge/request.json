@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-distributed-spec-decode-demo",
+  "params": {
+    "max_new_tokens": "48"
+  },
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1781865609-11db92"
+}
