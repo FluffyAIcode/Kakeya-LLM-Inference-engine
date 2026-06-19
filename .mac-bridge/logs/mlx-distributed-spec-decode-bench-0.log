@@ -1,0 +1,7 @@
+[dist-bench] python=/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3.13 label=Mac-localhost
+
+================  Mac-localhost  (peer=127.0.0.1:50061)  ================
+[RTT]  ProposeBlock n=300  mean=0.223ms  p50=0.219ms  p90=0.239ms  p99=0.264ms  min=0.193ms  max=0.509ms
+[THRUPUT]  baseline(local greedy)= 31.13 tok/s (1.54s)   distributed= 15.76 tok/s (3.05s)   acceptance=0.097 (13/134)
+[BOUNDED-KV]  ctx=1072 tok  sink+window=68  cache_logical_size=68 slots  bytes/kv-token=114688
+[BOUNDED-KV]  resident KV=7.799 MB (peak=7.799 MB)  vs full-attention KV=122.946 MB  => 15.8x smaller, CONSTANT in context length
