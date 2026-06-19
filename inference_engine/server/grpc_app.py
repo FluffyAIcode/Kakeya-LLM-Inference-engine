@@ -377,6 +377,9 @@ def create_grpc_server(
     generation_coordinator: Optional[GenerationCoordinator] = None,
     config: Optional[GrpcServerConfig] = None,
     on_session_close=None,
+    capability_registry: Optional[object] = None,
+    proposers: Optional[object] = None,
+    default_proposer_model_id: str = "",
 ) -> grpc.aio.Server:
     """Build, but do not start, a configured gRPC asyncio server.
 
@@ -392,6 +395,17 @@ def create_grpc_server(
     (or pass ``None``) to leave AppendTokens at its PR-B1
     UNIMPLEMENTED default — useful for tests that don't need a
     verifier instance.
+
+    ``capability_registry`` / ``proposers`` are the ADR 0009 v0.5-M1
+    multi-host plane wiring points. Pass a
+    :class:`~inference_engine.distributed.capability.CapabilityRegistry`
+    to additionally serve ``kakeya.v1.CapabilityService`` on the same
+    port, and/or a non-empty ``{model_id: proposer}`` mapping to serve
+    ``kakeya.v1.ProposerService``. Both default to off so a v0.3-style
+    single-host runtime is byte-for-byte unchanged. The parameters are
+    typed loosely (``object``) so this module keeps no import-time
+    dependency on the distributed subpackage when the plane is off;
+    the imports happen lazily at wiring time.
 
     The bound port is observable via the returned server's
     ``add_insecure_port`` return value; callers that need the port
@@ -414,6 +428,22 @@ def create_grpc_server(
         ),
         server,
     )
+    if capability_registry is not None:
+        from inference_engine.distributed.exchange import add_capability_service
+
+        add_capability_service(server, capability_registry)
+        _logger.info("gRPC CapabilityService enabled (ADR 0009)")
+    if proposers:
+        from inference_engine.distributed.proposer_service import (
+            add_proposer_service,
+        )
+
+        add_proposer_service(
+            server, proposers, default_model_id=default_proposer_model_id,
+        )
+        _logger.info(
+            "gRPC ProposerService enabled for models: %s", sorted(proposers),
+        )
     server.add_insecure_port(config.bind_address)
     _logger.info("gRPC RuntimeService bound to %s", config.bind_address)
     return server
