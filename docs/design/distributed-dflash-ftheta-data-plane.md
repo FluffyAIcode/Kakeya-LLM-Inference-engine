@@ -94,6 +94,48 @@ coverage-gated; they import mlx/torch), wired from the proven helpers in
   the GPU over gRPC; measure per-block `DraftBlock`+`ExtendContext` RTT and
   end-to-end tok/s, vs the single-host fused baseline (4.72 tok/s).
 
+## Real-model validation (landed)
+
+`inference_engine/backends/mlx/dflash_distributed.py` implements the two model-bound
+contracts (`MLXRestorationDraftEngine`, `MLXRestoringVerifierAdapter`) + an
+`InProcessDFlashProposer`; `scripts/research/k3_distributed_dflash_e2e_mac.py` runs
+the real engine (gemma-4-26B-A4B-it-mlx-4bit + torch DFlash + f_θ, loaded once)
+and asserts byte-identical-to-greedy. Bridge presets `mlx-distributed-dflash-e2e-{inproc,grpc}`.
+
+On the Mac mini (DFlash drafter on CPU), 28-tok prompt:
+
+| Run | output | acceptance | greedy | distributed |
+|---|---|---|---|---|
+| In-process | ✅ byte-identical | 0.892 (33/37) | 11.81 tok/s | 6.57 tok/s |
+| Loopback gRPC | ✅ byte-identical | 0.863 (44/51) | 19.60 tok/s | 8.78 tok/s |
+
+**Per-RPC RTT + payload (loopback gRPC, block=4, 64 tok):**
+
+| RPC | n | p50 | mean | payload |
+|---|---|---|---|---|
+| Restore | 1 | 162 ms | 162 ms | 11.47 MB (f_θ sliding-layer K/V, one-time) |
+| SeedContext | 1 | 11.7 ms | 11.7 ms | 1.89 MB (prompt aux) |
+| **DraftBlock** | 17 | **232 ms** | 272 ms | O(1) (scalars + L-1 ids) |
+| ExtendContext | 17 | 11.8 ms | 19.2 ms | 4.33 MB total (~0.25 MB/block aux) |
+
+### Cross-host motivation (what the numbers show)
+`DraftBlock`'s ~232 ms p50 is **the DFlash drafter's forward on the Mac's CPU**, not
+network — it is the single dominant per-block cost. This is exactly the work the
+GPU topology offloads: on an H200 the DFlash forward is single-digit ms, so the
+cross-host per-block cost becomes **GPU draft (~ms) + network RTT (~52 ms p50,
+measured VM↔H200) + ExtendContext aux (~0.25 MB)** — i.e. moving the proposer to
+the GPU is projected to cut `DraftBlock` from ~232 ms to well under network RTT.
+The one-time `Restore` (11.5 MB) + `SeedContext` (1.9 MB) amortize over the turn.
+
+### Remaining for the LIVE Mac↔GPU number
+The GPU (CUDA) cannot run MLX, so the GPU-side engine needs a **torch embedding**
+source for `embed_fn`/`lm_head_fn` (gemma-4 tied embed). Two options:
+1. one-time ship of the verifier embedding weights Mac→GPU at session setup
+   (~1.5 GB), then a pure-torch `TorchRestorationDraftEngine`; or
+2. embed/lm_head RPC back to host A per block (no weight ship, +2 hops/block).
+Output stays byte-identical either way (greedy verify is authoritative); only the
+drafter's numerics (and thus acceptance) may shift slightly vs the MLX 4-bit embed.
+
 ### Open considerations
 
 - **embed/lm_head on host B**: DFlash needs the verifier's tied embedding for the
