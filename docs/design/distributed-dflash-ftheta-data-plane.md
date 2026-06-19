@@ -127,7 +127,30 @@ measured VM↔H200) + ExtendContext aux (~0.25 MB)** — i.e. moving the propose
 the GPU is projected to cut `DraftBlock` from ~232 ms to well under network RTT.
 The one-time `Restore` (11.5 MB) + `SeedContext` (1.9 MB) amortize over the turn.
 
-### Remaining for the LIVE Mac↔GPU number
+## Live cross-host RTT (landed)
+
+Deployed the torch engine on an H200: `inference_engine/v04/dflash_distributed_engine
+.TorchRestorationDraftEngine` (torch gemma-4-26B-A4B-it for the embed + DFlash +
+f_θ) served by `scripts/research/k3_dflash_proposer_server.py`; a verifier host
+connects with `RemoteDFlashProposer`. The MLX verifier adapter filters restored
+layers to the verifier's KV-source layers (gemma-4 cross-layer sharing).
+
+Measured VM→H200 over an SSH `-L` tunnel (real GPU compute; true data-plane payloads):
+
+| RPC | p50 | payload | note |
+|---|---|---|---|
+| Restore | 2310 ms | 11.47 MB | one-time; f_θ-projected sliding-layer K/V (25 layers) |
+| SeedContext | 947 ms | 1.89 MB | one-time; prompt aux |
+| **DraftBlock** | **108 ms** | O(1) | H200 DFlash forward + net RTT — **vs 232 ms on the Mac CPU (loopback)**: the GPU offload cuts draft compute |
+| ExtendContext | 140 ms | 0.27 MB/block | committed aux — bandwidth-dominated cross-host |
+
+Per-block (draft+extend) p50 ≈ **248 ms** over the SSH tunnel. Caveats: the SSH
+single-stream inflates transfer-bound RPCs vs a direct gRPC link; VM↔H200 base RTT
+≈ 52 ms; byte-identical correctness is proven on the Mac loopback (same engine code).
+The Mac↔H200 byte-identical run uses the same path via `mlx-distributed-dflash-e2e-
+crosshost` with `ssh -p 43350 root@107.206.71.138 -L 50070:localhost:50070` active.
+
+### (historical) Remaining for the LIVE Mac↔GPU number
 The GPU (CUDA) cannot run MLX, so the GPU-side engine needs a **torch embedding**
 source for `embed_fn`/`lm_head_fn` (gemma-4 tied embed). Two options:
 1. one-time ship of the verifier embedding weights Mac→GPU at session setup
