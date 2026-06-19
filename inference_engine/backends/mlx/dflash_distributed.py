@@ -229,6 +229,16 @@ class MLXRestoringVerifierAdapter:
         self._prev = None
         self._block_logits = None
         self._candidate: List[int] = []
+        # gemma-4 shares K/V across layers; the MLX verifier injects restored K/V
+        # only at "source" layers (src_map[li]==li). A torch host B ships every
+        # non-exact layer; filter to what THIS verifier consumes.
+        from inference_engine.backends.mlx.cross_model_dlm_verifier import (
+            kv_source_layer_map,
+            resolve_mlx_text_model,
+        )
+        _tm = resolve_mlx_text_model(mlx_model)
+        _src = kv_source_layer_map(_tm)
+        self._source_layers = {li for li in range(len(_src)) if _src[li] == li}
 
     @property
     def context_len(self) -> int:
@@ -243,6 +253,8 @@ class MLXRestoringVerifierAdapter:
         rk: Dict[int, Any] = {}
         rv: Dict[int, Any] = {}
         for layer, k_w, v_w in restored:
+            if layer not in self._source_layers:
+                continue  # non-source layer (shared K/V) — verifier doesn't inject it
             rk[layer] = wire_to_mlx(k_w)
             rv[layer] = wire_to_mlx(v_w)
         self.adapter.prefill(

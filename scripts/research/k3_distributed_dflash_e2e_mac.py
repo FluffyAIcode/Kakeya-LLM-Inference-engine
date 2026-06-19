@@ -1,18 +1,16 @@
 """End-to-end check for the distributed DFlash+f_θ path with REAL models.
 
-Loads the gemma-4 MLX verifier + torch DFlash drafter + f_θ ONCE (avoids a 2x
-26B load / OOM), then:
+Host A is the gemma-4 MLX verifier (this script). The DFlash drafter + f_θ
+proposer is either:
+  * in-process (default): an MLXRestorationDraftEngine in this process (single
+    model load — validates the protocol + codec without a 2x load), or
+  * --grpc: a real loopback gRPC DFlashProposerService (same process, bg thread),
+  * --remote-addr HOST:PORT: a REMOTE gRPC proposer (e.g. a torch DFlash+f_θ
+    engine on a GPU) — the true cross-host run.
 
-  1. runs a pure greedy baseline on the verifier, and
-  2. runs the DistributedFusedDecoder over an InProcessDFlashProposer (the real
-     MLXRestorationDraftEngine + MLXRestoringVerifierAdapter, exercising the full
-     restore/seed/draft/verify/commit/extend protocol incl. WireTensor codec),
-
-and asserts the distributed output is BYTE-IDENTICAL to greedy (correctness
-containment), reporting acceptance + tok/s + per-block timing.
-
-Use --grpc to instead run the proposer behind a real loopback gRPC server (same
-process, two threads) to also exercise the wire + measure loopback RTT.
+For each, it runs the SAME verifier with block_size=1 (pure greedy baseline) and
+block_size=B (distributed spec-decode) and asserts byte-identical output, then
+reports acceptance, tok/s, and per-RPC RTT + payload bytes.
 """
 from __future__ import annotations
 
@@ -27,8 +25,7 @@ def _log(msg: str) -> None:
 
 
 class _TimingProposer:
-    """Wraps a proposer, timing each RPC and counting WireTensor payload bytes,
-    so the run reports a real per-block RTT + bandwidth breakdown."""
+    """Wraps a proposer, timing each RPC + counting WireTensor payload bytes."""
 
     def __init__(self, inner) -> None:
         self.inner = inner
@@ -41,36 +38,32 @@ class _TimingProposer:
         return int(sum(np.asarray(w.data).nbytes for w in aux))
 
     def restore(self, prompt_ids, **kw):
-        import time as _t
-        t0 = _t.perf_counter()
+        import numpy as np
+        t0 = time.perf_counter()
         r = self.inner.restore(prompt_ids, **kw)
-        self.t["restore"].append((_t.perf_counter() - t0) * 1000)
+        self.t["restore"].append((time.perf_counter() - t0) * 1000)
         self.bytes["restore"] += int(sum(
-            __import__("numpy").asarray(k.data).nbytes + __import__("numpy").asarray(v.data).nbytes
-            for (_, k, v) in r.restored))
+            np.asarray(k.data).nbytes + np.asarray(v.data).nbytes for (_, k, v) in r.restored))
         return r
 
     def seed_context(self, aux, positions):
-        import time as _t
         self.bytes["seed_context"] += self._wbytes(aux)
-        t0 = _t.perf_counter()
+        t0 = time.perf_counter()
         r = self.inner.seed_context(aux, positions)
-        self.t["seed_context"].append((_t.perf_counter() - t0) * 1000)
+        self.t["seed_context"].append((time.perf_counter() - t0) * 1000)
         return r
 
     def draft_block(self, **kw):
-        import time as _t
-        t0 = _t.perf_counter()
+        t0 = time.perf_counter()
         r = self.inner.draft_block(**kw)
-        self.t["draft_block"].append((_t.perf_counter() - t0) * 1000)
+        self.t["draft_block"].append((time.perf_counter() - t0) * 1000)
         return r
 
     def extend_context(self, aux, positions):
-        import time as _t
         self.bytes["extend_context"] += self._wbytes(aux)
-        t0 = _t.perf_counter()
+        t0 = time.perf_counter()
         r = self.inner.extend_context(aux, positions)
-        self.t["extend_context"].append((_t.perf_counter() - t0) * 1000)
+        self.t["extend_context"].append((time.perf_counter() - t0) * 1000)
         return r
 
     def close(self):
@@ -83,10 +76,9 @@ class _TimingProposer:
             v = self.t[name]
             if not v:
                 continue
-            mean = statistics.mean(v)
             p50 = sorted(v)[len(v) // 2]
             b = self.bytes.get(name, 0)
-            out.append(f"{name}: n={len(v)} mean={mean:.2f}ms p50={p50:.2f}ms"
+            out.append(f"{name}: n={len(v)} mean={statistics.mean(v):.2f}ms p50={p50:.2f}ms"
                        + (f" bytes={b/1e6:.2f}MB" if b else ""))
         return " | ".join(out)
 
@@ -94,142 +86,125 @@ class _TimingProposer:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verifier-path", required=True)
-    ap.add_argument("--drafter-id", required=True)
-    ap.add_argument("--f-theta-dir", required=True)
+    ap.add_argument("--drafter-id", default="")
+    ap.add_argument("--f-theta-dir", default="")
     ap.add_argument("--prompt", default="What is the capital of France? Answer in one short sentence.")
     ap.add_argument("--max-new-tokens", type=int, default=48)
     ap.add_argument("--block-size", type=int, default=4)
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--device", default="cpu")
-    ap.add_argument("--grpc", action="store_true",
-                    help="route the proposer through a real loopback gRPC server "
-                         "(exercises the wire + measures loopback RTT)")
+    ap.add_argument("--grpc", action="store_true")
+    ap.add_argument("--remote-addr", default="", help="HOST:PORT of a remote DFlashProposerService (cross-host)")
     args = ap.parse_args()
 
     import mlx.core as mx
     import mlx_lm
     import torch
 
-    from inference_engine.backends.mlx.cross_model_dlm_verifier import (
-        resolve_mlx_text_model,
-    )
+    from inference_engine.backends.mlx.cross_model_dlm_verifier import resolve_mlx_text_model
     from inference_engine.backends.mlx.dflash_distributed import (
-        InProcessDFlashProposer,
-        MLXRestorationDraftEngine,
-        MLXRestoringVerifierAdapter,
+        InProcessDFlashProposer, MLXRestorationDraftEngine, MLXRestoringVerifierAdapter,
     )
-    from inference_engine.backends.mlx.fused_specdecode import (
-        MLXRestoredIncrementalVerifier,
-    )
+    from inference_engine.backends.mlx.fused_specdecode import MLXRestoredIncrementalVerifier
+    from inference_engine.distributed.dflash_service import RemoteDFlashProposer
     from inference_engine.distributed.fused_decode import DistributedFusedDecoder
-    from inference_engine.distributed.tensor_codec import wire_to_mlx
-    from inference_engine.v04 import DFlashDrafter, FThetaProjection
-    from inference_engine.v04.kv_merge import compute_evicted_positions
     from scripts.research.k3_dflash_mlx_bridge import mx_to_torch
 
     dev = torch.device(args.device)
-
     _log(f"[e2e] loading MLX verifier {args.verifier_path}")
     mlx_model, tok = mlx_lm.load(args.verifier_path)
     text_model = resolve_mlx_text_model(mlx_model)
     embed_scale = float(getattr(text_model, "embed_scale", 1.0))
-
-    _log(f"[e2e] loading drafter {args.drafter_id} + f_θ {args.f_theta_dir} on {dev}")
-    drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=torch.float32).to(dev).eval()
-    for p in drafter.parameters():
-        p.requires_grad_(False)
-    f_theta = FThetaProjection.from_pretrained(args.f_theta_dir, dtype=torch.float32, device=dev)
-    aux_layer_ids = tuple(drafter.cfg.aux_layer_ids)
-
     bridge = lambda a: mx_to_torch(a, dtype=torch.float32, device=dev)
 
-    engine = MLXRestorationDraftEngine(
-        mlx_model=mlx_model, text_model=text_model, drafter=drafter, f_theta=f_theta,
-        embed_scale=embed_scale, device=dev, sink=args.sink, window=args.window,
-        force_f_theta=True)
+    remote = bool(args.remote_addr)
+    engine = None
+    if remote:
+        # aux_layer_ids must match the drafter; for a remote engine we still need
+        # them on host A to capture aux. Use the drafter config (downloaded) or a
+        # fixed gemma-4 DFlash value passed via --drafter-id (load cfg only).
+        from inference_engine.v04 import DFlashDrafter
+        aux_layer_ids = tuple(DFlashDrafter.from_pretrained(
+            args.drafter_id, dtype=torch.float32).cfg.aux_layer_ids)
+        _log(f"[e2e] REMOTE proposer at {args.remote_addr} (aux_layer_ids={aux_layer_ids})")
+    else:
+        from inference_engine.v04 import DFlashDrafter, FThetaProjection
+        _log(f"[e2e] loading drafter {args.drafter_id} + f_θ {args.f_theta_dir} on {dev}")
+        drafter = DFlashDrafter.from_pretrained(args.drafter_id, dtype=torch.float32).to(dev).eval()
+        for p in drafter.parameters():
+            p.requires_grad_(False)
+        f_theta = FThetaProjection.from_pretrained(args.f_theta_dir, dtype=torch.float32, device=dev)
+        aux_layer_ids = tuple(drafter.cfg.aux_layer_ids)
+        engine = MLXRestorationDraftEngine(
+            mlx_model=mlx_model, text_model=text_model, drafter=drafter, f_theta=f_theta,
+            embed_scale=embed_scale, device=dev, sink=args.sink, window=args.window,
+            force_f_theta=True)
 
     raw = MLXRestoredIncrementalVerifier(
-        mlx_model, embed_scale=embed_scale, aux_layer_ids=aux_layer_ids,
-        bridge_to_torch=bridge)
+        mlx_model, embed_scale=embed_scale, aux_layer_ids=aux_layer_ids, bridge_to_torch=bridge)
     verifier = MLXRestoringVerifierAdapter(
         adapter=raw, mlx_model=mlx_model, aux_layer_ids=aux_layer_ids,
         embed_scale=embed_scale, bridge=bridge)
 
-    prompt_ids = tok.apply_chat_template(
+    prompt_ids = [int(x) for x in tok.apply_chat_template(
         [{"role": "user", "content": args.prompt}],
-        add_generation_prompt=True, tokenize=True, return_dict=False)
-    prompt_ids = [int(x) for x in prompt_ids]
-    _log(f"[e2e] prompt_ids={len(prompt_ids)} tokens, max_new={args.max_new_tokens}, block={args.block_size}")
+        add_generation_prompt=True, tokenize=True, return_dict=False)]
+    _log(f"[e2e] prompt={len(prompt_ids)} tok, max_new={args.max_new_tokens}, block={args.block_size}")
 
-    # ---- 1. greedy baseline (verifier only, same f_θ restoration) ----------
-    base_restore = engine.restore("base", prompt_ids, sink=args.sink, window=args.window,
-                                  s5_exact_full_attn=True, model_id="")
-    rk = {l: wire_to_mlx(k) for (l, k, v) in base_restore.restored}
-    rv = {l: wire_to_mlx(v) for (l, k, v) in base_restore.restored}
-    raw._capture_aux = False
-    raw.prefill(prompt_ids, restored_k_per_layer=rk, restored_v_per_layer=rv,
-                evicted_positions=base_restore.evicted_positions,
-                prefill_chunk_size=512, full_kv=False)
-    t0 = time.perf_counter()
-    baseline: List[int] = [int(mx.argmax(raw.next_token_logits).item())]
-    while len(baseline) < args.max_new_tokens:
-        raw.append_token(baseline[-1])
-        baseline.append(int(mx.argmax(raw.next_token_logits).item()))
-    base_s = time.perf_counter() - t0
-    engine.close_session("base")
-    _log(f"[e2e] greedy baseline: {len(baseline)} tok in {base_s:.2f}s "
+    stop = lambda: None
+    if args.grpc and not remote:
+        addr, stop = _grpc_server(engine)
+    elif remote:
+        addr = args.remote_addr
+
+    def make_proposer(session_id: str):
+        if remote or args.grpc:
+            return RemoteDFlashProposer(addr, session_id=session_id, timeout_s=300.0)
+        return InProcessDFlashProposer(engine, session_id=session_id,
+                                       sink=args.sink, window=args.window)
+
+    def run(block_size: int, session_id: str):
+        prop = make_proposer(session_id)
+        timed = _TimingProposer(prop)
+        dec = DistributedFusedDecoder(timed, verifier, block_size=block_size,
+                                      sink=args.sink, window=args.window)
+        t0 = time.perf_counter()
+        res = dec.generate(prompt_ids, args.max_new_tokens)
+        dt = time.perf_counter() - t0
+        prop.close()
+        return res, dt, timed
+
+    base_res, base_s, _ = run(1, "base")
+    baseline = base_res.output_token_ids
+    _log(f"[e2e] greedy baseline (block=1): {len(baseline)} tok in {base_s:.2f}s "
          f"({len(baseline)/base_s:.2f} tok/s)")
 
-    # ---- 2. distributed in-process (or gRPC loopback) ----------------------
-    if args.grpc:
-        proposer, stop = _grpc_proposer(engine, sink=args.sink, window=args.window)
-    else:
-        proposer, stop = InProcessDFlashProposer(engine, session_id="dist",
-                                                 sink=args.sink, window=args.window), (lambda: None)
-
-    proposer = _TimingProposer(proposer)
-    dec = DistributedFusedDecoder(proposer, verifier, block_size=args.block_size,
-                                  sink=args.sink, window=args.window)
-    t0 = time.perf_counter()
-    res = dec.generate(prompt_ids, args.max_new_tokens)
-    dist_s = time.perf_counter() - t0
-    rtt_report = proposer.report()
-    proposer.close()
+    res, dist_s, timed = run(args.block_size, "dist")
     stop()
-    _log(f"[e2e] RTT/payload per RPC: {rtt_report}")
-
     n = len(res.output_token_ids)
-    _log(f"[e2e] distributed: {n} tok in {dist_s:.2f}s ({n/dist_s:.2f} tok/s) "
-         f"blocks={res.blocks} acceptance={res.acceptance_rate:.3f} "
+    _log(f"[e2e] distributed (block={args.block_size}): {n} tok in {dist_s:.2f}s "
+         f"({n/dist_s:.2f} tok/s) blocks={res.blocks} acceptance={res.acceptance_rate:.3f} "
          f"({res.total_accepted}/{res.total_proposed})")
-    text = tok.decode(res.output_token_ids)
-    _log(f"[e2e] output text:\n{text}")
+    _log(f"[e2e] RTT/payload per RPC: {timed.report()}")
+    _log(f"[e2e] output text:\n{tok.decode(res.output_token_ids)}")
 
-    ok = res.output_token_ids == baseline[:n]
-    if ok:
-        print(f"[e2e] PASS byte-identical-to-greedy ({n} tokens, "
-              f"acceptance={res.acceptance_rate:.3f}, "
+    if res.output_token_ids == baseline[:n]:
+        print(f"[e2e] PASS byte-identical-to-greedy ({n} tok, acceptance={res.acceptance_rate:.3f}, "
               f"baseline={len(baseline)/base_s:.2f} tok/s, dist={n/dist_s:.2f} tok/s)")
         return 0
     print("[e2e] FAIL divergence from greedy", file=sys.stderr)
-    print(f"  baseline={baseline[:n]}", file=sys.stderr)
-    print(f"  dist    ={res.output_token_ids}", file=sys.stderr)
+    print(f"  baseline={baseline[:n]}\n  dist    ={res.output_token_ids}", file=sys.stderr)
     return 1
 
 
-def _grpc_proposer(engine, *, sink: int, window: int):
-    """Start a loopback gRPC DFlashProposerService in a background event loop and
-    return a (RemoteDFlashProposer, stop_fn) pair."""
+def _grpc_server(engine):
     import asyncio
     import threading
 
     import grpc
 
-    from inference_engine.distributed.dflash_service import (
-        RemoteDFlashProposer,
-        add_dflash_proposer_service,
-    )
+    from inference_engine.distributed.dflash_service import add_dflash_proposer_service
 
     holder = {}
     ready = threading.Event()
@@ -247,20 +222,11 @@ def _grpc_proposer(engine, *, sink: int, window: int):
         await server.wait_for_termination()
 
     loop = asyncio.new_event_loop()
-
-    def _run():
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_serve())
-
-    th = threading.Thread(target=_run, daemon=True)
-    th.start()
+    threading.Thread(target=lambda: (asyncio.set_event_loop(loop), loop.run_until_complete(_serve())),
+                     daemon=True).start()
     ready.wait(timeout=30)
-    remote = RemoteDFlashProposer(holder["addr"], session_id="dist", timeout_s=120.0)
-
-    def _stop():
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(holder["server"].stop(0)))
-
-    return remote, _stop
+    return holder["addr"], (lambda: loop.call_soon_threadsafe(
+        lambda: asyncio.ensure_future(holder["server"].stop(0))))
 
 
 if __name__ == "__main__":

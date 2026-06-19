@@ -155,6 +155,30 @@ PRESETS: Dict[str, Preset] = {
             validate_reports=False,
         ),
         Preset(
+            name="mlx-distributed-dflash-e2e-crosshost",
+            description="TRUE cross-host: gemma-4 mlx-4bit verifier on THIS Mac ↔ a "
+                        "remote torch DFlash+f_θ DFlashProposerService on a GPU "
+                        "(107.206.71.138:43032, the vast map of the H200's :6006). "
+                        "Runs greedy (block=1) + distributed (block=N) over the wire "
+                        "and asserts byte-identical, reporting real cross-host RTT.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_distributed_dflash_e2e_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--remote-addr", "107.206.71.138:43032",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-distributed-spec-decode-demo",
             description="ADR 0009 distributed spec-decode, on-device: two local "
                         "processes (n-gram ProposerService + Qwen3-0.6B verifier) "

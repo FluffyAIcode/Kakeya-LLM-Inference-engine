@@ -79,6 +79,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-batched-manual-sdpa",
         "mlx-batched-multitenant",
         "mlx-batched-pad-decode",
+        "mlx-distributed-dflash-e2e-crosshost",
         "mlx-distributed-dflash-e2e-grpc",
         "mlx-distributed-dflash-e2e-inproc",
         "mlx-distributed-spec-decode-bench",
