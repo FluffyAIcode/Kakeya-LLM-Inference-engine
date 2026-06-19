@@ -40,6 +40,8 @@ reader what was *not* chosen.
 | 0006 | [Project positioning as local agent infrastructure](0006-local-agent-infrastructure-positioning.md) | Accepted |
 | 0007 | [Cross-request KV cache reuse for long sessions](0007-cross-request-kv-reuse.md) | Superseded by 0008 |
 | 0008 | [Session-bound runtime + gRPC protocol](0008-session-bound-runtime-and-grpc-protocol.md) | Accepted |
+| 0012 | [Proposer/verifier value proposition: bounded-memory + recall, platform-forked throughput](0012-proposer-verifier-value-proposition.md) | Accepted |
+| 0013 | [Distributed inference topology: what AR sequentiality allows](0013-distributed-inference-topology.md) | Accepted |
 | 0014 | [Agent-connection capacity & cross-host proposer/verifier topology: test plan & results](0014-agent-connection-capacity-and-cross-host-topology-tests.md) | Accepted |
 | 0015 | [Kakeya Inference Engine: a product-grade vLLM replacement, Kakeya Attention native](0015-kakeya-attention-and-engine-substrate.md) | Accepted |
 
