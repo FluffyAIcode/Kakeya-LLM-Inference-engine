@@ -1,0 +1,16 @@
+[dist-demo] python=/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3.13 verifier=Qwen/Qwen3-0.6B max_new=48
+2026-06-19 18:40:42,947 kakeya.demo.distributed INFO verifier node node-a serving CapabilityService on 127.0.0.1:50060
+2026-06-19 18:40:42,948 kakeya.demo.distributed INFO loading verifier Qwen/Qwen3-0.6B (cpu)
+[demo] fleet view after one gossip round (2 node(s)):
+  - node-a @ 127.0.0.1:50060 models=[('Qwen/Qwen3-0.6B', 'VERIFIER')]
+  - node-b @ 127.0.0.1:50061 models=[('ngram', 'PROPOSER')]
+[demo] placement: verifier=Qwen/Qwen3-0.6B@node-a(127.0.0.1:50060) proposer=ngram@node-b(127.0.0.1:50061) colocated=False
+[demo] greedy baseline: 48 tokens in 2.76s
+[demo] distributed spec decode: 48 tokens in 3.20s
+[demo] remote proposer: node=node-b blocks=25 acceptance_rate=0.127 accepted=23/181
+[demo] output text:
+List of numbers from 1 to 30, separated by commas, then repeat the same list again:
+
+1, 2, 3, 4, 5, 6, 7, 8, 9,
+[demo] PASS: spec-decode output is byte-identical to local greedy
+[dist-demo] VERIFIER_RC=0
