@@ -26,6 +26,71 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+class _TimingProposer:
+    """Wraps a proposer, timing each RPC and counting WireTensor payload bytes,
+    so the run reports a real per-block RTT + bandwidth breakdown."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.t = {"restore": [], "seed_context": [], "draft_block": [], "extend_context": []}
+        self.bytes = {"seed_context": 0, "extend_context": 0, "restore": 0}
+
+    @staticmethod
+    def _wbytes(aux) -> int:
+        import numpy as np
+        return int(sum(np.asarray(w.data).nbytes for w in aux))
+
+    def restore(self, prompt_ids, **kw):
+        import time as _t
+        t0 = _t.perf_counter()
+        r = self.inner.restore(prompt_ids, **kw)
+        self.t["restore"].append((_t.perf_counter() - t0) * 1000)
+        self.bytes["restore"] += int(sum(
+            __import__("numpy").asarray(k.data).nbytes + __import__("numpy").asarray(v.data).nbytes
+            for (_, k, v) in r.restored))
+        return r
+
+    def seed_context(self, aux, positions):
+        import time as _t
+        self.bytes["seed_context"] += self._wbytes(aux)
+        t0 = _t.perf_counter()
+        r = self.inner.seed_context(aux, positions)
+        self.t["seed_context"].append((_t.perf_counter() - t0) * 1000)
+        return r
+
+    def draft_block(self, **kw):
+        import time as _t
+        t0 = _t.perf_counter()
+        r = self.inner.draft_block(**kw)
+        self.t["draft_block"].append((_t.perf_counter() - t0) * 1000)
+        return r
+
+    def extend_context(self, aux, positions):
+        import time as _t
+        self.bytes["extend_context"] += self._wbytes(aux)
+        t0 = _t.perf_counter()
+        r = self.inner.extend_context(aux, positions)
+        self.t["extend_context"].append((_t.perf_counter() - t0) * 1000)
+        return r
+
+    def close(self):
+        return self.inner.close()
+
+    def report(self) -> str:
+        import statistics
+        out = []
+        for name in ("restore", "seed_context", "draft_block", "extend_context"):
+            v = self.t[name]
+            if not v:
+                continue
+            mean = statistics.mean(v)
+            p50 = sorted(v)[len(v) // 2]
+            b = self.bytes.get(name, 0)
+            out.append(f"{name}: n={len(v)} mean={mean:.2f}ms p50={p50:.2f}ms"
+                       + (f" bytes={b/1e6:.2f}MB" if b else ""))
+        return " | ".join(out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verifier-path", required=True)
@@ -123,13 +188,16 @@ def main() -> int:
         proposer, stop = InProcessDFlashProposer(engine, session_id="dist",
                                                  sink=args.sink, window=args.window), (lambda: None)
 
+    proposer = _TimingProposer(proposer)
     dec = DistributedFusedDecoder(proposer, verifier, block_size=args.block_size,
                                   sink=args.sink, window=args.window)
     t0 = time.perf_counter()
     res = dec.generate(prompt_ids, args.max_new_tokens)
     dist_s = time.perf_counter() - t0
+    rtt_report = proposer.report()
     proposer.close()
     stop()
+    _log(f"[e2e] RTT/payload per RPC: {rtt_report}")
 
     n = len(res.output_token_ids)
     _log(f"[e2e] distributed: {n} tok in {dist_s:.2f}s ({n/dist_s:.2f} tok/s) "
