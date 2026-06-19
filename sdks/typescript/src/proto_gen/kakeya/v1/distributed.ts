@@ -207,6 +207,95 @@ export interface ProposeBlockResponse {
   peakActivationBytes: string;
 }
 
+/**
+ * Tensor is a framework-neutral dense tensor: a numpy-style dtype string, an
+ * int64 shape, and the little-endian raw buffer (numpy.tobytes). bfloat16 has
+ * no numpy scalar, so it travels as the logical dtype "bfloat16" over a uint16
+ * bit buffer and is rebuilt by the torch/mlx bridge at the endpoint.
+ */
+export interface Tensor {
+  /** float32|float16|bfloat16|int32|int64|uint32|bool */
+  dtype: string;
+  shape: string[];
+  data: Uint8Array;
+}
+
+/** LayerKV is one verifier layer's restored K and V banks. */
+export interface LayerKV {
+  /** verifier layer index this K/V belongs to */
+  layer: number;
+  k?: Tensor | undefined;
+  v?: Tensor | undefined;
+}
+
+export interface RestoreRequest {
+  sessionId: string;
+  promptIds: number[];
+  sink: number;
+  window: number;
+  /**
+   * When true, full-attention (exact) layers are omitted from the response;
+   * the verifier's native cache holds them (the S5 free lunch on gemma-4).
+   */
+  s5ExactFullAttn: boolean;
+  modelId: string;
+}
+
+export interface RestoreResponse {
+  /** f_θ-projected verifier K/V for the layers the verifier must restore. */
+  restored: LayerKV[];
+  /** Middle positions evicted from the sink+window (outside [sink, T-window)). */
+  evictedPositions: number[];
+  promptLen: number;
+}
+
+export interface SeedContextRequest {
+  sessionId: string;
+  /** num_aux tensors, each [1, T, hidden]: verifier aux-layer hidden over prompt. */
+  aux: Tensor[];
+  positions: number[];
+}
+
+export interface SeedContextResponse {
+  contextLen: number;
+}
+
+export interface DraftBlockRequest {
+  sessionId: string;
+  bonusTokenId: number;
+  contextLen: number;
+  /**
+   * Number of draft tokens to return (L-1 in the fused loop; the bonus is the
+   * verifier's guaranteed-correct first token, handled caller-side).
+   */
+  blockSize: number;
+}
+
+export interface DraftBlockResponse {
+  /** exactly block_size drafts */
+  draftTokenIds: number[];
+  forwardPasses: number;
+  peakActivationBytes: string;
+}
+
+export interface ExtendContextRequest {
+  sessionId: string;
+  /** num_aux tensors, each [1, k, hidden] for the k newly committed positions. */
+  aux: Tensor[];
+  positions: number[];
+}
+
+export interface ExtendContextResponse {
+  contextLen: number;
+}
+
+export interface CloseDFlashSessionRequest {
+  sessionId: string;
+}
+
+export interface CloseDFlashSessionResponse {
+}
+
 function createBaseModelCapability(): ModelCapability {
   return { modelId: "", role: 0, quantization: "", tokensPerSecond: 0 };
 }
@@ -1054,6 +1143,1177 @@ export const ProposeBlockResponse: MessageFns<ProposeBlockResponse> = {
   },
 };
 
+function createBaseTensor(): Tensor {
+  return { dtype: "", shape: [], data: new Uint8Array(0) };
+}
+
+export const Tensor: MessageFns<Tensor> = {
+  encode(message: Tensor, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.dtype !== "") {
+      writer.uint32(10).string(message.dtype);
+    }
+    writer.uint32(18).fork();
+    for (const v of message.shape) {
+      writer.int64(v);
+    }
+    writer.join();
+    if (message.data.length !== 0) {
+      writer.uint32(26).bytes(message.data);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Tensor {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseTensor();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.dtype = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag === 16) {
+            message.shape.push(reader.int64().toString());
+
+            continue;
+          }
+
+          if (tag === 18) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.shape.push(reader.int64().toString());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.data = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Tensor {
+    return {
+      dtype: isSet(object.dtype) ? globalThis.String(object.dtype) : "",
+      shape: globalThis.Array.isArray(object?.shape) ? object.shape.map((e: any) => globalThis.String(e)) : [],
+      data: isSet(object.data) ? bytesFromBase64(object.data) : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: Tensor): unknown {
+    const obj: any = {};
+    if (message.dtype !== "") {
+      obj.dtype = message.dtype;
+    }
+    if (message.shape?.length) {
+      obj.shape = message.shape;
+    }
+    if (message.data.length !== 0) {
+      obj.data = base64FromBytes(message.data);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<Tensor>, I>>(base?: I): Tensor {
+    return Tensor.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<Tensor>, I>>(object: I): Tensor {
+    const message = createBaseTensor();
+    message.dtype = object.dtype ?? "";
+    message.shape = object.shape?.map((e) => e) || [];
+    message.data = object.data ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseLayerKV(): LayerKV {
+  return { layer: 0, k: undefined, v: undefined };
+}
+
+export const LayerKV: MessageFns<LayerKV> = {
+  encode(message: LayerKV, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.layer !== 0) {
+      writer.uint32(8).int32(message.layer);
+    }
+    if (message.k !== undefined) {
+      Tensor.encode(message.k, writer.uint32(18).fork()).join();
+    }
+    if (message.v !== undefined) {
+      Tensor.encode(message.v, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): LayerKV {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseLayerKV();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.layer = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.k = Tensor.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.v = Tensor.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): LayerKV {
+    return {
+      layer: isSet(object.layer) ? globalThis.Number(object.layer) : 0,
+      k: isSet(object.k) ? Tensor.fromJSON(object.k) : undefined,
+      v: isSet(object.v) ? Tensor.fromJSON(object.v) : undefined,
+    };
+  },
+
+  toJSON(message: LayerKV): unknown {
+    const obj: any = {};
+    if (message.layer !== 0) {
+      obj.layer = Math.round(message.layer);
+    }
+    if (message.k !== undefined) {
+      obj.k = Tensor.toJSON(message.k);
+    }
+    if (message.v !== undefined) {
+      obj.v = Tensor.toJSON(message.v);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<LayerKV>, I>>(base?: I): LayerKV {
+    return LayerKV.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<LayerKV>, I>>(object: I): LayerKV {
+    const message = createBaseLayerKV();
+    message.layer = object.layer ?? 0;
+    message.k = (object.k !== undefined && object.k !== null) ? Tensor.fromPartial(object.k) : undefined;
+    message.v = (object.v !== undefined && object.v !== null) ? Tensor.fromPartial(object.v) : undefined;
+    return message;
+  },
+};
+
+function createBaseRestoreRequest(): RestoreRequest {
+  return { sessionId: "", promptIds: [], sink: 0, window: 0, s5ExactFullAttn: false, modelId: "" };
+}
+
+export const RestoreRequest: MessageFns<RestoreRequest> = {
+  encode(message: RestoreRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sessionId !== "") {
+      writer.uint32(10).string(message.sessionId);
+    }
+    writer.uint32(18).fork();
+    for (const v of message.promptIds) {
+      writer.uint32(v);
+    }
+    writer.join();
+    if (message.sink !== 0) {
+      writer.uint32(24).uint32(message.sink);
+    }
+    if (message.window !== 0) {
+      writer.uint32(32).uint32(message.window);
+    }
+    if (message.s5ExactFullAttn !== false) {
+      writer.uint32(40).bool(message.s5ExactFullAttn);
+    }
+    if (message.modelId !== "") {
+      writer.uint32(50).string(message.modelId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RestoreRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRestoreRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag === 16) {
+            message.promptIds.push(reader.uint32());
+
+            continue;
+          }
+
+          if (tag === 18) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.promptIds.push(reader.uint32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.sink = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.window = reader.uint32();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.s5ExactFullAttn = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.modelId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RestoreRequest {
+    return {
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      promptIds: globalThis.Array.isArray(object?.promptIds)
+        ? object.promptIds.map((e: any) => globalThis.Number(e))
+        : globalThis.Array.isArray(object?.prompt_ids)
+        ? object.prompt_ids.map((e: any) => globalThis.Number(e))
+        : [],
+      sink: isSet(object.sink) ? globalThis.Number(object.sink) : 0,
+      window: isSet(object.window) ? globalThis.Number(object.window) : 0,
+      s5ExactFullAttn: isSet(object.s5ExactFullAttn)
+        ? globalThis.Boolean(object.s5ExactFullAttn)
+        : isSet(object.s5_exact_full_attn)
+        ? globalThis.Boolean(object.s5_exact_full_attn)
+        : false,
+      modelId: isSet(object.modelId)
+        ? globalThis.String(object.modelId)
+        : isSet(object.model_id)
+        ? globalThis.String(object.model_id)
+        : "",
+    };
+  },
+
+  toJSON(message: RestoreRequest): unknown {
+    const obj: any = {};
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.promptIds?.length) {
+      obj.promptIds = message.promptIds.map((e) => Math.round(e));
+    }
+    if (message.sink !== 0) {
+      obj.sink = Math.round(message.sink);
+    }
+    if (message.window !== 0) {
+      obj.window = Math.round(message.window);
+    }
+    if (message.s5ExactFullAttn !== false) {
+      obj.s5ExactFullAttn = message.s5ExactFullAttn;
+    }
+    if (message.modelId !== "") {
+      obj.modelId = message.modelId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<RestoreRequest>, I>>(base?: I): RestoreRequest {
+    return RestoreRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RestoreRequest>, I>>(object: I): RestoreRequest {
+    const message = createBaseRestoreRequest();
+    message.sessionId = object.sessionId ?? "";
+    message.promptIds = object.promptIds?.map((e) => e) || [];
+    message.sink = object.sink ?? 0;
+    message.window = object.window ?? 0;
+    message.s5ExactFullAttn = object.s5ExactFullAttn ?? false;
+    message.modelId = object.modelId ?? "";
+    return message;
+  },
+};
+
+function createBaseRestoreResponse(): RestoreResponse {
+  return { restored: [], evictedPositions: [], promptLen: 0 };
+}
+
+export const RestoreResponse: MessageFns<RestoreResponse> = {
+  encode(message: RestoreResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.restored) {
+      LayerKV.encode(v!, writer.uint32(10).fork()).join();
+    }
+    writer.uint32(18).fork();
+    for (const v of message.evictedPositions) {
+      writer.int32(v);
+    }
+    writer.join();
+    if (message.promptLen !== 0) {
+      writer.uint32(24).uint32(message.promptLen);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RestoreResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRestoreResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.restored.push(LayerKV.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 2: {
+          if (tag === 16) {
+            message.evictedPositions.push(reader.int32());
+
+            continue;
+          }
+
+          if (tag === 18) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.evictedPositions.push(reader.int32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.promptLen = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RestoreResponse {
+    return {
+      restored: globalThis.Array.isArray(object?.restored) ? object.restored.map((e: any) => LayerKV.fromJSON(e)) : [],
+      evictedPositions: globalThis.Array.isArray(object?.evictedPositions)
+        ? object.evictedPositions.map((e: any) => globalThis.Number(e))
+        : globalThis.Array.isArray(object?.evicted_positions)
+        ? object.evicted_positions.map((e: any) => globalThis.Number(e))
+        : [],
+      promptLen: isSet(object.promptLen)
+        ? globalThis.Number(object.promptLen)
+        : isSet(object.prompt_len)
+        ? globalThis.Number(object.prompt_len)
+        : 0,
+    };
+  },
+
+  toJSON(message: RestoreResponse): unknown {
+    const obj: any = {};
+    if (message.restored?.length) {
+      obj.restored = message.restored.map((e) => LayerKV.toJSON(e));
+    }
+    if (message.evictedPositions?.length) {
+      obj.evictedPositions = message.evictedPositions.map((e) => Math.round(e));
+    }
+    if (message.promptLen !== 0) {
+      obj.promptLen = Math.round(message.promptLen);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<RestoreResponse>, I>>(base?: I): RestoreResponse {
+    return RestoreResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RestoreResponse>, I>>(object: I): RestoreResponse {
+    const message = createBaseRestoreResponse();
+    message.restored = object.restored?.map((e) => LayerKV.fromPartial(e)) || [];
+    message.evictedPositions = object.evictedPositions?.map((e) => e) || [];
+    message.promptLen = object.promptLen ?? 0;
+    return message;
+  },
+};
+
+function createBaseSeedContextRequest(): SeedContextRequest {
+  return { sessionId: "", aux: [], positions: [] };
+}
+
+export const SeedContextRequest: MessageFns<SeedContextRequest> = {
+  encode(message: SeedContextRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sessionId !== "") {
+      writer.uint32(10).string(message.sessionId);
+    }
+    for (const v of message.aux) {
+      Tensor.encode(v!, writer.uint32(18).fork()).join();
+    }
+    writer.uint32(26).fork();
+    for (const v of message.positions) {
+      writer.int32(v);
+    }
+    writer.join();
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SeedContextRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSeedContextRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.aux.push(Tensor.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag === 24) {
+            message.positions.push(reader.int32());
+
+            continue;
+          }
+
+          if (tag === 26) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.positions.push(reader.int32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SeedContextRequest {
+    return {
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      aux: globalThis.Array.isArray(object?.aux) ? object.aux.map((e: any) => Tensor.fromJSON(e)) : [],
+      positions: globalThis.Array.isArray(object?.positions)
+        ? object.positions.map((e: any) => globalThis.Number(e))
+        : [],
+    };
+  },
+
+  toJSON(message: SeedContextRequest): unknown {
+    const obj: any = {};
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.aux?.length) {
+      obj.aux = message.aux.map((e) => Tensor.toJSON(e));
+    }
+    if (message.positions?.length) {
+      obj.positions = message.positions.map((e) => Math.round(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SeedContextRequest>, I>>(base?: I): SeedContextRequest {
+    return SeedContextRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SeedContextRequest>, I>>(object: I): SeedContextRequest {
+    const message = createBaseSeedContextRequest();
+    message.sessionId = object.sessionId ?? "";
+    message.aux = object.aux?.map((e) => Tensor.fromPartial(e)) || [];
+    message.positions = object.positions?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseSeedContextResponse(): SeedContextResponse {
+  return { contextLen: 0 };
+}
+
+export const SeedContextResponse: MessageFns<SeedContextResponse> = {
+  encode(message: SeedContextResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.contextLen !== 0) {
+      writer.uint32(8).uint32(message.contextLen);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SeedContextResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSeedContextResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.contextLen = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SeedContextResponse {
+    return {
+      contextLen: isSet(object.contextLen)
+        ? globalThis.Number(object.contextLen)
+        : isSet(object.context_len)
+        ? globalThis.Number(object.context_len)
+        : 0,
+    };
+  },
+
+  toJSON(message: SeedContextResponse): unknown {
+    const obj: any = {};
+    if (message.contextLen !== 0) {
+      obj.contextLen = Math.round(message.contextLen);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SeedContextResponse>, I>>(base?: I): SeedContextResponse {
+    return SeedContextResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SeedContextResponse>, I>>(object: I): SeedContextResponse {
+    const message = createBaseSeedContextResponse();
+    message.contextLen = object.contextLen ?? 0;
+    return message;
+  },
+};
+
+function createBaseDraftBlockRequest(): DraftBlockRequest {
+  return { sessionId: "", bonusTokenId: 0, contextLen: 0, blockSize: 0 };
+}
+
+export const DraftBlockRequest: MessageFns<DraftBlockRequest> = {
+  encode(message: DraftBlockRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sessionId !== "") {
+      writer.uint32(10).string(message.sessionId);
+    }
+    if (message.bonusTokenId !== 0) {
+      writer.uint32(16).uint32(message.bonusTokenId);
+    }
+    if (message.contextLen !== 0) {
+      writer.uint32(24).uint32(message.contextLen);
+    }
+    if (message.blockSize !== 0) {
+      writer.uint32(32).uint32(message.blockSize);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DraftBlockRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDraftBlockRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.bonusTokenId = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.contextLen = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.blockSize = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DraftBlockRequest {
+    return {
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      bonusTokenId: isSet(object.bonusTokenId)
+        ? globalThis.Number(object.bonusTokenId)
+        : isSet(object.bonus_token_id)
+        ? globalThis.Number(object.bonus_token_id)
+        : 0,
+      contextLen: isSet(object.contextLen)
+        ? globalThis.Number(object.contextLen)
+        : isSet(object.context_len)
+        ? globalThis.Number(object.context_len)
+        : 0,
+      blockSize: isSet(object.blockSize)
+        ? globalThis.Number(object.blockSize)
+        : isSet(object.block_size)
+        ? globalThis.Number(object.block_size)
+        : 0,
+    };
+  },
+
+  toJSON(message: DraftBlockRequest): unknown {
+    const obj: any = {};
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.bonusTokenId !== 0) {
+      obj.bonusTokenId = Math.round(message.bonusTokenId);
+    }
+    if (message.contextLen !== 0) {
+      obj.contextLen = Math.round(message.contextLen);
+    }
+    if (message.blockSize !== 0) {
+      obj.blockSize = Math.round(message.blockSize);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DraftBlockRequest>, I>>(base?: I): DraftBlockRequest {
+    return DraftBlockRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DraftBlockRequest>, I>>(object: I): DraftBlockRequest {
+    const message = createBaseDraftBlockRequest();
+    message.sessionId = object.sessionId ?? "";
+    message.bonusTokenId = object.bonusTokenId ?? 0;
+    message.contextLen = object.contextLen ?? 0;
+    message.blockSize = object.blockSize ?? 0;
+    return message;
+  },
+};
+
+function createBaseDraftBlockResponse(): DraftBlockResponse {
+  return { draftTokenIds: [], forwardPasses: 0, peakActivationBytes: "0" };
+}
+
+export const DraftBlockResponse: MessageFns<DraftBlockResponse> = {
+  encode(message: DraftBlockResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    writer.uint32(10).fork();
+    for (const v of message.draftTokenIds) {
+      writer.uint32(v);
+    }
+    writer.join();
+    if (message.forwardPasses !== 0) {
+      writer.uint32(16).uint32(message.forwardPasses);
+    }
+    if (message.peakActivationBytes !== "0") {
+      writer.uint32(24).uint64(message.peakActivationBytes);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DraftBlockResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDraftBlockResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag === 8) {
+            message.draftTokenIds.push(reader.uint32());
+
+            continue;
+          }
+
+          if (tag === 10) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.draftTokenIds.push(reader.uint32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.forwardPasses = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.peakActivationBytes = reader.uint64().toString();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DraftBlockResponse {
+    return {
+      draftTokenIds: globalThis.Array.isArray(object?.draftTokenIds)
+        ? object.draftTokenIds.map((e: any) => globalThis.Number(e))
+        : globalThis.Array.isArray(object?.draft_token_ids)
+        ? object.draft_token_ids.map((e: any) => globalThis.Number(e))
+        : [],
+      forwardPasses: isSet(object.forwardPasses)
+        ? globalThis.Number(object.forwardPasses)
+        : isSet(object.forward_passes)
+        ? globalThis.Number(object.forward_passes)
+        : 0,
+      peakActivationBytes: isSet(object.peakActivationBytes)
+        ? globalThis.String(object.peakActivationBytes)
+        : isSet(object.peak_activation_bytes)
+        ? globalThis.String(object.peak_activation_bytes)
+        : "0",
+    };
+  },
+
+  toJSON(message: DraftBlockResponse): unknown {
+    const obj: any = {};
+    if (message.draftTokenIds?.length) {
+      obj.draftTokenIds = message.draftTokenIds.map((e) => Math.round(e));
+    }
+    if (message.forwardPasses !== 0) {
+      obj.forwardPasses = Math.round(message.forwardPasses);
+    }
+    if (message.peakActivationBytes !== "0") {
+      obj.peakActivationBytes = message.peakActivationBytes;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DraftBlockResponse>, I>>(base?: I): DraftBlockResponse {
+    return DraftBlockResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DraftBlockResponse>, I>>(object: I): DraftBlockResponse {
+    const message = createBaseDraftBlockResponse();
+    message.draftTokenIds = object.draftTokenIds?.map((e) => e) || [];
+    message.forwardPasses = object.forwardPasses ?? 0;
+    message.peakActivationBytes = object.peakActivationBytes ?? "0";
+    return message;
+  },
+};
+
+function createBaseExtendContextRequest(): ExtendContextRequest {
+  return { sessionId: "", aux: [], positions: [] };
+}
+
+export const ExtendContextRequest: MessageFns<ExtendContextRequest> = {
+  encode(message: ExtendContextRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sessionId !== "") {
+      writer.uint32(10).string(message.sessionId);
+    }
+    for (const v of message.aux) {
+      Tensor.encode(v!, writer.uint32(18).fork()).join();
+    }
+    writer.uint32(26).fork();
+    for (const v of message.positions) {
+      writer.int32(v);
+    }
+    writer.join();
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ExtendContextRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseExtendContextRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.aux.push(Tensor.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 3: {
+          if (tag === 24) {
+            message.positions.push(reader.int32());
+
+            continue;
+          }
+
+          if (tag === 26) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.positions.push(reader.int32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ExtendContextRequest {
+    return {
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+      aux: globalThis.Array.isArray(object?.aux) ? object.aux.map((e: any) => Tensor.fromJSON(e)) : [],
+      positions: globalThis.Array.isArray(object?.positions)
+        ? object.positions.map((e: any) => globalThis.Number(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ExtendContextRequest): unknown {
+    const obj: any = {};
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    if (message.aux?.length) {
+      obj.aux = message.aux.map((e) => Tensor.toJSON(e));
+    }
+    if (message.positions?.length) {
+      obj.positions = message.positions.map((e) => Math.round(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ExtendContextRequest>, I>>(base?: I): ExtendContextRequest {
+    return ExtendContextRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ExtendContextRequest>, I>>(object: I): ExtendContextRequest {
+    const message = createBaseExtendContextRequest();
+    message.sessionId = object.sessionId ?? "";
+    message.aux = object.aux?.map((e) => Tensor.fromPartial(e)) || [];
+    message.positions = object.positions?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseExtendContextResponse(): ExtendContextResponse {
+  return { contextLen: 0 };
+}
+
+export const ExtendContextResponse: MessageFns<ExtendContextResponse> = {
+  encode(message: ExtendContextResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.contextLen !== 0) {
+      writer.uint32(8).uint32(message.contextLen);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ExtendContextResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseExtendContextResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.contextLen = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ExtendContextResponse {
+    return {
+      contextLen: isSet(object.contextLen)
+        ? globalThis.Number(object.contextLen)
+        : isSet(object.context_len)
+        ? globalThis.Number(object.context_len)
+        : 0,
+    };
+  },
+
+  toJSON(message: ExtendContextResponse): unknown {
+    const obj: any = {};
+    if (message.contextLen !== 0) {
+      obj.contextLen = Math.round(message.contextLen);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ExtendContextResponse>, I>>(base?: I): ExtendContextResponse {
+    return ExtendContextResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ExtendContextResponse>, I>>(object: I): ExtendContextResponse {
+    const message = createBaseExtendContextResponse();
+    message.contextLen = object.contextLen ?? 0;
+    return message;
+  },
+};
+
+function createBaseCloseDFlashSessionRequest(): CloseDFlashSessionRequest {
+  return { sessionId: "" };
+}
+
+export const CloseDFlashSessionRequest: MessageFns<CloseDFlashSessionRequest> = {
+  encode(message: CloseDFlashSessionRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.sessionId !== "") {
+      writer.uint32(10).string(message.sessionId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CloseDFlashSessionRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCloseDFlashSessionRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.sessionId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CloseDFlashSessionRequest {
+    return {
+      sessionId: isSet(object.sessionId)
+        ? globalThis.String(object.sessionId)
+        : isSet(object.session_id)
+        ? globalThis.String(object.session_id)
+        : "",
+    };
+  },
+
+  toJSON(message: CloseDFlashSessionRequest): unknown {
+    const obj: any = {};
+    if (message.sessionId !== "") {
+      obj.sessionId = message.sessionId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CloseDFlashSessionRequest>, I>>(base?: I): CloseDFlashSessionRequest {
+    return CloseDFlashSessionRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CloseDFlashSessionRequest>, I>>(object: I): CloseDFlashSessionRequest {
+    const message = createBaseCloseDFlashSessionRequest();
+    message.sessionId = object.sessionId ?? "";
+    return message;
+  },
+};
+
+function createBaseCloseDFlashSessionResponse(): CloseDFlashSessionResponse {
+  return {};
+}
+
+export const CloseDFlashSessionResponse: MessageFns<CloseDFlashSessionResponse> = {
+  encode(_: CloseDFlashSessionResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CloseDFlashSessionResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCloseDFlashSessionResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): CloseDFlashSessionResponse {
+    return {};
+  },
+
+  toJSON(_: CloseDFlashSessionResponse): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CloseDFlashSessionResponse>, I>>(base?: I): CloseDFlashSessionResponse {
+    return CloseDFlashSessionResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CloseDFlashSessionResponse>, I>>(_: I): CloseDFlashSessionResponse {
+    const message = createBaseCloseDFlashSessionResponse();
+    return message;
+  },
+};
+
 /**
  * CapabilityService is served by every Kakeya node that participates
  * in a fleet. Both RPCs are safe to call from any peer at any time;
@@ -1238,6 +2498,245 @@ export const ProposerServiceClient = makeGenericClientConstructor(
   service: typeof ProposerServiceService;
   serviceName: string;
 };
+
+/**
+ * DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
+ * Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext
+ * (verifier aux hidden -> drafter context K/V). Per decode block: DraftBlock
+ * (bonus + context_len -> draft tokens) then ExtendContext (committed aux ->
+ * grow drafter context). CloseSession frees host-B state.
+ */
+export type DFlashProposerServiceService = typeof DFlashProposerServiceService;
+export const DFlashProposerServiceService = {
+  /**
+   * Restore drafts the f_θ-projected verifier K/V banks for the prompt: host B
+   * embeds prompt_ids (verifier embedding), runs the DFlash drafter, and maps
+   * its K/V through f_θ into verifier K/V space. With s5_exact_full_attn the
+   * full-attention layers are omitted (the verifier's native cache owns them);
+   * only sliding-layer banks are returned. Opens the session.
+   */
+  restore: {
+    path: "/kakeya.v1.DFlashProposerService/Restore" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: RestoreRequest): Buffer => Buffer.from(RestoreRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): RestoreRequest => RestoreRequest.decode(value),
+    responseSerialize: (value: RestoreResponse): Buffer => Buffer.from(RestoreResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): RestoreResponse => RestoreResponse.decode(value),
+  },
+  /**
+   * SeedContext builds host B's drafter context K/V from the verifier's aux
+   * hidden states over the prompt (host A computed these during its prefill).
+   */
+  seedContext: {
+    path: "/kakeya.v1.DFlashProposerService/SeedContext" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: SeedContextRequest): Buffer => Buffer.from(SeedContextRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): SeedContextRequest => SeedContextRequest.decode(value),
+    responseSerialize: (value: SeedContextResponse): Buffer => Buffer.from(SeedContextResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): SeedContextResponse => SeedContextResponse.decode(value),
+  },
+  /**
+   * DraftBlock returns exactly block_size draft tokens for the upcoming block,
+   * conditioned on the verifier's bonus token + the session's context K/V.
+   */
+  draftBlock: {
+    path: "/kakeya.v1.DFlashProposerService/DraftBlock" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: DraftBlockRequest): Buffer => Buffer.from(DraftBlockRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): DraftBlockRequest => DraftBlockRequest.decode(value),
+    responseSerialize: (value: DraftBlockResponse): Buffer => Buffer.from(DraftBlockResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): DraftBlockResponse => DraftBlockResponse.decode(value),
+  },
+  /**
+   * ExtendContext appends the aux hidden of the just-committed tokens to host
+   * B's drafter context K/V (O(block_size), not O(prefix)).
+   */
+  extendContext: {
+    path: "/kakeya.v1.DFlashProposerService/ExtendContext" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: ExtendContextRequest): Buffer => Buffer.from(ExtendContextRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): ExtendContextRequest => ExtendContextRequest.decode(value),
+    responseSerialize: (value: ExtendContextResponse): Buffer =>
+      Buffer.from(ExtendContextResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): ExtendContextResponse => ExtendContextResponse.decode(value),
+  },
+  /** CloseSession releases host-B per-session state. Idempotent. */
+  closeSession: {
+    path: "/kakeya.v1.DFlashProposerService/CloseSession" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: CloseDFlashSessionRequest): Buffer =>
+      Buffer.from(CloseDFlashSessionRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): CloseDFlashSessionRequest => CloseDFlashSessionRequest.decode(value),
+    responseSerialize: (value: CloseDFlashSessionResponse): Buffer =>
+      Buffer.from(CloseDFlashSessionResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): CloseDFlashSessionResponse => CloseDFlashSessionResponse.decode(value),
+  },
+} as const;
+
+export interface DFlashProposerServiceServer extends UntypedServiceImplementation {
+  /**
+   * Restore drafts the f_θ-projected verifier K/V banks for the prompt: host B
+   * embeds prompt_ids (verifier embedding), runs the DFlash drafter, and maps
+   * its K/V through f_θ into verifier K/V space. With s5_exact_full_attn the
+   * full-attention layers are omitted (the verifier's native cache owns them);
+   * only sliding-layer banks are returned. Opens the session.
+   */
+  restore: handleUnaryCall<RestoreRequest, RestoreResponse>;
+  /**
+   * SeedContext builds host B's drafter context K/V from the verifier's aux
+   * hidden states over the prompt (host A computed these during its prefill).
+   */
+  seedContext: handleUnaryCall<SeedContextRequest, SeedContextResponse>;
+  /**
+   * DraftBlock returns exactly block_size draft tokens for the upcoming block,
+   * conditioned on the verifier's bonus token + the session's context K/V.
+   */
+  draftBlock: handleUnaryCall<DraftBlockRequest, DraftBlockResponse>;
+  /**
+   * ExtendContext appends the aux hidden of the just-committed tokens to host
+   * B's drafter context K/V (O(block_size), not O(prefix)).
+   */
+  extendContext: handleUnaryCall<ExtendContextRequest, ExtendContextResponse>;
+  /** CloseSession releases host-B per-session state. Idempotent. */
+  closeSession: handleUnaryCall<CloseDFlashSessionRequest, CloseDFlashSessionResponse>;
+}
+
+export interface DFlashProposerServiceClient extends Client {
+  /**
+   * Restore drafts the f_θ-projected verifier K/V banks for the prompt: host B
+   * embeds prompt_ids (verifier embedding), runs the DFlash drafter, and maps
+   * its K/V through f_θ into verifier K/V space. With s5_exact_full_attn the
+   * full-attention layers are omitted (the verifier's native cache owns them);
+   * only sliding-layer banks are returned. Opens the session.
+   */
+  restore(
+    request: RestoreRequest,
+    callback: (error: ServiceError | null, response: RestoreResponse) => void,
+  ): ClientUnaryCall;
+  restore(
+    request: RestoreRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: RestoreResponse) => void,
+  ): ClientUnaryCall;
+  restore(
+    request: RestoreRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: RestoreResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * SeedContext builds host B's drafter context K/V from the verifier's aux
+   * hidden states over the prompt (host A computed these during its prefill).
+   */
+  seedContext(
+    request: SeedContextRequest,
+    callback: (error: ServiceError | null, response: SeedContextResponse) => void,
+  ): ClientUnaryCall;
+  seedContext(
+    request: SeedContextRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: SeedContextResponse) => void,
+  ): ClientUnaryCall;
+  seedContext(
+    request: SeedContextRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: SeedContextResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * DraftBlock returns exactly block_size draft tokens for the upcoming block,
+   * conditioned on the verifier's bonus token + the session's context K/V.
+   */
+  draftBlock(
+    request: DraftBlockRequest,
+    callback: (error: ServiceError | null, response: DraftBlockResponse) => void,
+  ): ClientUnaryCall;
+  draftBlock(
+    request: DraftBlockRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: DraftBlockResponse) => void,
+  ): ClientUnaryCall;
+  draftBlock(
+    request: DraftBlockRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: DraftBlockResponse) => void,
+  ): ClientUnaryCall;
+  /**
+   * ExtendContext appends the aux hidden of the just-committed tokens to host
+   * B's drafter context K/V (O(block_size), not O(prefix)).
+   */
+  extendContext(
+    request: ExtendContextRequest,
+    callback: (error: ServiceError | null, response: ExtendContextResponse) => void,
+  ): ClientUnaryCall;
+  extendContext(
+    request: ExtendContextRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: ExtendContextResponse) => void,
+  ): ClientUnaryCall;
+  extendContext(
+    request: ExtendContextRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: ExtendContextResponse) => void,
+  ): ClientUnaryCall;
+  /** CloseSession releases host-B per-session state. Idempotent. */
+  closeSession(
+    request: CloseDFlashSessionRequest,
+    callback: (error: ServiceError | null, response: CloseDFlashSessionResponse) => void,
+  ): ClientUnaryCall;
+  closeSession(
+    request: CloseDFlashSessionRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: CloseDFlashSessionResponse) => void,
+  ): ClientUnaryCall;
+  closeSession(
+    request: CloseDFlashSessionRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: CloseDFlashSessionResponse) => void,
+  ): ClientUnaryCall;
+}
+
+export const DFlashProposerServiceClient = makeGenericClientConstructor(
+  DFlashProposerServiceService,
+  "kakeya.v1.DFlashProposerService",
+) as unknown as {
+  new (address: string, credentials: ChannelCredentials, options?: Partial<ClientOptions>): DFlashProposerServiceClient;
+  service: typeof DFlashProposerServiceService;
+  serviceName: string;
+};
+
+function bytesFromBase64(b64: string): Uint8Array {
+  if ((globalThis as any).Buffer) {
+    return Uint8Array.from((globalThis as any).Buffer.from(b64, "base64"));
+  } else {
+    const bin = globalThis.atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; ++i) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return arr;
+  }
+}
+
+function base64FromBytes(arr: Uint8Array): string {
+  if ((globalThis as any).Buffer) {
+    return (globalThis as any).Buffer.from(arr).toString("base64");
+  } else {
+    const bin: string[] = [];
+    arr.forEach((byte) => {
+      bin.push(globalThis.String.fromCharCode(byte));
+    });
+    return globalThis.btoa(bin.join(""));
+  }
+}
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
 
