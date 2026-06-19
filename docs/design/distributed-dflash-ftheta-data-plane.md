@@ -144,11 +144,23 @@ Measured VM→H200 over an SSH `-L` tunnel (real GPU compute; true data-plane pa
 | **DraftBlock** | **108 ms** | O(1) | H200 DFlash forward + net RTT — **vs 232 ms on the Mac CPU (loopback)**: the GPU offload cuts draft compute |
 | ExtendContext | 140 ms | 0.27 MB/block | committed aux — bandwidth-dominated cross-host |
 
-Per-block (draft+extend) p50 ≈ **248 ms** over the SSH tunnel. Caveats: the SSH
-single-stream inflates transfer-bound RPCs vs a direct gRPC link; VM↔H200 base RTT
-≈ 52 ms; byte-identical correctness is proven on the Mac loopback (same engine code).
-The Mac↔H200 byte-identical run uses the same path via `mlx-distributed-dflash-e2e-
-crosshost` with `ssh -p 43350 root@107.206.71.138 -L 50070:localhost:50070` active.
+Per-block (draft+extend) p50 ≈ **248 ms** over the SSH tunnel.
+
+**Production topology, Mac mini ↔ H200, byte-identical (landed):** gemma-4-mlx-4bit
+verifier on the Mac mini ↔ torch DFlash+f_θ on the H200 over an SSH `-L` tunnel
+(`mlx-distributed-dflash-e2e-crosshost`):
+
+| RPC | p50 | payload |
+|---|---|---|
+| Restore | 3189 ms | 11.47 MB (one-time) |
+| SeedContext | 412 ms | 1.89 MB (one-time) |
+| DraftBlock | 268 ms | O(1) |
+| ExtendContext | 316 ms | 0.27 MB/block |
+
+block=4 distributed = **3.70 tok/s, acceptance 0.863, PASS byte-identical to greedy**
+(vs block=1 1.03 tok/s — spec-decode amortizes per-block RTT, 3.6×). Cross-host cost
+is network-RTT + per-block aux bandwidth bound; GA optimizations: aux quantization/
+compression + same-rack placement.
 
 ### (historical) Remaining for the LIVE Mac↔GPU number
 The GPU (CUDA) cannot run MLX, so the GPU-side engine needs a **torch embedding**
