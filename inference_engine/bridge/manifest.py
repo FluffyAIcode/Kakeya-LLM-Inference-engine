@@ -29,6 +29,7 @@ BRANCH_PREFIX = "mac-bridge/"
 # bridge is for evidence runs and debugging, not for monopolizing the
 # single Mac with open-ended workloads.
 MAX_N_SAMPLES = 50
+MAX_RTT_SAMPLES = 5000  # gRPC RTT bench: enough samples for a stable p99
 MAX_NEW_TOKENS = 2048  # backstop for chat; natural EOS stops well before this
 MAX_BLOCK_SIZE = 16
 
@@ -56,7 +57,8 @@ class Preset:
     description: str
     command_templates: Tuple[Tuple[str, ...], ...]
     timeout_minutes: int
-    # name -> (kind, default). kind ∈ {"int:n_samples", "int:max_new_tokens",
+    # name -> (kind, default). kind ∈ {"int:n_samples", "int:rtt_samples",
+    #   "int:max_new_tokens",
     # "int:block_size", "path:tests"}; None default = required.
     params: Mapping[str, Tuple[str, Optional[str]]] = field(default_factory=dict)
     # Run the K3 evidence gate over results/research after the commands.
@@ -102,6 +104,122 @@ def _harness_preset(
 PRESETS: Dict[str, Preset] = {
     p.name: p
     for p in (
+        Preset(
+            name="mlx-distributed-dflash-e2e-inproc",
+            description="Real-model distributed DFlash+f_θ E2E (in-process): loads "
+                        "the gemma-4 mlx-4bit verifier + torch DFlash + f_θ ONCE, "
+                        "runs the DistributedFusedDecoder over an in-process "
+                        "engine (full restore/seed/draft/verify/commit/extend + "
+                        "WireTensor codec), and asserts byte-identical to greedy. "
+                        "Validates the F3 data plane with real models, no 2x load.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_distributed_dflash_e2e_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-distributed-dflash-e2e-grpc",
+            description="Like mlx-distributed-dflash-e2e-inproc but routes the "
+                        "proposer through a real loopback gRPC DFlashProposerService "
+                        "(--grpc): exercises the wire (Restore/SeedContext/DraftBlock/"
+                        "ExtendContext over gRPC + WireTensor (de)serialization) and "
+                        "measures loopback RTT, still asserting byte-identical.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_distributed_dflash_e2e_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--f-theta-dir", "${ENV:KAKEYA_MAC_FTHETA_DIR}",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                    "--grpc",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-distributed-dflash-e2e-crosshost",
+            description="TRUE cross-host: gemma-4 mlx-4bit verifier on THIS Mac ↔ a "
+                        "remote torch DFlash+f_θ DFlashProposerService on the H200, "
+                        "reached at localhost:50070 via an SSH -L tunnel "
+                        "(ssh -p 43350 root@107.206.71.138 -L 6006:localhost:50070). "
+                        "Runs greedy (block=1) + distributed (block=N) over the wire "
+                        "and asserts byte-identical, reporting real cross-host RTT.",
+            command_templates=(
+                (
+                    "python3", "scripts/research/k3_distributed_dflash_e2e_mac.py",
+                    "--verifier-path", "${ENV:KAKEYA_MAC_VERIFIER_PATH}",
+                    "--drafter-id", "${ENV:KAKEYA_MAC_DRAFTER_ID}",
+                    "--remote-addr", "localhost:50070",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--block-size", "{block_size}",
+                ),
+            ),
+            timeout_minutes=90,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "block_size": ("int:block_size", "4"),
+            },
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-distributed-spec-decode-demo",
+            description="ADR 0009 distributed spec-decode, on-device: two local "
+                        "processes (n-gram ProposerService + Qwen3-0.6B verifier) "
+                        "over real gRPC sockets — capability gossip, placement, "
+                        "remote drafts + LOCAL greedy verify, asserting the output "
+                        "is byte-identical to local greedy. Validates the "
+                        "distributed engine on the Mac.",
+            command_templates=(
+                (
+                    "bash", "scripts/run_distributed_demo.sh",
+                    "--verifier-id", "Qwen/Qwen3-0.6B",
+                    "--max-new-tokens", "{max_new_tokens}",
+                ),
+            ),
+            timeout_minutes=45,
+            params={"max_new_tokens": ("int:max_new_tokens", "48")},
+            validate_reports=False,
+        ),
+        Preset(
+            name="mlx-distributed-spec-decode-bench",
+            description="ADR 0009 distributed spec-decode perf bench, on-device: "
+                        "token throughput (local greedy vs distributed), bounded-KV "
+                        "footprint (constant in context length), and gRPC RTT "
+                        "(localhost ProposeBlock round-trip). Starts a local "
+                        "ProposerService and benches against it.",
+            command_templates=(
+                (
+                    "bash", "scripts/run_distributed_bench.sh",
+                    "--label", "Mac-localhost",
+                    "--max-new-tokens", "{max_new_tokens}",
+                    "--rtt-samples", "{rtt_samples}",
+                ),
+            ),
+            timeout_minutes=45,
+            params={
+                "max_new_tokens": ("int:max_new_tokens", "48"),
+                "rtt_samples": ("int:rtt_samples", "300"),
+            },
+            validate_reports=False,
+        ),
         Preset(
             name="mlx-env-probe",
             description="Probe Metal/MLX + mlx.distributed availability.",
@@ -957,6 +1075,7 @@ def _validate_param(name: str, kind: str, raw: str) -> str:
             raise ManifestError(f"param {name}={raw!r} is not an integer")
         bound = {
             "int:n_samples": MAX_N_SAMPLES,
+            "int:rtt_samples": MAX_RTT_SAMPLES,
             "int:max_new_tokens": MAX_NEW_TOKENS,
             "int:block_size": MAX_BLOCK_SIZE,
         }[kind]
