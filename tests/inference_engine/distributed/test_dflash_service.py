@@ -172,6 +172,19 @@ async def test_uncaught_engine_error_propagates_as_unknown(served):
             await asyncio.to_thread(remote.restore, [1], sink=1, window=1)
 
 
+async def test_client_context_manager_closes_session(served):
+    address, engine, _ = served
+
+    def _use():
+        # Run the whole `with` (incl. __exit__ -> close -> sync CloseSession RPC)
+        # off the event-loop thread so the in-test server can answer.
+        with RemoteDFlashProposer(address, session_id="cm") as remote:
+            assert remote.session_id == "cm"
+
+    await asyncio.to_thread(_use)
+    assert engine.calls.count("close_session") == 1
+
+
 async def test_rpc_failure_on_dead_address_wraps():
     remote = RemoteDFlashProposer("127.0.0.1:1", session_id="x", timeout_s=2.0)
     try:
