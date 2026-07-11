@@ -61,6 +61,17 @@ service ProposerService {
   rpc ProposeBlock(ProposeBlockRequest) returns (ProposeBlockResponse);
 }
 
+// PrefillCacheService exposes immutable, content-addressed prefill K/V blocks.
+// Lookup is metadata-only; FetchBlocks is the point-to-point bulk data plane.
+// Decode never calls this service: a requester imports a hit once, computes the
+// missing suffix locally, and keeps the autoregressive loop local.
+service PrefillCacheService {
+  rpc GetCacheSummary(GetCacheSummaryRequest) returns (GetCacheSummaryResponse);
+  rpc LookupPrefix(LookupPrefixRequest) returns (LookupPrefixResponse);
+  rpc FetchBlocks(FetchBlocksRequest) returns (stream KVBlockChunk);
+  rpc PublishBlock(stream KVBlockChunk) returns (PublishBlockResponse);
+}
+
 // -----------------------------------------------------------------------------
 // Capability messages
 // -----------------------------------------------------------------------------
@@ -81,6 +92,10 @@ enum CapabilityRole {
   // Reserved for future exchanged capabilities (ADR 0009 §4).
   CAPABILITY_ROLE_EMBEDDER = 3;
   CAPABILITY_ROLE_TOOL = 4;
+
+  // The node can answer PrefillCacheService lookups and stream compatible
+  // immutable prefill K/V blocks.
+  CAPABILITY_ROLE_PREFILL_CACHE = 5;
 }
 
 // ModelCapability is one (model, role) a node offers.
@@ -141,6 +156,46 @@ message NodeCapability {
   // Optional mlx.distributed ring endpoint for bulk-tensor flows
   // (ADR 0009 §4 item 4). Empty when the node is not part of a ring.
   string ring_address = 9;
+
+  // Optional prefill-cache offerings. Kept separate from ModelCapability so
+  // placement can reject incompatible cache formats before sending a lookup.
+  repeated CacheCapability caches = 10;
+
+  // Reachable interfaces ordered by operator preference (Thunderbolt before
+  // LAN/Tailscale). grpc_address remains the compatibility default.
+  repeated NodeEndpoint endpoints = 11;
+}
+
+message NodeEndpoint {
+  string address = 1;
+  string network = 2; // thunderbolt|lan|tailscale|public
+  uint32 priority = 3;
+  double measured_rtt_ms = 4;
+}
+
+message CacheCompatibility {
+  string model_id = 1;
+  string model_revision = 2;
+  string tokenizer_revision = 3;
+  string cache_format_version = 4;
+  string quantization = 5;
+  string rope_hash = 6;
+  string layer_geometry_hash = 7;
+  string kv_dtype = 8;
+  uint32 block_size_tokens = 9;
+}
+
+message CacheCapability {
+  CacheCompatibility compatibility = 1;
+  string cache_address = 2;
+  uint64 cache_bytes_used = 3;
+  uint64 cache_bytes_free = 4;
+  uint64 entry_count = 5;
+  uint64 cache_epoch = 6;
+  double load = 7;
+  uint64 tokens_served = 8;
+  // Compact probabilistic summary. Empty means "query me directly".
+  bytes bloom_filter = 9;
 }
 
 message ExchangeCapabilitiesRequest {
@@ -158,6 +213,57 @@ message GetNodeCapabilityRequest {}
 message GetNodeCapabilityResponse {
   // The callee's own card only.
   NodeCapability node = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Distributed prefill K/V cache
+// -----------------------------------------------------------------------------
+
+message GetCacheSummaryRequest {
+  CacheCompatibility compatibility = 1;
+}
+
+message GetCacheSummaryResponse {
+  string node_id = 1;
+  repeated CacheCapability caches = 2;
+}
+
+message LookupPrefixRequest {
+  CacheCompatibility compatibility = 1;
+  // Ordered chained hashes from token block zero onward.
+  repeated bytes block_hashes = 2;
+}
+
+message LookupPrefixResponse {
+  string node_id = 1;
+  uint32 hit_block_count = 2;
+  uint64 hit_token_count = 3;
+  uint64 transfer_bytes = 4;
+  uint64 cache_epoch = 5;
+  string lease_id = 6;
+  double lease_expires_at_unix = 7;
+  bytes payload_sha256 = 8;
+}
+
+message FetchBlocksRequest {
+  string lease_id = 1;
+}
+
+message KVBlockChunk {
+  bytes block_hash = 1;
+  uint32 block_index = 2;
+  uint32 token_count = 3;
+  uint32 chunk_index = 4;
+  uint32 total_chunks = 5;
+  bytes data = 6;
+  bytes block_sha256 = 7;
+  uint64 cache_epoch = 8;
+  CacheCompatibility compatibility = 9;
+}
+
+message PublishBlockResponse {
+  bool stored = 1;
+  uint64 cache_epoch = 2;
 }
 
 // -----------------------------------------------------------------------------

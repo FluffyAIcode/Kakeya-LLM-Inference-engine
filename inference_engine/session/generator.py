@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Iterator, Optional, Union
+from typing import Callable, Iterator, Optional, Union
 
 import torch
 
@@ -115,11 +115,13 @@ class GenerationCoordinator:
         store: SessionStore,
         verifier: VerifierProtocol,
         resolver=None,
+        on_tokens: Optional[Callable[[int], None]] = None,
     ) -> None:
         self._store = store
         self._verifier = verifier
         # PR-A3c: optional per-session verifier resolver (multi-tenant).
         self._resolver = resolver
+        self._on_tokens = on_tokens
 
     def _verifier_for(self, session_id: str) -> "VerifierProtocol":
         return self._resolver(session_id) if self._resolver else self._verifier
@@ -242,6 +244,8 @@ class GenerationCoordinator:
                 # capacity, this value plateaus and the caller can
                 # observe the architectural KV bound empirically.
                 _sync_slab_bytes(session, verifier)
+                if self._on_tokens is not None:
+                    self._on_tokens(generated_count)
                 yield DoneEvent(
                     stop_reason=STOP_REASON_EOS,
                     generated_token_count=generated_count,
@@ -251,6 +255,8 @@ class GenerationCoordinator:
                 return
 
         _sync_slab_bytes(session, verifier)
+        if self._on_tokens is not None:
+            self._on_tokens(generated_count)
         yield DoneEvent(
             stop_reason=STOP_REASON_MAX_TOKENS,
             generated_token_count=generated_count,

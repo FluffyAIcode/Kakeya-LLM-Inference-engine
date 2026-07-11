@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kakeya-inference-network",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-11",
+  "account_id": "c54b05200639ec14333bba0643416723",
+  "routes": [
+    {
+      "pattern": "kakeya.ai/*",
+      "zone_name": "kakeya.ai"
+    }
+  ]
+}

@@ -26,10 +26,6 @@ backend-specific library. Real backends are plugged in by the caller
 decoder from the user's chosen verifier/proposer pair.
 """
 
-from .config import ServerConfig
-from .engine import Engine, EngineResult, SpeculativeEngine
-from .tokenizer import Tokenizer
-
 __all__ = [
     "ServerConfig",
     "Engine",
@@ -37,3 +33,21 @@ __all__ = [
     "SpeculativeEngine",
     "Tokenizer",
 ]
+
+
+def __getattr__(name):
+    """Lazy public exports keep proto-only/cache-only nodes lightweight."""
+    if name == "ServerConfig":
+        from .config import ServerConfig
+        return ServerConfig
+    if name in {"Engine", "EngineResult", "SpeculativeEngine"}:
+        from .engine import Engine, EngineResult, SpeculativeEngine
+        return {
+            "Engine": Engine,
+            "EngineResult": EngineResult,
+            "SpeculativeEngine": SpeculativeEngine,
+        }[name]
+    if name == "Tokenizer":
+        from .tokenizer import Tokenizer
+        return Tokenizer
+    raise AttributeError(name)

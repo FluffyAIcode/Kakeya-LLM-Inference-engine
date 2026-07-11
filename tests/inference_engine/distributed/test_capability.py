@@ -16,8 +16,11 @@ from inference_engine.distributed.capability import (
     NGRAM_MODEL_ID,
     CapabilityRegistry,
     CapabilityRole,
+    CacheCapability,
+    CacheCompatibility,
     ModelCapability,
     NodeCapability,
+    NodeEndpoint,
 )
 
 T0 = 1_000_000.0
@@ -99,6 +102,47 @@ def test_proto_round_trip_is_lossless():
 def test_model_capability_proto_round_trip():
     model = ModelCapability("m", CapabilityRole.TOOL, "none", 7.0)
     assert ModelCapability.from_proto(model.to_proto()) == model
+
+
+def test_cache_capability_and_endpoints_proto_round_trip():
+    compatibility = CacheCompatibility(
+        model_id="gemma",
+        model_revision="abc",
+        tokenizer_revision="tok",
+        cache_format_version="kv-v1",
+        quantization="4bit",
+        rope_hash="rope",
+        layer_geometry_hash="geometry",
+        kv_dtype="bfloat16",
+        block_size_tokens=64,
+    )
+    card = NodeCapability(
+        node_id="cache-peer",
+        grpc_address="peer:50051",
+        caches=(
+            CacheCapability(
+                compatibility,
+                cache_address="169.254.27.104:52051",
+                cache_bytes_used=10,
+                cache_bytes_free=20,
+                entry_count=3,
+                cache_epoch=4,
+                load=0.5,
+                tokens_served=100,
+                bloom_filter=b"filter",
+            ),
+        ),
+        endpoints=(
+            NodeEndpoint(
+                "169.254.27.104:52051",
+                "thunderbolt",
+                100,
+                0.45,
+            ),
+        ),
+    )
+    assert NodeCapability.from_proto(card.to_proto()) == card
+    assert CapabilityRole.PREFILL_CACHE.value == 5
 
 
 # ---------------------------------------------------------------------------

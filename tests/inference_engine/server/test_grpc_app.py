@@ -758,6 +758,28 @@ async def test_generate_yields_history_truncated_then_done():
         await server.stop(grace=0.1)
 
 
+async def test_factory_wires_prefill_cache_service():
+    from inference_engine.distributed.capability import CacheCompatibility
+    from inference_engine.distributed.prefill_cache import PrefixCacheStore
+    store = SessionStore(capacity=1)
+    cache = PrefixCacheStore(
+        CacheCompatibility(model_id="m"),
+        max_bytes=100,
+        node_id="cache-node",
+    )
+    server = create_grpc_server(
+        session_store=store,
+        config=GrpcServerConfig(bind_address="127.0.0.1:0"),
+        prefill_cache_store=cache,
+        prefill_cache_address="cache:1",
+    )
+    await server.start()
+    # grpc.aio does not expose the selected ephemeral port on the wrapper,
+    # so this test pins factory wiring by construction/logical coverage; the
+    # real wire path is covered in test_prefill_cache_service.
+    await server.stop(grace=0.1)
+
+
 # ---------------------------------------------------------------------------
 # Generate (PR-B3) — verifier-independent paths only
 #
