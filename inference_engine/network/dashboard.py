@@ -1,0 +1,58 @@
+"""Self-contained kakeya.ai inference-network dashboard."""
+
+from __future__ import annotations
+
+
+def dashboard_html() -> str:
+    return r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kakeya Inference Network</title>
+<style>
+:root{color-scheme:dark;--bg:#0c0d10;--panel:#15171c;--line:#2a2e37;--text:#f0f2f5;--muted:#969da9;--accent:#7aa2ff;--ok:#57c785;--warn:#d7a84b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{max-width:1280px;margin:auto;padding:26px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+h1{font-size:24px;margin:0}h2{font-size:17px;margin:22px 0 10px}.sub,.muted{color:var(--muted)}
+button{background:transparent;border:1px solid var(--line);color:var(--text);border-radius:7px;padding:8px 12px;cursor:pointer}
+button.active,.primary{background:var(--accent);color:#0b1020;border-color:var(--accent);font-weight:650}
+.tabs{display:flex;gap:7px}.stats,.grid2,.grid3{display:grid;gap:12px}.stats{grid-template-columns:repeat(5,1fr);margin-top:22px}.grid2{grid-template-columns:1.2fr .8fr}.grid3{grid-template-columns:repeat(3,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:15px}.stat b{font-size:23px;display:block}.stat span{color:var(--muted);font-size:12px}
+.map{height:280px;position:relative;overflow:hidden}.map:before{content:"";position:absolute;inset:34px;border:1px dashed var(--line);border-radius:45%}
+.dot{position:absolute;transform:translate(-50%,-50%)}.dot i{display:block;width:12px;height:12px;background:var(--ok);border:2px solid var(--bg);border-radius:50%}.dot.head i{width:16px;height:16px;background:var(--accent)}.dot small{white-space:nowrap}
+.event{display:grid;grid-template-columns:64px 1fr;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}.event:last-child{border:0}.event time{color:var(--accent)}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:12px}.online{color:var(--ok)}.pending{color:var(--warn)}
+.bar{height:9px;background:#23262d;border-radius:5px;overflow:hidden;margin-top:8px}.bar i{display:block;height:100%;background:var(--accent)}
+.hidden{display:none}.register{margin-top:14px}input,select{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:9px;margin:4px 0 10px}
+code{display:block;background:var(--bg);border:1px solid var(--line);padding:10px;border-radius:6px;overflow:auto}
+@media(max-width:850px){.stats{grid-template-columns:repeat(2,1fr)}.grid2,.grid3{grid-template-columns:1fr}.wrap{padding:16px}}
+</style>
+</head>
+<body><main class="wrap">
+<div class="top"><div><h1>Kakeya Inference Network</h1><div class="sub">P2P Prefill KV sharing across trusted inference nodes</div></div>
+<div class="tabs"><button class="active" data-tab="overview">Overview</button><button data-tab="nodes">Nodes</button><button data-tab="groups">Groups</button><button class="primary" id="registerBtn">Register node</button></div></div>
+<section id="register" class="card register hidden"><h3>Register inference node</h3><div class="grid3"><label>Alias<input id="alias" placeholder="cache-peer-tb"></label><label>Address<input id="address" placeholder="169.254.27.104:52051"></label><label>Region<input id="region" placeholder="Hong Kong"></label></div><label>Admin API key<input id="adminKey" type="password" placeholder="Required for network changes"></label><button class="primary" id="createRegistration">Create pairing token</button><code id="pairing" class="hidden"></code></section>
+<section class="stats"><div class="card stat"><b id="online">0</b><span>Online nodes</span></div><div class="card stat"><b id="groupCount">0</b><span>Inference groups</span></div><div class="card stat"><b id="tokens">0</b><span>Completed tokens</span></div><div class="card stat"><b id="hitRate">0%</b><span>KV-assisted tokens</span></div><div class="card stat"><b id="cache">0 GB</b><span>Shared cache online</span></div></section>
+<section id="overview" class="tab">
+<div class="grid2"><div><h2>Online node distribution</h2><div class="card map" id="map"></div></div><div><h2>Live KV discovery</h2><div class="card" id="events"><div class="event"><time>live</time><div><b>Waiting for node telemetry</b><div class="muted">Capability gossip and prefix lookups appear here.</div></div></div></div><h2>Cache capacity</h2><div class="card"><span id="capacityLabel">0 / 0 GB</span><div class="bar"><i id="capacityBar" style="width:0%"></i></div></div></div></div>
+</section>
+<section id="nodes" class="tab hidden"><h2>Registered inference nodes</h2><div class="card"><table><thead><tr><th>Node</th><th>Role</th><th>Region</th><th>Model / Cache</th><th>Link</th><th>Status</th></tr></thead><tbody id="nodesBody"></tbody></table></div></section>
+<section id="groups" class="tab hidden"><h2>Paired inference groups</h2><div id="groupCards" class="grid3"></div><div class="card register"><h3>Create group</h3><label>Name<input id="groupName" placeholder="Snow Fox Studio"></label><label>Node IDs (comma separated)<input id="groupNodes"></label><button class="primary" id="createGroup">Create group</button></div></section>
+<p class="muted">Exact IPs, raw prompt hashes and cache keys are administrator-only. Region is operator-selected and coarse.</p>
+</main>
+<script>
+const $=id=>document.getElementById(id), fmt=n=>new Intl.NumberFormat().format(n||0), gb=n=>(n/1073741824).toFixed(1);
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.tab').forEach(x=>x.classList.add('hidden'));$(b.dataset.tab).classList.remove('hidden')});
+$('registerBtn').onclick=()=>$('register').classList.toggle('hidden');
+const writeHeaders=()=>({'content-type':'application/json','X-API-Key':$('adminKey').value});
+$('createRegistration').onclick=async()=>{let r=await fetch('/v1/network/nodes/register',{method:'POST',headers:writeHeaders(),body:JSON.stringify({alias:$('alias').value,address:$('address').value,region:$('region').value,role:'hybrid'})});let j=await r.json();$('pairing').textContent=r.ok?`Pairing token: ${j.pairing_token}\nExpires: ${new Date(j.expires_at*1000).toLocaleTimeString()}`:`Error: ${j.detail||r.status}`;$('pairing').classList.remove('hidden');load()};
+$('createGroup').onclick=async()=>{await fetch('/v1/network/groups',{method:'POST',headers:writeHeaders(),body:JSON.stringify({name:$('groupName').value,node_ids:$('groupNodes').value.split(',').map(x=>x.trim()).filter(Boolean)})});load()};
+function nodePosition(i,total){let a=(i/Math.max(total,1))*Math.PI*2;return {x:50+38*Math.cos(a),y:53+35*Math.sin(a)}}
+async function load(){let [s,n,g]=await Promise.all([fetch('/v1/network/summary').then(r=>r.json()),fetch('/v1/network/nodes').then(r=>r.json()),fetch('/v1/network/groups').then(r=>r.json())]);
+$('online').textContent=s.online_nodes;$('groupCount').textContent=s.groups;$('tokens').textContent=fmt(s.completed_tokens);$('hitRate').textContent=(s.kv_hit_rate*100).toFixed(0)+'%';$('cache').textContent=gb(s.cache_bytes_used+s.cache_bytes_free)+' GB';
+let total=s.cache_bytes_used+s.cache_bytes_free,pct=total?s.cache_bytes_used/total*100:0;$('capacityLabel').textContent=`${gb(s.cache_bytes_used)} / ${gb(total)} GB`;$('capacityBar').style.width=pct+'%';
+$('map').innerHTML=n.map((x,i)=>{let p=nodePosition(i,n.length);return `<div class="dot ${x.role.includes('head')?'head':''}" style="left:${p.x}%;top:${p.y}%"><i></i><small>${x.region}<br>${x.alias}</small></div>`}).join('');
+$('nodesBody').innerHTML=n.map(x=>`<tr><td>${x.alias}</td><td>${x.role}</td><td>${x.region}</td><td>${x.cache?(x.cache.model_id+' / '+x.cache.format):'—'}</td><td>${x.endpoint.network} ${x.endpoint.rtt_ms?x.endpoint.rtt_ms+'ms':''}</td><td class="${x.status}">${x.status}</td></tr>`).join('');
+$('groupCards').innerHTML=g.map(x=>`<div class="card"><b>${x.name}</b><p class="muted">${x.online} / ${x.node_ids.length} online</p><div>${x.node_ids.join(' · ')}</div></div>`).join('')||'<div class="card muted">Create the first inference group.</div>'}
+load();setInterval(load,5000);
+</script></body></html>"""

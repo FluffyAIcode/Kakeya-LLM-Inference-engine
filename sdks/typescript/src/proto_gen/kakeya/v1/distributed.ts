@@ -11,7 +11,11 @@ import {
   type ChannelCredentials,
   Client,
   type ClientOptions,
+  type ClientReadableStream,
   type ClientUnaryCall,
+  type ClientWritableStream,
+  type handleClientStreamingCall,
+  type handleServerStreamingCall,
   type handleUnaryCall,
   makeGenericClientConstructor,
   type Metadata,
@@ -38,6 +42,11 @@ export enum CapabilityRole {
   /** EMBEDDER - Reserved for future exchanged capabilities (ADR 0009 §4). */
   EMBEDDER = 3,
   TOOL = 4,
+  /**
+   * PREFILL_CACHE - The node can answer PrefillCacheService lookups and stream compatible
+   * immutable prefill K/V blocks.
+   */
+  PREFILL_CACHE = 5,
   UNRECOGNIZED = -1,
 }
 
@@ -58,6 +67,9 @@ export function capabilityRoleFromJSON(object: any): CapabilityRole {
     case 4:
     case "CAPABILITY_ROLE_TOOL":
       return CapabilityRole.TOOL;
+    case 5:
+    case "CAPABILITY_ROLE_PREFILL_CACHE":
+      return CapabilityRole.PREFILL_CACHE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -77,6 +89,8 @@ export function capabilityRoleToJSON(object: CapabilityRole): string {
       return "CAPABILITY_ROLE_EMBEDDER";
     case CapabilityRole.TOOL:
       return "CAPABILITY_ROLE_TOOL";
+    case CapabilityRole.PREFILL_CACHE:
+      return "CAPABILITY_ROLE_PREFILL_CACHE";
     case CapabilityRole.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -148,6 +162,49 @@ export interface NodeCapability {
    * (ADR 0009 §4 item 4). Empty when the node is not part of a ring.
    */
   ringAddress: string;
+  /**
+   * Optional prefill-cache offerings. Kept separate from ModelCapability so
+   * placement can reject incompatible cache formats before sending a lookup.
+   */
+  caches: CacheCapability[];
+  /**
+   * Reachable interfaces ordered by operator preference (Thunderbolt before
+   * LAN/Tailscale). grpc_address remains the compatibility default.
+   */
+  endpoints: NodeEndpoint[];
+}
+
+export interface NodeEndpoint {
+  address: string;
+  /** thunderbolt|lan|tailscale|public */
+  network: string;
+  priority: number;
+  measuredRttMs: number;
+}
+
+export interface CacheCompatibility {
+  modelId: string;
+  modelRevision: string;
+  tokenizerRevision: string;
+  cacheFormatVersion: string;
+  quantization: string;
+  ropeHash: string;
+  layerGeometryHash: string;
+  kvDtype: string;
+  blockSizeTokens: number;
+}
+
+export interface CacheCapability {
+  compatibility?: CacheCompatibility | undefined;
+  cacheAddress: string;
+  cacheBytesUsed: string;
+  cacheBytesFree: string;
+  entryCount: string;
+  cacheEpoch: string;
+  load: number;
+  tokensServed: string;
+  /** Compact probabilistic summary. Empty means "query me directly". */
+  bloomFilter: Uint8Array;
 }
 
 export interface ExchangeCapabilitiesRequest {
@@ -166,6 +223,66 @@ export interface GetNodeCapabilityRequest {
 export interface GetNodeCapabilityResponse {
   /** The callee's own card only. */
   node?: NodeCapability | undefined;
+}
+
+export interface GetCacheSummaryRequest {
+  compatibility?: CacheCompatibility | undefined;
+}
+
+export interface GetCacheSummaryResponse {
+  nodeId: string;
+  caches: CacheCapability[];
+}
+
+export interface LookupPrefixRequest {
+  compatibility?:
+    | CacheCompatibility
+    | undefined;
+  /** Ordered chained hashes from token block zero onward. */
+  blockHashes: Uint8Array[];
+}
+
+export interface LookupPrefixResponse {
+  nodeId: string;
+  hitBlockCount: number;
+  hitTokenCount: string;
+  transferBytes: string;
+  cacheEpoch: string;
+  leaseId: string;
+  leaseExpiresAtUnix: number;
+  payloadSha256: Uint8Array;
+}
+
+export interface FetchBlocksRequest {
+  leaseId: string;
+}
+
+export interface FetchBlocksResponse {
+  blockHash: Uint8Array;
+  blockIndex: number;
+  tokenCount: number;
+  chunkIndex: number;
+  totalChunks: number;
+  data: Uint8Array;
+  blockSha256: Uint8Array;
+  cacheEpoch: string;
+}
+
+export interface PublishBlockRequest {
+  blockHash: Uint8Array;
+  blockIndex: number;
+  tokenCount: number;
+  chunkIndex: number;
+  totalChunks: number;
+  data: Uint8Array;
+  blockSha256: Uint8Array;
+  cacheEpoch: string;
+  compatibility?: CacheCompatibility | undefined;
+}
+
+export interface PublishBlockResponse {
+  stored: boolean;
+  cacheEpoch: string;
 }
 
 export interface ProposeBlockRequest {
@@ -423,6 +540,8 @@ function createBaseNodeCapability(): NodeCapability {
     announcedAtUnix: 0,
     ttlSeconds: 0,
     ringAddress: "",
+    caches: [],
+    endpoints: [],
   };
 }
 
@@ -454,6 +573,12 @@ export const NodeCapability: MessageFns<NodeCapability> = {
     }
     if (message.ringAddress !== "") {
       writer.uint32(74).string(message.ringAddress);
+    }
+    for (const v of message.caches) {
+      CacheCapability.encode(v!, writer.uint32(82).fork()).join();
+    }
+    for (const v of message.endpoints) {
+      NodeEndpoint.encode(v!, writer.uint32(90).fork()).join();
     }
     return writer;
   },
@@ -537,6 +662,22 @@ export const NodeCapability: MessageFns<NodeCapability> = {
           message.ringAddress = reader.string();
           continue;
         }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.caches.push(CacheCapability.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.endpoints.push(NodeEndpoint.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -587,6 +728,12 @@ export const NodeCapability: MessageFns<NodeCapability> = {
         : isSet(object.ring_address)
         ? globalThis.String(object.ring_address)
         : "",
+      caches: globalThis.Array.isArray(object?.caches)
+        ? object.caches.map((e: any) => CacheCapability.fromJSON(e))
+        : [],
+      endpoints: globalThis.Array.isArray(object?.endpoints)
+        ? object.endpoints.map((e: any) => NodeEndpoint.fromJSON(e))
+        : [],
     };
   },
 
@@ -619,6 +766,12 @@ export const NodeCapability: MessageFns<NodeCapability> = {
     if (message.ringAddress !== "") {
       obj.ringAddress = message.ringAddress;
     }
+    if (message.caches?.length) {
+      obj.caches = message.caches.map((e) => CacheCapability.toJSON(e));
+    }
+    if (message.endpoints?.length) {
+      obj.endpoints = message.endpoints.map((e) => NodeEndpoint.toJSON(e));
+    }
     return obj;
   },
 
@@ -636,6 +789,578 @@ export const NodeCapability: MessageFns<NodeCapability> = {
     message.announcedAtUnix = object.announcedAtUnix ?? 0;
     message.ttlSeconds = object.ttlSeconds ?? 0;
     message.ringAddress = object.ringAddress ?? "";
+    message.caches = object.caches?.map((e) => CacheCapability.fromPartial(e)) || [];
+    message.endpoints = object.endpoints?.map((e) => NodeEndpoint.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseNodeEndpoint(): NodeEndpoint {
+  return { address: "", network: "", priority: 0, measuredRttMs: 0 };
+}
+
+export const NodeEndpoint: MessageFns<NodeEndpoint> = {
+  encode(message: NodeEndpoint, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.address !== "") {
+      writer.uint32(10).string(message.address);
+    }
+    if (message.network !== "") {
+      writer.uint32(18).string(message.network);
+    }
+    if (message.priority !== 0) {
+      writer.uint32(24).uint32(message.priority);
+    }
+    if (message.measuredRttMs !== 0) {
+      writer.uint32(33).double(message.measuredRttMs);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): NodeEndpoint {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseNodeEndpoint();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.address = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.network = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.priority = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 33) {
+            break;
+          }
+
+          message.measuredRttMs = reader.double();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): NodeEndpoint {
+    return {
+      address: isSet(object.address) ? globalThis.String(object.address) : "",
+      network: isSet(object.network) ? globalThis.String(object.network) : "",
+      priority: isSet(object.priority) ? globalThis.Number(object.priority) : 0,
+      measuredRttMs: isSet(object.measuredRttMs)
+        ? globalThis.Number(object.measuredRttMs)
+        : isSet(object.measured_rtt_ms)
+        ? globalThis.Number(object.measured_rtt_ms)
+        : 0,
+    };
+  },
+
+  toJSON(message: NodeEndpoint): unknown {
+    const obj: any = {};
+    if (message.address !== "") {
+      obj.address = message.address;
+    }
+    if (message.network !== "") {
+      obj.network = message.network;
+    }
+    if (message.priority !== 0) {
+      obj.priority = Math.round(message.priority);
+    }
+    if (message.measuredRttMs !== 0) {
+      obj.measuredRttMs = message.measuredRttMs;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<NodeEndpoint>, I>>(base?: I): NodeEndpoint {
+    return NodeEndpoint.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<NodeEndpoint>, I>>(object: I): NodeEndpoint {
+    const message = createBaseNodeEndpoint();
+    message.address = object.address ?? "";
+    message.network = object.network ?? "";
+    message.priority = object.priority ?? 0;
+    message.measuredRttMs = object.measuredRttMs ?? 0;
+    return message;
+  },
+};
+
+function createBaseCacheCompatibility(): CacheCompatibility {
+  return {
+    modelId: "",
+    modelRevision: "",
+    tokenizerRevision: "",
+    cacheFormatVersion: "",
+    quantization: "",
+    ropeHash: "",
+    layerGeometryHash: "",
+    kvDtype: "",
+    blockSizeTokens: 0,
+  };
+}
+
+export const CacheCompatibility: MessageFns<CacheCompatibility> = {
+  encode(message: CacheCompatibility, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.modelId !== "") {
+      writer.uint32(10).string(message.modelId);
+    }
+    if (message.modelRevision !== "") {
+      writer.uint32(18).string(message.modelRevision);
+    }
+    if (message.tokenizerRevision !== "") {
+      writer.uint32(26).string(message.tokenizerRevision);
+    }
+    if (message.cacheFormatVersion !== "") {
+      writer.uint32(34).string(message.cacheFormatVersion);
+    }
+    if (message.quantization !== "") {
+      writer.uint32(42).string(message.quantization);
+    }
+    if (message.ropeHash !== "") {
+      writer.uint32(50).string(message.ropeHash);
+    }
+    if (message.layerGeometryHash !== "") {
+      writer.uint32(58).string(message.layerGeometryHash);
+    }
+    if (message.kvDtype !== "") {
+      writer.uint32(66).string(message.kvDtype);
+    }
+    if (message.blockSizeTokens !== 0) {
+      writer.uint32(72).uint32(message.blockSizeTokens);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CacheCompatibility {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCacheCompatibility();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.modelId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.modelRevision = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.tokenizerRevision = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.cacheFormatVersion = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.quantization = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.ropeHash = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.layerGeometryHash = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.kvDtype = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.blockSizeTokens = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CacheCompatibility {
+    return {
+      modelId: isSet(object.modelId)
+        ? globalThis.String(object.modelId)
+        : isSet(object.model_id)
+        ? globalThis.String(object.model_id)
+        : "",
+      modelRevision: isSet(object.modelRevision)
+        ? globalThis.String(object.modelRevision)
+        : isSet(object.model_revision)
+        ? globalThis.String(object.model_revision)
+        : "",
+      tokenizerRevision: isSet(object.tokenizerRevision)
+        ? globalThis.String(object.tokenizerRevision)
+        : isSet(object.tokenizer_revision)
+        ? globalThis.String(object.tokenizer_revision)
+        : "",
+      cacheFormatVersion: isSet(object.cacheFormatVersion)
+        ? globalThis.String(object.cacheFormatVersion)
+        : isSet(object.cache_format_version)
+        ? globalThis.String(object.cache_format_version)
+        : "",
+      quantization: isSet(object.quantization) ? globalThis.String(object.quantization) : "",
+      ropeHash: isSet(object.ropeHash)
+        ? globalThis.String(object.ropeHash)
+        : isSet(object.rope_hash)
+        ? globalThis.String(object.rope_hash)
+        : "",
+      layerGeometryHash: isSet(object.layerGeometryHash)
+        ? globalThis.String(object.layerGeometryHash)
+        : isSet(object.layer_geometry_hash)
+        ? globalThis.String(object.layer_geometry_hash)
+        : "",
+      kvDtype: isSet(object.kvDtype)
+        ? globalThis.String(object.kvDtype)
+        : isSet(object.kv_dtype)
+        ? globalThis.String(object.kv_dtype)
+        : "",
+      blockSizeTokens: isSet(object.blockSizeTokens)
+        ? globalThis.Number(object.blockSizeTokens)
+        : isSet(object.block_size_tokens)
+        ? globalThis.Number(object.block_size_tokens)
+        : 0,
+    };
+  },
+
+  toJSON(message: CacheCompatibility): unknown {
+    const obj: any = {};
+    if (message.modelId !== "") {
+      obj.modelId = message.modelId;
+    }
+    if (message.modelRevision !== "") {
+      obj.modelRevision = message.modelRevision;
+    }
+    if (message.tokenizerRevision !== "") {
+      obj.tokenizerRevision = message.tokenizerRevision;
+    }
+    if (message.cacheFormatVersion !== "") {
+      obj.cacheFormatVersion = message.cacheFormatVersion;
+    }
+    if (message.quantization !== "") {
+      obj.quantization = message.quantization;
+    }
+    if (message.ropeHash !== "") {
+      obj.ropeHash = message.ropeHash;
+    }
+    if (message.layerGeometryHash !== "") {
+      obj.layerGeometryHash = message.layerGeometryHash;
+    }
+    if (message.kvDtype !== "") {
+      obj.kvDtype = message.kvDtype;
+    }
+    if (message.blockSizeTokens !== 0) {
+      obj.blockSizeTokens = Math.round(message.blockSizeTokens);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CacheCompatibility>, I>>(base?: I): CacheCompatibility {
+    return CacheCompatibility.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CacheCompatibility>, I>>(object: I): CacheCompatibility {
+    const message = createBaseCacheCompatibility();
+    message.modelId = object.modelId ?? "";
+    message.modelRevision = object.modelRevision ?? "";
+    message.tokenizerRevision = object.tokenizerRevision ?? "";
+    message.cacheFormatVersion = object.cacheFormatVersion ?? "";
+    message.quantization = object.quantization ?? "";
+    message.ropeHash = object.ropeHash ?? "";
+    message.layerGeometryHash = object.layerGeometryHash ?? "";
+    message.kvDtype = object.kvDtype ?? "";
+    message.blockSizeTokens = object.blockSizeTokens ?? 0;
+    return message;
+  },
+};
+
+function createBaseCacheCapability(): CacheCapability {
+  return {
+    compatibility: undefined,
+    cacheAddress: "",
+    cacheBytesUsed: "0",
+    cacheBytesFree: "0",
+    entryCount: "0",
+    cacheEpoch: "0",
+    load: 0,
+    tokensServed: "0",
+    bloomFilter: new Uint8Array(0),
+  };
+}
+
+export const CacheCapability: MessageFns<CacheCapability> = {
+  encode(message: CacheCapability, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.compatibility !== undefined) {
+      CacheCompatibility.encode(message.compatibility, writer.uint32(10).fork()).join();
+    }
+    if (message.cacheAddress !== "") {
+      writer.uint32(18).string(message.cacheAddress);
+    }
+    if (message.cacheBytesUsed !== "0") {
+      writer.uint32(24).uint64(message.cacheBytesUsed);
+    }
+    if (message.cacheBytesFree !== "0") {
+      writer.uint32(32).uint64(message.cacheBytesFree);
+    }
+    if (message.entryCount !== "0") {
+      writer.uint32(40).uint64(message.entryCount);
+    }
+    if (message.cacheEpoch !== "0") {
+      writer.uint32(48).uint64(message.cacheEpoch);
+    }
+    if (message.load !== 0) {
+      writer.uint32(57).double(message.load);
+    }
+    if (message.tokensServed !== "0") {
+      writer.uint32(64).uint64(message.tokensServed);
+    }
+    if (message.bloomFilter.length !== 0) {
+      writer.uint32(74).bytes(message.bloomFilter);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CacheCapability {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCacheCapability();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.compatibility = CacheCompatibility.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.cacheAddress = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.cacheBytesUsed = reader.uint64().toString();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.cacheBytesFree = reader.uint64().toString();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.entryCount = reader.uint64().toString();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.cacheEpoch = reader.uint64().toString();
+          continue;
+        }
+        case 7: {
+          if (tag !== 57) {
+            break;
+          }
+
+          message.load = reader.double();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.tokensServed = reader.uint64().toString();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.bloomFilter = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CacheCapability {
+    return {
+      compatibility: isSet(object.compatibility) ? CacheCompatibility.fromJSON(object.compatibility) : undefined,
+      cacheAddress: isSet(object.cacheAddress)
+        ? globalThis.String(object.cacheAddress)
+        : isSet(object.cache_address)
+        ? globalThis.String(object.cache_address)
+        : "",
+      cacheBytesUsed: isSet(object.cacheBytesUsed)
+        ? globalThis.String(object.cacheBytesUsed)
+        : isSet(object.cache_bytes_used)
+        ? globalThis.String(object.cache_bytes_used)
+        : "0",
+      cacheBytesFree: isSet(object.cacheBytesFree)
+        ? globalThis.String(object.cacheBytesFree)
+        : isSet(object.cache_bytes_free)
+        ? globalThis.String(object.cache_bytes_free)
+        : "0",
+      entryCount: isSet(object.entryCount)
+        ? globalThis.String(object.entryCount)
+        : isSet(object.entry_count)
+        ? globalThis.String(object.entry_count)
+        : "0",
+      cacheEpoch: isSet(object.cacheEpoch)
+        ? globalThis.String(object.cacheEpoch)
+        : isSet(object.cache_epoch)
+        ? globalThis.String(object.cache_epoch)
+        : "0",
+      load: isSet(object.load) ? globalThis.Number(object.load) : 0,
+      tokensServed: isSet(object.tokensServed)
+        ? globalThis.String(object.tokensServed)
+        : isSet(object.tokens_served)
+        ? globalThis.String(object.tokens_served)
+        : "0",
+      bloomFilter: isSet(object.bloomFilter)
+        ? bytesFromBase64(object.bloomFilter)
+        : isSet(object.bloom_filter)
+        ? bytesFromBase64(object.bloom_filter)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: CacheCapability): unknown {
+    const obj: any = {};
+    if (message.compatibility !== undefined) {
+      obj.compatibility = CacheCompatibility.toJSON(message.compatibility);
+    }
+    if (message.cacheAddress !== "") {
+      obj.cacheAddress = message.cacheAddress;
+    }
+    if (message.cacheBytesUsed !== "0") {
+      obj.cacheBytesUsed = message.cacheBytesUsed;
+    }
+    if (message.cacheBytesFree !== "0") {
+      obj.cacheBytesFree = message.cacheBytesFree;
+    }
+    if (message.entryCount !== "0") {
+      obj.entryCount = message.entryCount;
+    }
+    if (message.cacheEpoch !== "0") {
+      obj.cacheEpoch = message.cacheEpoch;
+    }
+    if (message.load !== 0) {
+      obj.load = message.load;
+    }
+    if (message.tokensServed !== "0") {
+      obj.tokensServed = message.tokensServed;
+    }
+    if (message.bloomFilter.length !== 0) {
+      obj.bloomFilter = base64FromBytes(message.bloomFilter);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CacheCapability>, I>>(base?: I): CacheCapability {
+    return CacheCapability.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CacheCapability>, I>>(object: I): CacheCapability {
+    const message = createBaseCacheCapability();
+    message.compatibility = (object.compatibility !== undefined && object.compatibility !== null)
+      ? CacheCompatibility.fromPartial(object.compatibility)
+      : undefined;
+    message.cacheAddress = object.cacheAddress ?? "";
+    message.cacheBytesUsed = object.cacheBytesUsed ?? "0";
+    message.cacheBytesFree = object.cacheBytesFree ?? "0";
+    message.entryCount = object.entryCount ?? "0";
+    message.cacheEpoch = object.cacheEpoch ?? "0";
+    message.load = object.load ?? 0;
+    message.tokensServed = object.tokensServed ?? "0";
+    message.bloomFilter = object.bloomFilter ?? new Uint8Array(0);
     return message;
   },
 };
@@ -867,6 +1592,1026 @@ export const GetNodeCapabilityResponse: MessageFns<GetNodeCapabilityResponse> = 
     message.node = (object.node !== undefined && object.node !== null)
       ? NodeCapability.fromPartial(object.node)
       : undefined;
+    return message;
+  },
+};
+
+function createBaseGetCacheSummaryRequest(): GetCacheSummaryRequest {
+  return { compatibility: undefined };
+}
+
+export const GetCacheSummaryRequest: MessageFns<GetCacheSummaryRequest> = {
+  encode(message: GetCacheSummaryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.compatibility !== undefined) {
+      CacheCompatibility.encode(message.compatibility, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetCacheSummaryRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetCacheSummaryRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.compatibility = CacheCompatibility.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetCacheSummaryRequest {
+    return {
+      compatibility: isSet(object.compatibility) ? CacheCompatibility.fromJSON(object.compatibility) : undefined,
+    };
+  },
+
+  toJSON(message: GetCacheSummaryRequest): unknown {
+    const obj: any = {};
+    if (message.compatibility !== undefined) {
+      obj.compatibility = CacheCompatibility.toJSON(message.compatibility);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetCacheSummaryRequest>, I>>(base?: I): GetCacheSummaryRequest {
+    return GetCacheSummaryRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetCacheSummaryRequest>, I>>(object: I): GetCacheSummaryRequest {
+    const message = createBaseGetCacheSummaryRequest();
+    message.compatibility = (object.compatibility !== undefined && object.compatibility !== null)
+      ? CacheCompatibility.fromPartial(object.compatibility)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseGetCacheSummaryResponse(): GetCacheSummaryResponse {
+  return { nodeId: "", caches: [] };
+}
+
+export const GetCacheSummaryResponse: MessageFns<GetCacheSummaryResponse> = {
+  encode(message: GetCacheSummaryResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nodeId !== "") {
+      writer.uint32(10).string(message.nodeId);
+    }
+    for (const v of message.caches) {
+      CacheCapability.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetCacheSummaryResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetCacheSummaryResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.caches.push(CacheCapability.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetCacheSummaryResponse {
+    return {
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      caches: globalThis.Array.isArray(object?.caches)
+        ? object.caches.map((e: any) => CacheCapability.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: GetCacheSummaryResponse): unknown {
+    const obj: any = {};
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.caches?.length) {
+      obj.caches = message.caches.map((e) => CacheCapability.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetCacheSummaryResponse>, I>>(base?: I): GetCacheSummaryResponse {
+    return GetCacheSummaryResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetCacheSummaryResponse>, I>>(object: I): GetCacheSummaryResponse {
+    const message = createBaseGetCacheSummaryResponse();
+    message.nodeId = object.nodeId ?? "";
+    message.caches = object.caches?.map((e) => CacheCapability.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseLookupPrefixRequest(): LookupPrefixRequest {
+  return { compatibility: undefined, blockHashes: [] };
+}
+
+export const LookupPrefixRequest: MessageFns<LookupPrefixRequest> = {
+  encode(message: LookupPrefixRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.compatibility !== undefined) {
+      CacheCompatibility.encode(message.compatibility, writer.uint32(10).fork()).join();
+    }
+    for (const v of message.blockHashes) {
+      writer.uint32(18).bytes(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): LookupPrefixRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseLookupPrefixRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.compatibility = CacheCompatibility.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.blockHashes.push(reader.bytes());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): LookupPrefixRequest {
+    return {
+      compatibility: isSet(object.compatibility) ? CacheCompatibility.fromJSON(object.compatibility) : undefined,
+      blockHashes: globalThis.Array.isArray(object?.blockHashes)
+        ? object.blockHashes.map((e: any) => bytesFromBase64(e))
+        : globalThis.Array.isArray(object?.block_hashes)
+        ? object.block_hashes.map((e: any) => bytesFromBase64(e))
+        : [],
+    };
+  },
+
+  toJSON(message: LookupPrefixRequest): unknown {
+    const obj: any = {};
+    if (message.compatibility !== undefined) {
+      obj.compatibility = CacheCompatibility.toJSON(message.compatibility);
+    }
+    if (message.blockHashes?.length) {
+      obj.blockHashes = message.blockHashes.map((e) => base64FromBytes(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<LookupPrefixRequest>, I>>(base?: I): LookupPrefixRequest {
+    return LookupPrefixRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<LookupPrefixRequest>, I>>(object: I): LookupPrefixRequest {
+    const message = createBaseLookupPrefixRequest();
+    message.compatibility = (object.compatibility !== undefined && object.compatibility !== null)
+      ? CacheCompatibility.fromPartial(object.compatibility)
+      : undefined;
+    message.blockHashes = object.blockHashes?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseLookupPrefixResponse(): LookupPrefixResponse {
+  return {
+    nodeId: "",
+    hitBlockCount: 0,
+    hitTokenCount: "0",
+    transferBytes: "0",
+    cacheEpoch: "0",
+    leaseId: "",
+    leaseExpiresAtUnix: 0,
+    payloadSha256: new Uint8Array(0),
+  };
+}
+
+export const LookupPrefixResponse: MessageFns<LookupPrefixResponse> = {
+  encode(message: LookupPrefixResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nodeId !== "") {
+      writer.uint32(10).string(message.nodeId);
+    }
+    if (message.hitBlockCount !== 0) {
+      writer.uint32(16).uint32(message.hitBlockCount);
+    }
+    if (message.hitTokenCount !== "0") {
+      writer.uint32(24).uint64(message.hitTokenCount);
+    }
+    if (message.transferBytes !== "0") {
+      writer.uint32(32).uint64(message.transferBytes);
+    }
+    if (message.cacheEpoch !== "0") {
+      writer.uint32(40).uint64(message.cacheEpoch);
+    }
+    if (message.leaseId !== "") {
+      writer.uint32(50).string(message.leaseId);
+    }
+    if (message.leaseExpiresAtUnix !== 0) {
+      writer.uint32(57).double(message.leaseExpiresAtUnix);
+    }
+    if (message.payloadSha256.length !== 0) {
+      writer.uint32(66).bytes(message.payloadSha256);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): LookupPrefixResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseLookupPrefixResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodeId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.hitBlockCount = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.hitTokenCount = reader.uint64().toString();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.transferBytes = reader.uint64().toString();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.cacheEpoch = reader.uint64().toString();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.leaseId = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 57) {
+            break;
+          }
+
+          message.leaseExpiresAtUnix = reader.double();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.payloadSha256 = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): LookupPrefixResponse {
+    return {
+      nodeId: isSet(object.nodeId)
+        ? globalThis.String(object.nodeId)
+        : isSet(object.node_id)
+        ? globalThis.String(object.node_id)
+        : "",
+      hitBlockCount: isSet(object.hitBlockCount)
+        ? globalThis.Number(object.hitBlockCount)
+        : isSet(object.hit_block_count)
+        ? globalThis.Number(object.hit_block_count)
+        : 0,
+      hitTokenCount: isSet(object.hitTokenCount)
+        ? globalThis.String(object.hitTokenCount)
+        : isSet(object.hit_token_count)
+        ? globalThis.String(object.hit_token_count)
+        : "0",
+      transferBytes: isSet(object.transferBytes)
+        ? globalThis.String(object.transferBytes)
+        : isSet(object.transfer_bytes)
+        ? globalThis.String(object.transfer_bytes)
+        : "0",
+      cacheEpoch: isSet(object.cacheEpoch)
+        ? globalThis.String(object.cacheEpoch)
+        : isSet(object.cache_epoch)
+        ? globalThis.String(object.cache_epoch)
+        : "0",
+      leaseId: isSet(object.leaseId)
+        ? globalThis.String(object.leaseId)
+        : isSet(object.lease_id)
+        ? globalThis.String(object.lease_id)
+        : "",
+      leaseExpiresAtUnix: isSet(object.leaseExpiresAtUnix)
+        ? globalThis.Number(object.leaseExpiresAtUnix)
+        : isSet(object.lease_expires_at_unix)
+        ? globalThis.Number(object.lease_expires_at_unix)
+        : 0,
+      payloadSha256: isSet(object.payloadSha256)
+        ? bytesFromBase64(object.payloadSha256)
+        : isSet(object.payload_sha256)
+        ? bytesFromBase64(object.payload_sha256)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: LookupPrefixResponse): unknown {
+    const obj: any = {};
+    if (message.nodeId !== "") {
+      obj.nodeId = message.nodeId;
+    }
+    if (message.hitBlockCount !== 0) {
+      obj.hitBlockCount = Math.round(message.hitBlockCount);
+    }
+    if (message.hitTokenCount !== "0") {
+      obj.hitTokenCount = message.hitTokenCount;
+    }
+    if (message.transferBytes !== "0") {
+      obj.transferBytes = message.transferBytes;
+    }
+    if (message.cacheEpoch !== "0") {
+      obj.cacheEpoch = message.cacheEpoch;
+    }
+    if (message.leaseId !== "") {
+      obj.leaseId = message.leaseId;
+    }
+    if (message.leaseExpiresAtUnix !== 0) {
+      obj.leaseExpiresAtUnix = message.leaseExpiresAtUnix;
+    }
+    if (message.payloadSha256.length !== 0) {
+      obj.payloadSha256 = base64FromBytes(message.payloadSha256);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<LookupPrefixResponse>, I>>(base?: I): LookupPrefixResponse {
+    return LookupPrefixResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<LookupPrefixResponse>, I>>(object: I): LookupPrefixResponse {
+    const message = createBaseLookupPrefixResponse();
+    message.nodeId = object.nodeId ?? "";
+    message.hitBlockCount = object.hitBlockCount ?? 0;
+    message.hitTokenCount = object.hitTokenCount ?? "0";
+    message.transferBytes = object.transferBytes ?? "0";
+    message.cacheEpoch = object.cacheEpoch ?? "0";
+    message.leaseId = object.leaseId ?? "";
+    message.leaseExpiresAtUnix = object.leaseExpiresAtUnix ?? 0;
+    message.payloadSha256 = object.payloadSha256 ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseFetchBlocksRequest(): FetchBlocksRequest {
+  return { leaseId: "" };
+}
+
+export const FetchBlocksRequest: MessageFns<FetchBlocksRequest> = {
+  encode(message: FetchBlocksRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.leaseId !== "") {
+      writer.uint32(10).string(message.leaseId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): FetchBlocksRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseFetchBlocksRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.leaseId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): FetchBlocksRequest {
+    return {
+      leaseId: isSet(object.leaseId)
+        ? globalThis.String(object.leaseId)
+        : isSet(object.lease_id)
+        ? globalThis.String(object.lease_id)
+        : "",
+    };
+  },
+
+  toJSON(message: FetchBlocksRequest): unknown {
+    const obj: any = {};
+    if (message.leaseId !== "") {
+      obj.leaseId = message.leaseId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<FetchBlocksRequest>, I>>(base?: I): FetchBlocksRequest {
+    return FetchBlocksRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<FetchBlocksRequest>, I>>(object: I): FetchBlocksRequest {
+    const message = createBaseFetchBlocksRequest();
+    message.leaseId = object.leaseId ?? "";
+    return message;
+  },
+};
+
+function createBaseFetchBlocksResponse(): FetchBlocksResponse {
+  return {
+    blockHash: new Uint8Array(0),
+    blockIndex: 0,
+    tokenCount: 0,
+    chunkIndex: 0,
+    totalChunks: 0,
+    data: new Uint8Array(0),
+    blockSha256: new Uint8Array(0),
+    cacheEpoch: "0",
+  };
+}
+
+export const FetchBlocksResponse: MessageFns<FetchBlocksResponse> = {
+  encode(message: FetchBlocksResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.blockHash.length !== 0) {
+      writer.uint32(10).bytes(message.blockHash);
+    }
+    if (message.blockIndex !== 0) {
+      writer.uint32(16).uint32(message.blockIndex);
+    }
+    if (message.tokenCount !== 0) {
+      writer.uint32(24).uint32(message.tokenCount);
+    }
+    if (message.chunkIndex !== 0) {
+      writer.uint32(32).uint32(message.chunkIndex);
+    }
+    if (message.totalChunks !== 0) {
+      writer.uint32(40).uint32(message.totalChunks);
+    }
+    if (message.data.length !== 0) {
+      writer.uint32(50).bytes(message.data);
+    }
+    if (message.blockSha256.length !== 0) {
+      writer.uint32(58).bytes(message.blockSha256);
+    }
+    if (message.cacheEpoch !== "0") {
+      writer.uint32(64).uint64(message.cacheEpoch);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): FetchBlocksResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseFetchBlocksResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.blockHash = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.blockIndex = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.tokenCount = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.chunkIndex = reader.uint32();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.totalChunks = reader.uint32();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.data = reader.bytes();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.blockSha256 = reader.bytes();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.cacheEpoch = reader.uint64().toString();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): FetchBlocksResponse {
+    return {
+      blockHash: isSet(object.blockHash)
+        ? bytesFromBase64(object.blockHash)
+        : isSet(object.block_hash)
+        ? bytesFromBase64(object.block_hash)
+        : new Uint8Array(0),
+      blockIndex: isSet(object.blockIndex)
+        ? globalThis.Number(object.blockIndex)
+        : isSet(object.block_index)
+        ? globalThis.Number(object.block_index)
+        : 0,
+      tokenCount: isSet(object.tokenCount)
+        ? globalThis.Number(object.tokenCount)
+        : isSet(object.token_count)
+        ? globalThis.Number(object.token_count)
+        : 0,
+      chunkIndex: isSet(object.chunkIndex)
+        ? globalThis.Number(object.chunkIndex)
+        : isSet(object.chunk_index)
+        ? globalThis.Number(object.chunk_index)
+        : 0,
+      totalChunks: isSet(object.totalChunks)
+        ? globalThis.Number(object.totalChunks)
+        : isSet(object.total_chunks)
+        ? globalThis.Number(object.total_chunks)
+        : 0,
+      data: isSet(object.data) ? bytesFromBase64(object.data) : new Uint8Array(0),
+      blockSha256: isSet(object.blockSha256)
+        ? bytesFromBase64(object.blockSha256)
+        : isSet(object.block_sha256)
+        ? bytesFromBase64(object.block_sha256)
+        : new Uint8Array(0),
+      cacheEpoch: isSet(object.cacheEpoch)
+        ? globalThis.String(object.cacheEpoch)
+        : isSet(object.cache_epoch)
+        ? globalThis.String(object.cache_epoch)
+        : "0",
+    };
+  },
+
+  toJSON(message: FetchBlocksResponse): unknown {
+    const obj: any = {};
+    if (message.blockHash.length !== 0) {
+      obj.blockHash = base64FromBytes(message.blockHash);
+    }
+    if (message.blockIndex !== 0) {
+      obj.blockIndex = Math.round(message.blockIndex);
+    }
+    if (message.tokenCount !== 0) {
+      obj.tokenCount = Math.round(message.tokenCount);
+    }
+    if (message.chunkIndex !== 0) {
+      obj.chunkIndex = Math.round(message.chunkIndex);
+    }
+    if (message.totalChunks !== 0) {
+      obj.totalChunks = Math.round(message.totalChunks);
+    }
+    if (message.data.length !== 0) {
+      obj.data = base64FromBytes(message.data);
+    }
+    if (message.blockSha256.length !== 0) {
+      obj.blockSha256 = base64FromBytes(message.blockSha256);
+    }
+    if (message.cacheEpoch !== "0") {
+      obj.cacheEpoch = message.cacheEpoch;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<FetchBlocksResponse>, I>>(base?: I): FetchBlocksResponse {
+    return FetchBlocksResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<FetchBlocksResponse>, I>>(object: I): FetchBlocksResponse {
+    const message = createBaseFetchBlocksResponse();
+    message.blockHash = object.blockHash ?? new Uint8Array(0);
+    message.blockIndex = object.blockIndex ?? 0;
+    message.tokenCount = object.tokenCount ?? 0;
+    message.chunkIndex = object.chunkIndex ?? 0;
+    message.totalChunks = object.totalChunks ?? 0;
+    message.data = object.data ?? new Uint8Array(0);
+    message.blockSha256 = object.blockSha256 ?? new Uint8Array(0);
+    message.cacheEpoch = object.cacheEpoch ?? "0";
+    return message;
+  },
+};
+
+function createBasePublishBlockRequest(): PublishBlockRequest {
+  return {
+    blockHash: new Uint8Array(0),
+    blockIndex: 0,
+    tokenCount: 0,
+    chunkIndex: 0,
+    totalChunks: 0,
+    data: new Uint8Array(0),
+    blockSha256: new Uint8Array(0),
+    cacheEpoch: "0",
+    compatibility: undefined,
+  };
+}
+
+export const PublishBlockRequest: MessageFns<PublishBlockRequest> = {
+  encode(message: PublishBlockRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.blockHash.length !== 0) {
+      writer.uint32(10).bytes(message.blockHash);
+    }
+    if (message.blockIndex !== 0) {
+      writer.uint32(16).uint32(message.blockIndex);
+    }
+    if (message.tokenCount !== 0) {
+      writer.uint32(24).uint32(message.tokenCount);
+    }
+    if (message.chunkIndex !== 0) {
+      writer.uint32(32).uint32(message.chunkIndex);
+    }
+    if (message.totalChunks !== 0) {
+      writer.uint32(40).uint32(message.totalChunks);
+    }
+    if (message.data.length !== 0) {
+      writer.uint32(50).bytes(message.data);
+    }
+    if (message.blockSha256.length !== 0) {
+      writer.uint32(58).bytes(message.blockSha256);
+    }
+    if (message.cacheEpoch !== "0") {
+      writer.uint32(64).uint64(message.cacheEpoch);
+    }
+    if (message.compatibility !== undefined) {
+      CacheCompatibility.encode(message.compatibility, writer.uint32(74).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PublishBlockRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePublishBlockRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.blockHash = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.blockIndex = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.tokenCount = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.chunkIndex = reader.uint32();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.totalChunks = reader.uint32();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.data = reader.bytes();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.blockSha256 = reader.bytes();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.cacheEpoch = reader.uint64().toString();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.compatibility = CacheCompatibility.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PublishBlockRequest {
+    return {
+      blockHash: isSet(object.blockHash)
+        ? bytesFromBase64(object.blockHash)
+        : isSet(object.block_hash)
+        ? bytesFromBase64(object.block_hash)
+        : new Uint8Array(0),
+      blockIndex: isSet(object.blockIndex)
+        ? globalThis.Number(object.blockIndex)
+        : isSet(object.block_index)
+        ? globalThis.Number(object.block_index)
+        : 0,
+      tokenCount: isSet(object.tokenCount)
+        ? globalThis.Number(object.tokenCount)
+        : isSet(object.token_count)
+        ? globalThis.Number(object.token_count)
+        : 0,
+      chunkIndex: isSet(object.chunkIndex)
+        ? globalThis.Number(object.chunkIndex)
+        : isSet(object.chunk_index)
+        ? globalThis.Number(object.chunk_index)
+        : 0,
+      totalChunks: isSet(object.totalChunks)
+        ? globalThis.Number(object.totalChunks)
+        : isSet(object.total_chunks)
+        ? globalThis.Number(object.total_chunks)
+        : 0,
+      data: isSet(object.data) ? bytesFromBase64(object.data) : new Uint8Array(0),
+      blockSha256: isSet(object.blockSha256)
+        ? bytesFromBase64(object.blockSha256)
+        : isSet(object.block_sha256)
+        ? bytesFromBase64(object.block_sha256)
+        : new Uint8Array(0),
+      cacheEpoch: isSet(object.cacheEpoch)
+        ? globalThis.String(object.cacheEpoch)
+        : isSet(object.cache_epoch)
+        ? globalThis.String(object.cache_epoch)
+        : "0",
+      compatibility: isSet(object.compatibility) ? CacheCompatibility.fromJSON(object.compatibility) : undefined,
+    };
+  },
+
+  toJSON(message: PublishBlockRequest): unknown {
+    const obj: any = {};
+    if (message.blockHash.length !== 0) {
+      obj.blockHash = base64FromBytes(message.blockHash);
+    }
+    if (message.blockIndex !== 0) {
+      obj.blockIndex = Math.round(message.blockIndex);
+    }
+    if (message.tokenCount !== 0) {
+      obj.tokenCount = Math.round(message.tokenCount);
+    }
+    if (message.chunkIndex !== 0) {
+      obj.chunkIndex = Math.round(message.chunkIndex);
+    }
+    if (message.totalChunks !== 0) {
+      obj.totalChunks = Math.round(message.totalChunks);
+    }
+    if (message.data.length !== 0) {
+      obj.data = base64FromBytes(message.data);
+    }
+    if (message.blockSha256.length !== 0) {
+      obj.blockSha256 = base64FromBytes(message.blockSha256);
+    }
+    if (message.cacheEpoch !== "0") {
+      obj.cacheEpoch = message.cacheEpoch;
+    }
+    if (message.compatibility !== undefined) {
+      obj.compatibility = CacheCompatibility.toJSON(message.compatibility);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PublishBlockRequest>, I>>(base?: I): PublishBlockRequest {
+    return PublishBlockRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PublishBlockRequest>, I>>(object: I): PublishBlockRequest {
+    const message = createBasePublishBlockRequest();
+    message.blockHash = object.blockHash ?? new Uint8Array(0);
+    message.blockIndex = object.blockIndex ?? 0;
+    message.tokenCount = object.tokenCount ?? 0;
+    message.chunkIndex = object.chunkIndex ?? 0;
+    message.totalChunks = object.totalChunks ?? 0;
+    message.data = object.data ?? new Uint8Array(0);
+    message.blockSha256 = object.blockSha256 ?? new Uint8Array(0);
+    message.cacheEpoch = object.cacheEpoch ?? "0";
+    message.compatibility = (object.compatibility !== undefined && object.compatibility !== null)
+      ? CacheCompatibility.fromPartial(object.compatibility)
+      : undefined;
+    return message;
+  },
+};
+
+function createBasePublishBlockResponse(): PublishBlockResponse {
+  return { stored: false, cacheEpoch: "0" };
+}
+
+export const PublishBlockResponse: MessageFns<PublishBlockResponse> = {
+  encode(message: PublishBlockResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.stored !== false) {
+      writer.uint32(8).bool(message.stored);
+    }
+    if (message.cacheEpoch !== "0") {
+      writer.uint32(16).uint64(message.cacheEpoch);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PublishBlockResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePublishBlockResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.stored = reader.bool();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.cacheEpoch = reader.uint64().toString();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PublishBlockResponse {
+    return {
+      stored: isSet(object.stored) ? globalThis.Boolean(object.stored) : false,
+      cacheEpoch: isSet(object.cacheEpoch)
+        ? globalThis.String(object.cacheEpoch)
+        : isSet(object.cache_epoch)
+        ? globalThis.String(object.cache_epoch)
+        : "0",
+    };
+  },
+
+  toJSON(message: PublishBlockResponse): unknown {
+    const obj: any = {};
+    if (message.stored !== false) {
+      obj.stored = message.stored;
+    }
+    if (message.cacheEpoch !== "0") {
+      obj.cacheEpoch = message.cacheEpoch;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PublishBlockResponse>, I>>(base?: I): PublishBlockResponse {
+    return PublishBlockResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PublishBlockResponse>, I>>(object: I): PublishBlockResponse {
+    const message = createBasePublishBlockResponse();
+    message.stored = object.stored ?? false;
+    message.cacheEpoch = object.cacheEpoch ?? "0";
     return message;
   },
 };
@@ -2504,6 +4249,127 @@ export const ProposerServiceClient = makeGenericClientConstructor(
 ) as unknown as {
   new (address: string, credentials: ChannelCredentials, options?: Partial<ClientOptions>): ProposerServiceClient;
   service: typeof ProposerServiceService;
+  serviceName: string;
+};
+
+/**
+ * PrefillCacheService exposes immutable, content-addressed prefill K/V blocks.
+ * Lookup is metadata-only; FetchBlocks is the point-to-point bulk data plane.
+ * Decode never calls this service: a requester imports a hit once, computes the
+ * missing suffix locally, and keeps the autoregressive loop local.
+ */
+export type PrefillCacheServiceService = typeof PrefillCacheServiceService;
+export const PrefillCacheServiceService = {
+  getCacheSummary: {
+    path: "/kakeya.v1.PrefillCacheService/GetCacheSummary" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: GetCacheSummaryRequest): Buffer =>
+      Buffer.from(GetCacheSummaryRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetCacheSummaryRequest => GetCacheSummaryRequest.decode(value),
+    responseSerialize: (value: GetCacheSummaryResponse): Buffer =>
+      Buffer.from(GetCacheSummaryResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetCacheSummaryResponse => GetCacheSummaryResponse.decode(value),
+  },
+  lookupPrefix: {
+    path: "/kakeya.v1.PrefillCacheService/LookupPrefix" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: LookupPrefixRequest): Buffer => Buffer.from(LookupPrefixRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): LookupPrefixRequest => LookupPrefixRequest.decode(value),
+    responseSerialize: (value: LookupPrefixResponse): Buffer =>
+      Buffer.from(LookupPrefixResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): LookupPrefixResponse => LookupPrefixResponse.decode(value),
+  },
+  fetchBlocks: {
+    path: "/kakeya.v1.PrefillCacheService/FetchBlocks" as const,
+    requestStream: false as const,
+    responseStream: true as const,
+    requestSerialize: (value: FetchBlocksRequest): Buffer => Buffer.from(FetchBlocksRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): FetchBlocksRequest => FetchBlocksRequest.decode(value),
+    responseSerialize: (value: FetchBlocksResponse): Buffer => Buffer.from(FetchBlocksResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): FetchBlocksResponse => FetchBlocksResponse.decode(value),
+  },
+  publishBlock: {
+    path: "/kakeya.v1.PrefillCacheService/PublishBlock" as const,
+    requestStream: true as const,
+    responseStream: false as const,
+    requestSerialize: (value: PublishBlockRequest): Buffer => Buffer.from(PublishBlockRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): PublishBlockRequest => PublishBlockRequest.decode(value),
+    responseSerialize: (value: PublishBlockResponse): Buffer =>
+      Buffer.from(PublishBlockResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): PublishBlockResponse => PublishBlockResponse.decode(value),
+  },
+} as const;
+
+export interface PrefillCacheServiceServer extends UntypedServiceImplementation {
+  getCacheSummary: handleUnaryCall<GetCacheSummaryRequest, GetCacheSummaryResponse>;
+  lookupPrefix: handleUnaryCall<LookupPrefixRequest, LookupPrefixResponse>;
+  fetchBlocks: handleServerStreamingCall<FetchBlocksRequest, FetchBlocksResponse>;
+  publishBlock: handleClientStreamingCall<PublishBlockRequest, PublishBlockResponse>;
+}
+
+export interface PrefillCacheServiceClient extends Client {
+  getCacheSummary(
+    request: GetCacheSummaryRequest,
+    callback: (error: ServiceError | null, response: GetCacheSummaryResponse) => void,
+  ): ClientUnaryCall;
+  getCacheSummary(
+    request: GetCacheSummaryRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetCacheSummaryResponse) => void,
+  ): ClientUnaryCall;
+  getCacheSummary(
+    request: GetCacheSummaryRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetCacheSummaryResponse) => void,
+  ): ClientUnaryCall;
+  lookupPrefix(
+    request: LookupPrefixRequest,
+    callback: (error: ServiceError | null, response: LookupPrefixResponse) => void,
+  ): ClientUnaryCall;
+  lookupPrefix(
+    request: LookupPrefixRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: LookupPrefixResponse) => void,
+  ): ClientUnaryCall;
+  lookupPrefix(
+    request: LookupPrefixRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: LookupPrefixResponse) => void,
+  ): ClientUnaryCall;
+  fetchBlocks(request: FetchBlocksRequest, options?: Partial<CallOptions>): ClientReadableStream<FetchBlocksResponse>;
+  fetchBlocks(
+    request: FetchBlocksRequest,
+    metadata?: Metadata,
+    options?: Partial<CallOptions>,
+  ): ClientReadableStream<FetchBlocksResponse>;
+  publishBlock(
+    callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
+  ): ClientWritableStream<PublishBlockRequest>;
+  publishBlock(
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
+  ): ClientWritableStream<PublishBlockRequest>;
+  publishBlock(
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
+  ): ClientWritableStream<PublishBlockRequest>;
+  publishBlock(
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
+  ): ClientWritableStream<PublishBlockRequest>;
+}
+
+export const PrefillCacheServiceClient = makeGenericClientConstructor(
+  PrefillCacheServiceService,
+  "kakeya.v1.PrefillCacheService",
+) as unknown as {
+  new (address: string, credentials: ChannelCredentials, options?: Partial<ClientOptions>): PrefillCacheServiceClient;
+  service: typeof PrefillCacheServiceService;
   serviceName: string;
 };
 

@@ -67,21 +67,39 @@ def _resolve_kv_dims(verifier) -> Tuple[int, int, int]:
     verifier's HF config means the per-session byte numbers reported
     over gRPC match what the verifier is actually holding.
     """
-    cfg = verifier.model.config
-    # Gemma 4 is multimodal: decoder dims live under config.text_config.
-    cfg = getattr(cfg, "text_config", None) or cfg
-    num_layers = int(getattr(cfg, "num_hidden_layers"))
-    # Qwen3 / Gemma / DeepSeek all support GQA — kv-heads is the
-    # dimension that matters for KV cache size, not attention-heads.
-    num_kv_heads = int(
-        getattr(cfg, "num_key_value_heads", None)
-        or getattr(cfg, "num_attention_heads")
-    )
-    head_dim = int(
-        getattr(cfg, "head_dim", None)
-        or (cfg.hidden_size // cfg.num_attention_heads)
-    )
-    return num_layers, num_kv_heads, head_dim
+    try:
+        cfg = (
+            getattr(verifier.model, "config", None)
+            or getattr(verifier.model, "args", None)
+        )
+        if cfg is None:
+            raise AttributeError("model exposes neither config nor args")
+        if hasattr(cfg, "get_text_config"):
+            cfg = cfg.get_text_config()
+        cfg = getattr(cfg, "text_config", None) or cfg
+        num_layers = int(getattr(cfg, "num_hidden_layers"))
+        num_kv_heads = int(
+            getattr(cfg, "num_key_value_heads", None)
+            or getattr(cfg, "num_attention_heads")
+        )
+        head_dim = int(
+            getattr(cfg, "head_dim", None)
+            or (cfg.hidden_size // cfg.num_attention_heads)
+        )
+        return num_layers, num_kv_heads, head_dim
+    except AttributeError:
+        from inference_engine.backends.mlx.cross_model_dlm_verifier import (
+            per_layer_kv_geometry,
+            resolve_mlx_text_model,
+        )
+        geometry = per_layer_kv_geometry(resolve_mlx_text_model(verifier.model))
+        if not geometry:
+            raise
+        return (
+            len(geometry),
+            max(item[0] for item in geometry),
+            max(item[1] for item in geometry),
+        )
 
 
 def _build_verifier(
@@ -143,7 +161,12 @@ def _total_memory_bytes() -> int:
         return 0
 
 
-def _build_capability_registry(args: argparse.Namespace, *, backend: str):
+def _build_capability_registry(
+    args: argparse.Namespace,
+    *,
+    backend: str,
+    cache_store=None,
+):
     """Build this node's CapabilityRegistry from CLI flags + probes."""
     import platform as _platform
     import time
@@ -155,6 +178,7 @@ def _build_capability_registry(args: argparse.Namespace, *, backend: str):
         CapabilityRole,
         ModelCapability,
         NodeCapability,
+        NodeEndpoint,
     )
     from inference_engine.distributed.mlx_ring import probe_ring_environment
 
@@ -173,6 +197,24 @@ def _build_capability_registry(args: argparse.Namespace, *, backend: str):
                 quantization="none",
             ),
         )
+    caches = ()
+    if cache_store is not None:
+        from inference_engine.distributed.prefill_cache_service import (
+            cache_capability,
+        )
+        models.append(
+            ModelCapability(
+                model_id=args.verifier_id,
+                role=CapabilityRole.PREFILL_CACHE,
+                quantization=args.cache_quantization,
+            ),
+        )
+        caches = (
+            cache_capability(
+                cache_store,
+                cache_address=args.cache_advertise or args.advertise or args.bind,
+            ),
+        )
 
     mlx_env = probe_environment()
     ring_env = probe_ring_environment()
@@ -187,6 +229,15 @@ def _build_capability_registry(args: argparse.Namespace, *, backend: str):
         announced_at_unix=time.time(),
         ttl_seconds=args.capability_ttl_s,
         ring_address=ring_env.ring_address(hostname),
+        caches=caches,
+        endpoints=(
+            NodeEndpoint(
+                address=args.advertise or args.bind,
+                network=args.network_label,
+                priority=args.network_priority,
+                measured_rtt_ms=args.measured_rtt_ms,
+            ),
+        ),
     )
     _LOG.info("capability card: %s @ %s ring=%r models=%s",
               self_card.node_id, self_card.grpc_address,
@@ -195,11 +246,32 @@ def _build_capability_registry(args: argparse.Namespace, *, backend: str):
     return CapabilityRegistry(self_card=self_card)
 
 
-async def _exchange_loop(registry, peers, interval_s: float) -> None:
+async def _exchange_loop(
+    registry,
+    peers,
+    interval_s: float,
+    *,
+    cache_store=None,
+    cache_address: str = "",
+) -> None:
     """Periodic gossip with seed peers until the task is cancelled."""
     from inference_engine.distributed.exchange import exchange_once
 
     while True:
+        if cache_store is not None:
+            from dataclasses import replace
+            from inference_engine.distributed.prefill_cache_service import (
+                cache_capability,
+            )
+            registry.self_card = replace(
+                registry.self_card,
+                caches=(
+                    cache_capability(
+                        cache_store,
+                        cache_address=cache_address,
+                    ),
+                ),
+            )
         report = await exchange_once(registry, peers)
         if report.errors:
             _LOG.warning("gossip errors: %s", report.errors)
@@ -209,6 +281,42 @@ async def _exchange_loop(registry, peers, interval_s: float) -> None:
                 report.merged_cards, registry.peer_count + 1,
             )
         await asyncio.sleep(interval_s)
+
+
+def _build_token_telemetry_callback(args):
+    if not args.network_telemetry_url:
+        return None
+
+    def report(count: int, kv_assisted: int = 0) -> None:
+        import json
+        import threading
+        import urllib.request
+
+        def send() -> None:
+            body = json.dumps({
+                "node_id": args.node_id or "runtime",
+                "completed": int(count),
+                "kv_assisted": int(kv_assisted),
+            }).encode()
+            headers = {"Content-Type": "application/json"}
+            if args.network_telemetry_api_key:
+                headers["X-API-Key"] = args.network_telemetry_api_key
+            try:
+                with urllib.request.urlopen(
+                    urllib.request.Request(
+                        args.network_telemetry_url,
+                        data=body,
+                        headers=headers,
+                    ),
+                    timeout=3,
+                ):
+                    pass
+            except OSError:
+                _LOG.warning("failed to publish token telemetry")
+
+        threading.Thread(target=send, daemon=True).start()
+
+    return report
 
 
 async def _serve(args: argparse.Namespace) -> int:
@@ -259,6 +367,53 @@ async def _serve(args: argparse.Namespace) -> int:
     )
     pool = SlabPool(num_slabs=args.capacity, slab_config=slab_cfg)
 
+    prefill_store = None
+    prefill_hook = None
+    if args.enable_prefill_cache:
+        if args.backend != "mlx":
+            raise SystemExit("--enable-prefill-cache currently requires --backend mlx")
+        import hashlib
+        from inference_engine.distributed.capability import CacheCompatibility
+        from inference_engine.distributed.prefill_cache import PrefixCacheStore
+        from inference_engine.distributed.prefill_cache_runtime import (
+            DistributedPrefillCacheHook,
+        )
+
+        geometry = f"{num_layers}:{num_kv_heads}:{head_dim}"
+        compatibility = CacheCompatibility(
+            model_id=args.cache_model_id or args.verifier_id,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
+            cache_format_version=args.cache_format_version,
+            quantization=args.cache_quantization,
+            rope_hash=args.rope_hash,
+            layer_geometry_hash=hashlib.sha256(geometry.encode()).hexdigest(),
+            kv_dtype=args.cache_kv_dtype,
+            block_size_tokens=args.cache_block_tokens,
+        )
+        prefill_store = PrefixCacheStore(
+            compatibility,
+            max_bytes=int(args.prefill_cache_gb * (1 << 30)),
+            node_id=args.node_id or (__import__("platform").node() or "localhost"),
+        )
+        telemetry_callback = _build_token_telemetry_callback(args)
+        prefill_hook = DistributedPrefillCacheHook(
+            prefill_store,
+            peers=args.cache_peer,
+            lookup_timeout_s=args.cache_lookup_timeout_s,
+            fetch_timeout_s=args.cache_fetch_timeout_s,
+            on_reuse=(
+                (lambda count: telemetry_callback(count, count))
+                if telemetry_callback is not None else None
+            ),
+        )
+        _LOG.info(
+            "distributed prefill cache enabled: %.2f GiB, block=%d, peers=%s",
+            args.prefill_cache_gb,
+            args.cache_block_tokens,
+            args.cache_peer,
+        )
+
     # PR-A3c: per-session binding for true multi-tenant serving. Each session
     # gets its own verifier adapter (isolated KV) sharing the model weights via
     # the adapter's spawn(); the registry doubles as cache_inspector + resolver.
@@ -282,19 +437,36 @@ async def _serve(args: argparse.Namespace) -> int:
         slab_pool=pool,
     )
     resolver = registry.get if registry is not None else None
-    append_coord = AppendTokensCoordinator(store, verifier, resolver=resolver)
-    gen_coord = GenerationCoordinator(store, verifier, resolver=resolver)
+    append_coord = AppendTokensCoordinator(
+        store,
+        verifier,
+        resolver=resolver,
+        prefill_cache=prefill_hook,
+    )
+    gen_coord = GenerationCoordinator(
+        store,
+        verifier,
+        resolver=resolver,
+        on_tokens=_build_token_telemetry_callback(args),
+    )
 
     # Multi-host capability plane (ADR 0009): only constructed when
     # the operator opts in via --enable-capability-exchange (implied
     # by --peer / --serve-ngram-proposer).
     distributed_enabled = bool(
-        args.enable_capability_exchange or args.peer or args.serve_ngram_proposer
+        args.enable_capability_exchange
+        or args.peer
+        or args.serve_ngram_proposer
+        or args.enable_prefill_cache
     )
     registry = None
     proposers = None
     if distributed_enabled:
-        registry = _build_capability_registry(args, backend=args.backend)
+        registry = _build_capability_registry(
+            args,
+            backend=args.backend,
+            cache_store=prefill_store,
+        )
         if args.serve_ngram_proposer:
             from inference_engine.distributed.capability import NGRAM_MODEL_ID
             from inference_engine.distributed.ngram import NGramProposer
@@ -312,15 +484,55 @@ async def _serve(args: argparse.Namespace) -> int:
         on_session_close=on_session_close,
         capability_registry=registry,
         proposers=proposers,
+        prefill_cache_store=prefill_store,
+        prefill_cache_address=args.cache_advertise or args.advertise or args.bind,
     )
 
     await server.start()
     _LOG.info("kakeya gRPC RuntimeService listening on %s", args.bind)
 
+    http_server = None
+    http_task = None
+    if args.network_http_port:
+        if registry is None or prefill_store is None:
+            raise SystemExit(
+                "--network-http-port requires --enable-prefill-cache",
+            )
+        import uvicorn
+        from inference_engine.network.api import create_network_app
+        from inference_engine.network.state import NetworkState
+
+        network_state = NetworkState(
+            registry,
+            prefill_store,
+            state_path=args.network_state,
+        )
+        http_server = uvicorn.Server(uvicorn.Config(
+            create_network_app(
+                network_state,
+                api_key=args.network_api_key,
+            ),
+            host=args.network_http_host,
+            port=args.network_http_port,
+            log_level=args.log_level.lower(),
+        ))
+        http_task = asyncio.create_task(http_server.serve())
+        _LOG.info(
+            "inference-network dashboard listening on http://%s:%d/network",
+            args.network_http_host,
+            args.network_http_port,
+        )
+
     exchange_task = None
     if registry is not None and args.peer:
         exchange_task = asyncio.create_task(
-            _exchange_loop(registry, list(args.peer), args.exchange_interval_s),
+            _exchange_loop(
+                registry,
+                list(args.peer),
+                args.exchange_interval_s,
+                cache_store=prefill_store,
+                cache_address=args.cache_advertise or args.advertise or args.bind,
+            ),
         )
         _LOG.info(
             "capability gossip every %.1fs with peers: %s",
@@ -347,6 +559,10 @@ async def _serve(args: argparse.Namespace) -> int:
             await exchange_task
         except asyncio.CancelledError:
             pass
+    if http_server is not None:
+        http_server.should_exit = True
+    if http_task is not None:
+        await http_task
     await server.stop(grace=args.shutdown_grace_s)
     _LOG.info("kakeya gRPC RuntimeService stopped cleanly")
     return 0
@@ -419,6 +635,48 @@ def main() -> int:
     ap.add_argument("--capability-ttl-s", type=float, default=120.0,
                     help="TTL of this node's capability card; peers drop "
                          "it if not refreshed within this window.")
+    # --- Distributed prefill K/V cache --------------------------------
+    ap.add_argument("--enable-prefill-cache", action="store_true",
+                    help="Enable immutable longest-prefix prefill K/V reuse "
+                         "and serve PrefillCacheService.")
+    ap.add_argument("--prefill-cache-gb", type=float, default=4.0,
+                    help="Maximum local in-memory snapshot cache size.")
+    ap.add_argument("--cache-peer", action="append", default=[],
+                    help="Peer PrefillCacheService host:port. Repeatable.")
+    ap.add_argument("--cache-advertise", default="",
+                    help="Peer-reachable PrefillCacheService address. "
+                         "Defaults to --advertise/--bind.")
+    ap.add_argument("--cache-block-tokens", type=int, default=64,
+                    help="Token boundary interval for restorable snapshots.")
+    ap.add_argument("--cache-format-version", default="kakeya-prefill-v1")
+    ap.add_argument("--cache-model-id", default="",
+                    help="Logical cache model id; defaults to --verifier-id. "
+                         "Use this when verifier-id is a host-specific path.")
+    ap.add_argument("--cache-quantization", default="",
+                    help="Exact model quantization label used in compatibility.")
+    ap.add_argument("--cache-kv-dtype", default="bfloat16")
+    ap.add_argument("--model-revision", default="",
+                    help="Exact weights revision/hash for cache compatibility.")
+    ap.add_argument("--tokenizer-revision", default="",
+                    help="Exact tokenizer/chat-template revision.")
+    ap.add_argument("--rope-hash", default="",
+                    help="RoPE/position configuration fingerprint.")
+    ap.add_argument("--cache-lookup-timeout-s", type=float, default=2.0)
+    ap.add_argument("--cache-fetch-timeout-s", type=float, default=30.0)
+    ap.add_argument("--network-label", default="lan",
+                    help="Advertised interface: thunderbolt|lan|tailscale|public.")
+    ap.add_argument("--network-priority", type=int, default=50)
+    ap.add_argument("--measured-rtt-ms", type=float, default=0.0)
+    ap.add_argument("--network-http-host", default="127.0.0.1")
+    ap.add_argument("--network-http-port", type=int, default=0,
+                    help="Serve the inference-network API/dashboard; 0 disables.")
+    ap.add_argument("--network-state",
+                    default="~/.kakeya/inference_network.json")
+    ap.add_argument("--network-api-key", default="",
+                    help="X-API-Key required for registration/group/telemetry writes.")
+    ap.add_argument("--network-telemetry-url", default="",
+                    help="Optional POST endpoint receiving completed token counters.")
+    ap.add_argument("--network-telemetry-api-key", default="")
     ap.add_argument("--skip-cache-check", action="store_true",
                     help="Skip the HF-cache pre-flight assertion. By "
                          "default the server fails fast if the verifier "

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.kakeya.prefill-network</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/allen/kakeya-prefill-venv/bin/python</string>
+    <string>/Users/allen/kakeya-prefill-network/start_prefill_cache_node.py</string>
+    <string>--node-id</string><string>allens-mini</string>
+    <string>--bind</string><string>169.254.27.104:52051</string>
+    <string>--advertise</string><string>169.254.27.104:52051</string>
+    <string>--model-id</string><string>gemma-4-26B-A4B-it-mlx-4bit</string>
+    <string>--model-revision</string><string>local-4bit-v1</string>
+    <string>--tokenizer-revision</string><string>gemma4-v1</string>
+    <string>--quantization</string><string>4bit-mlx</string>
+    <string>--layer-geometry-hash</string><string>93d9585b0f06b60bac8e1cadf50b29df1adbf086c862e61720b6127d22c30e2b</string>
+    <string>--cache-gb</string><string>2</string>
+    <string>--network</string><string>thunderbolt</string>
+    <string>--priority</string><string>100</string>
+    <string>--rtt-ms</string><string>0.55</string>
+    <string>--state-path</string><string>/Users/allen/.kakeya/inference_network_peer.json</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/allen/kakeya-prefill-network</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/Users/allen/kakeya-prefill-venv/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONPATH</key><string>/Users/allen/kakeya-prefill-network</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>/Users/allen/.kakeya/prefill-cache.log</string>
+  <key>StandardErrorPath</key><string>/Users/allen/.kakeya/prefill-cache.log</string>
+</dict></plist>

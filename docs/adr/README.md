@@ -45,6 +45,7 @@ reader what was *not* chosen.
 | 0013 | [Distributed inference topology: what AR sequentiality allows](0013-distributed-inference-topology.md) | Accepted |
 | 0014 | [Agent-connection capacity & cross-host proposer/verifier topology: test plan & results](0014-agent-connection-capacity-and-cross-host-topology-tests.md) | Accepted |
 | 0015 | [Kakeya Inference Engine: a product-grade vLLM replacement, Kakeya Attention native](0015-kakeya-attention-and-engine-substrate.md) | Accepted |
+| 0016 | [Distributed Prefill KV Cache Network](0016-distributed-prefill-kv-cache-network.md) | Proposed / MVP |
 
 Note: ADR numbering is monotonically increasing; in-flight or
 planned numbers (0005) appear in the index so readers can

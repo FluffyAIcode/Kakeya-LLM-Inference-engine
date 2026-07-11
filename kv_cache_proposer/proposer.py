@@ -25,12 +25,41 @@ diffusion forward passes.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import List, Optional
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForMaskedLM, AutoTokenizer
+
+
+@contextmanager
+def _legacy_dllm_registration_compat():
+    """Bridge the dllm-hub Qwen remote code to strict Transformers 4.x.
+
+    The checkpoint registers ``A2DQwen3LMHeadModel`` against
+    ``A2DQwen3Config`` but inherits Qwen3's default ``config_class``. Newer
+    Transformers 4.x validates that pair. Limit the correction to these exact
+    remote class names and restore the registry method after model import.
+    """
+    from transformers.models.auto.auto_factory import _BaseAutoModelClass
+
+    original = _BaseAutoModelClass.register.__func__
+
+    def register(cls, config_class, model_class, exist_ok=False):
+        if (
+            config_class.__name__ == "A2DQwen3Config"
+            and model_class.__name__ == "A2DQwen3LMHeadModel"
+        ):
+            model_class.config_class = config_class
+        return original(cls, config_class, model_class, exist_ok=exist_ok)
+
+    _BaseAutoModelClass.register = classmethod(register)
+    try:
+        yield
+    finally:
+        _BaseAutoModelClass.register = classmethod(original)
 
 
 @dataclass
@@ -71,11 +100,12 @@ class DLMProposer:
         self.config = config or ProposerConfig()
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_id)
         # The dLLM checkpoint uses a custom `A2DQwen3LMHeadModel` head.
-        self.model = AutoModelForMaskedLM.from_pretrained(
-            self.config.model_id,
-            dtype=self.config.dtype,
-            trust_remote_code=True,
-        )
+        with _legacy_dllm_registration_compat():
+            self.model = AutoModelForMaskedLM.from_pretrained(
+                self.config.model_id,
+                dtype=self.config.dtype,
+                trust_remote_code=True,
+            )
         self.model.to(self.config.device).eval()
         self.mask_id: int = self.tokenizer.mask_token_id
         if self.mask_id is None:

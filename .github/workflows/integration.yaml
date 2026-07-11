@@ -90,6 +90,12 @@ jobs:
           # requirements.txt rather than an editable `-e .` (which errors with
           # "does not appear to be a Python project").
           python3 -m pip install -r requirements.txt
+          # The integration suite exercises the legacy dllm-hub Qwen proposer,
+          # whose remote modeling file depends on the Transformers 4.x
+          # decoder_layer.attention_type API. Keep this runner in the dedicated
+          # legacy range; K3/Gemma production paths use requirements.txt's
+          # unbounded Transformers 5.x-compatible environment.
+          python3 -m pip install 'transformers>=4.45,<5.0'
           python3 -m pip install pytest pytest-asyncio pytest-timeout coverage
 
       - name: Run integration suite

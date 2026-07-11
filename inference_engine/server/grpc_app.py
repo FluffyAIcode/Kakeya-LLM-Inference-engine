@@ -380,6 +380,8 @@ def create_grpc_server(
     capability_registry: Optional[object] = None,
     proposers: Optional[object] = None,
     default_proposer_model_id: str = "",
+    prefill_cache_store: Optional[object] = None,
+    prefill_cache_address: str = "",
 ) -> grpc.aio.Server:
     """Build, but do not start, a configured gRPC asyncio server.
 
@@ -443,6 +445,20 @@ def create_grpc_server(
         )
         _logger.info(
             "gRPC ProposerService enabled for models: %s", sorted(proposers),
+        )
+    if prefill_cache_store is not None:
+        from inference_engine.distributed.prefill_cache_service import (
+            add_prefill_cache_service,
+        )
+
+        add_prefill_cache_service(
+            server,
+            prefill_cache_store,
+            cache_address=prefill_cache_address or config.bind_address,
+        )
+        _logger.info(
+            "gRPC PrefillCacheService enabled at %s",
+            prefill_cache_address or config.bind_address,
         )
     server.add_insecure_port(config.bind_address)
     _logger.info("gRPC RuntimeService bound to %s", config.bind_address)

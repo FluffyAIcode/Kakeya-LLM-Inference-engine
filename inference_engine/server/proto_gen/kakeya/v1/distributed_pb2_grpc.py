@@ -255,6 +255,219 @@ class ProposerService:
             _registered_method=True)
 
 
+class PrefillCacheServiceStub:
+    """PrefillCacheService exposes immutable, content-addressed prefill K/V blocks.
+    Lookup is metadata-only; FetchBlocks is the point-to-point bulk data plane.
+    Decode never calls this service: a requester imports a hit once, computes the
+    missing suffix locally, and keeps the autoregressive loop local.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetCacheSummary = channel.unary_unary(
+                '/kakeya.v1.PrefillCacheService/GetCacheSummary',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.GetCacheSummaryRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.GetCacheSummaryResponse.FromString,
+                _registered_method=True)
+        self.LookupPrefix = channel.unary_unary(
+                '/kakeya.v1.PrefillCacheService/LookupPrefix',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.LookupPrefixRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.LookupPrefixResponse.FromString,
+                _registered_method=True)
+        self.FetchBlocks = channel.unary_stream(
+                '/kakeya.v1.PrefillCacheService/FetchBlocks',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksResponse.FromString,
+                _registered_method=True)
+        self.PublishBlock = channel.stream_unary(
+                '/kakeya.v1.PrefillCacheService/PublishBlock',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockResponse.FromString,
+                _registered_method=True)
+
+
+class PrefillCacheServiceServicer:
+    """PrefillCacheService exposes immutable, content-addressed prefill K/V blocks.
+    Lookup is metadata-only; FetchBlocks is the point-to-point bulk data plane.
+    Decode never calls this service: a requester imports a hit once, computes the
+    missing suffix locally, and keeps the autoregressive loop local.
+    """
+
+    def GetCacheSummary(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LookupPrefix(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FetchBlocks(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PublishBlock(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_PrefillCacheServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetCacheSummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCacheSummary,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.GetCacheSummaryRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.GetCacheSummaryResponse.SerializeToString,
+            ),
+            'LookupPrefix': grpc.unary_unary_rpc_method_handler(
+                    servicer.LookupPrefix,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.LookupPrefixRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.LookupPrefixResponse.SerializeToString,
+            ),
+            'FetchBlocks': grpc.unary_stream_rpc_method_handler(
+                    servicer.FetchBlocks,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksResponse.SerializeToString,
+            ),
+            'PublishBlock': grpc.stream_unary_rpc_method_handler(
+                    servicer.PublishBlock,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'kakeya.v1.PrefillCacheService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('kakeya.v1.PrefillCacheService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class PrefillCacheService:
+    """PrefillCacheService exposes immutable, content-addressed prefill K/V blocks.
+    Lookup is metadata-only; FetchBlocks is the point-to-point bulk data plane.
+    Decode never calls this service: a requester imports a hit once, computes the
+    missing suffix locally, and keeps the autoregressive loop local.
+    """
+
+    @staticmethod
+    def GetCacheSummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.PrefillCacheService/GetCacheSummary',
+            kakeya_dot_v1_dot_distributed__pb2.GetCacheSummaryRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.GetCacheSummaryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LookupPrefix(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.PrefillCacheService/LookupPrefix',
+            kakeya_dot_v1_dot_distributed__pb2.LookupPrefixRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.LookupPrefixResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FetchBlocks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/kakeya.v1.PrefillCacheService/FetchBlocks',
+            kakeya_dot_v1_dot_distributed__pb2.FetchBlocksRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.FetchBlocksResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PublishBlock(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/kakeya.v1.PrefillCacheService/PublishBlock',
+            kakeya_dot_v1_dot_distributed__pb2.PublishBlockRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.PublishBlockResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
 class DFlashProposerServiceStub:
     """DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
     Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext

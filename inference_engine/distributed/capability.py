@@ -48,6 +48,7 @@ class CapabilityRole(enum.IntEnum):
     PROPOSER = 2
     EMBEDDER = 3
     TOOL = 4
+    PREFILL_CACHE = 5
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,119 @@ class ModelCapability:
 
 
 @dataclass(frozen=True)
+class NodeEndpoint:
+    """One interface-specific address advertised by a node."""
+
+    address: str
+    network: str = ""
+    priority: int = 0
+    measured_rtt_ms: float = 0.0
+
+    def to_proto(self) -> distributed_pb2.NodeEndpoint:
+        return distributed_pb2.NodeEndpoint(
+            address=self.address,
+            network=self.network,
+            priority=self.priority,
+            measured_rtt_ms=self.measured_rtt_ms,
+        )
+
+    @classmethod
+    def from_proto(cls, msg: distributed_pb2.NodeEndpoint) -> "NodeEndpoint":
+        return cls(
+            address=msg.address,
+            network=msg.network,
+            priority=msg.priority,
+            measured_rtt_ms=msg.measured_rtt_ms,
+        )
+
+
+@dataclass(frozen=True)
+class CacheCompatibility:
+    """Exact compatibility tuple for reusable prefill K/V blocks."""
+
+    model_id: str
+    model_revision: str = ""
+    tokenizer_revision: str = ""
+    cache_format_version: str = "kv-v1"
+    quantization: str = ""
+    rope_hash: str = ""
+    layer_geometry_hash: str = ""
+    kv_dtype: str = ""
+    block_size_tokens: int = 64
+
+    def to_proto(self) -> distributed_pb2.CacheCompatibility:
+        return distributed_pb2.CacheCompatibility(
+            model_id=self.model_id,
+            model_revision=self.model_revision,
+            tokenizer_revision=self.tokenizer_revision,
+            cache_format_version=self.cache_format_version,
+            quantization=self.quantization,
+            rope_hash=self.rope_hash,
+            layer_geometry_hash=self.layer_geometry_hash,
+            kv_dtype=self.kv_dtype,
+            block_size_tokens=self.block_size_tokens,
+        )
+
+    @classmethod
+    def from_proto(
+        cls, msg: distributed_pb2.CacheCompatibility,
+    ) -> "CacheCompatibility":
+        return cls(
+            model_id=msg.model_id,
+            model_revision=msg.model_revision,
+            tokenizer_revision=msg.tokenizer_revision,
+            cache_format_version=msg.cache_format_version,
+            quantization=msg.quantization,
+            rope_hash=msg.rope_hash,
+            layer_geometry_hash=msg.layer_geometry_hash,
+            kv_dtype=msg.kv_dtype,
+            block_size_tokens=msg.block_size_tokens,
+        )
+
+
+@dataclass(frozen=True)
+class CacheCapability:
+    """One compatible prefill-cache offering on a node."""
+
+    compatibility: CacheCompatibility
+    cache_address: str = ""
+    cache_bytes_used: int = 0
+    cache_bytes_free: int = 0
+    entry_count: int = 0
+    cache_epoch: int = 0
+    load: float = 0.0
+    tokens_served: int = 0
+    bloom_filter: bytes = b""
+
+    def to_proto(self) -> distributed_pb2.CacheCapability:
+        return distributed_pb2.CacheCapability(
+            compatibility=self.compatibility.to_proto(),
+            cache_address=self.cache_address,
+            cache_bytes_used=self.cache_bytes_used,
+            cache_bytes_free=self.cache_bytes_free,
+            entry_count=self.entry_count,
+            cache_epoch=self.cache_epoch,
+            load=self.load,
+            tokens_served=self.tokens_served,
+            bloom_filter=self.bloom_filter,
+        )
+
+    @classmethod
+    def from_proto(cls, msg: distributed_pb2.CacheCapability) -> "CacheCapability":
+        return cls(
+            compatibility=CacheCompatibility.from_proto(msg.compatibility),
+            cache_address=msg.cache_address,
+            cache_bytes_used=msg.cache_bytes_used,
+            cache_bytes_free=msg.cache_bytes_free,
+            entry_count=msg.entry_count,
+            cache_epoch=msg.cache_epoch,
+            load=msg.load,
+            tokens_served=msg.tokens_served,
+            bloom_filter=msg.bloom_filter,
+        )
+
+
+@dataclass(frozen=True)
 class NodeCapability:
     """One node's capability card. See distributed.proto for field docs."""
 
@@ -90,6 +204,8 @@ class NodeCapability:
     announced_at_unix: float = 0.0
     ttl_seconds: float = DEFAULT_TTL_SECONDS
     ring_address: str = ""
+    caches: Tuple[CacheCapability, ...] = ()
+    endpoints: Tuple[NodeEndpoint, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.node_id:
@@ -121,6 +237,8 @@ class NodeCapability:
             announced_at_unix=self.announced_at_unix,
             ttl_seconds=self.ttl_seconds,
             ring_address=self.ring_address,
+            caches=[c.to_proto() for c in self.caches],
+            endpoints=[e.to_proto() for e in self.endpoints],
         )
 
     @classmethod
@@ -135,6 +253,8 @@ class NodeCapability:
             announced_at_unix=msg.announced_at_unix,
             ttl_seconds=msg.ttl_seconds,
             ring_address=msg.ring_address,
+            caches=tuple(CacheCapability.from_proto(c) for c in msg.caches),
+            endpoints=tuple(NodeEndpoint.from_proto(e) for e in msg.endpoints),
         )
 
 

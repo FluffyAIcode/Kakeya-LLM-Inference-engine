@@ -47,6 +47,53 @@ latency drift over a 4-hour, 480-turn Mac M4 run; bounded memory).
 > verifier for lightweight serving, or the **restored Gemma-4 26B** path
 > (proposer + f_θ/S5) for the memory-bounded, recall-preserving engine below.
 
+## Distributed Prefill KV Cache Network
+
+Kakeya can use trusted peer Mac minis as an **immutable prefill-cache tier**.
+Every node advertises model/cache compatibility through the existing P2P
+`CapabilityService`; a cold inference node queries local and remote caches in
+parallel, imports the longest valid token-prefix snapshot once, computes only
+the missing suffix, and keeps autoregressive decode entirely local.
+
+This is not remote attention and not coherent shared RAM:
+
+```text
+tokenize + chained prefix hashes
+        │
+        ├── local lookup ──────────────┐
+        └── P2P lookup over gossip ────┤ choose longest compatible prefix
+                                       ▼
+                         stream one immutable KV snapshot
+                                       ▼
+                         local suffix prefill → local decode
+```
+
+Key properties:
+
+- exact model/tokenizer/quantization/RoPE/cache-format compatibility;
+- longest **contiguous** prefix reuse — arbitrary holes are never reused;
+- memory-bounded LRU storage with leases and cache epochs;
+- point-to-point chunked gRPC publish/fetch with SHA-256 validation;
+- failure-safe fallback to local prefill;
+- Thunderbolt/LAN/Tailscale endpoint priority;
+- node registration, inference groups, token accounting and topology UI.
+
+Live product dashboard: **[https://kakeya.ai](https://kakeya.ai)**.
+
+Two-Mac measured evidence (Gemma 26B MLX 4-bit, 93-token prompt):
+
+```text
+cold local prefill     5.926 s
+remote Thunderbolt hit 0.061 s
+observed speedup       ≈97×
+```
+
+Architecture and operations:
+
+- [ADR 0016 — Distributed Prefill KV Cache Network](docs/adr/0016-distributed-prefill-kv-cache-network.md)
+- [Two-Mac live report](docs/reports/distributed-prefill-kv-mac-thunderbolt.md)
+- [Operator runbook](docs/ops/distributed-prefill-kv-network.md)
+
 ## Quickstart (5 minutes on Mac M4 / Linux x86)
 
 > **Status — v0.4** (`v0.4-mac` / `v0.4-cuda` tags). Ships from source; PyPI +
@@ -102,6 +149,7 @@ patterns — see [`docs/quickstart.md`](docs/quickstart.md).
 | `AppendTokens` / `Generation` coordinators | Drive prefill / incremental forward / greedy decode; route per-session (multi-tenant) or single. | `inference_engine.session.{coordinator,generator}` |
 | Python / TypeScript SDKs | `kakeya.Client` / `Session` (sync gRPC); `@kakeya/runtime` (Node 20+). | [`sdks/`](sdks/) |
 | HTTP shim (deprecated) | OpenAI-compatible `/v1/chat/completions`; `Deprecation` + `Sunset` headers. | `inference_engine.server.app` |
+| **Distributed Prefill KV Cache** | P2P capability gossip, exact compatibility locks, chained longest-prefix lookup, chunked snapshot publish/fetch, local suffix prefill and local decode. | `inference_engine.distributed.prefill_cache*`, `inference_engine.network` |
 
 ## Runtime evidence (foundational, carried into v0.4)
 
@@ -703,7 +751,7 @@ scripts/
 | v0.5 GA multi-host hardening | queued | mTLS node identity, Bonjour seed discovery, K3 DFlash hidden-state flow over the mlx.distributed ring |
 | Async continuous batching | designing | Dynamic mid-flight arrival + ragged-length cohorts under the async gRPC `Generate` handlers (current batcher is fixed-cohort) |
 | Deployment polish | queued | PyPI + npm publishing, GHCR Docker image, `kakeya prewarm` CLI, `kakeya chat` REPL |
-| Cross-request KV reuse | designing | Sessions survive across requests on gRPC; turns intra-session drift into 0 ms inter-request drift |
+| **Distributed Prefill KV reuse** | ✅ live MVP | Cross-node immutable snapshots, chained longest-prefix matching, Thunderbolt gRPC transfer and public fleet dashboard ([ADR 0016](docs/adr/0016-distributed-prefill-kv-cache-network.md)) |
 
 ## Continuous integration
 

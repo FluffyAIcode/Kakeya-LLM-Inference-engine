@@ -14,11 +14,13 @@ class CapabilityRole(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CAPABILITY_ROLE_PROPOSER: _ClassVar[CapabilityRole]
     CAPABILITY_ROLE_EMBEDDER: _ClassVar[CapabilityRole]
     CAPABILITY_ROLE_TOOL: _ClassVar[CapabilityRole]
+    CAPABILITY_ROLE_PREFILL_CACHE: _ClassVar[CapabilityRole]
 CAPABILITY_ROLE_UNSPECIFIED: CapabilityRole
 CAPABILITY_ROLE_VERIFIER: CapabilityRole
 CAPABILITY_ROLE_PROPOSER: CapabilityRole
 CAPABILITY_ROLE_EMBEDDER: CapabilityRole
 CAPABILITY_ROLE_TOOL: CapabilityRole
+CAPABILITY_ROLE_PREFILL_CACHE: CapabilityRole
 
 class ModelCapability(_message.Message):
     __slots__ = ("model_id", "role", "quantization", "tokens_per_second")
@@ -33,7 +35,7 @@ class ModelCapability(_message.Message):
     def __init__(self, model_id: _Optional[str] = ..., role: _Optional[_Union[CapabilityRole, str]] = ..., quantization: _Optional[str] = ..., tokens_per_second: _Optional[float] = ...) -> None: ...
 
 class NodeCapability(_message.Message):
-    __slots__ = ("node_id", "grpc_address", "platform", "unified_memory_bytes", "mlx_version", "models", "announced_at_unix", "ttl_seconds", "ring_address")
+    __slots__ = ("node_id", "grpc_address", "platform", "unified_memory_bytes", "mlx_version", "models", "announced_at_unix", "ttl_seconds", "ring_address", "caches", "endpoints")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     GRPC_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     PLATFORM_FIELD_NUMBER: _ClassVar[int]
@@ -43,6 +45,8 @@ class NodeCapability(_message.Message):
     ANNOUNCED_AT_UNIX_FIELD_NUMBER: _ClassVar[int]
     TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
     RING_ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    CACHES_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     grpc_address: str
     platform: str
@@ -52,7 +56,65 @@ class NodeCapability(_message.Message):
     announced_at_unix: float
     ttl_seconds: float
     ring_address: str
-    def __init__(self, node_id: _Optional[str] = ..., grpc_address: _Optional[str] = ..., platform: _Optional[str] = ..., unified_memory_bytes: _Optional[int] = ..., mlx_version: _Optional[str] = ..., models: _Optional[_Iterable[_Union[ModelCapability, _Mapping]]] = ..., announced_at_unix: _Optional[float] = ..., ttl_seconds: _Optional[float] = ..., ring_address: _Optional[str] = ...) -> None: ...
+    caches: _containers.RepeatedCompositeFieldContainer[CacheCapability]
+    endpoints: _containers.RepeatedCompositeFieldContainer[NodeEndpoint]
+    def __init__(self, node_id: _Optional[str] = ..., grpc_address: _Optional[str] = ..., platform: _Optional[str] = ..., unified_memory_bytes: _Optional[int] = ..., mlx_version: _Optional[str] = ..., models: _Optional[_Iterable[_Union[ModelCapability, _Mapping]]] = ..., announced_at_unix: _Optional[float] = ..., ttl_seconds: _Optional[float] = ..., ring_address: _Optional[str] = ..., caches: _Optional[_Iterable[_Union[CacheCapability, _Mapping]]] = ..., endpoints: _Optional[_Iterable[_Union[NodeEndpoint, _Mapping]]] = ...) -> None: ...
+
+class NodeEndpoint(_message.Message):
+    __slots__ = ("address", "network", "priority", "measured_rtt_ms")
+    ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    NETWORK_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    MEASURED_RTT_MS_FIELD_NUMBER: _ClassVar[int]
+    address: str
+    network: str
+    priority: int
+    measured_rtt_ms: float
+    def __init__(self, address: _Optional[str] = ..., network: _Optional[str] = ..., priority: _Optional[int] = ..., measured_rtt_ms: _Optional[float] = ...) -> None: ...
+
+class CacheCompatibility(_message.Message):
+    __slots__ = ("model_id", "model_revision", "tokenizer_revision", "cache_format_version", "quantization", "rope_hash", "layer_geometry_hash", "kv_dtype", "block_size_tokens")
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    MODEL_REVISION_FIELD_NUMBER: _ClassVar[int]
+    TOKENIZER_REVISION_FIELD_NUMBER: _ClassVar[int]
+    CACHE_FORMAT_VERSION_FIELD_NUMBER: _ClassVar[int]
+    QUANTIZATION_FIELD_NUMBER: _ClassVar[int]
+    ROPE_HASH_FIELD_NUMBER: _ClassVar[int]
+    LAYER_GEOMETRY_HASH_FIELD_NUMBER: _ClassVar[int]
+    KV_DTYPE_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_SIZE_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    model_id: str
+    model_revision: str
+    tokenizer_revision: str
+    cache_format_version: str
+    quantization: str
+    rope_hash: str
+    layer_geometry_hash: str
+    kv_dtype: str
+    block_size_tokens: int
+    def __init__(self, model_id: _Optional[str] = ..., model_revision: _Optional[str] = ..., tokenizer_revision: _Optional[str] = ..., cache_format_version: _Optional[str] = ..., quantization: _Optional[str] = ..., rope_hash: _Optional[str] = ..., layer_geometry_hash: _Optional[str] = ..., kv_dtype: _Optional[str] = ..., block_size_tokens: _Optional[int] = ...) -> None: ...
+
+class CacheCapability(_message.Message):
+    __slots__ = ("compatibility", "cache_address", "cache_bytes_used", "cache_bytes_free", "entry_count", "cache_epoch", "load", "tokens_served", "bloom_filter")
+    COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
+    CACHE_ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    CACHE_BYTES_USED_FIELD_NUMBER: _ClassVar[int]
+    CACHE_BYTES_FREE_FIELD_NUMBER: _ClassVar[int]
+    ENTRY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CACHE_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    LOAD_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_SERVED_FIELD_NUMBER: _ClassVar[int]
+    BLOOM_FILTER_FIELD_NUMBER: _ClassVar[int]
+    compatibility: CacheCompatibility
+    cache_address: str
+    cache_bytes_used: int
+    cache_bytes_free: int
+    entry_count: int
+    cache_epoch: int
+    load: float
+    tokens_served: int
+    bloom_filter: bytes
+    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., cache_address: _Optional[str] = ..., cache_bytes_used: _Optional[int] = ..., cache_bytes_free: _Optional[int] = ..., entry_count: _Optional[int] = ..., cache_epoch: _Optional[int] = ..., load: _Optional[float] = ..., tokens_served: _Optional[int] = ..., bloom_filter: _Optional[bytes] = ...) -> None: ...
 
 class ExchangeCapabilitiesRequest(_message.Message):
     __slots__ = ("known_nodes",)
@@ -75,6 +137,104 @@ class GetNodeCapabilityResponse(_message.Message):
     NODE_FIELD_NUMBER: _ClassVar[int]
     node: NodeCapability
     def __init__(self, node: _Optional[_Union[NodeCapability, _Mapping]] = ...) -> None: ...
+
+class GetCacheSummaryRequest(_message.Message):
+    __slots__ = ("compatibility",)
+    COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
+    compatibility: CacheCompatibility
+    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ...) -> None: ...
+
+class GetCacheSummaryResponse(_message.Message):
+    __slots__ = ("node_id", "caches")
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    CACHES_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    caches: _containers.RepeatedCompositeFieldContainer[CacheCapability]
+    def __init__(self, node_id: _Optional[str] = ..., caches: _Optional[_Iterable[_Union[CacheCapability, _Mapping]]] = ...) -> None: ...
+
+class LookupPrefixRequest(_message.Message):
+    __slots__ = ("compatibility", "block_hashes")
+    COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_HASHES_FIELD_NUMBER: _ClassVar[int]
+    compatibility: CacheCompatibility
+    block_hashes: _containers.RepeatedScalarFieldContainer[bytes]
+    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., block_hashes: _Optional[_Iterable[bytes]] = ...) -> None: ...
+
+class LookupPrefixResponse(_message.Message):
+    __slots__ = ("node_id", "hit_block_count", "hit_token_count", "transfer_bytes", "cache_epoch", "lease_id", "lease_expires_at_unix", "payload_sha256")
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    HIT_BLOCK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    HIT_TOKEN_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TRANSFER_BYTES_FIELD_NUMBER: _ClassVar[int]
+    CACHE_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_EXPIRES_AT_UNIX_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_SHA256_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    hit_block_count: int
+    hit_token_count: int
+    transfer_bytes: int
+    cache_epoch: int
+    lease_id: str
+    lease_expires_at_unix: float
+    payload_sha256: bytes
+    def __init__(self, node_id: _Optional[str] = ..., hit_block_count: _Optional[int] = ..., hit_token_count: _Optional[int] = ..., transfer_bytes: _Optional[int] = ..., cache_epoch: _Optional[int] = ..., lease_id: _Optional[str] = ..., lease_expires_at_unix: _Optional[float] = ..., payload_sha256: _Optional[bytes] = ...) -> None: ...
+
+class FetchBlocksRequest(_message.Message):
+    __slots__ = ("lease_id",)
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    lease_id: str
+    def __init__(self, lease_id: _Optional[str] = ...) -> None: ...
+
+class FetchBlocksResponse(_message.Message):
+    __slots__ = ("block_hash", "block_index", "token_count", "chunk_index", "total_chunks", "data", "block_sha256", "cache_epoch")
+    BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_SHA256_FIELD_NUMBER: _ClassVar[int]
+    CACHE_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    block_hash: bytes
+    block_index: int
+    token_count: int
+    chunk_index: int
+    total_chunks: int
+    data: bytes
+    block_sha256: bytes
+    cache_epoch: int
+    def __init__(self, block_hash: _Optional[bytes] = ..., block_index: _Optional[int] = ..., token_count: _Optional[int] = ..., chunk_index: _Optional[int] = ..., total_chunks: _Optional[int] = ..., data: _Optional[bytes] = ..., block_sha256: _Optional[bytes] = ..., cache_epoch: _Optional[int] = ...) -> None: ...
+
+class PublishBlockRequest(_message.Message):
+    __slots__ = ("block_hash", "block_index", "token_count", "chunk_index", "total_chunks", "data", "block_sha256", "cache_epoch", "compatibility")
+    BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_SHA256_FIELD_NUMBER: _ClassVar[int]
+    CACHE_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
+    block_hash: bytes
+    block_index: int
+    token_count: int
+    chunk_index: int
+    total_chunks: int
+    data: bytes
+    block_sha256: bytes
+    cache_epoch: int
+    compatibility: CacheCompatibility
+    def __init__(self, block_hash: _Optional[bytes] = ..., block_index: _Optional[int] = ..., token_count: _Optional[int] = ..., chunk_index: _Optional[int] = ..., total_chunks: _Optional[int] = ..., data: _Optional[bytes] = ..., block_sha256: _Optional[bytes] = ..., cache_epoch: _Optional[int] = ..., compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ...) -> None: ...
+
+class PublishBlockResponse(_message.Message):
+    __slots__ = ("stored", "cache_epoch")
+    STORED_FIELD_NUMBER: _ClassVar[int]
+    CACHE_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    stored: bool
+    cache_epoch: int
+    def __init__(self, stored: _Optional[bool] = ..., cache_epoch: _Optional[int] = ...) -> None: ...
 
 class ProposeBlockRequest(_message.Message):
     __slots__ = ("committed_token_ids", "block_size", "num_steps", "model_id")

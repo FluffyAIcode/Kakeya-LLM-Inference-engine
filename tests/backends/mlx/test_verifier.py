@@ -460,26 +460,16 @@ def test_mlx_kv_live_bytes_zero_before_prefill() -> None:
 
 
 def test_mlx_kv_live_bytes_equals_k_seq_length_times_per_token() -> None:
-    """kv_live_bytes = k_seq_length × per-token bytes, computed from
-    the wrapped HF config the same way the verifier does."""
+    """kv_live_bytes = k_seq_length × resolved per-token bytes.
+
+    The verifier may resolve geometry from an HF config or directly from a
+    multimodal mlx-lm text-model wrapper (Gemma 4).
+    """
     v = _build_mlx_verifier(sink=2, window=8)
     v.prefill([10, 20, 30, 40, 50])
     k_len = v.k_seq_length(session=None)
     assert k_len == 5
-    cfg = v.model.config if hasattr(v.model, "config") else v.model
-    num_layers = int(cfg.num_hidden_layers)
-    num_kv_heads = int(
-        getattr(cfg, "num_key_value_heads", None)
-        or cfg.num_attention_heads
-    )
-    head_dim = int(
-        getattr(cfg, "head_dim", None)
-        or (cfg.hidden_size // cfg.num_attention_heads)
-    )
-    bytes_per_token = (
-        num_layers * num_kv_heads * head_dim
-        * v.config.dtype.itemsize * 2
-    )
+    bytes_per_token = v._bytes_per_kv_token
     expected = k_len * bytes_per_token
     assert v.kv_live_bytes(session=None) == expected
     assert expected > 0

@@ -107,20 +107,41 @@ class MLXSinkWindowVerifier:
         # ``kv_live_bytes`` accessor. Mirrors the CPU verifier;
         # reads dims from the wrapped HF config so GQA / MQA via
         # ``num_key_value_heads`` is honored.
-        cfg = self.model.config if hasattr(self.model, "config") else self.model
-        num_layers = int(getattr(cfg, "num_hidden_layers"))
-        num_kv_heads = int(
-            getattr(cfg, "num_key_value_heads", None)
-            or getattr(cfg, "num_attention_heads")
+        cfg = (
+            getattr(self.model, "config", None)
+            or getattr(self.model, "args", None)
+            or self.model
         )
-        head_dim = int(
-            getattr(cfg, "head_dim", None)
-            or (cfg.hidden_size // cfg.num_attention_heads)
-        )
+        cfg = getattr(cfg, "text_config", None) or cfg
         itemsize = torch.tensor([], dtype=self.config.dtype).element_size()
-        self._bytes_per_kv_token = (
-            num_layers * num_kv_heads * head_dim * itemsize * 2
-        )
+        try:
+            num_layers = int(getattr(cfg, "num_hidden_layers"))
+            num_kv_heads = int(
+                getattr(cfg, "num_key_value_heads", None)
+                or getattr(cfg, "num_attention_heads")
+            )
+            head_dim = int(
+                getattr(cfg, "head_dim", None)
+                or (cfg.hidden_size // cfg.num_attention_heads)
+            )
+            self._bytes_per_kv_token = (
+                num_layers * num_kv_heads * head_dim * itemsize * 2
+            )
+        except Exception:
+            from inference_engine.backends.mlx.cross_model_dlm_verifier import (
+                per_layer_kv_geometry,
+                resolve_mlx_text_model,
+            )
+            geometry = per_layer_kv_geometry(resolve_mlx_text_model(self.model))
+            if not geometry or any(
+                num_kv_heads <= 0 or head_dim <= 0
+                for num_kv_heads, head_dim, _layer_type in geometry
+            ):
+                raise
+            self._bytes_per_kv_token = sum(
+                num_kv_heads * head_dim * itemsize * 2
+                for num_kv_heads, head_dim, _layer_type in geometry
+            )
 
     # ---------------------------- public API ---------------------------- #
 

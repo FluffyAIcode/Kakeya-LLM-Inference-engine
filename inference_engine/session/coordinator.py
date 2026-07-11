@@ -48,7 +48,7 @@ Anomaly invariants:
 
 from __future__ import annotations
 
-from typing import Iterable, List, Protocol
+from typing import Any, Iterable, List, Protocol
 
 import torch
 
@@ -100,6 +100,13 @@ class VerifierProtocol(Protocol):
         ...  # pragma: no cover - Protocol body, never executed
 
 
+class PrefillCacheHookProtocol(Protocol):
+    """Optional cold-prefill accelerator used by distributed cache nodes."""
+
+    def prepare(self, verifier: Any, token_ids: List[int]) -> int:
+        ...  # pragma: no cover
+
+
 def _sync_slab_bytes(session: Session, verifier: "VerifierProtocol") -> None:
     """Mirror the verifier's current KV byte count onto the session's
     slab placeholder (PR-E1c).
@@ -137,6 +144,7 @@ class AppendTokensCoordinator:
         store: SessionStore,
         verifier: VerifierProtocol,
         resolver=None,
+        prefill_cache: PrefillCacheHookProtocol | None = None,
     ) -> None:
         self._store = store
         self._verifier = verifier
@@ -144,6 +152,7 @@ class AppendTokensCoordinator:
         # binding (multi-tenant). When None, the single ``verifier`` is used
         # for every session (v0.3 single-tenant behaviour, unchanged).
         self._resolver = resolver
+        self._prefill_cache = prefill_cache
 
     def _verifier_for(self, session_id: str) -> "VerifierProtocol":
         return self._resolver(session_id) if self._resolver else self._verifier
@@ -193,7 +202,10 @@ class AppendTokensCoordinator:
         #   - next_global_position = sum of all tokens ever appended
         #   - next_token_logits predicts position == next_global_position
         if session.next_global_position == 0:
-            verifier.prefill(token_list)
+            if self._prefill_cache is not None:
+                self._prefill_cache.prepare(verifier, token_list)
+            else:
+                verifier.prefill(token_list)
         else:
             block_logits = verifier.forward_block(token_list)
             verifier.commit_or_truncate(
