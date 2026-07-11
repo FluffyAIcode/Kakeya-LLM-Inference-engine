@@ -4,12 +4,10 @@ name: Integration (Mac M4)
 # tests/integration/ against real Qwen3-0.6B on Apple Silicon.
 #
 # Trigger model:
-#   - Pull-request events. Only fires when the PR carries the
-#     ``needs-mac-m4`` label (auto-applied by .github/workflows/
-#     auto-label-mac.yaml when a PR touches inference_engine/,
-#     sdks/, proto/, or tests/integration/). PRs that don't touch
-#     verifier-dependent code skip this gate entirely so the runner
-#     pool isn't burned on doc-only or CI-only PRs.
+#   - Pull-request events touching runtime/model/proto/integration paths.
+#     Path filtering is used directly instead of depending on an auto-label:
+#     workflows triggered with GITHUB_TOKEN do not recursively trigger the
+#     ``labeled`` event, which previously made the first Mac gate skip.
 #   - Manual workflow_dispatch for re-runs from the Actions UI.
 #
 # Runner requirements (self-hosted):
@@ -27,6 +25,14 @@ on:
     # Only run on PR events for branches targeting main.
     types: [opened, synchronize, reopened, labeled]
     branches: [main]
+    paths:
+      - "inference_engine/**"
+      - "kv_cache_proposer/**"
+      - "proto/**"
+      - "sdks/**"
+      - "tests/integration/**"
+      - "tests/backends/mlx/**"
+      - ".github/workflows/integration.yaml"
   workflow_dispatch: {}
 
 # Cancel superseded runs on the same PR — saves runner time when
@@ -39,13 +45,6 @@ concurrency:
 jobs:
   integration:
     name: pytest -m integration on Mac M4
-    # Only fire on labeled PRs (this saves the runner pool from
-    # doc-only / CI-only PRs that don't touch verifier-dependent
-    # code). The auto-label workflow adds 'needs-mac-m4' on file
-    # paths that warrant the GA gate.
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'needs-mac-m4')
     runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
     timeout-minutes: 90
     steps:
