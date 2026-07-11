@@ -9,17 +9,19 @@
 Kakeya is a **memory-bounded local agent runtime**: a long-running inference
 server that holds session state on the server side, exposes a gRPC
 `RuntimeService`, and bounds **KV memory + per-turn latency** on long
-conversations — its KV footprint **does not grow with the conversation** (see
-[Kakeya Attention](#how-this-differs--kakeya-attention-vs-pagedattention--radixattention)).
+conversations — its active decode KV footprint **does not grow with the
+conversation**.
 
-**v0.4** pairs a frozen **AR verifier** (Gemma-4 26B-A4B) with a **dLLM proposer**
-(DFlash) and a trained projection **f_θ**: a sliding-window-bounded KV cache plus
-**K/V restoration** reconstructs evicted context on demand, so memory is bounded
-**without trading away recall, throughput, or context length**. It ships per
-platform — **`v0.4-mac`** (Apple-Silicon MLX) and **`v0.4-cuda`** (NVIDIA) — atop
-the session-bound gRPC runtime whose foundation landed in June 2026
-([ADR 0008](docs/adr/0008-session-bound-runtime-and-grpc-protocol.md): 9 ms
-latency drift over a 4-hour, 480-turn Mac M4 run; bounded memory).
+**Current architecture (ADR 0017):** one primary Mac owns RuntimeService,
+sessions and every decode step. Compatible peer Macs are either
+`PREFILL_COMPUTE` workers (same model, prefill only) or `PREFILL_CACHE` nodes
+(RAM-only). The primary imports one immutable longest-prefix KV snapshot,
+computes a missing suffix locally, and decodes entirely locally.
+
+> **Legacy notice:** DFlash, f_θ and fused speculative-decode experiments are
+> retained for reproducibility, but they are no longer the product architecture
+> or a completeness criterion. Historical v0.4 sections below are labeled as
+> such.
 
 ```
 ┌────────────────────┐    gRPC bidi-stream     ┌────────────────────────┐
@@ -33,27 +35,26 @@ latency drift over a 4-hour, 480-turn Mac M4 run; bounded memory).
                                                │  └────────┬─────────┘  │
                                                │           ▼            │
                                                │  ┌──────────────────┐  │
-                                               │  │ Restored verifier│  │
+                                               │  │ Primary verifier│  │
                                                │  │ Gemma-4 26B (AR) │  │
-                                               │  │ + DFlash proposer│  │
-                                               │  │ + f_θ / S5       │  │
                                                │  │ bounded sink+win │  │
+                                               │  │ peer-prefill KV  │  │
                                                │  │ per-session bind │  │
                                                │  └──────────────────┘  │
                                                └────────────────────────┘
 ```
 
-> The verifier slot is pluggable: a small **Qwen3 (CPU/MLX)** sink+window
-> verifier for lightweight serving, or the **restored Gemma-4 26B** path
-> (proposer + f_θ/S5) for the memory-bounded, recall-preserving engine below.
+> The verifier slot remains pluggable. All nodes in one prefill group must use
+> the exact same model/tokenizer/quantization/RoPE/cache geometry.
 
 ## Distributed Prefill KV Cache Network
 
-Kakeya can use trusted peer Mac minis as an **immutable prefill-cache tier**.
-Every node advertises model/cache compatibility through the existing P2P
-`CapabilityService`; a cold inference node queries local and remote caches in
-parallel, imports the longest valid token-prefix snapshot once, computes only
-the missing suffix, and keeps autoregressive decode entirely local.
+Kakeya uses trusted peer Mac minis as an **immutable prefill-cache and compute
+tier**. Every node advertises exact compatibility through P2P
+`CapabilityService`. A cold primary queries compatible snapshots; on a miss it
+can submit the prompt to a load-aware `PREFILL_COMPUTE` worker. The worker
+prefills with the same model and retains the snapshot in RAM. The primary
+imports it once and keeps autoregressive decode entirely local.
 
 This is not remote attention and not coherent shared RAM:
 
@@ -73,6 +74,9 @@ Key properties:
 - exact model/tokenizer/quantization/RoPE/cache-format compatibility;
 - longest **contiguous** prefix reuse — arbitrary holes are never reused;
 - memory-bounded LRU storage with leases and cache epochs;
+- load/cost-aware prefill workers, idempotent jobs and local fallback;
+- gossip-driven worker/cache discovery and deterministic bounded replication;
+- optional zlib framing, fleet-PSK authentication and tenant-HMAC prefix hashes;
 - point-to-point chunked gRPC publish/fetch with SHA-256 validation;
 - failure-safe fallback to local prefill;
 - Thunderbolt/LAN/Tailscale endpoint priority;
@@ -91,6 +95,7 @@ observed speedup       ≈97×
 Architecture and operations:
 
 - [ADR 0016 — Distributed Prefill KV Cache Network](docs/adr/0016-distributed-prefill-kv-cache-network.md)
+- [ADR 0017 — Primary-decode / distributed-prefill orchestration](docs/adr/0017-prefill-compute-worker-orchestration.md)
 - [Two-Mac live report](docs/reports/distributed-prefill-kv-mac-thunderbolt.md)
 - [Operator runbook](docs/ops/distributed-prefill-kv-network.md)
 
@@ -136,7 +141,7 @@ For a full 10-minute walkthrough — Mac vs Linux setup, troubleshooting,
 HuggingFace cache pre-warm, mainland-China mirror routing, gRPC SDK
 patterns — see [`docs/quickstart.md`](docs/quickstart.md).
 
-## What's in the v0.4 architecture
+## Historical: v0.4 DFlash/f_θ architecture (no longer the product path)
 
 | Component | What it does | Where |
 | --- | --- | --- |
@@ -451,7 +456,7 @@ H200, gemma-4-26B-A4B, recall **1.0**:
 > models — the large ~6× memory differentiator, where a bounded window *without*
 > restoration would destroy recall — is the **v0.6** roadmap item.
 
-## v0.4 for Mac — MLX speculative-decode port (the journey to parity)
+## Historical: v0.4 for Mac — MLX speculative-decode research
 
 After the **CUDA** path (f_θ + S5 K/V-restoration verifier, **fused DFlash
 spec-decode at 1.79–2.06× AR, recall 1.0 on Gemma-4-26B-A4B / H200**), the engine

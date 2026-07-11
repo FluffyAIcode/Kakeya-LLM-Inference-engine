@@ -1,8 +1,8 @@
 # Distributed Prefill KV Cache Network — Operator Runbook
 
-This runbook deploys one inference head and one cache peer over a private
-Thunderbolt Bridge. The same services work over LAN/Tailscale with lower
-endpoint priority.
+This runbook deploys one primary decode node, prefill-compute workers and
+optional cache-only peers over a private Thunderbolt Bridge. The same services
+work over LAN/Tailscale with lower endpoint priority.
 
 ## Production surfaces
 
@@ -17,13 +17,15 @@ require `X-API-Key`.
 
 ## Components
 
-| Component | Head | Cache peer |
-|---|---|---|
-| Kakeya RuntimeService | `127.0.0.1:51051` | optional |
-| PrefillCacheService | runtime + `:52051` control node | `169.254.27.104:52051` |
-| CapabilityService gossip | enabled | enabled / pull-only if macOS blocks outbound Python sockets |
-| Dashboard/API | `127.0.0.1:8090` | no |
-| Cloudflare public edge | `kakeya.ai/*` Worker | no |
+| Component | Primary | Prefill worker | Cache-only peer |
+|---|---|---|---|
+| Kakeya RuntimeService / decode | `127.0.0.1:51051` | no | no |
+| Same MLX model loaded | yes | yes | no |
+| PrefillWorkerService | no | `:53051` | no |
+| PrefillCacheService | runtime/local LRU | co-located | `:52051` |
+| CapabilityService gossip | enabled | enabled | enabled / pull-only |
+| Dashboard/API | `127.0.0.1:8090` | no | no |
+| Cloudflare public edge | `kakeya.ai/*` Worker | no | no |
 
 ## Compatibility lock
 
@@ -101,6 +103,52 @@ If `nc` works but Python/gRPC outbound calls return `Errno 65`, grant Local
 Network access to that Python executable in macOS Privacy & Security. Head→peer
 lookup/publish/fetch remains usable while reverse gossip is disabled.
 
+## Prefill-compute worker
+
+The worker loads the exact same MLX model as the primary, accepts queued
+prefill-only jobs, writes immutable snapshots into its co-located RAM cache and
+never serves user decode.
+
+Create a fleet PSK once and copy it to every trusted node:
+
+```bash
+openssl rand -hex 32 > ~/.kakeya/fleet.psk
+chmod 600 ~/.kakeya/fleet.psk
+```
+
+Install the worker:
+
+```bash
+export KAKEYA_WORKER_REPO="$HOME/Kakeya-LLM-Inference-engine"
+export KAKEYA_WORKER_PYTHON="$HOME/kakeya-venv/bin/python"
+export KAKEYA_WORKER_MODEL="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+export KAKEYA_CACHE_MODEL_ID="gemma-4-26B-A4B-it-mlx-4bit"
+export KAKEYA_MODEL_REVISION="local-4bit-v1"
+export KAKEYA_TOKENIZER_REVISION="gemma4-v1"
+export KAKEYA_WORKER_NODE_ID="prefill-mini-1"
+export KAKEYA_WORKER_ADVERTISE="169.254.27.104:53051"
+export KAKEYA_LAYER_GEOMETRY_HASH="<same-value-as-primary>"
+export KAKEYA_FLEET_PSK_FILE="$HOME/.kakeya/fleet.psk"
+export KAKEYA_TENANT_ID="private-fleet"
+bash deploy/install_prefill_worker_launchd.sh
+```
+
+The primary must use the same compatibility and auth values:
+
+```text
+--enable-prefill-cache
+--enable-capability-exchange
+--peer 169.254.27.104:53051
+--cache-tenant-id private-fleet
+--fleet-psk-file ~/.kakeya/fleet.psk
+--cache-compression zlib
+--cache-replication-factor 1
+```
+
+`--cache-peer` remains an emergency static override. Normal worker/cache
+selection is derived from compatible live capability cards and their TTL/load
+metrics.
+
 ## Node registration and groups
 
 Create a registration:
@@ -132,6 +180,10 @@ Expected invariants:
 - imported snapshot checksum and compatibility fingerprint match;
 - remote failure falls back to local prefill;
 - no remote RPC occurs in autoregressive decode;
+- a cache miss is assigned to a compatible `PREFILL_COMPUTE` worker when its
+  queue+compute+transfer estimate beats blocking the primary;
+- worker failure/timeout/import rejection resets the verifier and performs full
+  local prefill;
 - completed and KV-assisted token counters increase after live calls.
 
 Minimal acceptance:
