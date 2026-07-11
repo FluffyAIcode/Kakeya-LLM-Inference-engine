@@ -78,15 +78,11 @@ Same steps as Mac, plus a `torch` build matching your CUDA toolkit.
 ### Common pitfalls
 
 - **`ModuleNotFoundError: dllm`**: the legacy diffusion proposer (v0.2)
-  references a `dllm` package that v0.3 doesn't need but transformers'
-  static imports flag. Fix:
-  ```bash
-  python3 -c "import site, os; \
-      p = os.path.join(site.getusersitepackages(), 'dllm'); \
-      os.makedirs(p, exist_ok=True); \
-      open(os.path.join(p, '__init__.py'), 'a').close()"
-  ```
-  `setup_mac.sh` and `setup_cuda.sh` do this automatically.
+  declares a `dllm` package that Kakeya does not call at runtime but
+  Transformers validates statically. Current source checkouts include the empty
+  compatibility namespace at `dllm/__init__.py`; ensure the repository root is
+  on `PYTHONPATH`. Older tags can use `setup_mac.sh` / `setup_cuda.sh`, which
+  create the same namespace in site-packages.
 - **Connection refused to `huggingface.co`**: set `HF_ENDPOINT` before
   setup (see above) or pre-warm offline.
 
