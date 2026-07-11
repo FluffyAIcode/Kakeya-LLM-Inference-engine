@@ -47,6 +47,8 @@ export enum CapabilityRole {
    * immutable prefill K/V blocks.
    */
   PREFILL_CACHE = 5,
+  /** PREFILL_COMPUTE - The node has the compatible model loaded and accepts prefill-only jobs. */
+  PREFILL_COMPUTE = 6,
   UNRECOGNIZED = -1,
 }
 
@@ -70,6 +72,9 @@ export function capabilityRoleFromJSON(object: any): CapabilityRole {
     case 5:
     case "CAPABILITY_ROLE_PREFILL_CACHE":
       return CapabilityRole.PREFILL_CACHE;
+    case 6:
+    case "CAPABILITY_ROLE_PREFILL_COMPUTE":
+      return CapabilityRole.PREFILL_COMPUTE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -91,7 +96,105 @@ export function capabilityRoleToJSON(object: CapabilityRole): string {
       return "CAPABILITY_ROLE_TOOL";
     case CapabilityRole.PREFILL_CACHE:
       return "CAPABILITY_ROLE_PREFILL_CACHE";
+    case CapabilityRole.PREFILL_COMPUTE:
+      return "CAPABILITY_ROLE_PREFILL_COMPUTE";
     case CapabilityRole.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum CompressionCodec {
+  UNSPECIFIED = 0,
+  NONE = 1,
+  ZLIB = 2,
+  UNRECOGNIZED = -1,
+}
+
+export function compressionCodecFromJSON(object: any): CompressionCodec {
+  switch (object) {
+    case 0:
+    case "COMPRESSION_CODEC_UNSPECIFIED":
+      return CompressionCodec.UNSPECIFIED;
+    case 1:
+    case "COMPRESSION_CODEC_NONE":
+      return CompressionCodec.NONE;
+    case 2:
+    case "COMPRESSION_CODEC_ZLIB":
+      return CompressionCodec.ZLIB;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return CompressionCodec.UNRECOGNIZED;
+  }
+}
+
+export function compressionCodecToJSON(object: CompressionCodec): string {
+  switch (object) {
+    case CompressionCodec.UNSPECIFIED:
+      return "COMPRESSION_CODEC_UNSPECIFIED";
+    case CompressionCodec.NONE:
+      return "COMPRESSION_CODEC_NONE";
+    case CompressionCodec.ZLIB:
+      return "COMPRESSION_CODEC_ZLIB";
+    case CompressionCodec.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+export enum PrefillJobStatus {
+  UNSPECIFIED = 0,
+  QUEUED = 1,
+  RUNNING = 2,
+  COMPLETED = 3,
+  FAILED = 4,
+  CANCELLED = 5,
+  UNRECOGNIZED = -1,
+}
+
+export function prefillJobStatusFromJSON(object: any): PrefillJobStatus {
+  switch (object) {
+    case 0:
+    case "PREFILL_JOB_STATUS_UNSPECIFIED":
+      return PrefillJobStatus.UNSPECIFIED;
+    case 1:
+    case "PREFILL_JOB_STATUS_QUEUED":
+      return PrefillJobStatus.QUEUED;
+    case 2:
+    case "PREFILL_JOB_STATUS_RUNNING":
+      return PrefillJobStatus.RUNNING;
+    case 3:
+    case "PREFILL_JOB_STATUS_COMPLETED":
+      return PrefillJobStatus.COMPLETED;
+    case 4:
+    case "PREFILL_JOB_STATUS_FAILED":
+      return PrefillJobStatus.FAILED;
+    case 5:
+    case "PREFILL_JOB_STATUS_CANCELLED":
+      return PrefillJobStatus.CANCELLED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return PrefillJobStatus.UNRECOGNIZED;
+  }
+}
+
+export function prefillJobStatusToJSON(object: PrefillJobStatus): string {
+  switch (object) {
+    case PrefillJobStatus.UNSPECIFIED:
+      return "PREFILL_JOB_STATUS_UNSPECIFIED";
+    case PrefillJobStatus.QUEUED:
+      return "PREFILL_JOB_STATUS_QUEUED";
+    case PrefillJobStatus.RUNNING:
+      return "PREFILL_JOB_STATUS_RUNNING";
+    case PrefillJobStatus.COMPLETED:
+      return "PREFILL_JOB_STATUS_COMPLETED";
+    case PrefillJobStatus.FAILED:
+      return "PREFILL_JOB_STATUS_FAILED";
+    case PrefillJobStatus.CANCELLED:
+      return "PREFILL_JOB_STATUS_CANCELLED";
+    case PrefillJobStatus.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
   }
@@ -172,6 +275,8 @@ export interface NodeCapability {
    * LAN/Tailscale). grpc_address remains the compatibility default.
    */
   endpoints: NodeEndpoint[];
+  /** Prefill-only compute offerings. Cache-only nodes leave this empty. */
+  prefillWorkers: PrefillWorkerCapability[];
 }
 
 export interface NodeEndpoint {
@@ -192,6 +297,14 @@ export interface CacheCompatibility {
   layerGeometryHash: string;
   kvDtype: string;
   blockSizeTokens: number;
+  /**
+   * Tenant namespace is part of the compatibility fingerprint. It prevents a
+   * snapshot from being reused across isolation domains even with identical
+   * model/tokenizer geometry.
+   */
+  tenantNamespace: string;
+  sinkSize: number;
+  windowSize: number;
 }
 
 export interface CacheCapability {
@@ -205,6 +318,21 @@ export interface CacheCapability {
   tokensServed: string;
   /** Compact probabilistic summary. Empty means "query me directly". */
   bloomFilter: Uint8Array;
+  defaultCompression: CompressionCodec;
+  replicationFactor: number;
+}
+
+export interface PrefillWorkerCapability {
+  compatibility?: CacheCompatibility | undefined;
+  workerAddress: string;
+  maxConcurrentJobs: number;
+  inflightJobs: number;
+  queuedJobs: number;
+  load: number;
+  tokensPerSecondPrefill: number;
+  ramBytesFree: string;
+  acceptsComputeJobs: boolean;
+  queuedTokens: string;
 }
 
 export interface ExchangeCapabilitiesRequest {
@@ -283,6 +411,55 @@ export interface PublishBlockRequest {
 export interface PublishBlockResponse {
   stored: boolean;
   cacheEpoch: string;
+}
+
+export interface SubmitPrefillJobRequest {
+  /** Caller-generated idempotency key. Repeating it returns the existing job. */
+  requestId: string;
+  tenantId: string;
+  compatibility?: CacheCompatibility | undefined;
+  tokenIds: number[];
+  /**
+   * Chained hashes computed by the primary (tenant-HMACed in authenticated
+   * mode). One hash per token block.
+   */
+  blockHashes: Uint8Array[];
+  deadlineMs: number;
+  preferredCompression: CompressionCodec;
+}
+
+export interface SubmitPrefillJobResponse {
+  jobId: string;
+  status: PrefillJobStatus;
+  workerNodeId: string;
+  queueEtaMs: number;
+}
+
+export interface GetPrefillJobStatusRequest {
+  jobId: string;
+  tenantId: string;
+}
+
+export interface GetPrefillJobStatusResponse {
+  jobId: string;
+  status: PrefillJobStatus;
+  tokensComputed: number;
+  leaseId: string;
+  blockHash: Uint8Array;
+  payloadSha256: Uint8Array;
+  transferBytes: string;
+  failureReason: string;
+  computeMs: number;
+  cacheAddress: string;
+}
+
+export interface CancelPrefillJobRequest {
+  jobId: string;
+  tenantId: string;
+}
+
+export interface CancelPrefillJobResponse {
+  cancelled: boolean;
 }
 
 export interface ProposeBlockRequest {
@@ -542,6 +719,7 @@ function createBaseNodeCapability(): NodeCapability {
     ringAddress: "",
     caches: [],
     endpoints: [],
+    prefillWorkers: [],
   };
 }
 
@@ -579,6 +757,9 @@ export const NodeCapability: MessageFns<NodeCapability> = {
     }
     for (const v of message.endpoints) {
       NodeEndpoint.encode(v!, writer.uint32(90).fork()).join();
+    }
+    for (const v of message.prefillWorkers) {
+      PrefillWorkerCapability.encode(v!, writer.uint32(98).fork()).join();
     }
     return writer;
   },
@@ -678,6 +859,14 @@ export const NodeCapability: MessageFns<NodeCapability> = {
           message.endpoints.push(NodeEndpoint.decode(reader, reader.uint32()));
           continue;
         }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          message.prefillWorkers.push(PrefillWorkerCapability.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -734,6 +923,11 @@ export const NodeCapability: MessageFns<NodeCapability> = {
       endpoints: globalThis.Array.isArray(object?.endpoints)
         ? object.endpoints.map((e: any) => NodeEndpoint.fromJSON(e))
         : [],
+      prefillWorkers: globalThis.Array.isArray(object?.prefillWorkers)
+        ? object.prefillWorkers.map((e: any) => PrefillWorkerCapability.fromJSON(e))
+        : globalThis.Array.isArray(object?.prefill_workers)
+        ? object.prefill_workers.map((e: any) => PrefillWorkerCapability.fromJSON(e))
+        : [],
     };
   },
 
@@ -772,6 +966,9 @@ export const NodeCapability: MessageFns<NodeCapability> = {
     if (message.endpoints?.length) {
       obj.endpoints = message.endpoints.map((e) => NodeEndpoint.toJSON(e));
     }
+    if (message.prefillWorkers?.length) {
+      obj.prefillWorkers = message.prefillWorkers.map((e) => PrefillWorkerCapability.toJSON(e));
+    }
     return obj;
   },
 
@@ -791,6 +988,7 @@ export const NodeCapability: MessageFns<NodeCapability> = {
     message.ringAddress = object.ringAddress ?? "";
     message.caches = object.caches?.map((e) => CacheCapability.fromPartial(e)) || [];
     message.endpoints = object.endpoints?.map((e) => NodeEndpoint.fromPartial(e)) || [];
+    message.prefillWorkers = object.prefillWorkers?.map((e) => PrefillWorkerCapability.fromPartial(e)) || [];
     return message;
   },
 };
@@ -918,6 +1116,9 @@ function createBaseCacheCompatibility(): CacheCompatibility {
     layerGeometryHash: "",
     kvDtype: "",
     blockSizeTokens: 0,
+    tenantNamespace: "",
+    sinkSize: 0,
+    windowSize: 0,
   };
 }
 
@@ -949,6 +1150,15 @@ export const CacheCompatibility: MessageFns<CacheCompatibility> = {
     }
     if (message.blockSizeTokens !== 0) {
       writer.uint32(72).uint32(message.blockSizeTokens);
+    }
+    if (message.tenantNamespace !== "") {
+      writer.uint32(82).string(message.tenantNamespace);
+    }
+    if (message.sinkSize !== 0) {
+      writer.uint32(88).uint32(message.sinkSize);
+    }
+    if (message.windowSize !== 0) {
+      writer.uint32(96).uint32(message.windowSize);
     }
     return writer;
   },
@@ -1032,6 +1242,30 @@ export const CacheCompatibility: MessageFns<CacheCompatibility> = {
           message.blockSizeTokens = reader.uint32();
           continue;
         }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.tenantNamespace = reader.string();
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.sinkSize = reader.uint32();
+          continue;
+        }
+        case 12: {
+          if (tag !== 96) {
+            break;
+          }
+
+          message.windowSize = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1084,6 +1318,21 @@ export const CacheCompatibility: MessageFns<CacheCompatibility> = {
         : isSet(object.block_size_tokens)
         ? globalThis.Number(object.block_size_tokens)
         : 0,
+      tenantNamespace: isSet(object.tenantNamespace)
+        ? globalThis.String(object.tenantNamespace)
+        : isSet(object.tenant_namespace)
+        ? globalThis.String(object.tenant_namespace)
+        : "",
+      sinkSize: isSet(object.sinkSize)
+        ? globalThis.Number(object.sinkSize)
+        : isSet(object.sink_size)
+        ? globalThis.Number(object.sink_size)
+        : 0,
+      windowSize: isSet(object.windowSize)
+        ? globalThis.Number(object.windowSize)
+        : isSet(object.window_size)
+        ? globalThis.Number(object.window_size)
+        : 0,
     };
   },
 
@@ -1116,6 +1365,15 @@ export const CacheCompatibility: MessageFns<CacheCompatibility> = {
     if (message.blockSizeTokens !== 0) {
       obj.blockSizeTokens = Math.round(message.blockSizeTokens);
     }
+    if (message.tenantNamespace !== "") {
+      obj.tenantNamespace = message.tenantNamespace;
+    }
+    if (message.sinkSize !== 0) {
+      obj.sinkSize = Math.round(message.sinkSize);
+    }
+    if (message.windowSize !== 0) {
+      obj.windowSize = Math.round(message.windowSize);
+    }
     return obj;
   },
 
@@ -1133,6 +1391,9 @@ export const CacheCompatibility: MessageFns<CacheCompatibility> = {
     message.layerGeometryHash = object.layerGeometryHash ?? "";
     message.kvDtype = object.kvDtype ?? "";
     message.blockSizeTokens = object.blockSizeTokens ?? 0;
+    message.tenantNamespace = object.tenantNamespace ?? "";
+    message.sinkSize = object.sinkSize ?? 0;
+    message.windowSize = object.windowSize ?? 0;
     return message;
   },
 };
@@ -1148,6 +1409,8 @@ function createBaseCacheCapability(): CacheCapability {
     load: 0,
     tokensServed: "0",
     bloomFilter: new Uint8Array(0),
+    defaultCompression: 0,
+    replicationFactor: 0,
   };
 }
 
@@ -1179,6 +1442,12 @@ export const CacheCapability: MessageFns<CacheCapability> = {
     }
     if (message.bloomFilter.length !== 0) {
       writer.uint32(74).bytes(message.bloomFilter);
+    }
+    if (message.defaultCompression !== 0) {
+      writer.uint32(80).int32(message.defaultCompression);
+    }
+    if (message.replicationFactor !== 0) {
+      writer.uint32(88).uint32(message.replicationFactor);
     }
     return writer;
   },
@@ -1262,6 +1531,22 @@ export const CacheCapability: MessageFns<CacheCapability> = {
           message.bloomFilter = reader.bytes();
           continue;
         }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.defaultCompression = reader.int32() as any;
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.replicationFactor = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1310,6 +1595,16 @@ export const CacheCapability: MessageFns<CacheCapability> = {
         : isSet(object.bloom_filter)
         ? bytesFromBase64(object.bloom_filter)
         : new Uint8Array(0),
+      defaultCompression: isSet(object.defaultCompression)
+        ? compressionCodecFromJSON(object.defaultCompression)
+        : isSet(object.default_compression)
+        ? compressionCodecFromJSON(object.default_compression)
+        : 0,
+      replicationFactor: isSet(object.replicationFactor)
+        ? globalThis.Number(object.replicationFactor)
+        : isSet(object.replication_factor)
+        ? globalThis.Number(object.replication_factor)
+        : 0,
     };
   },
 
@@ -1342,6 +1637,12 @@ export const CacheCapability: MessageFns<CacheCapability> = {
     if (message.bloomFilter.length !== 0) {
       obj.bloomFilter = base64FromBytes(message.bloomFilter);
     }
+    if (message.defaultCompression !== 0) {
+      obj.defaultCompression = compressionCodecToJSON(message.defaultCompression);
+    }
+    if (message.replicationFactor !== 0) {
+      obj.replicationFactor = Math.round(message.replicationFactor);
+    }
     return obj;
   },
 
@@ -1361,6 +1662,257 @@ export const CacheCapability: MessageFns<CacheCapability> = {
     message.load = object.load ?? 0;
     message.tokensServed = object.tokensServed ?? "0";
     message.bloomFilter = object.bloomFilter ?? new Uint8Array(0);
+    message.defaultCompression = object.defaultCompression ?? 0;
+    message.replicationFactor = object.replicationFactor ?? 0;
+    return message;
+  },
+};
+
+function createBasePrefillWorkerCapability(): PrefillWorkerCapability {
+  return {
+    compatibility: undefined,
+    workerAddress: "",
+    maxConcurrentJobs: 0,
+    inflightJobs: 0,
+    queuedJobs: 0,
+    load: 0,
+    tokensPerSecondPrefill: 0,
+    ramBytesFree: "0",
+    acceptsComputeJobs: false,
+    queuedTokens: "0",
+  };
+}
+
+export const PrefillWorkerCapability: MessageFns<PrefillWorkerCapability> = {
+  encode(message: PrefillWorkerCapability, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.compatibility !== undefined) {
+      CacheCompatibility.encode(message.compatibility, writer.uint32(10).fork()).join();
+    }
+    if (message.workerAddress !== "") {
+      writer.uint32(18).string(message.workerAddress);
+    }
+    if (message.maxConcurrentJobs !== 0) {
+      writer.uint32(24).uint32(message.maxConcurrentJobs);
+    }
+    if (message.inflightJobs !== 0) {
+      writer.uint32(32).uint32(message.inflightJobs);
+    }
+    if (message.queuedJobs !== 0) {
+      writer.uint32(40).uint32(message.queuedJobs);
+    }
+    if (message.load !== 0) {
+      writer.uint32(49).double(message.load);
+    }
+    if (message.tokensPerSecondPrefill !== 0) {
+      writer.uint32(57).double(message.tokensPerSecondPrefill);
+    }
+    if (message.ramBytesFree !== "0") {
+      writer.uint32(64).uint64(message.ramBytesFree);
+    }
+    if (message.acceptsComputeJobs !== false) {
+      writer.uint32(72).bool(message.acceptsComputeJobs);
+    }
+    if (message.queuedTokens !== "0") {
+      writer.uint32(80).uint64(message.queuedTokens);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PrefillWorkerCapability {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePrefillWorkerCapability();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.compatibility = CacheCompatibility.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.workerAddress = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.maxConcurrentJobs = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.inflightJobs = reader.uint32();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.queuedJobs = reader.uint32();
+          continue;
+        }
+        case 6: {
+          if (tag !== 49) {
+            break;
+          }
+
+          message.load = reader.double();
+          continue;
+        }
+        case 7: {
+          if (tag !== 57) {
+            break;
+          }
+
+          message.tokensPerSecondPrefill = reader.double();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.ramBytesFree = reader.uint64().toString();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.acceptsComputeJobs = reader.bool();
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.queuedTokens = reader.uint64().toString();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PrefillWorkerCapability {
+    return {
+      compatibility: isSet(object.compatibility) ? CacheCompatibility.fromJSON(object.compatibility) : undefined,
+      workerAddress: isSet(object.workerAddress)
+        ? globalThis.String(object.workerAddress)
+        : isSet(object.worker_address)
+        ? globalThis.String(object.worker_address)
+        : "",
+      maxConcurrentJobs: isSet(object.maxConcurrentJobs)
+        ? globalThis.Number(object.maxConcurrentJobs)
+        : isSet(object.max_concurrent_jobs)
+        ? globalThis.Number(object.max_concurrent_jobs)
+        : 0,
+      inflightJobs: isSet(object.inflightJobs)
+        ? globalThis.Number(object.inflightJobs)
+        : isSet(object.inflight_jobs)
+        ? globalThis.Number(object.inflight_jobs)
+        : 0,
+      queuedJobs: isSet(object.queuedJobs)
+        ? globalThis.Number(object.queuedJobs)
+        : isSet(object.queued_jobs)
+        ? globalThis.Number(object.queued_jobs)
+        : 0,
+      load: isSet(object.load) ? globalThis.Number(object.load) : 0,
+      tokensPerSecondPrefill: isSet(object.tokensPerSecondPrefill)
+        ? globalThis.Number(object.tokensPerSecondPrefill)
+        : isSet(object.tokens_per_second_prefill)
+        ? globalThis.Number(object.tokens_per_second_prefill)
+        : 0,
+      ramBytesFree: isSet(object.ramBytesFree)
+        ? globalThis.String(object.ramBytesFree)
+        : isSet(object.ram_bytes_free)
+        ? globalThis.String(object.ram_bytes_free)
+        : "0",
+      acceptsComputeJobs: isSet(object.acceptsComputeJobs)
+        ? globalThis.Boolean(object.acceptsComputeJobs)
+        : isSet(object.accepts_compute_jobs)
+        ? globalThis.Boolean(object.accepts_compute_jobs)
+        : false,
+      queuedTokens: isSet(object.queuedTokens)
+        ? globalThis.String(object.queuedTokens)
+        : isSet(object.queued_tokens)
+        ? globalThis.String(object.queued_tokens)
+        : "0",
+    };
+  },
+
+  toJSON(message: PrefillWorkerCapability): unknown {
+    const obj: any = {};
+    if (message.compatibility !== undefined) {
+      obj.compatibility = CacheCompatibility.toJSON(message.compatibility);
+    }
+    if (message.workerAddress !== "") {
+      obj.workerAddress = message.workerAddress;
+    }
+    if (message.maxConcurrentJobs !== 0) {
+      obj.maxConcurrentJobs = Math.round(message.maxConcurrentJobs);
+    }
+    if (message.inflightJobs !== 0) {
+      obj.inflightJobs = Math.round(message.inflightJobs);
+    }
+    if (message.queuedJobs !== 0) {
+      obj.queuedJobs = Math.round(message.queuedJobs);
+    }
+    if (message.load !== 0) {
+      obj.load = message.load;
+    }
+    if (message.tokensPerSecondPrefill !== 0) {
+      obj.tokensPerSecondPrefill = message.tokensPerSecondPrefill;
+    }
+    if (message.ramBytesFree !== "0") {
+      obj.ramBytesFree = message.ramBytesFree;
+    }
+    if (message.acceptsComputeJobs !== false) {
+      obj.acceptsComputeJobs = message.acceptsComputeJobs;
+    }
+    if (message.queuedTokens !== "0") {
+      obj.queuedTokens = message.queuedTokens;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PrefillWorkerCapability>, I>>(base?: I): PrefillWorkerCapability {
+    return PrefillWorkerCapability.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PrefillWorkerCapability>, I>>(object: I): PrefillWorkerCapability {
+    const message = createBasePrefillWorkerCapability();
+    message.compatibility = (object.compatibility !== undefined && object.compatibility !== null)
+      ? CacheCompatibility.fromPartial(object.compatibility)
+      : undefined;
+    message.workerAddress = object.workerAddress ?? "";
+    message.maxConcurrentJobs = object.maxConcurrentJobs ?? 0;
+    message.inflightJobs = object.inflightJobs ?? 0;
+    message.queuedJobs = object.queuedJobs ?? 0;
+    message.load = object.load ?? 0;
+    message.tokensPerSecondPrefill = object.tokensPerSecondPrefill ?? 0;
+    message.ramBytesFree = object.ramBytesFree ?? "0";
+    message.acceptsComputeJobs = object.acceptsComputeJobs ?? false;
+    message.queuedTokens = object.queuedTokens ?? "0";
     return message;
   },
 };
@@ -2612,6 +3164,805 @@ export const PublishBlockResponse: MessageFns<PublishBlockResponse> = {
     const message = createBasePublishBlockResponse();
     message.stored = object.stored ?? false;
     message.cacheEpoch = object.cacheEpoch ?? "0";
+    return message;
+  },
+};
+
+function createBaseSubmitPrefillJobRequest(): SubmitPrefillJobRequest {
+  return {
+    requestId: "",
+    tenantId: "",
+    compatibility: undefined,
+    tokenIds: [],
+    blockHashes: [],
+    deadlineMs: 0,
+    preferredCompression: 0,
+  };
+}
+
+export const SubmitPrefillJobRequest: MessageFns<SubmitPrefillJobRequest> = {
+  encode(message: SubmitPrefillJobRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== "") {
+      writer.uint32(10).string(message.requestId);
+    }
+    if (message.tenantId !== "") {
+      writer.uint32(18).string(message.tenantId);
+    }
+    if (message.compatibility !== undefined) {
+      CacheCompatibility.encode(message.compatibility, writer.uint32(26).fork()).join();
+    }
+    writer.uint32(34).fork();
+    for (const v of message.tokenIds) {
+      writer.uint32(v);
+    }
+    writer.join();
+    for (const v of message.blockHashes) {
+      writer.uint32(42).bytes(v!);
+    }
+    if (message.deadlineMs !== 0) {
+      writer.uint32(48).uint32(message.deadlineMs);
+    }
+    if (message.preferredCompression !== 0) {
+      writer.uint32(56).int32(message.preferredCompression);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubmitPrefillJobRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubmitPrefillJobRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requestId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.tenantId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.compatibility = CacheCompatibility.decode(reader, reader.uint32());
+          continue;
+        }
+        case 4: {
+          if (tag === 32) {
+            message.tokenIds.push(reader.uint32());
+
+            continue;
+          }
+
+          if (tag === 34) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.tokenIds.push(reader.uint32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.blockHashes.push(reader.bytes());
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.deadlineMs = reader.uint32();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.preferredCompression = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubmitPrefillJobRequest {
+    return {
+      requestId: isSet(object.requestId)
+        ? globalThis.String(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.String(object.request_id)
+        : "",
+      tenantId: isSet(object.tenantId)
+        ? globalThis.String(object.tenantId)
+        : isSet(object.tenant_id)
+        ? globalThis.String(object.tenant_id)
+        : "",
+      compatibility: isSet(object.compatibility) ? CacheCompatibility.fromJSON(object.compatibility) : undefined,
+      tokenIds: globalThis.Array.isArray(object?.tokenIds)
+        ? object.tokenIds.map((e: any) => globalThis.Number(e))
+        : globalThis.Array.isArray(object?.token_ids)
+        ? object.token_ids.map((e: any) => globalThis.Number(e))
+        : [],
+      blockHashes: globalThis.Array.isArray(object?.blockHashes)
+        ? object.blockHashes.map((e: any) => bytesFromBase64(e))
+        : globalThis.Array.isArray(object?.block_hashes)
+        ? object.block_hashes.map((e: any) => bytesFromBase64(e))
+        : [],
+      deadlineMs: isSet(object.deadlineMs)
+        ? globalThis.Number(object.deadlineMs)
+        : isSet(object.deadline_ms)
+        ? globalThis.Number(object.deadline_ms)
+        : 0,
+      preferredCompression: isSet(object.preferredCompression)
+        ? compressionCodecFromJSON(object.preferredCompression)
+        : isSet(object.preferred_compression)
+        ? compressionCodecFromJSON(object.preferred_compression)
+        : 0,
+    };
+  },
+
+  toJSON(message: SubmitPrefillJobRequest): unknown {
+    const obj: any = {};
+    if (message.requestId !== "") {
+      obj.requestId = message.requestId;
+    }
+    if (message.tenantId !== "") {
+      obj.tenantId = message.tenantId;
+    }
+    if (message.compatibility !== undefined) {
+      obj.compatibility = CacheCompatibility.toJSON(message.compatibility);
+    }
+    if (message.tokenIds?.length) {
+      obj.tokenIds = message.tokenIds.map((e) => Math.round(e));
+    }
+    if (message.blockHashes?.length) {
+      obj.blockHashes = message.blockHashes.map((e) => base64FromBytes(e));
+    }
+    if (message.deadlineMs !== 0) {
+      obj.deadlineMs = Math.round(message.deadlineMs);
+    }
+    if (message.preferredCompression !== 0) {
+      obj.preferredCompression = compressionCodecToJSON(message.preferredCompression);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubmitPrefillJobRequest>, I>>(base?: I): SubmitPrefillJobRequest {
+    return SubmitPrefillJobRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubmitPrefillJobRequest>, I>>(object: I): SubmitPrefillJobRequest {
+    const message = createBaseSubmitPrefillJobRequest();
+    message.requestId = object.requestId ?? "";
+    message.tenantId = object.tenantId ?? "";
+    message.compatibility = (object.compatibility !== undefined && object.compatibility !== null)
+      ? CacheCompatibility.fromPartial(object.compatibility)
+      : undefined;
+    message.tokenIds = object.tokenIds?.map((e) => e) || [];
+    message.blockHashes = object.blockHashes?.map((e) => e) || [];
+    message.deadlineMs = object.deadlineMs ?? 0;
+    message.preferredCompression = object.preferredCompression ?? 0;
+    return message;
+  },
+};
+
+function createBaseSubmitPrefillJobResponse(): SubmitPrefillJobResponse {
+  return { jobId: "", status: 0, workerNodeId: "", queueEtaMs: 0 };
+}
+
+export const SubmitPrefillJobResponse: MessageFns<SubmitPrefillJobResponse> = {
+  encode(message: SubmitPrefillJobResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.jobId !== "") {
+      writer.uint32(10).string(message.jobId);
+    }
+    if (message.status !== 0) {
+      writer.uint32(16).int32(message.status);
+    }
+    if (message.workerNodeId !== "") {
+      writer.uint32(26).string(message.workerNodeId);
+    }
+    if (message.queueEtaMs !== 0) {
+      writer.uint32(33).double(message.queueEtaMs);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubmitPrefillJobResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubmitPrefillJobResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.jobId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.workerNodeId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 33) {
+            break;
+          }
+
+          message.queueEtaMs = reader.double();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubmitPrefillJobResponse {
+    return {
+      jobId: isSet(object.jobId)
+        ? globalThis.String(object.jobId)
+        : isSet(object.job_id)
+        ? globalThis.String(object.job_id)
+        : "",
+      status: isSet(object.status) ? prefillJobStatusFromJSON(object.status) : 0,
+      workerNodeId: isSet(object.workerNodeId)
+        ? globalThis.String(object.workerNodeId)
+        : isSet(object.worker_node_id)
+        ? globalThis.String(object.worker_node_id)
+        : "",
+      queueEtaMs: isSet(object.queueEtaMs)
+        ? globalThis.Number(object.queueEtaMs)
+        : isSet(object.queue_eta_ms)
+        ? globalThis.Number(object.queue_eta_ms)
+        : 0,
+    };
+  },
+
+  toJSON(message: SubmitPrefillJobResponse): unknown {
+    const obj: any = {};
+    if (message.jobId !== "") {
+      obj.jobId = message.jobId;
+    }
+    if (message.status !== 0) {
+      obj.status = prefillJobStatusToJSON(message.status);
+    }
+    if (message.workerNodeId !== "") {
+      obj.workerNodeId = message.workerNodeId;
+    }
+    if (message.queueEtaMs !== 0) {
+      obj.queueEtaMs = message.queueEtaMs;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubmitPrefillJobResponse>, I>>(base?: I): SubmitPrefillJobResponse {
+    return SubmitPrefillJobResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubmitPrefillJobResponse>, I>>(object: I): SubmitPrefillJobResponse {
+    const message = createBaseSubmitPrefillJobResponse();
+    message.jobId = object.jobId ?? "";
+    message.status = object.status ?? 0;
+    message.workerNodeId = object.workerNodeId ?? "";
+    message.queueEtaMs = object.queueEtaMs ?? 0;
+    return message;
+  },
+};
+
+function createBaseGetPrefillJobStatusRequest(): GetPrefillJobStatusRequest {
+  return { jobId: "", tenantId: "" };
+}
+
+export const GetPrefillJobStatusRequest: MessageFns<GetPrefillJobStatusRequest> = {
+  encode(message: GetPrefillJobStatusRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.jobId !== "") {
+      writer.uint32(10).string(message.jobId);
+    }
+    if (message.tenantId !== "") {
+      writer.uint32(18).string(message.tenantId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetPrefillJobStatusRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetPrefillJobStatusRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.jobId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.tenantId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetPrefillJobStatusRequest {
+    return {
+      jobId: isSet(object.jobId)
+        ? globalThis.String(object.jobId)
+        : isSet(object.job_id)
+        ? globalThis.String(object.job_id)
+        : "",
+      tenantId: isSet(object.tenantId)
+        ? globalThis.String(object.tenantId)
+        : isSet(object.tenant_id)
+        ? globalThis.String(object.tenant_id)
+        : "",
+    };
+  },
+
+  toJSON(message: GetPrefillJobStatusRequest): unknown {
+    const obj: any = {};
+    if (message.jobId !== "") {
+      obj.jobId = message.jobId;
+    }
+    if (message.tenantId !== "") {
+      obj.tenantId = message.tenantId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetPrefillJobStatusRequest>, I>>(base?: I): GetPrefillJobStatusRequest {
+    return GetPrefillJobStatusRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetPrefillJobStatusRequest>, I>>(object: I): GetPrefillJobStatusRequest {
+    const message = createBaseGetPrefillJobStatusRequest();
+    message.jobId = object.jobId ?? "";
+    message.tenantId = object.tenantId ?? "";
+    return message;
+  },
+};
+
+function createBaseGetPrefillJobStatusResponse(): GetPrefillJobStatusResponse {
+  return {
+    jobId: "",
+    status: 0,
+    tokensComputed: 0,
+    leaseId: "",
+    blockHash: new Uint8Array(0),
+    payloadSha256: new Uint8Array(0),
+    transferBytes: "0",
+    failureReason: "",
+    computeMs: 0,
+    cacheAddress: "",
+  };
+}
+
+export const GetPrefillJobStatusResponse: MessageFns<GetPrefillJobStatusResponse> = {
+  encode(message: GetPrefillJobStatusResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.jobId !== "") {
+      writer.uint32(10).string(message.jobId);
+    }
+    if (message.status !== 0) {
+      writer.uint32(16).int32(message.status);
+    }
+    if (message.tokensComputed !== 0) {
+      writer.uint32(24).uint32(message.tokensComputed);
+    }
+    if (message.leaseId !== "") {
+      writer.uint32(34).string(message.leaseId);
+    }
+    if (message.blockHash.length !== 0) {
+      writer.uint32(42).bytes(message.blockHash);
+    }
+    if (message.payloadSha256.length !== 0) {
+      writer.uint32(50).bytes(message.payloadSha256);
+    }
+    if (message.transferBytes !== "0") {
+      writer.uint32(56).uint64(message.transferBytes);
+    }
+    if (message.failureReason !== "") {
+      writer.uint32(66).string(message.failureReason);
+    }
+    if (message.computeMs !== 0) {
+      writer.uint32(73).double(message.computeMs);
+    }
+    if (message.cacheAddress !== "") {
+      writer.uint32(82).string(message.cacheAddress);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetPrefillJobStatusResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetPrefillJobStatusResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.jobId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.status = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.tokensComputed = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.leaseId = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.blockHash = reader.bytes();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.payloadSha256 = reader.bytes();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.transferBytes = reader.uint64().toString();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.failureReason = reader.string();
+          continue;
+        }
+        case 9: {
+          if (tag !== 73) {
+            break;
+          }
+
+          message.computeMs = reader.double();
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.cacheAddress = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetPrefillJobStatusResponse {
+    return {
+      jobId: isSet(object.jobId)
+        ? globalThis.String(object.jobId)
+        : isSet(object.job_id)
+        ? globalThis.String(object.job_id)
+        : "",
+      status: isSet(object.status) ? prefillJobStatusFromJSON(object.status) : 0,
+      tokensComputed: isSet(object.tokensComputed)
+        ? globalThis.Number(object.tokensComputed)
+        : isSet(object.tokens_computed)
+        ? globalThis.Number(object.tokens_computed)
+        : 0,
+      leaseId: isSet(object.leaseId)
+        ? globalThis.String(object.leaseId)
+        : isSet(object.lease_id)
+        ? globalThis.String(object.lease_id)
+        : "",
+      blockHash: isSet(object.blockHash)
+        ? bytesFromBase64(object.blockHash)
+        : isSet(object.block_hash)
+        ? bytesFromBase64(object.block_hash)
+        : new Uint8Array(0),
+      payloadSha256: isSet(object.payloadSha256)
+        ? bytesFromBase64(object.payloadSha256)
+        : isSet(object.payload_sha256)
+        ? bytesFromBase64(object.payload_sha256)
+        : new Uint8Array(0),
+      transferBytes: isSet(object.transferBytes)
+        ? globalThis.String(object.transferBytes)
+        : isSet(object.transfer_bytes)
+        ? globalThis.String(object.transfer_bytes)
+        : "0",
+      failureReason: isSet(object.failureReason)
+        ? globalThis.String(object.failureReason)
+        : isSet(object.failure_reason)
+        ? globalThis.String(object.failure_reason)
+        : "",
+      computeMs: isSet(object.computeMs)
+        ? globalThis.Number(object.computeMs)
+        : isSet(object.compute_ms)
+        ? globalThis.Number(object.compute_ms)
+        : 0,
+      cacheAddress: isSet(object.cacheAddress)
+        ? globalThis.String(object.cacheAddress)
+        : isSet(object.cache_address)
+        ? globalThis.String(object.cache_address)
+        : "",
+    };
+  },
+
+  toJSON(message: GetPrefillJobStatusResponse): unknown {
+    const obj: any = {};
+    if (message.jobId !== "") {
+      obj.jobId = message.jobId;
+    }
+    if (message.status !== 0) {
+      obj.status = prefillJobStatusToJSON(message.status);
+    }
+    if (message.tokensComputed !== 0) {
+      obj.tokensComputed = Math.round(message.tokensComputed);
+    }
+    if (message.leaseId !== "") {
+      obj.leaseId = message.leaseId;
+    }
+    if (message.blockHash.length !== 0) {
+      obj.blockHash = base64FromBytes(message.blockHash);
+    }
+    if (message.payloadSha256.length !== 0) {
+      obj.payloadSha256 = base64FromBytes(message.payloadSha256);
+    }
+    if (message.transferBytes !== "0") {
+      obj.transferBytes = message.transferBytes;
+    }
+    if (message.failureReason !== "") {
+      obj.failureReason = message.failureReason;
+    }
+    if (message.computeMs !== 0) {
+      obj.computeMs = message.computeMs;
+    }
+    if (message.cacheAddress !== "") {
+      obj.cacheAddress = message.cacheAddress;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetPrefillJobStatusResponse>, I>>(base?: I): GetPrefillJobStatusResponse {
+    return GetPrefillJobStatusResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetPrefillJobStatusResponse>, I>>(object: I): GetPrefillJobStatusResponse {
+    const message = createBaseGetPrefillJobStatusResponse();
+    message.jobId = object.jobId ?? "";
+    message.status = object.status ?? 0;
+    message.tokensComputed = object.tokensComputed ?? 0;
+    message.leaseId = object.leaseId ?? "";
+    message.blockHash = object.blockHash ?? new Uint8Array(0);
+    message.payloadSha256 = object.payloadSha256 ?? new Uint8Array(0);
+    message.transferBytes = object.transferBytes ?? "0";
+    message.failureReason = object.failureReason ?? "";
+    message.computeMs = object.computeMs ?? 0;
+    message.cacheAddress = object.cacheAddress ?? "";
+    return message;
+  },
+};
+
+function createBaseCancelPrefillJobRequest(): CancelPrefillJobRequest {
+  return { jobId: "", tenantId: "" };
+}
+
+export const CancelPrefillJobRequest: MessageFns<CancelPrefillJobRequest> = {
+  encode(message: CancelPrefillJobRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.jobId !== "") {
+      writer.uint32(10).string(message.jobId);
+    }
+    if (message.tenantId !== "") {
+      writer.uint32(18).string(message.tenantId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CancelPrefillJobRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCancelPrefillJobRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.jobId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.tenantId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CancelPrefillJobRequest {
+    return {
+      jobId: isSet(object.jobId)
+        ? globalThis.String(object.jobId)
+        : isSet(object.job_id)
+        ? globalThis.String(object.job_id)
+        : "",
+      tenantId: isSet(object.tenantId)
+        ? globalThis.String(object.tenantId)
+        : isSet(object.tenant_id)
+        ? globalThis.String(object.tenant_id)
+        : "",
+    };
+  },
+
+  toJSON(message: CancelPrefillJobRequest): unknown {
+    const obj: any = {};
+    if (message.jobId !== "") {
+      obj.jobId = message.jobId;
+    }
+    if (message.tenantId !== "") {
+      obj.tenantId = message.tenantId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CancelPrefillJobRequest>, I>>(base?: I): CancelPrefillJobRequest {
+    return CancelPrefillJobRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CancelPrefillJobRequest>, I>>(object: I): CancelPrefillJobRequest {
+    const message = createBaseCancelPrefillJobRequest();
+    message.jobId = object.jobId ?? "";
+    message.tenantId = object.tenantId ?? "";
+    return message;
+  },
+};
+
+function createBaseCancelPrefillJobResponse(): CancelPrefillJobResponse {
+  return { cancelled: false };
+}
+
+export const CancelPrefillJobResponse: MessageFns<CancelPrefillJobResponse> = {
+  encode(message: CancelPrefillJobResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.cancelled !== false) {
+      writer.uint32(8).bool(message.cancelled);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CancelPrefillJobResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCancelPrefillJobResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.cancelled = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CancelPrefillJobResponse {
+    return { cancelled: isSet(object.cancelled) ? globalThis.Boolean(object.cancelled) : false };
+  },
+
+  toJSON(message: CancelPrefillJobResponse): unknown {
+    const obj: any = {};
+    if (message.cancelled !== false) {
+      obj.cancelled = message.cancelled;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CancelPrefillJobResponse>, I>>(base?: I): CancelPrefillJobResponse {
+    return CancelPrefillJobResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CancelPrefillJobResponse>, I>>(object: I): CancelPrefillJobResponse {
+    const message = createBaseCancelPrefillJobResponse();
+    message.cancelled = object.cancelled ?? false;
     return message;
   },
 };
@@ -4370,6 +5721,111 @@ export const PrefillCacheServiceClient = makeGenericClientConstructor(
 ) as unknown as {
   new (address: string, credentials: ChannelCredentials, options?: Partial<ClientOptions>): PrefillCacheServiceClient;
   service: typeof PrefillCacheServiceService;
+  serviceName: string;
+};
+
+/**
+ * PrefillWorkerService executes model prefill only. Workers load the same model
+ * as the primary, materialize immutable snapshots into their co-located
+ * PrefillCacheService, and never participate in autoregressive decode.
+ */
+export type PrefillWorkerServiceService = typeof PrefillWorkerServiceService;
+export const PrefillWorkerServiceService = {
+  submitPrefillJob: {
+    path: "/kakeya.v1.PrefillWorkerService/SubmitPrefillJob" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: SubmitPrefillJobRequest): Buffer =>
+      Buffer.from(SubmitPrefillJobRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): SubmitPrefillJobRequest => SubmitPrefillJobRequest.decode(value),
+    responseSerialize: (value: SubmitPrefillJobResponse): Buffer =>
+      Buffer.from(SubmitPrefillJobResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): SubmitPrefillJobResponse => SubmitPrefillJobResponse.decode(value),
+  },
+  getPrefillJobStatus: {
+    path: "/kakeya.v1.PrefillWorkerService/GetPrefillJobStatus" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: GetPrefillJobStatusRequest): Buffer =>
+      Buffer.from(GetPrefillJobStatusRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetPrefillJobStatusRequest => GetPrefillJobStatusRequest.decode(value),
+    responseSerialize: (value: GetPrefillJobStatusResponse): Buffer =>
+      Buffer.from(GetPrefillJobStatusResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetPrefillJobStatusResponse => GetPrefillJobStatusResponse.decode(value),
+  },
+  cancelPrefillJob: {
+    path: "/kakeya.v1.PrefillWorkerService/CancelPrefillJob" as const,
+    requestStream: false as const,
+    responseStream: false as const,
+    requestSerialize: (value: CancelPrefillJobRequest): Buffer =>
+      Buffer.from(CancelPrefillJobRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): CancelPrefillJobRequest => CancelPrefillJobRequest.decode(value),
+    responseSerialize: (value: CancelPrefillJobResponse): Buffer =>
+      Buffer.from(CancelPrefillJobResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): CancelPrefillJobResponse => CancelPrefillJobResponse.decode(value),
+  },
+} as const;
+
+export interface PrefillWorkerServiceServer extends UntypedServiceImplementation {
+  submitPrefillJob: handleUnaryCall<SubmitPrefillJobRequest, SubmitPrefillJobResponse>;
+  getPrefillJobStatus: handleUnaryCall<GetPrefillJobStatusRequest, GetPrefillJobStatusResponse>;
+  cancelPrefillJob: handleUnaryCall<CancelPrefillJobRequest, CancelPrefillJobResponse>;
+}
+
+export interface PrefillWorkerServiceClient extends Client {
+  submitPrefillJob(
+    request: SubmitPrefillJobRequest,
+    callback: (error: ServiceError | null, response: SubmitPrefillJobResponse) => void,
+  ): ClientUnaryCall;
+  submitPrefillJob(
+    request: SubmitPrefillJobRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: SubmitPrefillJobResponse) => void,
+  ): ClientUnaryCall;
+  submitPrefillJob(
+    request: SubmitPrefillJobRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: SubmitPrefillJobResponse) => void,
+  ): ClientUnaryCall;
+  getPrefillJobStatus(
+    request: GetPrefillJobStatusRequest,
+    callback: (error: ServiceError | null, response: GetPrefillJobStatusResponse) => void,
+  ): ClientUnaryCall;
+  getPrefillJobStatus(
+    request: GetPrefillJobStatusRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetPrefillJobStatusResponse) => void,
+  ): ClientUnaryCall;
+  getPrefillJobStatus(
+    request: GetPrefillJobStatusRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetPrefillJobStatusResponse) => void,
+  ): ClientUnaryCall;
+  cancelPrefillJob(
+    request: CancelPrefillJobRequest,
+    callback: (error: ServiceError | null, response: CancelPrefillJobResponse) => void,
+  ): ClientUnaryCall;
+  cancelPrefillJob(
+    request: CancelPrefillJobRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: CancelPrefillJobResponse) => void,
+  ): ClientUnaryCall;
+  cancelPrefillJob(
+    request: CancelPrefillJobRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: CancelPrefillJobResponse) => void,
+  ): ClientUnaryCall;
+}
+
+export const PrefillWorkerServiceClient = makeGenericClientConstructor(
+  PrefillWorkerServiceService,
+  "kakeya.v1.PrefillWorkerService",
+) as unknown as {
+  new (address: string, credentials: ChannelCredentials, options?: Partial<ClientOptions>): PrefillWorkerServiceClient;
+  service: typeof PrefillWorkerServiceService;
   serviceName: string;
 };
 

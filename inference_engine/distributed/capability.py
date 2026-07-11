@@ -49,6 +49,13 @@ class CapabilityRole(enum.IntEnum):
     EMBEDDER = 3
     TOOL = 4
     PREFILL_CACHE = 5
+    PREFILL_COMPUTE = 6
+
+
+class CompressionCodec(enum.IntEnum):
+    UNSPECIFIED = 0
+    NONE = 1
+    ZLIB = 2
 
 
 @dataclass(frozen=True)
@@ -112,12 +119,15 @@ class CacheCompatibility:
     model_id: str
     model_revision: str = ""
     tokenizer_revision: str = ""
-    cache_format_version: str = "kv-v1"
+    cache_format_version: str = "kakeya-prefill-v2-zlib"
     quantization: str = ""
     rope_hash: str = ""
     layer_geometry_hash: str = ""
     kv_dtype: str = ""
     block_size_tokens: int = 64
+    tenant_namespace: str = ""
+    sink_size: int = 4
+    window_size: int = 64
 
     def to_proto(self) -> distributed_pb2.CacheCompatibility:
         return distributed_pb2.CacheCompatibility(
@@ -130,6 +140,9 @@ class CacheCompatibility:
             layer_geometry_hash=self.layer_geometry_hash,
             kv_dtype=self.kv_dtype,
             block_size_tokens=self.block_size_tokens,
+            tenant_namespace=self.tenant_namespace,
+            sink_size=self.sink_size,
+            window_size=self.window_size,
         )
 
     @classmethod
@@ -146,6 +159,9 @@ class CacheCompatibility:
             layer_geometry_hash=msg.layer_geometry_hash,
             kv_dtype=msg.kv_dtype,
             block_size_tokens=msg.block_size_tokens,
+            tenant_namespace=msg.tenant_namespace,
+            sink_size=msg.sink_size,
+            window_size=msg.window_size,
         )
 
 
@@ -162,6 +178,8 @@ class CacheCapability:
     load: float = 0.0
     tokens_served: int = 0
     bloom_filter: bytes = b""
+    default_compression: CompressionCodec = CompressionCodec.NONE
+    replication_factor: int = 1
 
     def to_proto(self) -> distributed_pb2.CacheCapability:
         return distributed_pb2.CacheCapability(
@@ -174,6 +192,8 @@ class CacheCapability:
             load=self.load,
             tokens_served=self.tokens_served,
             bloom_filter=self.bloom_filter,
+            default_compression=int(self.default_compression),
+            replication_factor=self.replication_factor,
         )
 
     @classmethod
@@ -188,6 +208,55 @@ class CacheCapability:
             load=msg.load,
             tokens_served=msg.tokens_served,
             bloom_filter=msg.bloom_filter,
+            default_compression=CompressionCodec(msg.default_compression),
+            replication_factor=msg.replication_factor,
+        )
+
+
+@dataclass(frozen=True)
+class PrefillWorkerCapability:
+    """One prefill-only compute offering on a node."""
+
+    compatibility: CacheCompatibility
+    worker_address: str = ""
+    max_concurrent_jobs: int = 1
+    inflight_jobs: int = 0
+    queued_jobs: int = 0
+    load: float = 0.0
+    tokens_per_second_prefill: float = 0.0
+    ram_bytes_free: int = 0
+    accepts_compute_jobs: bool = True
+    queued_tokens: int = 0
+
+    def to_proto(self) -> distributed_pb2.PrefillWorkerCapability:
+        return distributed_pb2.PrefillWorkerCapability(
+            compatibility=self.compatibility.to_proto(),
+            worker_address=self.worker_address,
+            max_concurrent_jobs=self.max_concurrent_jobs,
+            inflight_jobs=self.inflight_jobs,
+            queued_jobs=self.queued_jobs,
+            load=self.load,
+            tokens_per_second_prefill=self.tokens_per_second_prefill,
+            ram_bytes_free=self.ram_bytes_free,
+            accepts_compute_jobs=self.accepts_compute_jobs,
+            queued_tokens=self.queued_tokens,
+        )
+
+    @classmethod
+    def from_proto(
+        cls, msg: distributed_pb2.PrefillWorkerCapability,
+    ) -> "PrefillWorkerCapability":
+        return cls(
+            compatibility=CacheCompatibility.from_proto(msg.compatibility),
+            worker_address=msg.worker_address,
+            max_concurrent_jobs=msg.max_concurrent_jobs,
+            inflight_jobs=msg.inflight_jobs,
+            queued_jobs=msg.queued_jobs,
+            load=msg.load,
+            tokens_per_second_prefill=msg.tokens_per_second_prefill,
+            ram_bytes_free=msg.ram_bytes_free,
+            accepts_compute_jobs=msg.accepts_compute_jobs,
+            queued_tokens=msg.queued_tokens,
         )
 
 
@@ -206,6 +275,7 @@ class NodeCapability:
     ring_address: str = ""
     caches: Tuple[CacheCapability, ...] = ()
     endpoints: Tuple[NodeEndpoint, ...] = ()
+    prefill_workers: Tuple[PrefillWorkerCapability, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.node_id:
@@ -239,6 +309,7 @@ class NodeCapability:
             ring_address=self.ring_address,
             caches=[c.to_proto() for c in self.caches],
             endpoints=[e.to_proto() for e in self.endpoints],
+            prefill_workers=[w.to_proto() for w in self.prefill_workers],
         )
 
     @classmethod
@@ -255,6 +326,10 @@ class NodeCapability:
             ring_address=msg.ring_address,
             caches=tuple(CacheCapability.from_proto(c) for c in msg.caches),
             endpoints=tuple(NodeEndpoint.from_proto(e) for e in msg.endpoints),
+            prefill_workers=tuple(
+                PrefillWorkerCapability.from_proto(w)
+                for w in msg.prefill_workers
+            ),
         )
 
 

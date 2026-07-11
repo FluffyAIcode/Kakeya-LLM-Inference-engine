@@ -72,6 +72,15 @@ service PrefillCacheService {
   rpc PublishBlock(stream PublishBlockRequest) returns (PublishBlockResponse);
 }
 
+// PrefillWorkerService executes model prefill only. Workers load the same model
+// as the primary, materialize immutable snapshots into their co-located
+// PrefillCacheService, and never participate in autoregressive decode.
+service PrefillWorkerService {
+  rpc SubmitPrefillJob(SubmitPrefillJobRequest) returns (SubmitPrefillJobResponse);
+  rpc GetPrefillJobStatus(GetPrefillJobStatusRequest) returns (GetPrefillJobStatusResponse);
+  rpc CancelPrefillJob(CancelPrefillJobRequest) returns (CancelPrefillJobResponse);
+}
+
 // -----------------------------------------------------------------------------
 // Capability messages
 // -----------------------------------------------------------------------------
@@ -96,6 +105,24 @@ enum CapabilityRole {
   // The node can answer PrefillCacheService lookups and stream compatible
   // immutable prefill K/V blocks.
   CAPABILITY_ROLE_PREFILL_CACHE = 5;
+
+  // The node has the compatible model loaded and accepts prefill-only jobs.
+  CAPABILITY_ROLE_PREFILL_COMPUTE = 6;
+}
+
+enum CompressionCodec {
+  COMPRESSION_CODEC_UNSPECIFIED = 0;
+  COMPRESSION_CODEC_NONE = 1;
+  COMPRESSION_CODEC_ZLIB = 2;
+}
+
+enum PrefillJobStatus {
+  PREFILL_JOB_STATUS_UNSPECIFIED = 0;
+  PREFILL_JOB_STATUS_QUEUED = 1;
+  PREFILL_JOB_STATUS_RUNNING = 2;
+  PREFILL_JOB_STATUS_COMPLETED = 3;
+  PREFILL_JOB_STATUS_FAILED = 4;
+  PREFILL_JOB_STATUS_CANCELLED = 5;
 }
 
 // ModelCapability is one (model, role) a node offers.
@@ -164,6 +191,9 @@ message NodeCapability {
   // Reachable interfaces ordered by operator preference (Thunderbolt before
   // LAN/Tailscale). grpc_address remains the compatibility default.
   repeated NodeEndpoint endpoints = 11;
+
+  // Prefill-only compute offerings. Cache-only nodes leave this empty.
+  repeated PrefillWorkerCapability prefill_workers = 12;
 }
 
 message NodeEndpoint {
@@ -183,6 +213,12 @@ message CacheCompatibility {
   string layer_geometry_hash = 7;
   string kv_dtype = 8;
   uint32 block_size_tokens = 9;
+  // Tenant namespace is part of the compatibility fingerprint. It prevents a
+  // snapshot from being reused across isolation domains even with identical
+  // model/tokenizer geometry.
+  string tenant_namespace = 10;
+  uint32 sink_size = 11;
+  uint32 window_size = 12;
 }
 
 message CacheCapability {
@@ -196,6 +232,21 @@ message CacheCapability {
   uint64 tokens_served = 8;
   // Compact probabilistic summary. Empty means "query me directly".
   bytes bloom_filter = 9;
+  CompressionCodec default_compression = 10;
+  uint32 replication_factor = 11;
+}
+
+message PrefillWorkerCapability {
+  CacheCompatibility compatibility = 1;
+  string worker_address = 2;
+  uint32 max_concurrent_jobs = 3;
+  uint32 inflight_jobs = 4;
+  uint32 queued_jobs = 5;
+  double load = 6;
+  double tokens_per_second_prefill = 7;
+  uint64 ram_bytes_free = 8;
+  bool accepts_compute_jobs = 9;
+  uint64 queued_tokens = 10;
 }
 
 message ExchangeCapabilitiesRequest {
@@ -275,6 +326,57 @@ message PublishBlockRequest {
 message PublishBlockResponse {
   bool stored = 1;
   uint64 cache_epoch = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Prefill-only compute jobs
+// -----------------------------------------------------------------------------
+
+message SubmitPrefillJobRequest {
+  // Caller-generated idempotency key. Repeating it returns the existing job.
+  string request_id = 1;
+  string tenant_id = 2;
+  CacheCompatibility compatibility = 3;
+  repeated uint32 token_ids = 4;
+  // Chained hashes computed by the primary (tenant-HMACed in authenticated
+  // mode). One hash per token block.
+  repeated bytes block_hashes = 5;
+  uint32 deadline_ms = 6;
+  CompressionCodec preferred_compression = 7;
+}
+
+message SubmitPrefillJobResponse {
+  string job_id = 1;
+  PrefillJobStatus status = 2;
+  string worker_node_id = 3;
+  double queue_eta_ms = 4;
+}
+
+message GetPrefillJobStatusRequest {
+  string job_id = 1;
+  string tenant_id = 2;
+}
+
+message GetPrefillJobStatusResponse {
+  string job_id = 1;
+  PrefillJobStatus status = 2;
+  uint32 tokens_computed = 3;
+  string lease_id = 4;
+  bytes block_hash = 5;
+  bytes payload_sha256 = 6;
+  uint64 transfer_bytes = 7;
+  string failure_reason = 8;
+  double compute_ms = 9;
+  string cache_address = 10;
+}
+
+message CancelPrefillJobRequest {
+  string job_id = 1;
+  string tenant_id = 2;
+}
+
+message CancelPrefillJobResponse {
+  bool cancelled = 1;
 }
 
 // -----------------------------------------------------------------------------

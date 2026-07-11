@@ -468,6 +468,173 @@ class PrefillCacheService:
             _registered_method=True)
 
 
+class PrefillWorkerServiceStub:
+    """PrefillWorkerService executes model prefill only. Workers load the same model
+    as the primary, materialize immutable snapshots into their co-located
+    PrefillCacheService, and never participate in autoregressive decode.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.SubmitPrefillJob = channel.unary_unary(
+                '/kakeya.v1.PrefillWorkerService/SubmitPrefillJob',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.SubmitPrefillJobRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.SubmitPrefillJobResponse.FromString,
+                _registered_method=True)
+        self.GetPrefillJobStatus = channel.unary_unary(
+                '/kakeya.v1.PrefillWorkerService/GetPrefillJobStatus',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.GetPrefillJobStatusRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.GetPrefillJobStatusResponse.FromString,
+                _registered_method=True)
+        self.CancelPrefillJob = channel.unary_unary(
+                '/kakeya.v1.PrefillWorkerService/CancelPrefillJob',
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.CancelPrefillJobRequest.SerializeToString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.CancelPrefillJobResponse.FromString,
+                _registered_method=True)
+
+
+class PrefillWorkerServiceServicer:
+    """PrefillWorkerService executes model prefill only. Workers load the same model
+    as the primary, materialize immutable snapshots into their co-located
+    PrefillCacheService, and never participate in autoregressive decode.
+    """
+
+    def SubmitPrefillJob(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPrefillJobStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelPrefillJob(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_PrefillWorkerServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'SubmitPrefillJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitPrefillJob,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.SubmitPrefillJobRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.SubmitPrefillJobResponse.SerializeToString,
+            ),
+            'GetPrefillJobStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPrefillJobStatus,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.GetPrefillJobStatusRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.GetPrefillJobStatusResponse.SerializeToString,
+            ),
+            'CancelPrefillJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelPrefillJob,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.CancelPrefillJobRequest.FromString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.CancelPrefillJobResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'kakeya.v1.PrefillWorkerService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('kakeya.v1.PrefillWorkerService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class PrefillWorkerService:
+    """PrefillWorkerService executes model prefill only. Workers load the same model
+    as the primary, materialize immutable snapshots into their co-located
+    PrefillCacheService, and never participate in autoregressive decode.
+    """
+
+    @staticmethod
+    def SubmitPrefillJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.PrefillWorkerService/SubmitPrefillJob',
+            kakeya_dot_v1_dot_distributed__pb2.SubmitPrefillJobRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.SubmitPrefillJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPrefillJobStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.PrefillWorkerService/GetPrefillJobStatus',
+            kakeya_dot_v1_dot_distributed__pb2.GetPrefillJobStatusRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.GetPrefillJobStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CancelPrefillJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kakeya.v1.PrefillWorkerService/CancelPrefillJob',
+            kakeya_dot_v1_dot_distributed__pb2.CancelPrefillJobRequest.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.CancelPrefillJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
 class DFlashProposerServiceStub:
     """DFlashProposerService: stateful remote DFlash drafter + f_θ restoration.
     Per turn: Restore (prompt -> f_θ-projected verifier K/V) then SeedContext

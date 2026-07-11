@@ -24,6 +24,7 @@ import uvicorn
 
 from inference_engine.distributed.capability import (
     CacheCompatibility,
+    CompressionCodec,
     CapabilityRegistry,
     CapabilityRole,
     ModelCapability,
@@ -35,6 +36,7 @@ from inference_engine.distributed.exchange import (
     exchange_once,
 )
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
+from inference_engine.distributed.prefill_auth import FleetAuthConfig
 from inference_engine.distributed.prefill_cache_service import (
     add_prefill_cache_service,
     cache_capability,
@@ -62,11 +64,22 @@ async def serve(args) -> None:
         layer_geometry_hash=args.layer_geometry_hash,
         kv_dtype=args.kv_dtype,
         block_size_tokens=args.block_size_tokens,
+        tenant_namespace=args.tenant_id,
+        sink_size=args.sink,
+        window_size=args.window,
     )
     store = PrefixCacheStore(
         compatibility,
         max_bytes=int(args.cache_gb * (1 << 30)),
         node_id=args.node_id,
+    )
+    auth = (
+        FleetAuthConfig.from_file(
+            args.fleet_psk_file,
+            tenant_id=args.tenant_id,
+            node_id=args.node_id,
+        )
+        if args.fleet_psk_file else None
     )
     card = NodeCapability(
         node_id=args.node_id,
@@ -82,7 +95,16 @@ async def serve(args) -> None:
         ),
         announced_at_unix=time.time(),
         ttl_seconds=args.ttl_seconds,
-        caches=(cache_capability(store, cache_address=args.advertise),),
+        caches=(cache_capability(
+            store,
+            cache_address=args.advertise,
+            default_compression=(
+                CompressionCodec.ZLIB
+                if args.cache_compression == "zlib"
+                else CompressionCodec.NONE
+            ),
+            replication_factor=args.replication_factor,
+        ),),
         endpoints=(
             NodeEndpoint(
                 args.advertise,
@@ -99,6 +121,7 @@ async def serve(args) -> None:
         grpc_server,
         store,
         cache_address=args.advertise,
+        auth=auth,
     )
     grpc_server.add_insecure_port(args.bind)
     await grpc_server.start()
@@ -169,12 +192,19 @@ def main() -> None:
     ap.add_argument("--model-id", required=True)
     ap.add_argument("--model-revision", default="")
     ap.add_argument("--tokenizer-revision", default="")
-    ap.add_argument("--cache-format-version", default="kakeya-prefill-v1")
+    ap.add_argument("--cache-format-version", default="kakeya-prefill-v2-zlib")
     ap.add_argument("--quantization", default="")
     ap.add_argument("--rope-hash", default="")
     ap.add_argument("--layer-geometry-hash", default="")
     ap.add_argument("--kv-dtype", default="bfloat16")
     ap.add_argument("--block-size-tokens", type=int, default=64)
+    ap.add_argument("--tenant-id", default="default")
+    ap.add_argument("--sink", type=int, default=4)
+    ap.add_argument("--window", type=int, default=64)
+    ap.add_argument("--fleet-psk-file", default="")
+    ap.add_argument("--cache-compression", choices=["none", "zlib"],
+                    default="zlib")
+    ap.add_argument("--replication-factor", type=int, default=1)
     ap.add_argument("--cache-gb", type=float, default=4)
     ap.add_argument("--platform", default="")
     ap.add_argument("--memory-bytes", type=int, default=0)

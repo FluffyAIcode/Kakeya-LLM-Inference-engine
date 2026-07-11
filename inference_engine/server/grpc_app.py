@@ -382,6 +382,7 @@ def create_grpc_server(
     default_proposer_model_id: str = "",
     prefill_cache_store: Optional[object] = None,
     prefill_cache_address: str = "",
+    prefill_auth: Optional[object] = None,
 ) -> grpc.aio.Server:
     """Build, but do not start, a configured gRPC asyncio server.
 
@@ -455,6 +456,7 @@ def create_grpc_server(
             server,
             prefill_cache_store,
             cache_address=prefill_cache_address or config.bind_address,
+            auth=prefill_auth,
         )
         _logger.info(
             "gRPC PrefillCacheService enabled at %s",
