@@ -139,8 +139,8 @@ async def test_publish_rejects_malformed_streams():
             await call([])
         with pytest.raises(grpc.aio.AioRpcError):
             await call([
-                distributed_pb2.KVBlockChunk(**base, chunk_index=0, data=b"x"),
-                distributed_pb2.KVBlockChunk(
+                distributed_pb2.PublishBlockRequest(**base, chunk_index=0, data=b"x"),
+                distributed_pb2.PublishBlockRequest(
                     **{**base, "block_hash": bytes.fromhex("01" * 32)},
                     chunk_index=1,
                     data=b"x",
@@ -148,7 +148,7 @@ async def test_publish_rejects_malformed_streams():
             ])
         with pytest.raises(grpc.aio.AioRpcError):
             await call([
-                distributed_pb2.KVBlockChunk(
+                distributed_pb2.PublishBlockRequest(
                     **{**base, "block_hash": b"short"},
                     chunk_index=0,
                     data=b"x",
@@ -156,7 +156,7 @@ async def test_publish_rejects_malformed_streams():
             ])
         with pytest.raises(grpc.aio.AioRpcError):
             await call([
-                distributed_pb2.KVBlockChunk(
+                distributed_pb2.PublishBlockRequest(
                     **{**base, "compatibility": CacheCompatibility(
                         model_id="wrong",
                     ).to_proto()},
@@ -166,7 +166,7 @@ async def test_publish_rejects_malformed_streams():
             ])
         with pytest.raises(grpc.aio.AioRpcError):
             await call([
-                distributed_pb2.KVBlockChunk(
+                distributed_pb2.PublishBlockRequest(
                     **{**base, "total_chunks": 2},
                     chunk_index=0,
                     data=b"x",
@@ -174,7 +174,7 @@ async def test_publish_rejects_malformed_streams():
             ])
         with pytest.raises(grpc.aio.AioRpcError):
             await call([
-                distributed_pb2.KVBlockChunk(
+                distributed_pb2.PublishBlockRequest(
                     **{**base, "block_sha256": bytes(32)},
                     chunk_index=0,
                     data=b"x",

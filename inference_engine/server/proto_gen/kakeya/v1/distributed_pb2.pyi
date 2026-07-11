@@ -186,7 +186,27 @@ class FetchBlocksRequest(_message.Message):
     lease_id: str
     def __init__(self, lease_id: _Optional[str] = ...) -> None: ...
 
-class KVBlockChunk(_message.Message):
+class FetchBlocksResponse(_message.Message):
+    __slots__ = ("block_hash", "block_index", "token_count", "chunk_index", "total_chunks", "data", "block_sha256", "cache_epoch")
+    BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_SHA256_FIELD_NUMBER: _ClassVar[int]
+    CACHE_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    block_hash: bytes
+    block_index: int
+    token_count: int
+    chunk_index: int
+    total_chunks: int
+    data: bytes
+    block_sha256: bytes
+    cache_epoch: int
+    def __init__(self, block_hash: _Optional[bytes] = ..., block_index: _Optional[int] = ..., token_count: _Optional[int] = ..., chunk_index: _Optional[int] = ..., total_chunks: _Optional[int] = ..., data: _Optional[bytes] = ..., block_sha256: _Optional[bytes] = ..., cache_epoch: _Optional[int] = ...) -> None: ...
+
+class PublishBlockRequest(_message.Message):
     __slots__ = ("block_hash", "block_index", "token_count", "chunk_index", "total_chunks", "data", "block_sha256", "cache_epoch", "compatibility")
     BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
     BLOCK_INDEX_FIELD_NUMBER: _ClassVar[int]

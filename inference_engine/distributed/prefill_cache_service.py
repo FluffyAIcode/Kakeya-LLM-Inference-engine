@@ -112,7 +112,7 @@ class PrefillCacheServiceServicer(
             )
             for chunk_index in range(total_chunks):
                 start = chunk_index * self.chunk_bytes
-                yield distributed_pb2.KVBlockChunk(
+                yield distributed_pb2.FetchBlocksResponse(
                     block_hash=block.block_hash,
                     block_index=block_index,
                     token_count=block.token_count,
@@ -282,7 +282,7 @@ async def fetch_remote_blocks(
     hit: RemotePrefixHit,
     *,
     timeout_s: float = 30.0,
-) -> list[distributed_pb2.KVBlockChunk]:
+) -> list[distributed_pb2.FetchBlocksResponse]:
     async with grpc.aio.insecure_channel(hit.address) as channel:
         stub = distributed_pb2_grpc.PrefillCacheServiceStub(channel)
         stream = stub.FetchBlocks(
@@ -309,7 +309,7 @@ def publish_block_sync(
         def chunks():
             for chunk_index in range(total_chunks):
                 start = chunk_index * chunk_bytes
-                yield distributed_pb2.KVBlockChunk(
+                yield distributed_pb2.PublishBlockRequest(
                     block_hash=block.block_hash,
                     token_count=block.token_count,
                     chunk_index=chunk_index,

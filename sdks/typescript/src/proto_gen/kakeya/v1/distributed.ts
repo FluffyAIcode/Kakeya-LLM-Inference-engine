@@ -257,7 +257,18 @@ export interface FetchBlocksRequest {
   leaseId: string;
 }
 
-export interface KVBlockChunk {
+export interface FetchBlocksResponse {
+  blockHash: Uint8Array;
+  blockIndex: number;
+  tokenCount: number;
+  chunkIndex: number;
+  totalChunks: number;
+  data: Uint8Array;
+  blockSha256: Uint8Array;
+  cacheEpoch: string;
+}
+
+export interface PublishBlockRequest {
   blockHash: Uint8Array;
   blockIndex: number;
   tokenCount: number;
@@ -2088,7 +2099,216 @@ export const FetchBlocksRequest: MessageFns<FetchBlocksRequest> = {
   },
 };
 
-function createBaseKVBlockChunk(): KVBlockChunk {
+function createBaseFetchBlocksResponse(): FetchBlocksResponse {
+  return {
+    blockHash: new Uint8Array(0),
+    blockIndex: 0,
+    tokenCount: 0,
+    chunkIndex: 0,
+    totalChunks: 0,
+    data: new Uint8Array(0),
+    blockSha256: new Uint8Array(0),
+    cacheEpoch: "0",
+  };
+}
+
+export const FetchBlocksResponse: MessageFns<FetchBlocksResponse> = {
+  encode(message: FetchBlocksResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.blockHash.length !== 0) {
+      writer.uint32(10).bytes(message.blockHash);
+    }
+    if (message.blockIndex !== 0) {
+      writer.uint32(16).uint32(message.blockIndex);
+    }
+    if (message.tokenCount !== 0) {
+      writer.uint32(24).uint32(message.tokenCount);
+    }
+    if (message.chunkIndex !== 0) {
+      writer.uint32(32).uint32(message.chunkIndex);
+    }
+    if (message.totalChunks !== 0) {
+      writer.uint32(40).uint32(message.totalChunks);
+    }
+    if (message.data.length !== 0) {
+      writer.uint32(50).bytes(message.data);
+    }
+    if (message.blockSha256.length !== 0) {
+      writer.uint32(58).bytes(message.blockSha256);
+    }
+    if (message.cacheEpoch !== "0") {
+      writer.uint32(64).uint64(message.cacheEpoch);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): FetchBlocksResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseFetchBlocksResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.blockHash = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.blockIndex = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.tokenCount = reader.uint32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.chunkIndex = reader.uint32();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.totalChunks = reader.uint32();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.data = reader.bytes();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.blockSha256 = reader.bytes();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.cacheEpoch = reader.uint64().toString();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): FetchBlocksResponse {
+    return {
+      blockHash: isSet(object.blockHash)
+        ? bytesFromBase64(object.blockHash)
+        : isSet(object.block_hash)
+        ? bytesFromBase64(object.block_hash)
+        : new Uint8Array(0),
+      blockIndex: isSet(object.blockIndex)
+        ? globalThis.Number(object.blockIndex)
+        : isSet(object.block_index)
+        ? globalThis.Number(object.block_index)
+        : 0,
+      tokenCount: isSet(object.tokenCount)
+        ? globalThis.Number(object.tokenCount)
+        : isSet(object.token_count)
+        ? globalThis.Number(object.token_count)
+        : 0,
+      chunkIndex: isSet(object.chunkIndex)
+        ? globalThis.Number(object.chunkIndex)
+        : isSet(object.chunk_index)
+        ? globalThis.Number(object.chunk_index)
+        : 0,
+      totalChunks: isSet(object.totalChunks)
+        ? globalThis.Number(object.totalChunks)
+        : isSet(object.total_chunks)
+        ? globalThis.Number(object.total_chunks)
+        : 0,
+      data: isSet(object.data) ? bytesFromBase64(object.data) : new Uint8Array(0),
+      blockSha256: isSet(object.blockSha256)
+        ? bytesFromBase64(object.blockSha256)
+        : isSet(object.block_sha256)
+        ? bytesFromBase64(object.block_sha256)
+        : new Uint8Array(0),
+      cacheEpoch: isSet(object.cacheEpoch)
+        ? globalThis.String(object.cacheEpoch)
+        : isSet(object.cache_epoch)
+        ? globalThis.String(object.cache_epoch)
+        : "0",
+    };
+  },
+
+  toJSON(message: FetchBlocksResponse): unknown {
+    const obj: any = {};
+    if (message.blockHash.length !== 0) {
+      obj.blockHash = base64FromBytes(message.blockHash);
+    }
+    if (message.blockIndex !== 0) {
+      obj.blockIndex = Math.round(message.blockIndex);
+    }
+    if (message.tokenCount !== 0) {
+      obj.tokenCount = Math.round(message.tokenCount);
+    }
+    if (message.chunkIndex !== 0) {
+      obj.chunkIndex = Math.round(message.chunkIndex);
+    }
+    if (message.totalChunks !== 0) {
+      obj.totalChunks = Math.round(message.totalChunks);
+    }
+    if (message.data.length !== 0) {
+      obj.data = base64FromBytes(message.data);
+    }
+    if (message.blockSha256.length !== 0) {
+      obj.blockSha256 = base64FromBytes(message.blockSha256);
+    }
+    if (message.cacheEpoch !== "0") {
+      obj.cacheEpoch = message.cacheEpoch;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<FetchBlocksResponse>, I>>(base?: I): FetchBlocksResponse {
+    return FetchBlocksResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<FetchBlocksResponse>, I>>(object: I): FetchBlocksResponse {
+    const message = createBaseFetchBlocksResponse();
+    message.blockHash = object.blockHash ?? new Uint8Array(0);
+    message.blockIndex = object.blockIndex ?? 0;
+    message.tokenCount = object.tokenCount ?? 0;
+    message.chunkIndex = object.chunkIndex ?? 0;
+    message.totalChunks = object.totalChunks ?? 0;
+    message.data = object.data ?? new Uint8Array(0);
+    message.blockSha256 = object.blockSha256 ?? new Uint8Array(0);
+    message.cacheEpoch = object.cacheEpoch ?? "0";
+    return message;
+  },
+};
+
+function createBasePublishBlockRequest(): PublishBlockRequest {
   return {
     blockHash: new Uint8Array(0),
     blockIndex: 0,
@@ -2102,8 +2322,8 @@ function createBaseKVBlockChunk(): KVBlockChunk {
   };
 }
 
-export const KVBlockChunk: MessageFns<KVBlockChunk> = {
-  encode(message: KVBlockChunk, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+export const PublishBlockRequest: MessageFns<PublishBlockRequest> = {
+  encode(message: PublishBlockRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.blockHash.length !== 0) {
       writer.uint32(10).bytes(message.blockHash);
     }
@@ -2134,10 +2354,10 @@ export const KVBlockChunk: MessageFns<KVBlockChunk> = {
     return writer;
   },
 
-  decode(input: BinaryReader | Uint8Array, length?: number): KVBlockChunk {
+  decode(input: BinaryReader | Uint8Array, length?: number): PublishBlockRequest {
     const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
     const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseKVBlockChunk();
+    const message = createBasePublishBlockRequest();
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
@@ -2222,7 +2442,7 @@ export const KVBlockChunk: MessageFns<KVBlockChunk> = {
     return message;
   },
 
-  fromJSON(object: any): KVBlockChunk {
+  fromJSON(object: any): PublishBlockRequest {
     return {
       blockHash: isSet(object.blockHash)
         ? bytesFromBase64(object.blockHash)
@@ -2264,7 +2484,7 @@ export const KVBlockChunk: MessageFns<KVBlockChunk> = {
     };
   },
 
-  toJSON(message: KVBlockChunk): unknown {
+  toJSON(message: PublishBlockRequest): unknown {
     const obj: any = {};
     if (message.blockHash.length !== 0) {
       obj.blockHash = base64FromBytes(message.blockHash);
@@ -2296,11 +2516,11 @@ export const KVBlockChunk: MessageFns<KVBlockChunk> = {
     return obj;
   },
 
-  create<I extends Exact<DeepPartial<KVBlockChunk>, I>>(base?: I): KVBlockChunk {
-    return KVBlockChunk.fromPartial(base ?? ({} as any));
+  create<I extends Exact<DeepPartial<PublishBlockRequest>, I>>(base?: I): PublishBlockRequest {
+    return PublishBlockRequest.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<KVBlockChunk>, I>>(object: I): KVBlockChunk {
-    const message = createBaseKVBlockChunk();
+  fromPartial<I extends Exact<DeepPartial<PublishBlockRequest>, I>>(object: I): PublishBlockRequest {
+    const message = createBasePublishBlockRequest();
     message.blockHash = object.blockHash ?? new Uint8Array(0);
     message.blockIndex = object.blockIndex ?? 0;
     message.tokenCount = object.tokenCount ?? 0;
@@ -4067,15 +4287,15 @@ export const PrefillCacheServiceService = {
     responseStream: true as const,
     requestSerialize: (value: FetchBlocksRequest): Buffer => Buffer.from(FetchBlocksRequest.encode(value).finish()),
     requestDeserialize: (value: Buffer): FetchBlocksRequest => FetchBlocksRequest.decode(value),
-    responseSerialize: (value: KVBlockChunk): Buffer => Buffer.from(KVBlockChunk.encode(value).finish()),
-    responseDeserialize: (value: Buffer): KVBlockChunk => KVBlockChunk.decode(value),
+    responseSerialize: (value: FetchBlocksResponse): Buffer => Buffer.from(FetchBlocksResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): FetchBlocksResponse => FetchBlocksResponse.decode(value),
   },
   publishBlock: {
     path: "/kakeya.v1.PrefillCacheService/PublishBlock" as const,
     requestStream: true as const,
     responseStream: false as const,
-    requestSerialize: (value: KVBlockChunk): Buffer => Buffer.from(KVBlockChunk.encode(value).finish()),
-    requestDeserialize: (value: Buffer): KVBlockChunk => KVBlockChunk.decode(value),
+    requestSerialize: (value: PublishBlockRequest): Buffer => Buffer.from(PublishBlockRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): PublishBlockRequest => PublishBlockRequest.decode(value),
     responseSerialize: (value: PublishBlockResponse): Buffer =>
       Buffer.from(PublishBlockResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): PublishBlockResponse => PublishBlockResponse.decode(value),
@@ -4085,8 +4305,8 @@ export const PrefillCacheServiceService = {
 export interface PrefillCacheServiceServer extends UntypedServiceImplementation {
   getCacheSummary: handleUnaryCall<GetCacheSummaryRequest, GetCacheSummaryResponse>;
   lookupPrefix: handleUnaryCall<LookupPrefixRequest, LookupPrefixResponse>;
-  fetchBlocks: handleServerStreamingCall<FetchBlocksRequest, KVBlockChunk>;
-  publishBlock: handleClientStreamingCall<KVBlockChunk, PublishBlockResponse>;
+  fetchBlocks: handleServerStreamingCall<FetchBlocksRequest, FetchBlocksResponse>;
+  publishBlock: handleClientStreamingCall<PublishBlockRequest, PublishBlockResponse>;
 }
 
 export interface PrefillCacheServiceClient extends Client {
@@ -4120,28 +4340,28 @@ export interface PrefillCacheServiceClient extends Client {
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: LookupPrefixResponse) => void,
   ): ClientUnaryCall;
-  fetchBlocks(request: FetchBlocksRequest, options?: Partial<CallOptions>): ClientReadableStream<KVBlockChunk>;
+  fetchBlocks(request: FetchBlocksRequest, options?: Partial<CallOptions>): ClientReadableStream<FetchBlocksResponse>;
   fetchBlocks(
     request: FetchBlocksRequest,
     metadata?: Metadata,
     options?: Partial<CallOptions>,
-  ): ClientReadableStream<KVBlockChunk>;
+  ): ClientReadableStream<FetchBlocksResponse>;
   publishBlock(
     callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
-  ): ClientWritableStream<KVBlockChunk>;
+  ): ClientWritableStream<PublishBlockRequest>;
   publishBlock(
     metadata: Metadata,
     callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
-  ): ClientWritableStream<KVBlockChunk>;
+  ): ClientWritableStream<PublishBlockRequest>;
   publishBlock(
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
-  ): ClientWritableStream<KVBlockChunk>;
+  ): ClientWritableStream<PublishBlockRequest>;
   publishBlock(
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: PublishBlockResponse) => void,
-  ): ClientWritableStream<KVBlockChunk>;
+  ): ClientWritableStream<PublishBlockRequest>;
 }
 
 export const PrefillCacheServiceClient = makeGenericClientConstructor(

@@ -281,11 +281,11 @@ class PrefillCacheServiceStub:
         self.FetchBlocks = channel.unary_stream(
                 '/kakeya.v1.PrefillCacheService/FetchBlocks',
                 request_serializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksRequest.SerializeToString,
-                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.KVBlockChunk.FromString,
+                response_deserializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksResponse.FromString,
                 _registered_method=True)
         self.PublishBlock = channel.stream_unary(
                 '/kakeya.v1.PrefillCacheService/PublishBlock',
-                request_serializer=kakeya_dot_v1_dot_distributed__pb2.KVBlockChunk.SerializeToString,
+                request_serializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockRequest.SerializeToString,
                 response_deserializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockResponse.FromString,
                 _registered_method=True)
 
@@ -337,11 +337,11 @@ def add_PrefillCacheServiceServicer_to_server(servicer, server):
             'FetchBlocks': grpc.unary_stream_rpc_method_handler(
                     servicer.FetchBlocks,
                     request_deserializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksRequest.FromString,
-                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.KVBlockChunk.SerializeToString,
+                    response_serializer=kakeya_dot_v1_dot_distributed__pb2.FetchBlocksResponse.SerializeToString,
             ),
             'PublishBlock': grpc.stream_unary_rpc_method_handler(
                     servicer.PublishBlock,
-                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.KVBlockChunk.FromString,
+                    request_deserializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockRequest.FromString,
                     response_serializer=kakeya_dot_v1_dot_distributed__pb2.PublishBlockResponse.SerializeToString,
             ),
     }
@@ -429,7 +429,7 @@ class PrefillCacheService:
             target,
             '/kakeya.v1.PrefillCacheService/FetchBlocks',
             kakeya_dot_v1_dot_distributed__pb2.FetchBlocksRequest.SerializeToString,
-            kakeya_dot_v1_dot_distributed__pb2.KVBlockChunk.FromString,
+            kakeya_dot_v1_dot_distributed__pb2.FetchBlocksResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -455,7 +455,7 @@ class PrefillCacheService:
             request_iterator,
             target,
             '/kakeya.v1.PrefillCacheService/PublishBlock',
-            kakeya_dot_v1_dot_distributed__pb2.KVBlockChunk.SerializeToString,
+            kakeya_dot_v1_dot_distributed__pb2.PublishBlockRequest.SerializeToString,
             kakeya_dot_v1_dot_distributed__pb2.PublishBlockResponse.FromString,
             options,
             channel_credentials,

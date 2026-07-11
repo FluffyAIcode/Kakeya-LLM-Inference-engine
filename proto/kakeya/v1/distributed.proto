@@ -68,8 +68,8 @@ service ProposerService {
 service PrefillCacheService {
   rpc GetCacheSummary(GetCacheSummaryRequest) returns (GetCacheSummaryResponse);
   rpc LookupPrefix(LookupPrefixRequest) returns (LookupPrefixResponse);
-  rpc FetchBlocks(FetchBlocksRequest) returns (stream KVBlockChunk);
-  rpc PublishBlock(stream KVBlockChunk) returns (PublishBlockResponse);
+  rpc FetchBlocks(FetchBlocksRequest) returns (stream FetchBlocksResponse);
+  rpc PublishBlock(stream PublishBlockRequest) returns (PublishBlockResponse);
 }
 
 // -----------------------------------------------------------------------------
@@ -249,7 +249,18 @@ message FetchBlocksRequest {
   string lease_id = 1;
 }
 
-message KVBlockChunk {
+message FetchBlocksResponse {
+  bytes block_hash = 1;
+  uint32 block_index = 2;
+  uint32 token_count = 3;
+  uint32 chunk_index = 4;
+  uint32 total_chunks = 5;
+  bytes data = 6;
+  bytes block_sha256 = 7;
+  uint64 cache_epoch = 8;
+}
+
+message PublishBlockRequest {
   bytes block_hash = 1;
   uint32 block_index = 2;
   uint32 token_count = 3;
