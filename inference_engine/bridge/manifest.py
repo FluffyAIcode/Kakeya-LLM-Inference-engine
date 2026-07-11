@@ -105,6 +105,22 @@ PRESETS: Dict[str, Preset] = {
     p.name: p
     for p in (
         Preset(
+            name="mlx-prefill-snapshot-equivalence",
+            description="ADR 0017 real-model gate: local MLX prefill vs "
+                        "snapshot export/import must preserve continuation "
+                        "logits, argmax, retained KV tokens and one decode step.",
+            command_templates=(
+                (
+                    "python3", "-m", "pytest",
+                    "-m", "integration",
+                    "tests/integration/test_prefill_snapshot_mlx_equivalence.py",
+                    "-q",
+                ),
+            ),
+            timeout_minutes=45,
+            validate_reports=False,
+        ),
+        Preset(
             name="mlx-distributed-dflash-e2e-inproc",
             description="Real-model distributed DFlash+f_θ E2E (in-process): loads "
                         "the gemma-4 mlx-4bit verifier + torch DFlash + f_θ ONCE, "

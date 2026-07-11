@@ -96,6 +96,7 @@ def test_allowlist_contains_exactly_the_documented_presets():
         "mlx-kakeya-launcher-full",
         "mlx-kakeya-launcher-smoke",
         "mlx-multitenant-pressure",
+        "mlx-prefill-snapshot-equivalence",
         "mlx-upgrade",
         "mlx-upstream-batch-probe",
         "pytest-path",

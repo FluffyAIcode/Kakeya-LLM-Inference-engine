@@ -6,6 +6,7 @@ from inference_engine.distributed.capability import (
     CapabilityRegistry,
     NodeCapability,
     NodeEndpoint,
+    PrefillWorkerCapability,
 )
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
 from inference_engine.network.state import NetworkState
@@ -27,6 +28,12 @@ def _state(tmp_path):
             ),
         ),
         endpoints=(NodeEndpoint("head:2", "thunderbolt", 100, 0.4),),
+        prefill_workers=(PrefillWorkerCapability(
+            compatibility,
+            worker_address="head:3",
+            queued_tokens=128,
+            tokens_per_second_prefill=32,
+        ),),
     )
     return NetworkState(
         CapabilityRegistry(self_card=card),
