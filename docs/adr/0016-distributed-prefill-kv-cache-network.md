@@ -209,4 +209,3 @@ validation.
 - arbitrary-hole K/V reuse;
 - cross-model or cross-tokenizer cache conversion;
 - using gossip to carry tensor payloads.
-

@@ -60,4 +60,3 @@ Roll back with Wrangler's version rollback/deployment command, or remove the
 ```text
 https://agent.kakeya.ai/network
 ```
-

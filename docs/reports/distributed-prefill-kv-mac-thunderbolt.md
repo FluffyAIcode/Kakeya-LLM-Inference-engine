@@ -46,4 +46,3 @@ version at validation time: `e45f67be-721a-413d-804e-33f7e28e80d8`.
 - Cache entries are in-memory and intentionally disappear on peer restart.
 - The MVP trusts the private Thunderbolt fleet. Production requires mTLS/PSK
   identity binding before accepting remote tensor payloads.
-

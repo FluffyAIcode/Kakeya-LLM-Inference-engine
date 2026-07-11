@@ -170,4 +170,3 @@ The live MVP assumes trusted private Macs. Before accepting third-party nodes:
 - cap block size and stream bytes before allocation;
 - maintain revocation and audit logs;
 - never expose raw prompts, hashes, IPs or cache payloads in the public UI.
-
