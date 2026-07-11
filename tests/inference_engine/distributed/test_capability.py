@@ -18,9 +18,11 @@ from inference_engine.distributed.capability import (
     CapabilityRole,
     CacheCapability,
     CacheCompatibility,
+    CompressionCodec,
     ModelCapability,
     NodeCapability,
     NodeEndpoint,
+    PrefillWorkerCapability,
 )
 
 T0 = 1_000_000.0
@@ -115,6 +117,7 @@ def test_cache_capability_and_endpoints_proto_round_trip():
         layer_geometry_hash="geometry",
         kv_dtype="bfloat16",
         block_size_tokens=64,
+        tenant_namespace="tenant",
     )
     card = NodeCapability(
         node_id="cache-peer",
@@ -130,6 +133,8 @@ def test_cache_capability_and_endpoints_proto_round_trip():
                 load=0.5,
                 tokens_served=100,
                 bloom_filter=b"filter",
+                default_compression=CompressionCodec.ZLIB,
+                replication_factor=2,
             ),
         ),
         endpoints=(
@@ -138,6 +143,19 @@ def test_cache_capability_and_endpoints_proto_round_trip():
                 "thunderbolt",
                 100,
                 0.45,
+            ),
+        ),
+        prefill_workers=(
+            PrefillWorkerCapability(
+                compatibility,
+                worker_address="169.254.27.104:53051",
+                max_concurrent_jobs=1,
+                inflight_jobs=1,
+                queued_jobs=2,
+                load=0.5,
+                tokens_per_second_prefill=33.0,
+                ram_bytes_free=1234,
+                queued_tokens=456,
             ),
         ),
     )

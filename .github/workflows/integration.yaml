@@ -80,6 +80,41 @@ jobs:
           fi
           echo "Found $MODEL_DIR"
 
+      - name: Gate real MLX distributed-prefill continuation equivalence
+        run: |
+          set -euo pipefail
+          if [ -z "${KAKEYA_MAC_VERIFIER_PATH:-}" ] || [ ! -d "$KAKEYA_MAC_VERIFIER_PATH" ]; then
+            echo "::error::KAKEYA_MAC_VERIFIER_PATH must point to the pre-warmed MLX verifier."
+            exit 1
+          fi
+          PYBIN="$(
+            python3 - <<'PY'
+          import os, shutil, subprocess
+          candidates = [
+              os.environ.get("KAKEYA_MAC_PYTHON"),
+              os.path.expanduser("~/kakeya-venv/bin/python"),
+              os.path.expanduser("~/.venv/bin/python"),
+              shutil.which("python3.13"),
+              shutil.which("python3"),
+          ]
+          for candidate in candidates:
+              if not candidate:
+                  continue
+              if subprocess.run(
+                  [candidate, "-c", "import mlx_lm, torch, pytest"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode == 0:
+                  print(candidate)
+                  break
+          PY
+          )"
+          test -n "$PYBIN"
+          PYTHONPATH=.:sdks/python "$PYBIN" -m pytest \
+            -m integration \
+            tests/integration/test_prefill_snapshot_mlx_equivalence.py \
+            -q
+
       - name: Install Python dependencies
         run: |
           # The runner is expected to have a long-lived venv.
