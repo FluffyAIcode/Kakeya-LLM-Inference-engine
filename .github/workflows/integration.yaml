@@ -104,9 +104,16 @@ jobs:
           echo "Found $MODEL_DIR"
 
       - name: Gate real MLX distributed-prefill continuation equivalence
+        env:
+          KAKEYA_MAC_VERIFIER_PATH_VAR: ${{ vars.KAKEYA_MAC_VERIFIER_PATH || '' }}
         run: |
           set -euo pipefail
-          if [ -z "${KAKEYA_MAC_VERIFIER_PATH:-}" ] || [ ! -d "$KAKEYA_MAC_VERIFIER_PATH" ]; then
+          default_verifier="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+          if [ ! -d "$default_verifier" ]; then
+            default_verifier="models/gemma-4-26B-A4B-it-mlx-4bit"
+          fi
+          export KAKEYA_MAC_VERIFIER_PATH="${KAKEYA_MAC_VERIFIER_PATH_VAR:-$default_verifier}"
+          if [ ! -d "$KAKEYA_MAC_VERIFIER_PATH" ]; then
             echo "::error::KAKEYA_MAC_VERIFIER_PATH must point to the pre-warmed MLX verifier."
             exit 1
           fi
@@ -117,6 +124,14 @@ jobs:
               os.environ.get("KAKEYA_MAC_PYTHON"),
               os.path.expanduser("~/kakeya-venv/bin/python"),
               os.path.expanduser("~/.venv/bin/python"),
+              os.path.expanduser(
+                  "~/Documents/Kakeya-LLM-Inference-engine-pr109/"
+                  ".venv-mac/bin/python3.13"
+              ),
+              os.path.expanduser(
+                  "~/Documents/Kakeya-LLM-Inference-engine-pr109/"
+                  ".venv-mac/bin/python"
+              ),
               shutil.which("python3.13"),
               shutil.which("python3"),
           ]
