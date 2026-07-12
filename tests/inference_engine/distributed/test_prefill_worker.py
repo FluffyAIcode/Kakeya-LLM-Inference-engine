@@ -162,6 +162,10 @@ def test_job_store_validation_queue_stats_and_gc():
     cache = PrefixCacheStore(COMPAT, max_bytes=1024, node_id="w")
     with pytest.raises(ValueError):
         PrefillJobStore(_Engine(), cache, max_jobs=0)
+    with pytest.raises(ValueError, match="exactly one"):
+        PrefillJobStore(None, cache)
+    with pytest.raises(ValueError, match="exactly one"):
+        PrefillJobStore(_Engine(), cache, engine_factory=_Engine)
     blocking = _Engine()
     blocking.block.set()
     jobs = PrefillJobStore(blocking, cache, max_jobs=1, max_prompt_tokens=4)
@@ -228,6 +232,42 @@ def test_job_store_validation_queue_stats_and_gc():
         assert len(completed_jobs._jobs) <= completed_jobs.max_jobs * 2
     finally:
         completed_jobs.close()
+
+
+def test_factory_engine_is_warmed_and_used_on_same_compute_thread():
+    cache = PrefixCacheStore(COMPAT, max_bytes=1024, node_id="w")
+    created_on = []
+    computed_on = []
+
+    class ThreadBoundEngine(_Engine):
+        def compute_prefill(self, *args, **kwargs):
+            computed_on.append(threading.get_ident())
+            return super().compute_prefill(*args, **kwargs)
+
+    def factory():
+        created_on.append(threading.get_ident())
+        return ThreadBoundEngine()
+
+    jobs = PrefillJobStore(None, cache, engine_factory=factory)
+    try:
+        jobs.warmup()
+        job = jobs.submit(
+            request_id="thread-affinity",
+            tenant_id="tenant",
+            token_ids=[1, 2],
+            block_hashes=[b"a" * 32],
+            compatibility=COMPAT,
+            compression=CompressionCodec.NONE,
+        )
+        for _ in range(100):
+            if job.state == PrefillJobState.COMPLETED:
+                break
+            time.sleep(0.005)
+        assert job.state == PrefillJobState.COMPLETED
+        assert created_on == computed_on
+        assert created_on[0] != threading.get_ident()
+    finally:
+        jobs.close()
 
 
 def test_job_store_failure_modes_and_precancelled_run():

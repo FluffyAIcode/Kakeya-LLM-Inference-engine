@@ -83,27 +83,37 @@ async def serve(args) -> None:
         )
         if args.fleet_psk_file else None
     )
-    verifier = MLXSinkWindowVerifier(VerifierConfig(
-        model_id=args.model_id,
-        sink_size=args.sink,
-        window_size=args.window,
-        dtype=torch.bfloat16,
-        device="cpu",
-    ))
+    if args.max_concurrent_jobs != 1:
+        raise SystemExit(
+            "MLX prefill workers require --max-concurrent-jobs 1 so the "
+            "model and its stream remain on one compute thread",
+        )
     store = PrefixCacheStore(
         compatibility,
         max_bytes=int(args.cache_gb * (1 << 30)),
         node_id=args.node_id,
     )
-    engine = MLXPrefillComputeEngine(verifier, compatibility)
+
+    def engine_factory() -> MLXPrefillComputeEngine:
+        verifier = MLXSinkWindowVerifier(VerifierConfig(
+            model_id=args.model_id,
+            sink_size=args.sink,
+            window_size=args.window,
+            dtype=torch.bfloat16,
+            device="cpu",
+        ))
+        return MLXPrefillComputeEngine(verifier, compatibility)
+
     jobs = PrefillJobStore(
-        engine,
+        None,
         store,
+        engine_factory=engine_factory,
         max_concurrent_jobs=args.max_concurrent_jobs,
         max_jobs=args.max_jobs,
         completed_ttl_s=args.job_ttl_s,
         max_prompt_tokens=args.max_prompt_tokens,
     )
+    jobs.warmup()
 
     def card() -> NodeCapability:
         inflight, queued, load, queued_tokens = jobs.stats()
