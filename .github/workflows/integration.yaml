@@ -48,6 +48,30 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
     timeout-minutes: 90
     steps:
+      - name: Bootstrap git-lfs before checkout
+        # Reused worktrees can retain a git-lfs post-checkout hook. The hook
+        # executes inside checkout@v4, so repair PATH before checkout.
+        run: |
+          set -euo pipefail
+          if [ -x /opt/homebrew/bin/git-lfs ]; then
+            echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          if [ -x /usr/local/bin/git-lfs ]; then
+            echo "/usr/local/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          brew_bin=""
+          for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [ -x "$candidate" ]; then brew_bin="$candidate"; break; fi
+          done
+          if [ -z "$brew_bin" ]; then
+            echo "::error::git-lfs is missing and Homebrew is unavailable."
+            exit 1
+          fi
+          "$brew_bin" install git-lfs
+          echo "$(dirname "$brew_bin")" >> "$GITHUB_PATH"
+
       - uses: actions/checkout@v4
         with:
           # Full history so the runner can compare against base for

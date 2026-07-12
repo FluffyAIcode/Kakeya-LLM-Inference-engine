@@ -51,36 +51,35 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
     timeout-minutes: 150
     steps:
+      - name: Bootstrap git-lfs before checkout
+        # A previous `git lfs install --local` leaves a post-checkout hook in
+        # the reused worktree. That hook runs inside actions/checkout itself,
+        # even with lfs:false, so git-lfs must be available BEFORE checkout.
+        run: |
+          set -euo pipefail
+          if [ -x /opt/homebrew/bin/git-lfs ]; then
+            echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          if [ -x /usr/local/bin/git-lfs ]; then
+            echo "/usr/local/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          brew_bin=""
+          for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [ -x "$candidate" ]; then brew_bin="$candidate"; break; fi
+          done
+          if [ -z "$brew_bin" ]; then
+            echo "::error::git-lfs is missing and Homebrew is unavailable."
+            exit 1
+          fi
+          "$brew_bin" install git-lfs
+          echo "$(dirname "$brew_bin")" >> "$GITHUB_PATH"
+
       - uses: actions/checkout@v4
         with:
           # Push results back to the request branch.
           persist-credentials: true
-
-      - name: Ensure git-lfs is available
-        # Do this AFTER a normal checkout. checkout@v4 with lfs:true invokes
-        # git-lfs before any workflow step can repair PATH, which makes a
-        # recovered/minimal runner fail at step 2 with "Unable to locate
-        # executable file: git-lfs".
-        run: |
-          set -euo pipefail
-          if ! command -v git-lfs >/dev/null 2>&1; then
-            for candidate in /opt/homebrew/bin/git-lfs /usr/local/bin/git-lfs; do
-              if [ -x "$candidate" ]; then
-                echo "$(dirname "$candidate")" >> "$GITHUB_PATH"
-                export PATH="$(dirname "$candidate"):$PATH"
-                break
-              fi
-            done
-          fi
-          if ! command -v git-lfs >/dev/null 2>&1; then
-            if command -v brew >/dev/null 2>&1; then
-              brew install git-lfs
-            else
-              echo "::error::git-lfs is missing and Homebrew is unavailable."
-              exit 1
-            fi
-          fi
-          git lfs version
 
       - name: Show request
         run: |
