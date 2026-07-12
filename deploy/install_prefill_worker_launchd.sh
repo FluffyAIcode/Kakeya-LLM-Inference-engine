@@ -88,7 +88,24 @@ cat > "$PLIST" <<EOF
 EOF
 
 chmod 644 "$PLIST"
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+DOMAIN="gui/$(id -u)"
+launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+for _ in {1..20}; do
+  if ! launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
+for attempt in 1 2 3; do
+  if launchctl bootstrap "$DOMAIN" "$PLIST"; then
+    break
+  fi
+  if [[ "$attempt" -eq 3 ]]; then
+    echo "failed to bootstrap $LABEL after $attempt attempts" >&2
+    exit 1
+  fi
+  sleep 2
+done
+launchctl kickstart -k "$DOMAIN/$LABEL"
 echo "installed $LABEL -> $PLIST"
 
