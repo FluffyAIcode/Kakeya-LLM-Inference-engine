@@ -55,13 +55,32 @@ jobs:
         with:
           # Push results back to the request branch.
           persist-credentials: true
-          # k3-* presets load LFS-tracked checkpoints from the repo
-          # (e.g. results/research/f_theta_v5_s5_sliding/
-          # f_theta_weights.pt). Without lfs:true the workspace holds
-          # pointer files and torch.load fails with the cryptic
-          # "Unsupported operand 118" (ASCII 'v' = the first byte of
-          # an LFS pointer).
-          lfs: true
+
+      - name: Ensure git-lfs is available
+        # Do this AFTER a normal checkout. checkout@v4 with lfs:true invokes
+        # git-lfs before any workflow step can repair PATH, which makes a
+        # recovered/minimal runner fail at step 2 with "Unable to locate
+        # executable file: git-lfs".
+        run: |
+          set -euo pipefail
+          if ! command -v git-lfs >/dev/null 2>&1; then
+            for candidate in /opt/homebrew/bin/git-lfs /usr/local/bin/git-lfs; do
+              if [ -x "$candidate" ]; then
+                echo "$(dirname "$candidate")" >> "$GITHUB_PATH"
+                export PATH="$(dirname "$candidate"):$PATH"
+                break
+              fi
+            done
+          fi
+          if ! command -v git-lfs >/dev/null 2>&1; then
+            if command -v brew >/dev/null 2>&1; then
+              brew install git-lfs
+            else
+              echo "::error::git-lfs is missing and Homebrew is unavailable."
+              exit 1
+            fi
+          fi
+          git lfs version
 
       - name: Show request
         run: |
