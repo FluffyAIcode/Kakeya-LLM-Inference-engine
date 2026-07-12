@@ -56,6 +56,7 @@ class CompressionCodec(enum.IntEnum):
     UNSPECIFIED = 0
     NONE = 1
     ZLIB = 2
+    KAKEYA_LATTICE_D4 = 3
 
 
 @dataclass(frozen=True)

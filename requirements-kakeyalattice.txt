@@ -1,0 +1,2 @@
+# Bit-packed snapshot support is unreleased on PyPI as of 2026-07-12.
+kakeyalattice @ git+https://github.com/FluffyAIcode/LLM-KV--Cache-compress.git@61ad37f8cd833dff6346cf138bcd37dd12bdf1d9#subdirectory=kakeyalattice

@@ -22,6 +22,8 @@
     <string>--cache-model-id</string><string>gemma-4-26B-A4B-it-mlx-4bit</string>
     <string>--model-revision</string><string>local-4bit-v1</string>
     <string>--tokenizer-revision</string><string>gemma4-v1</string>
+    <string>--cache-format-version</string><string>kakeya-prefill-v3-kl-d4-q38</string>
+    <string>--cache-compression</string><string>kakeyalattice-d4</string>
     <string>--cache-quantization</string><string>4bit-mlx</string>
     <string>--cache-kv-dtype</string><string>bfloat16</string>
     <string>--cache-block-tokens</string><string>64</string>

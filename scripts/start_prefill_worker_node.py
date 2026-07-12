@@ -52,6 +52,14 @@ from kv_cache_proposer.verifier import VerifierConfig
 _LOG = logging.getLogger("kakeya.prefill-worker")
 
 
+def compression_codec(name: str) -> CompressionCodec:
+    return {
+        "none": CompressionCodec.NONE,
+        "zlib": CompressionCodec.ZLIB,
+        "kakeyalattice-d4": CompressionCodec.KAKEYA_LATTICE_D4,
+    }[name]
+
+
 def physical_memory_bytes() -> int:
     try:
         import os
@@ -150,11 +158,7 @@ async def serve(args) -> None:
                 store,
                 cache_address=args.advertise,
                 load=load,
-                default_compression=(
-                    CompressionCodec.ZLIB
-                    if args.cache_compression == "zlib"
-                    else CompressionCodec.NONE
-                ),
+                default_compression=compression_codec(args.cache_compression),
                 replication_factor=args.replication_factor,
             ),),
             endpoints=(
@@ -236,7 +240,8 @@ def main() -> None:
     parser.add_argument("--sink", type=int, default=4)
     parser.add_argument("--window", type=int, default=64)
     parser.add_argument("--cache-gb", type=float, default=4.0)
-    parser.add_argument("--cache-compression", choices=["none", "zlib"],
+    parser.add_argument("--cache-compression",
+                        choices=["none", "zlib", "kakeyalattice-d4"],
                         default="zlib")
     parser.add_argument("--replication-factor", type=int, default=1)
     parser.add_argument("--max-concurrent-jobs", type=int, default=1)

@@ -56,6 +56,15 @@ from kv_cache_proposer.verifier import VerifierConfig
 _LOG = logging.getLogger("kakeya.grpc-runtime")
 
 
+def _compression_codec(name: str):
+    from inference_engine.distributed.capability import CompressionCodec
+    return {
+        "none": CompressionCodec.NONE,
+        "zlib": CompressionCodec.ZLIB,
+        "kakeyalattice-d4": CompressionCodec.KAKEYA_LATTICE_D4,
+    }[name]
+
+
 def _resolve_kv_dims(verifier) -> Tuple[int, int, int]:
     """Derive (num_layers, num_kv_heads, head_dim) from a loaded
     HF / MLX verifier.
@@ -213,9 +222,7 @@ def _build_capability_registry(
             cache_capability(
                 cache_store,
                 cache_address=args.cache_advertise or args.advertise or args.bind,
-                default_compression=(
-                    2 if args.cache_compression == "zlib" else 1
-                ),
+                default_compression=_compression_codec(args.cache_compression),
                 replication_factor=args.cache_replication_factor,
             ),
         )
@@ -385,7 +392,6 @@ async def _serve(args: argparse.Namespace) -> int:
         import hashlib
         from inference_engine.distributed.capability import (
             CacheCompatibility,
-            CompressionCodec,
         )
         from inference_engine.distributed.prefill_auth import FleetAuthConfig
         from inference_engine.distributed.prefill_cache import PrefixCacheStore
@@ -436,11 +442,7 @@ async def _serve(args: argparse.Namespace) -> int:
             remote_compute_min_tokens=args.remote_prefill_min_tokens,
             max_import_bytes=int(args.cache_max_import_gb * (1 << 30)),
             estimated_snapshot_bytes_per_token=args.cache_estimated_bytes_per_token,
-            compression=(
-                CompressionCodec.ZLIB
-                if args.cache_compression == "zlib"
-                else CompressionCodec.NONE
-            ),
+            compression=_compression_codec(args.cache_compression),
             replication_factor=args.cache_replication_factor,
             cost_config=PrefillCostConfig(
                 local_prefill_tps=args.local_prefill_tps,
@@ -587,9 +589,7 @@ async def _serve(args: argparse.Namespace) -> int:
                 args.exchange_interval_s,
                 cache_store=prefill_store,
                 cache_address=args.cache_advertise or args.advertise or args.bind,
-                cache_compression=(
-                    2 if args.cache_compression == "zlib" else 1
-                ),
+                cache_compression=int(_compression_codec(args.cache_compression)),
                 cache_replication_factor=args.cache_replication_factor,
             ),
         )
@@ -729,7 +729,8 @@ def main() -> int:
     ap.add_argument("--fleet-psk-file", default="",
                     help="Optional fleet PSK file for authenticated prefill RPCs "
                          "and tenant-HMAC prefix hashes.")
-    ap.add_argument("--cache-compression", choices=["none", "zlib"],
+    ap.add_argument("--cache-compression",
+                    choices=["none", "zlib", "kakeyalattice-d4"],
                     default="zlib")
     ap.add_argument("--cache-replication-factor", type=int, default=1)
     ap.add_argument("--cache-max-import-gb", type=float, default=1.0,

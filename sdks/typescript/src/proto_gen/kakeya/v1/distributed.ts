@@ -108,6 +108,8 @@ export enum CompressionCodec {
   UNSPECIFIED = 0,
   NONE = 1,
   ZLIB = 2,
+  /** KAKEYA_LATTICE_D4 - Lossy D4 Q=38 lattice quantization with bit-packed integer codes. */
+  KAKEYA_LATTICE_D4 = 3,
   UNRECOGNIZED = -1,
 }
 
@@ -122,6 +124,9 @@ export function compressionCodecFromJSON(object: any): CompressionCodec {
     case 2:
     case "COMPRESSION_CODEC_ZLIB":
       return CompressionCodec.ZLIB;
+    case 3:
+    case "COMPRESSION_CODEC_KAKEYA_LATTICE_D4":
+      return CompressionCodec.KAKEYA_LATTICE_D4;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -137,6 +142,8 @@ export function compressionCodecToJSON(object: CompressionCodec): string {
       return "COMPRESSION_CODEC_NONE";
     case CompressionCodec.ZLIB:
       return "COMPRESSION_CODEC_ZLIB";
+    case CompressionCodec.KAKEYA_LATTICE_D4:
+      return "COMPRESSION_CODEC_KAKEYA_LATTICE_D4";
     case CompressionCodec.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";

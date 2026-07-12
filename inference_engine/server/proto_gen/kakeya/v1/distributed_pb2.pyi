@@ -22,6 +22,7 @@ class CompressionCodec(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     COMPRESSION_CODEC_UNSPECIFIED: _ClassVar[CompressionCodec]
     COMPRESSION_CODEC_NONE: _ClassVar[CompressionCodec]
     COMPRESSION_CODEC_ZLIB: _ClassVar[CompressionCodec]
+    COMPRESSION_CODEC_KAKEYA_LATTICE_D4: _ClassVar[CompressionCodec]
 
 class PrefillJobStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -41,6 +42,7 @@ CAPABILITY_ROLE_PREFILL_COMPUTE: CapabilityRole
 COMPRESSION_CODEC_UNSPECIFIED: CompressionCodec
 COMPRESSION_CODEC_NONE: CompressionCodec
 COMPRESSION_CODEC_ZLIB: CompressionCodec
+COMPRESSION_CODEC_KAKEYA_LATTICE_D4: CompressionCodec
 PREFILL_JOB_STATUS_UNSPECIFIED: PrefillJobStatus
 PREFILL_JOB_STATUS_QUEUED: PrefillJobStatus
 PREFILL_JOB_STATUS_RUNNING: PrefillJobStatus

@@ -12,6 +12,8 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
         "--sink",
         "--window",
         "--block-size-tokens",
+        "--cache-format-version",
+        "--cache-compression",
         "--prefill-tps",
         "--network",
         "--priority",
@@ -44,3 +46,8 @@ def test_head_runtime_discovers_and_uses_worker_cache_port():
         in plist
     )
     assert "<string>--fleet-psk-file</string>" in plist
+    assert (
+        "<string>--cache-compression</string>"
+        "<string>kakeyalattice-d4</string>"
+        in plist
+    )

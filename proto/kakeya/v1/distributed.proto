@@ -114,6 +114,8 @@ enum CompressionCodec {
   COMPRESSION_CODEC_UNSPECIFIED = 0;
   COMPRESSION_CODEC_NONE = 1;
   COMPRESSION_CODEC_ZLIB = 2;
+  // Lossy D4 Q=38 lattice quantization with bit-packed integer codes.
+  COMPRESSION_CODEC_KAKEYA_LATTICE_D4 = 3;
 }
 
 enum PrefillJobStatus {
