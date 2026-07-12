@@ -17,6 +17,8 @@ CACHE_MODEL_ID="${KAKEYA_CACHE_MODEL_ID:-$KAKEYA_WORKER_MODEL}"
 MODEL_REVISION="${KAKEYA_MODEL_REVISION:-}"
 TOKENIZER_REVISION="${KAKEYA_TOKENIZER_REVISION:-}"
 QUANTIZATION="${KAKEYA_CACHE_QUANTIZATION:-4bit-mlx}"
+CACHE_FORMAT_VERSION="${KAKEYA_CACHE_FORMAT_VERSION:-kakeya-prefill-v2-zlib}"
+CACHE_COMPRESSION="${KAKEYA_CACHE_COMPRESSION:-zlib}"
 ROPE_HASH="${KAKEYA_ROPE_HASH:-}"
 SINK="${KAKEYA_WORKER_SINK:-4}"
 WINDOW="${KAKEYA_WORKER_WINDOW:-64}"
@@ -59,6 +61,8 @@ cat > "$PLIST" <<EOF
     <string>--model-revision</string><string>$MODEL_REVISION</string>
     <string>--tokenizer-revision</string><string>$TOKENIZER_REVISION</string>
     <string>--quantization</string><string>$QUANTIZATION</string>
+    <string>--cache-format-version</string><string>$CACHE_FORMAT_VERSION</string>
+    <string>--cache-compression</string><string>$CACHE_COMPRESSION</string>
     <string>--rope-hash</string><string>$ROPE_HASH</string>
     <string>--layer-geometry-hash</string><string>$KAKEYA_LAYER_GEOMETRY_HASH</string>
     <string>--tenant-id</string><string>$TENANT</string>

@@ -45,6 +45,14 @@ from inference_engine.network.api import create_network_app
 from inference_engine.network.state import NetworkState
 
 
+def compression_codec(name: str) -> CompressionCodec:
+    return {
+        "none": CompressionCodec.NONE,
+        "zlib": CompressionCodec.ZLIB,
+        "kakeyalattice-d4": CompressionCodec.KAKEYA_LATTICE_D4,
+    }[name]
+
+
 def physical_memory_bytes() -> int:
     try:
         return int(__import__("os").sysconf("SC_PAGE_SIZE")
@@ -98,11 +106,7 @@ async def serve(args) -> None:
         caches=(cache_capability(
             store,
             cache_address=args.advertise,
-            default_compression=(
-                CompressionCodec.ZLIB
-                if args.cache_compression == "zlib"
-                else CompressionCodec.NONE
-            ),
+            default_compression=compression_codec(args.cache_compression),
             replication_factor=args.replication_factor,
         ),),
         endpoints=(
@@ -202,7 +206,8 @@ def main() -> None:
     ap.add_argument("--sink", type=int, default=4)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--fleet-psk-file", default="")
-    ap.add_argument("--cache-compression", choices=["none", "zlib"],
+    ap.add_argument("--cache-compression",
+                    choices=["none", "zlib", "kakeyalattice-d4"],
                     default="zlib")
     ap.add_argument("--replication-factor", type=int, default=1)
     ap.add_argument("--cache-gb", type=float, default=4)

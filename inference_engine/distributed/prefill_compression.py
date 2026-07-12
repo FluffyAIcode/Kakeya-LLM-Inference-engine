@@ -20,16 +20,25 @@ def compress_payload(
     raw = bytes(payload)
     if codec in (CompressionCodec.UNSPECIFIED, CompressionCodec.NONE):
         return raw
-    if codec != CompressionCodec.ZLIB:
+    if codec not in (
+        CompressionCodec.ZLIB,
+        CompressionCodec.KAKEYA_LATTICE_D4,
+    ):
         raise ValueError(f"unsupported compression codec {codec!r}")
     if not (0 <= level <= 9):
         raise ValueError("zlib level must be in [0, 9]")
-    compressed = zlib.compress(raw, level)
+    framed = raw
+    if codec == CompressionCodec.KAKEYA_LATTICE_D4:
+        from inference_engine.distributed.prefill_kakeyalattice import (
+            encode_snapshot,
+        )
+        framed = encode_snapshot(raw)
+    compressed = zlib.compress(framed, level)
     return _HEADER.pack(
         _MAGIC,
         int(codec),
         len(raw),
-        hashlib.sha256(raw).digest(),
+        hashlib.sha256(framed).digest(),
     ) + compressed
 
 
@@ -54,7 +63,10 @@ def decompress_payload(
         codec = CompressionCodec(raw_codec)
     except ValueError as exc:
         raise ValueError(f"unsupported compression codec {raw_codec}") from exc
-    if codec != CompressionCodec.ZLIB:
+    if codec not in (
+        CompressionCodec.ZLIB,
+        CompressionCodec.KAKEYA_LATTICE_D4,
+    ):
         raise ValueError(f"unsupported framed compression codec {codec.name}")
     decompressor = zlib.decompressobj()
     raw = decompressor.decompress(
@@ -69,12 +81,17 @@ def decompress_payload(
         raise ValueError("decompressed payload exceeds import budget")
     if decompressor.unused_data:
         raise ValueError("compressed prefill payload has trailing data")
+    if hashlib.sha256(raw).digest() != expected_sha:
+        raise ValueError("decompressed prefill payload checksum mismatch")
+    if codec == CompressionCodec.KAKEYA_LATTICE_D4:
+        from inference_engine.distributed.prefill_kakeyalattice import (
+            decode_snapshot,
+        )
+        raw = decode_snapshot(raw)
     if len(raw) != expected_size:
         raise ValueError(
             f"decompressed payload size {len(raw)} != expected {expected_size}",
         )
-    if hashlib.sha256(raw).digest() != expected_sha:
-        raise ValueError("decompressed prefill payload checksum mismatch")
     return raw
 
 

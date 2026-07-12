@@ -119,6 +119,7 @@ chmod 600 ~/.kakeya/fleet.psk
 Install the worker:
 
 ```bash
+python -m pip install -r requirements-kakeyalattice.txt
 export KAKEYA_WORKER_REPO="$HOME/Kakeya-LLM-Inference-engine"
 export KAKEYA_WORKER_PYTHON="$HOME/kakeya-venv/bin/python"
 export KAKEYA_WORKER_MODEL="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
@@ -132,6 +133,8 @@ export KAKEYA_LAYER_GEOMETRY_HASH="<same-value-as-primary>"
 export KAKEYA_WORKER_SINK="4"
 export KAKEYA_WORKER_WINDOW="2048"
 export KAKEYA_CACHE_BLOCK_TOKENS="64"
+export KAKEYA_CACHE_FORMAT_VERSION="kakeya-prefill-v3-kl-d4-q38"
+export KAKEYA_CACHE_COMPRESSION="kakeyalattice-d4"
 export KAKEYA_WORKER_NETWORK="thunderbolt"
 export KAKEYA_WORKER_PRIORITY="100"
 export KAKEYA_WORKER_RTT_MS="0.55"
@@ -152,6 +155,12 @@ The primary must use the same compatibility and auth values:
 --cache-compression zlib
 --cache-replication-factor 1
 ```
+
+For bit-packed KakeyaLattice snapshots, replace the primary compression line
+with `--cache-compression kakeyalattice-d4` and set
+`--cache-format-version kakeya-prefill-v3-kl-d4-q38`. Both nodes must install
+the pinned optional dependency from `requirements-kakeyalattice.txt`. D4 Q=38
+is lossy; live acceptance must validate output quality as well as byte savings.
 
 `--cache-peer` remains an emergency static override. Normal worker/cache
 selection is derived from compatible live capability cards and their TTL/load

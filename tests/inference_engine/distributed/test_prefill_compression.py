@@ -28,6 +28,27 @@ def test_none_is_backward_compatible_raw_payload():
     assert payload_sizes(raw) == (len(raw), len(raw))
 
 
+def test_kakeyalattice_framing_uses_optional_snapshot_codec(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules,
+        "inference_engine.distributed.prefill_kakeyalattice",
+        SimpleNamespace(
+            encode_snapshot=lambda raw: raw[::-1],
+            decode_snapshot=lambda packed: packed[::-1],
+        ),
+    )
+    raw = b"portable-kpkv" * 100
+    framed = compress_payload(raw, CompressionCodec.KAKEYA_LATTICE_D4)
+    assert payload_sizes(framed) == (len(framed), len(raw))
+    assert decompress_payload(
+        framed,
+        max_uncompressed_bytes=len(raw),
+    ) == raw
+
+
 def test_compression_and_import_limits_validate():
     with pytest.raises(ValueError, match="zlib level"):
         compress_payload(b"x", CompressionCodec.ZLIB, level=10)
