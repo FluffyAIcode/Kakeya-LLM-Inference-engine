@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from scripts.chat_grpc import _generate_and_print
+from scripts.chat_grpc import (
+    _generate_and_print,
+    _is_degenerate_loop,
+    _resolve_eos_token_ids,
+)
 
 
 class Tokenizer:
@@ -27,6 +31,32 @@ class Session:
         yield from tokens
         self.last_stop_reason = reason
         self.last_total_duration_seconds = seconds
+
+
+class GemmaTokenizer:
+    eos_token_ids = 1
+    eos_token_id = 1
+    eot_token_id = 106
+    eos_token = "<eos>"
+    eot_token = "<turn|>"
+    unk_token_id = 3
+
+    def convert_tokens_to_ids(self, token):
+        return {
+            "<eos>": 1,
+            "<turn|>": 106,
+            "<end_of_turn>": 3,
+            "<|im_end|>": 3,
+        }[token]
+
+
+def test_resolves_gemma_end_of_turn_as_natural_eos():
+    assert _resolve_eos_token_ids(GemmaTokenizer()) == [1, 106]
+
+
+def test_degenerate_loop_guard_requires_three_consecutive_blocks():
+    assert not _is_degenerate_loop("normal text " * 2)
+    assert _is_degenerate_loop("0123456789abcdef" * 3)
 
 
 def test_continues_max_token_chunks_until_eos(capsys):
@@ -69,3 +99,20 @@ def test_no_progress_breaks_continuation_loop(capsys):
     ])
     assert _generate_and_print(session, Tokenizer(), [9], max_tokens=2) == 0
     assert "stop=no_progress" in capsys.readouterr().err
+
+
+def test_stops_and_closes_stream_on_strict_degenerate_loop(capsys):
+    class RepeatingTokenizer:
+        def decode(self, token_ids, *, skip_special_tokens=True):
+            assert skip_special_tokens
+            return "x" * len(token_ids)
+
+    session = Session([
+        ([1] * 64, 1, 1.0),
+    ])
+    assert _generate_and_print(
+        session, RepeatingTokenizer(), [9], max_tokens=64,
+    ) == 48
+    output = capsys.readouterr()
+    assert "stop=degenerate_loop" in output.err
+    assert "use /reset" in output.err
