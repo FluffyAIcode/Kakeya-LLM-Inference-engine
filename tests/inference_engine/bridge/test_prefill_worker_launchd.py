@@ -23,6 +23,9 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
     assert 'PEER="${KAKEYA_WORKER_PEER:-}"' in source
     assert "<string>--peer</string>" in source
     assert 'chmod 644 "$PLIST"' in source
+    assert 'launchctl print "$DOMAIN/$LABEL"' in source
+    assert "for attempt in 1 2 3" in source
+    assert 'launchctl kickstart -k "$DOMAIN/$LABEL"' in source
 
 
 def test_head_runtime_discovers_and_uses_worker_cache_port():
