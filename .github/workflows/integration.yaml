@@ -155,21 +155,29 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          # The runner is expected to have a long-lived venv.
-          # If a per-run venv is preferred, swap to ``python3 -m venv .venv``.
-          python3 -m pip install --upgrade pip
+          # Keep the legacy Qwen/Transformers-4 suite isolated from both
+          # Homebrew's PEP-668-managed system Python and the Transformers-5 MLX
+          # production venv used by the preceding real-model gate.
+          LEGACY_VENV="$HOME/.kakeya/integration-legacy-venv"
+          if [ ! -x "$LEGACY_VENV/bin/python" ]; then
+            mkdir -p "$(dirname "$LEGACY_VENV")"
+            python3 -m venv "$LEGACY_VENV"
+          fi
+          LEGACY_PY="$LEGACY_VENV/bin/python"
+          "$LEGACY_PY" -m pip install --upgrade pip
           # The repo runs via PYTHONPATH (see ci.yaml) — it is NOT a pip package
           # (no setup.py/pyproject.toml), so install runtime deps from
           # requirements.txt rather than an editable `-e .` (which errors with
           # "does not appear to be a Python project").
-          python3 -m pip install -r requirements.txt
+          "$LEGACY_PY" -m pip install -r requirements.txt
           # The integration suite exercises the legacy dllm-hub Qwen proposer,
           # whose remote modeling file depends on the Transformers 4.x
           # decoder_layer.attention_type API. Keep this runner in the dedicated
           # legacy range; K3/Gemma production paths use requirements.txt's
           # unbounded Transformers 5.x-compatible environment.
-          python3 -m pip install 'transformers>=4.45,<5.0'
-          python3 -m pip install pytest pytest-asyncio pytest-timeout coverage
+          "$LEGACY_PY" -m pip install 'transformers>=4.45,<5.0'
+          "$LEGACY_PY" -m pip install pytest pytest-asyncio pytest-timeout coverage
+          echo "KAKEYA_INTEGRATION_PY=$LEGACY_PY" >> "$GITHUB_ENV"
 
       - name: Run integration suite
         env:
@@ -180,7 +188,7 @@ jobs:
         run: |
           mkdir -p results/platform-tests
           stamp=$(date +%s)
-          python3 -m pytest \
+          "$KAKEYA_INTEGRATION_PY" -m pytest \
             -m integration \
             tests/integration/ \
             --junitxml="results/platform-tests/integration-mac-m4-${stamp}.junit.xml" \
