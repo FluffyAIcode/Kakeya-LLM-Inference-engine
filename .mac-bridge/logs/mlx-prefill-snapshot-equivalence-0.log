@@ -1,0 +1,66 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_________ test_real_mlx_prefill_snapshot_preserves_continuation_logits _________
+
+    def test_real_mlx_prefill_snapshot_preserves_continuation_logits():
+        pytest.importorskip("mlx.core")
+        torch = pytest.importorskip("torch")
+    
+        from inference_engine.backends.mlx.verifier import MLXSinkWindowVerifier
+        from inference_engine.distributed.capability import (
+            CacheCompatibility,
+            CompressionCodec,
+        )
+        from inference_engine.distributed.prefill_cache import PrefixCacheStore
+        from inference_engine.distributed.prefill_cache_runtime import (
+            DistributedPrefillCacheHook,
+        )
+        from kv_cache_proposer.verifier import VerifierConfig
+    
+        model_path = os.environ["KAKEYA_MAC_VERIFIER_PATH"]
+        verifier = MLXSinkWindowVerifier(VerifierConfig(
+            model_id=model_path,
+            dtype=torch.bfloat16,
+            device="cpu",
+            sink_size=4,
+            window_size=64,
+        ))
+        prompt = (
+            "Kakeya distributed prefill equivalence test. "
+            "The imported cache must produce exactly the same continuation logits. "
+        ) * 8
+        token_ids = verifier.tokenizer.encode(prompt)
+        compatibility = CacheCompatibility(
+            model_id=os.environ.get("KAKEYA_CACHE_MODEL_ID", model_path),
+            model_revision=os.environ.get("KAKEYA_MODEL_REVISION", ""),
+            tokenizer_revision=os.environ.get("KAKEYA_TOKENIZER_REVISION", ""),
+            cache_format_version="kakeya-prefill-v2-zlib",
+            quantization="4bit-mlx",
+>           layer_geometry_hash=os.environ["KAKEYA_LAYER_GEOMETRY_HASH"],
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            kv_dtype="bfloat16",
+            block_size_tokens=64,
+            tenant_namespace="integration",
+        )
+
+tests/integration/test_prefill_snapshot_mlx_equivalence.py:43: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = environ({'GITHUB_JOB': 'bridge', 'GITHUB_EVENT_PATH': '/Users/fluffy314/actions-runner/_work/_temp/_github_workflow/ev...ce.py::test_real_mlx_prefill_snapshot_preserves_continuation_logits (call)', 'TRANSFORMERS_NO_ADVISORY_WARNINGS': '1'})
+key = 'KAKEYA_LAYER_GEOMETRY_HASH'
+
+>   ???
+E   KeyError: 'KAKEYA_LAYER_GEOMETRY_HASH'
+
+<frozen os>:717: KeyError
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/integration/test_prefill_snapshot_mlx_equivalence.py::test_real_mlx_prefill_snapshot_preserves_continuation_logits - KeyError: 'KAKEYA_LAYER_GEOMETRY_HASH'
+1 failed, 2 warnings in 9.13s
