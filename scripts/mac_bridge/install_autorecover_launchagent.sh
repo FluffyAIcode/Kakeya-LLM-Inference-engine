@@ -7,6 +7,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RECOVER_SCRIPT="${REPO_ROOT}/scripts/mac_bridge/recover_runner_after_reboot.sh"
+SUPPORT_DIR="${HOME}/Library/Application Support/Kakeya"
+INSTALLED_RECOVER_SCRIPT="${SUPPORT_DIR}/recover_runner_after_reboot.sh"
 LABEL="com.kakeya.mac-bridge-runner-autorecover"
 UID_NUM="$(id -u)"
 USER_NAME="$(id -un)"
@@ -20,6 +22,8 @@ fi
 
 [ -x "$RECOVER_SCRIPT" ] || chmod +x "$RECOVER_SCRIPT"
 mkdir -p "${HOME}/actions-runner/_diag"
+mkdir -p "$SUPPORT_DIR"
+install -m 755 "$RECOVER_SCRIPT" "$INSTALLED_RECOVER_SCRIPT"
 TMP_PLIST="$(mktemp)"
 trap 'rm -f "$TMP_PLIST"' EXIT
 
@@ -34,11 +38,11 @@ cat >"$TMP_PLIST" <<EOF
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>${RECOVER_SCRIPT}</string>
+    <string>${INSTALLED_RECOVER_SCRIPT}</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>${REPO_ROOT}</string>
+  <string>${HOME}/actions-runner</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -47,6 +51,8 @@ cat >"$TMP_PLIST" <<EOF
   </dict>
 
   <key>RunAtLoad</key>
+  <true/>
+  <key>AbandonProcessGroup</key>
   <true/>
   <key>KeepAlive</key>
   <dict>
