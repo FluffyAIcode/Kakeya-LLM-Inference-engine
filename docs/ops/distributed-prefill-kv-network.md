@@ -92,6 +92,11 @@ Use an isolated venv and copy/sync the repository package. The peer plist is:
 deploy/launchd/ai.kakeya.prefill-network-peer.plist
 ```
 
+In the two-Mac profile, `allens-mini` runs this role only. It does not load the
+model or apply a chat template. Snapshots arrive from the primary's fallback
+prefill today, and from separately deployed compute workers when the fleet has
+additional machines.
+
 Check from the head over Thunderbolt:
 
 ```bash
@@ -108,6 +113,11 @@ lookup/publish/fetch remains usable while reverse gossip is disabled.
 The worker loads the exact same MLX model as the primary, accepts queued
 prefill-only jobs, writes immutable snapshots into its co-located RAM cache and
 never serves user decode.
+
+This is an additional fleet role, not the `allens-mini` cache-only role in the
+two-Mac profile. Deploy it on Worker A/B/C addresses when those machines exist.
+Workers receive canonical token IDs from the scheduler; they do not construct
+their own chat template.
 
 Create a fleet PSK once and copy it to every trusted node:
 
@@ -127,8 +137,8 @@ export KAKEYA_CACHE_MODEL_ID="gemma-4-26B-A4B-it-mlx-4bit"
 export KAKEYA_MODEL_REVISION="local-4bit-v1"
 export KAKEYA_TOKENIZER_REVISION="gemma4-v1"
 export KAKEYA_WORKER_NODE_ID="prefill-mini-1"
-export KAKEYA_WORKER_BIND="169.254.27.104:53051"
-export KAKEYA_WORKER_ADVERTISE="169.254.27.104:53051"
+export KAKEYA_WORKER_BIND="<worker-ip>:53051"
+export KAKEYA_WORKER_ADVERTISE="<worker-ip>:53051"
 export KAKEYA_LAYER_GEOMETRY_HASH="<same-value-as-primary>"
 export KAKEYA_WORKER_SINK="4"
 export KAKEYA_WORKER_WINDOW="2048"
@@ -149,7 +159,7 @@ The primary must use the same compatibility and auth values:
 ```text
 --enable-prefill-cache
 --enable-capability-exchange
---peer 169.254.27.104:53051
+--peer <worker-ip>:53051
 --cache-tenant-id private-fleet
 --fleet-psk-file ~/.kakeya/fleet.psk
 --cache-compression zlib
@@ -175,7 +185,7 @@ KEY="$(cat ~/.kakeya/network_api_key)"
 curl -fsS -X POST http://127.0.0.1:8090/v1/network/nodes/register \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $KEY" \
-  -d '{"alias":"peer-mini","address":"169.254.27.104:53051","region":"Private","role":"hybrid"}'
+  -d '{"alias":"allens-mini","address":"169.254.27.104:52051","region":"Private","role":"cache"}'
 ```
 
 Create a paired group:
@@ -217,11 +227,11 @@ PYTHONPATH=.:sdks/python python scripts/verify_remote_prefill_e2e.py \
   --tokenizer-id ~/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
 ```
 
-The verifier exits non-zero unless a live worker capability is present and one
-cold unique prefix increments `remote_jobs`, `remote_hits`, and
-`tokens_reused`. Decode throughput is reported separately; remote prefill is
-accepted on lower TTFT/prefill time and higher request throughput, not a change
-to single-stream decode tokens/s.
+By default the verifier accepts a remote cache hit and requires `remote_hits`
+and `tokens_reused` to increase. Use `--require-worker` only when testing the
+separate Worker A/B/C path; that mode additionally requires `remote_jobs`.
+Decode throughput is reported separately because all autoregressive decode
+remains on the primary.
 
 ## Rollback
 

@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 INSTALLER = ROOT / "deploy" / "install_prefill_worker_launchd.sh"
 HEAD_PLIST = ROOT / "deploy" / "launchd" / "ai.kakeya.grpc-runtime-prefill.plist"
+PEER_PLIST = ROOT / "deploy" / "launchd" / "ai.kakeya.prefill-network-peer.plist"
 
 
 def test_worker_installer_emits_full_cache_compatibility_contract():
@@ -30,17 +31,17 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
     assert 'launchctl kickstart -k "$DOMAIN/$LABEL"' in source
 
 
-def test_head_runtime_discovers_and_uses_worker_cache_port():
+def test_two_mac_deployment_uses_allens_as_cache_only():
     plist = HEAD_PLIST.read_text()
     assert (
-        "<string>--peer</string><string>169.254.27.104:53051</string>"
+        "<string>--peer</string><string>169.254.27.104:52051</string>"
         in plist
     )
     assert (
-        "<string>--cache-peer</string><string>169.254.27.104:53051</string>"
+        "<string>--cache-peer</string><string>169.254.27.104:52051</string>"
         in plist
     )
-    assert "<string>--primary-prefill-penalty-ms</string>" in plist
+    assert "<string>--primary-prefill-penalty-ms</string>" not in plist
     assert (
         "<string>--cache-tenant-id</string><string>private-fleet</string>"
         in plist
@@ -51,3 +52,8 @@ def test_head_runtime_discovers_and_uses_worker_cache_port():
         "<string>kakeyalattice-d4</string>"
         in plist
     )
+    peer = PEER_PLIST.read_text()
+    assert "scripts/start_prefill_cache_node.py" in peer
+    assert "scripts/start_prefill_worker_node.py" not in peer
+    assert "<string>--cache-gb</string><string>8</string>" in peer
+    assert "<string>--window</string><string>2048</string>" in peer
