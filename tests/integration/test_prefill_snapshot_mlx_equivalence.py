@@ -40,7 +40,13 @@ def test_real_mlx_prefill_snapshot_preserves_continuation_logits():
         tokenizer_revision=os.environ.get("KAKEYA_TOKENIZER_REVISION", ""),
         cache_format_version="kakeya-prefill-v2-zlib",
         quantization="4bit-mlx",
-        layer_geometry_hash=os.environ["KAKEYA_LAYER_GEOMETRY_HASH"],
+        # This is a single-verifier round-trip gate; production head/workers
+        # derive and compare the real geometry hash separately. Keep the
+        # namespace stable without requiring another machine-local env var.
+        layer_geometry_hash=os.environ.get(
+            "KAKEYA_LAYER_GEOMETRY_HASH",
+            "integration-single-verifier",
+        ),
         kv_dtype="bfloat16",
         block_size_tokens=64,
         tenant_namespace="integration",

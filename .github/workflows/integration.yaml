@@ -136,7 +136,7 @@ jobs:
               shutil.which("python3"),
           ]
           for candidate in candidates:
-              if not candidate:
+              if not candidate or not os.path.isfile(candidate):
                   continue
               if subprocess.run(
                   [candidate, "-c", "import mlx_lm, torch, pytest"],
