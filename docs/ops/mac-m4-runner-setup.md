@@ -1,11 +1,8 @@
 # Mac M4 self-hosted runner setup
 
-This runner backs the **Integration (Mac M4)** GitHub Actions workflow
-(`.github/workflows/integration.yaml`). It runs `pytest -m integration`
-against real Qwen3-0.6B on every PR labelled `needs-mac-m4`
-(auto-applied by `.github/workflows/auto-label-mac.yaml` when a PR
-touches `inference_engine/`, `sdks/`, `proto/`, `tests/integration/`,
-or `kv_cache_proposer/`).
+This runner backs the **Integration (Mac M4)** and **Mac bridge** workflows.
+Integration is triggered directly by runtime/model/proto/integration path
+changes; it does not depend on a label being applied by another workflow.
 
 ## Hardware requirements
 
@@ -66,13 +63,11 @@ pyenv global 3.12.7
 
 Confirm `python3 --version` returns 3.12.x and `python3 -c 'import platform; print(platform.machine())'` returns `arm64`.
 
-### 4. (Optional) long-lived venv
+### 4. Pin the MLX workload venv
 
-The workflow currently does `pip install -e .` per run, which is
-~30 s on a warm pip cache. If you want to skip even that, create a
-venv at `~/kakeya-runner-venv` and add a step to the workflow that
-activates it before `pytest`. v0.3 keeps the per-run install for
-simplicity.
+Set `KAKEYA_MAC_PYTHON` in the runner service environment to the long-lived
+venv that imports `mlx_lm`, `torch` and `pytest`. Real MLX gates resolve this
+interpreter before the legacy Qwen integration environment is installed.
 
 ## Runtime expectations
 
@@ -123,18 +118,38 @@ cd ~/actions-runner
 
 Workflow failures are visible at `Actions → Integration (Mac M4)`. The "Surface failure summary" step inlines the test names + first-line error messages so triage doesn't require downloading the JUnit XML.
 
-If the runner itself is offline (queue depth grows, no jobs pick up), check on the Mac:
+If the runner itself is offline (multiple differently-labelled jobs remain
+`queued` and no first step starts), check on the Mac:
 
 ```bash
 cd ~/actions-runner
 sudo ./svc.sh status
 tail -200 ~/Library/Logs/actions-runner/Runner_*.log
+bash /path/to/repo/scripts/mac_bridge/runner_healthcheck.sh
 ```
 
 Common causes:
 - macOS auto-update rebooted the host; service didn't auto-start (rare with `launchd` but possible).
 - HF cache was purged; the verify step fails. Re-warm.
 - Disk full from accumulated pip downloads; clear cache.
+
+### Headless reboot recovery
+
+A user LaunchAgent runs only after GUI login. For an unattended Mac mini,
+install the system watchdog once so the runner recovers before login:
+
+```bash
+cd /path/to/Kakeya-LLM-Inference-engine
+sudo "$HOME/actions-runner/svc.sh" install 2>/dev/null || true
+sudo "$HOME/actions-runner/svc.sh" start 2>/dev/null || true
+bash scripts/mac_bridge/install_autorecover_launchagent.sh --system
+bash scripts/mac_bridge/recover_runner_after_reboot.sh
+```
+
+For jobs that are already queued, the last command is the immediate recovery
+action. GitHub assigns queued jobs automatically once `Runner.Listener`
+reconnects. The system LaunchDaemon retries every 60 seconds and does not
+require a logged-in desktop session.
 
 ## Mac bridge (cloud-agent access)
 
