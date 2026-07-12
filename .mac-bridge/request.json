@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "preset": "mlx-prefill-snapshot-equivalence",
+  "params": {},
+  "ref": "HEAD",
+  "requested_by": "cloud-agent",
+  "nonce": "1783829877-e17b2c"
+}
