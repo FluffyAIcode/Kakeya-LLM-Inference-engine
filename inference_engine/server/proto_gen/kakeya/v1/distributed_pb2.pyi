@@ -15,12 +15,38 @@ class CapabilityRole(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CAPABILITY_ROLE_EMBEDDER: _ClassVar[CapabilityRole]
     CAPABILITY_ROLE_TOOL: _ClassVar[CapabilityRole]
     CAPABILITY_ROLE_PREFILL_CACHE: _ClassVar[CapabilityRole]
+    CAPABILITY_ROLE_PREFILL_COMPUTE: _ClassVar[CapabilityRole]
+
+class CompressionCodec(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    COMPRESSION_CODEC_UNSPECIFIED: _ClassVar[CompressionCodec]
+    COMPRESSION_CODEC_NONE: _ClassVar[CompressionCodec]
+    COMPRESSION_CODEC_ZLIB: _ClassVar[CompressionCodec]
+
+class PrefillJobStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PREFILL_JOB_STATUS_UNSPECIFIED: _ClassVar[PrefillJobStatus]
+    PREFILL_JOB_STATUS_QUEUED: _ClassVar[PrefillJobStatus]
+    PREFILL_JOB_STATUS_RUNNING: _ClassVar[PrefillJobStatus]
+    PREFILL_JOB_STATUS_COMPLETED: _ClassVar[PrefillJobStatus]
+    PREFILL_JOB_STATUS_FAILED: _ClassVar[PrefillJobStatus]
+    PREFILL_JOB_STATUS_CANCELLED: _ClassVar[PrefillJobStatus]
 CAPABILITY_ROLE_UNSPECIFIED: CapabilityRole
 CAPABILITY_ROLE_VERIFIER: CapabilityRole
 CAPABILITY_ROLE_PROPOSER: CapabilityRole
 CAPABILITY_ROLE_EMBEDDER: CapabilityRole
 CAPABILITY_ROLE_TOOL: CapabilityRole
 CAPABILITY_ROLE_PREFILL_CACHE: CapabilityRole
+CAPABILITY_ROLE_PREFILL_COMPUTE: CapabilityRole
+COMPRESSION_CODEC_UNSPECIFIED: CompressionCodec
+COMPRESSION_CODEC_NONE: CompressionCodec
+COMPRESSION_CODEC_ZLIB: CompressionCodec
+PREFILL_JOB_STATUS_UNSPECIFIED: PrefillJobStatus
+PREFILL_JOB_STATUS_QUEUED: PrefillJobStatus
+PREFILL_JOB_STATUS_RUNNING: PrefillJobStatus
+PREFILL_JOB_STATUS_COMPLETED: PrefillJobStatus
+PREFILL_JOB_STATUS_FAILED: PrefillJobStatus
+PREFILL_JOB_STATUS_CANCELLED: PrefillJobStatus
 
 class ModelCapability(_message.Message):
     __slots__ = ("model_id", "role", "quantization", "tokens_per_second")
@@ -35,7 +61,7 @@ class ModelCapability(_message.Message):
     def __init__(self, model_id: _Optional[str] = ..., role: _Optional[_Union[CapabilityRole, str]] = ..., quantization: _Optional[str] = ..., tokens_per_second: _Optional[float] = ...) -> None: ...
 
 class NodeCapability(_message.Message):
-    __slots__ = ("node_id", "grpc_address", "platform", "unified_memory_bytes", "mlx_version", "models", "announced_at_unix", "ttl_seconds", "ring_address", "caches", "endpoints")
+    __slots__ = ("node_id", "grpc_address", "platform", "unified_memory_bytes", "mlx_version", "models", "announced_at_unix", "ttl_seconds", "ring_address", "caches", "endpoints", "prefill_workers")
     NODE_ID_FIELD_NUMBER: _ClassVar[int]
     GRPC_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     PLATFORM_FIELD_NUMBER: _ClassVar[int]
@@ -47,6 +73,7 @@ class NodeCapability(_message.Message):
     RING_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     CACHES_FIELD_NUMBER: _ClassVar[int]
     ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
+    PREFILL_WORKERS_FIELD_NUMBER: _ClassVar[int]
     node_id: str
     grpc_address: str
     platform: str
@@ -58,7 +85,8 @@ class NodeCapability(_message.Message):
     ring_address: str
     caches: _containers.RepeatedCompositeFieldContainer[CacheCapability]
     endpoints: _containers.RepeatedCompositeFieldContainer[NodeEndpoint]
-    def __init__(self, node_id: _Optional[str] = ..., grpc_address: _Optional[str] = ..., platform: _Optional[str] = ..., unified_memory_bytes: _Optional[int] = ..., mlx_version: _Optional[str] = ..., models: _Optional[_Iterable[_Union[ModelCapability, _Mapping]]] = ..., announced_at_unix: _Optional[float] = ..., ttl_seconds: _Optional[float] = ..., ring_address: _Optional[str] = ..., caches: _Optional[_Iterable[_Union[CacheCapability, _Mapping]]] = ..., endpoints: _Optional[_Iterable[_Union[NodeEndpoint, _Mapping]]] = ...) -> None: ...
+    prefill_workers: _containers.RepeatedCompositeFieldContainer[PrefillWorkerCapability]
+    def __init__(self, node_id: _Optional[str] = ..., grpc_address: _Optional[str] = ..., platform: _Optional[str] = ..., unified_memory_bytes: _Optional[int] = ..., mlx_version: _Optional[str] = ..., models: _Optional[_Iterable[_Union[ModelCapability, _Mapping]]] = ..., announced_at_unix: _Optional[float] = ..., ttl_seconds: _Optional[float] = ..., ring_address: _Optional[str] = ..., caches: _Optional[_Iterable[_Union[CacheCapability, _Mapping]]] = ..., endpoints: _Optional[_Iterable[_Union[NodeEndpoint, _Mapping]]] = ..., prefill_workers: _Optional[_Iterable[_Union[PrefillWorkerCapability, _Mapping]]] = ...) -> None: ...
 
 class NodeEndpoint(_message.Message):
     __slots__ = ("address", "network", "priority", "measured_rtt_ms")
@@ -73,7 +101,7 @@ class NodeEndpoint(_message.Message):
     def __init__(self, address: _Optional[str] = ..., network: _Optional[str] = ..., priority: _Optional[int] = ..., measured_rtt_ms: _Optional[float] = ...) -> None: ...
 
 class CacheCompatibility(_message.Message):
-    __slots__ = ("model_id", "model_revision", "tokenizer_revision", "cache_format_version", "quantization", "rope_hash", "layer_geometry_hash", "kv_dtype", "block_size_tokens")
+    __slots__ = ("model_id", "model_revision", "tokenizer_revision", "cache_format_version", "quantization", "rope_hash", "layer_geometry_hash", "kv_dtype", "block_size_tokens", "tenant_namespace", "sink_size", "window_size")
     MODEL_ID_FIELD_NUMBER: _ClassVar[int]
     MODEL_REVISION_FIELD_NUMBER: _ClassVar[int]
     TOKENIZER_REVISION_FIELD_NUMBER: _ClassVar[int]
@@ -83,6 +111,9 @@ class CacheCompatibility(_message.Message):
     LAYER_GEOMETRY_HASH_FIELD_NUMBER: _ClassVar[int]
     KV_DTYPE_FIELD_NUMBER: _ClassVar[int]
     BLOCK_SIZE_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    TENANT_NAMESPACE_FIELD_NUMBER: _ClassVar[int]
+    SINK_SIZE_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_SIZE_FIELD_NUMBER: _ClassVar[int]
     model_id: str
     model_revision: str
     tokenizer_revision: str
@@ -92,10 +123,13 @@ class CacheCompatibility(_message.Message):
     layer_geometry_hash: str
     kv_dtype: str
     block_size_tokens: int
-    def __init__(self, model_id: _Optional[str] = ..., model_revision: _Optional[str] = ..., tokenizer_revision: _Optional[str] = ..., cache_format_version: _Optional[str] = ..., quantization: _Optional[str] = ..., rope_hash: _Optional[str] = ..., layer_geometry_hash: _Optional[str] = ..., kv_dtype: _Optional[str] = ..., block_size_tokens: _Optional[int] = ...) -> None: ...
+    tenant_namespace: str
+    sink_size: int
+    window_size: int
+    def __init__(self, model_id: _Optional[str] = ..., model_revision: _Optional[str] = ..., tokenizer_revision: _Optional[str] = ..., cache_format_version: _Optional[str] = ..., quantization: _Optional[str] = ..., rope_hash: _Optional[str] = ..., layer_geometry_hash: _Optional[str] = ..., kv_dtype: _Optional[str] = ..., block_size_tokens: _Optional[int] = ..., tenant_namespace: _Optional[str] = ..., sink_size: _Optional[int] = ..., window_size: _Optional[int] = ...) -> None: ...
 
 class CacheCapability(_message.Message):
-    __slots__ = ("compatibility", "cache_address", "cache_bytes_used", "cache_bytes_free", "entry_count", "cache_epoch", "load", "tokens_served", "bloom_filter")
+    __slots__ = ("compatibility", "cache_address", "cache_bytes_used", "cache_bytes_free", "entry_count", "cache_epoch", "load", "tokens_served", "bloom_filter", "default_compression", "replication_factor")
     COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
     CACHE_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     CACHE_BYTES_USED_FIELD_NUMBER: _ClassVar[int]
@@ -105,6 +139,8 @@ class CacheCapability(_message.Message):
     LOAD_FIELD_NUMBER: _ClassVar[int]
     TOKENS_SERVED_FIELD_NUMBER: _ClassVar[int]
     BLOOM_FILTER_FIELD_NUMBER: _ClassVar[int]
+    DEFAULT_COMPRESSION_FIELD_NUMBER: _ClassVar[int]
+    REPLICATION_FACTOR_FIELD_NUMBER: _ClassVar[int]
     compatibility: CacheCompatibility
     cache_address: str
     cache_bytes_used: int
@@ -114,7 +150,33 @@ class CacheCapability(_message.Message):
     load: float
     tokens_served: int
     bloom_filter: bytes
-    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., cache_address: _Optional[str] = ..., cache_bytes_used: _Optional[int] = ..., cache_bytes_free: _Optional[int] = ..., entry_count: _Optional[int] = ..., cache_epoch: _Optional[int] = ..., load: _Optional[float] = ..., tokens_served: _Optional[int] = ..., bloom_filter: _Optional[bytes] = ...) -> None: ...
+    default_compression: CompressionCodec
+    replication_factor: int
+    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., cache_address: _Optional[str] = ..., cache_bytes_used: _Optional[int] = ..., cache_bytes_free: _Optional[int] = ..., entry_count: _Optional[int] = ..., cache_epoch: _Optional[int] = ..., load: _Optional[float] = ..., tokens_served: _Optional[int] = ..., bloom_filter: _Optional[bytes] = ..., default_compression: _Optional[_Union[CompressionCodec, str]] = ..., replication_factor: _Optional[int] = ...) -> None: ...
+
+class PrefillWorkerCapability(_message.Message):
+    __slots__ = ("compatibility", "worker_address", "max_concurrent_jobs", "inflight_jobs", "queued_jobs", "load", "tokens_per_second_prefill", "ram_bytes_free", "accepts_compute_jobs", "queued_tokens")
+    COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
+    WORKER_ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    MAX_CONCURRENT_JOBS_FIELD_NUMBER: _ClassVar[int]
+    INFLIGHT_JOBS_FIELD_NUMBER: _ClassVar[int]
+    QUEUED_JOBS_FIELD_NUMBER: _ClassVar[int]
+    LOAD_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_PER_SECOND_PREFILL_FIELD_NUMBER: _ClassVar[int]
+    RAM_BYTES_FREE_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTS_COMPUTE_JOBS_FIELD_NUMBER: _ClassVar[int]
+    QUEUED_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    compatibility: CacheCompatibility
+    worker_address: str
+    max_concurrent_jobs: int
+    inflight_jobs: int
+    queued_jobs: int
+    load: float
+    tokens_per_second_prefill: float
+    ram_bytes_free: int
+    accepts_compute_jobs: bool
+    queued_tokens: int
+    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., worker_address: _Optional[str] = ..., max_concurrent_jobs: _Optional[int] = ..., inflight_jobs: _Optional[int] = ..., queued_jobs: _Optional[int] = ..., load: _Optional[float] = ..., tokens_per_second_prefill: _Optional[float] = ..., ram_bytes_free: _Optional[int] = ..., accepts_compute_jobs: _Optional[bool] = ..., queued_tokens: _Optional[int] = ...) -> None: ...
 
 class ExchangeCapabilitiesRequest(_message.Message):
     __slots__ = ("known_nodes",)
@@ -235,6 +297,82 @@ class PublishBlockResponse(_message.Message):
     stored: bool
     cache_epoch: int
     def __init__(self, stored: _Optional[bool] = ..., cache_epoch: _Optional[int] = ...) -> None: ...
+
+class SubmitPrefillJobRequest(_message.Message):
+    __slots__ = ("request_id", "tenant_id", "compatibility", "token_ids", "block_hashes", "deadline_ms", "preferred_compression")
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    TENANT_ID_FIELD_NUMBER: _ClassVar[int]
+    COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_IDS_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_HASHES_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_MS_FIELD_NUMBER: _ClassVar[int]
+    PREFERRED_COMPRESSION_FIELD_NUMBER: _ClassVar[int]
+    request_id: str
+    tenant_id: str
+    compatibility: CacheCompatibility
+    token_ids: _containers.RepeatedScalarFieldContainer[int]
+    block_hashes: _containers.RepeatedScalarFieldContainer[bytes]
+    deadline_ms: int
+    preferred_compression: CompressionCodec
+    def __init__(self, request_id: _Optional[str] = ..., tenant_id: _Optional[str] = ..., compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., token_ids: _Optional[_Iterable[int]] = ..., block_hashes: _Optional[_Iterable[bytes]] = ..., deadline_ms: _Optional[int] = ..., preferred_compression: _Optional[_Union[CompressionCodec, str]] = ...) -> None: ...
+
+class SubmitPrefillJobResponse(_message.Message):
+    __slots__ = ("job_id", "status", "worker_node_id", "queue_eta_ms")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    WORKER_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    QUEUE_ETA_MS_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    status: PrefillJobStatus
+    worker_node_id: str
+    queue_eta_ms: float
+    def __init__(self, job_id: _Optional[str] = ..., status: _Optional[_Union[PrefillJobStatus, str]] = ..., worker_node_id: _Optional[str] = ..., queue_eta_ms: _Optional[float] = ...) -> None: ...
+
+class GetPrefillJobStatusRequest(_message.Message):
+    __slots__ = ("job_id", "tenant_id")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    TENANT_ID_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    tenant_id: str
+    def __init__(self, job_id: _Optional[str] = ..., tenant_id: _Optional[str] = ...) -> None: ...
+
+class GetPrefillJobStatusResponse(_message.Message):
+    __slots__ = ("job_id", "status", "tokens_computed", "lease_id", "block_hash", "payload_sha256", "transfer_bytes", "failure_reason", "compute_ms", "cache_address")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_COMPUTED_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_SHA256_FIELD_NUMBER: _ClassVar[int]
+    TRANSFER_BYTES_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_REASON_FIELD_NUMBER: _ClassVar[int]
+    COMPUTE_MS_FIELD_NUMBER: _ClassVar[int]
+    CACHE_ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    status: PrefillJobStatus
+    tokens_computed: int
+    lease_id: str
+    block_hash: bytes
+    payload_sha256: bytes
+    transfer_bytes: int
+    failure_reason: str
+    compute_ms: float
+    cache_address: str
+    def __init__(self, job_id: _Optional[str] = ..., status: _Optional[_Union[PrefillJobStatus, str]] = ..., tokens_computed: _Optional[int] = ..., lease_id: _Optional[str] = ..., block_hash: _Optional[bytes] = ..., payload_sha256: _Optional[bytes] = ..., transfer_bytes: _Optional[int] = ..., failure_reason: _Optional[str] = ..., compute_ms: _Optional[float] = ..., cache_address: _Optional[str] = ...) -> None: ...
+
+class CancelPrefillJobRequest(_message.Message):
+    __slots__ = ("job_id", "tenant_id")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    TENANT_ID_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    tenant_id: str
+    def __init__(self, job_id: _Optional[str] = ..., tenant_id: _Optional[str] = ...) -> None: ...
+
+class CancelPrefillJobResponse(_message.Message):
+    __slots__ = ("cancelled",)
+    CANCELLED_FIELD_NUMBER: _ClassVar[int]
+    cancelled: bool
+    def __init__(self, cancelled: _Optional[bool] = ...) -> None: ...
 
 class ProposeBlockRequest(_message.Message):
     __slots__ = ("committed_token_ids", "block_size", "num_steps", "model_id")

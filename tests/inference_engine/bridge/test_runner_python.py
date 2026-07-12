@@ -30,6 +30,8 @@ def test_candidates_prioritise_pin_then_venvs_then_path():
         "/pin/bin/python",
         "/home/me/kakeya-venv/bin/python",
         "/home/me/.venv/bin/python",
+        "/home/me/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3.13",
+        "/home/me/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python",
         "/usr/bin/python3.13",
         "/usr/bin/python3",
     ]
@@ -44,6 +46,8 @@ def test_candidates_drop_empty_and_dedupe():
     assert cands == [
         "/home/me/kakeya-venv/bin/python",
         "/home/me/.venv/bin/python",
+        "/home/me/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python3.13",
+        "/home/me/Documents/Kakeya-LLM-Inference-engine-pr109/.venv-mac/bin/python",
     ]
     assert None not in cands
 

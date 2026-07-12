@@ -13,6 +13,10 @@ from inference_engine.distributed.capability import (
 )
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
 from inference_engine.distributed.prefill_cache import CacheBlock
+from inference_engine.distributed.prefill_auth import (
+    FleetAuthConfig,
+    signed_metadata,
+)
 from inference_engine.distributed.prefill_cache_service import (
     PrefillCacheServiceServicer,
     add_prefill_cache_service,
@@ -63,6 +67,54 @@ async def test_lookup_and_fetch_over_real_grpc():
                 ):
                     pass
             assert error.value.code() == grpc.StatusCode.NOT_FOUND
+    finally:
+        await server.stop(0)
+
+
+@pytest.mark.asyncio
+async def test_authenticated_cache_service_rejects_unsigned_requests():
+    compatibility = CacheCompatibility(
+        model_id="m",
+        block_size_tokens=2,
+        tenant_namespace="tenant",
+    )
+    store = PrefixCacheStore(compatibility, max_bytes=1024, node_id="peer")
+    hashes = store.put_prefix([1, 2], [b"payload"])
+    auth = FleetAuthConfig(b"k" * 32, "tenant", "client")
+    server = grpc.aio.server()
+    port = server.add_insecure_port("127.0.0.1:0")
+    address = f"127.0.0.1:{port}"
+    add_prefill_cache_service(
+        server, store, cache_address=address, auth=auth,
+    )
+    await server.start()
+    try:
+        request = distributed_pb2.LookupPrefixRequest(
+            compatibility=_compat().to_proto(),
+            # overwritten below to use the authenticated tenant namespace
+            block_hashes=hashes,
+        )
+        request.compatibility.CopyFrom(compatibility.to_proto())
+        async with grpc.aio.insecure_channel(address) as channel:
+            stub = distributed_pb2_grpc.PrefillCacheServiceStub(channel)
+            with pytest.raises(grpc.aio.AioRpcError) as error:
+                await stub.LookupPrefix(request)
+            assert error.value.code() == grpc.StatusCode.UNAUTHENTICATED
+            response = await stub.LookupPrefix(
+                request,
+                metadata=signed_metadata(request, auth),
+            )
+            assert response.hit_block_count == 1
+            wrong = distributed_pb2.LookupPrefixRequest(
+                compatibility=_compat().to_proto(),
+                block_hashes=hashes,
+            )
+            with pytest.raises(grpc.aio.AioRpcError) as error:
+                await stub.LookupPrefix(
+                    wrong,
+                    metadata=signed_metadata(wrong, auth),
+                )
+            assert error.value.code() == grpc.StatusCode.PERMISSION_DENIED
     finally:
         await server.stop(0)
 
@@ -224,5 +276,73 @@ def test_service_validation_and_dead_publish():
             cache_address="peer:1",
             chunk_bytes=0,
         )
+    with pytest.raises(ValueError, match="max_payload_bytes"):
+        PrefillCacheServiceServicer(
+            store,
+            cache_address="peer:1",
+            max_payload_bytes=0,
+        )
     block = CacheBlock.create(bytes(32), 1, b"x")
     assert not publish_block_sync("127.0.0.1:1", _compat(), block, timeout_s=0.1)
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_duplicate_over_budget_and_incomplete_streams():
+    store = PrefixCacheStore(_compat(), max_bytes=1024, node_id="peer")
+    server = grpc.aio.server()
+    port = server.add_insecure_port("127.0.0.1:0")
+    address = f"127.0.0.1:{port}"
+    add_prefill_cache_service(
+        server,
+        store,
+        cache_address=address,
+        chunk_bytes=3,
+        max_payload_bytes=4,
+    )
+    await server.start()
+
+    async def call(chunks):
+        async with grpc.aio.insecure_channel(address) as channel:
+            stub = distributed_pb2_grpc.PrefillCacheServiceStub(channel)
+            return await stub.PublishBlock(iter(chunks))
+
+    import hashlib
+    base = dict(
+        block_hash=bytes(32),
+        token_count=2,
+        total_chunks=2,
+        block_sha256=hashlib.sha256(b"abcdef").digest(),
+        compatibility=_compat().to_proto(),
+    )
+    try:
+        with pytest.raises(grpc.aio.AioRpcError) as exc:
+            await call([
+                distributed_pb2.PublishBlockRequest(
+                    **base, chunk_index=0, data=b"abc",
+                ),
+                distributed_pb2.PublishBlockRequest(
+                    **base, chunk_index=0, data=b"abc",
+                ),
+            ])
+        assert exc.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+        with pytest.raises(grpc.aio.AioRpcError) as exc:
+            await call([
+                distributed_pb2.PublishBlockRequest(
+                    **base, chunk_index=0, data=b"abc",
+                ),
+                distributed_pb2.PublishBlockRequest(
+                    **base, chunk_index=1, data=b"def",
+                ),
+            ])
+        assert exc.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+
+        with pytest.raises(grpc.aio.AioRpcError) as exc:
+            await call([
+                distributed_pb2.PublishBlockRequest(
+                    **base, chunk_index=0, data=b"abc",
+                ),
+            ])
+        assert exc.value.code() == grpc.StatusCode.DATA_LOSS
+    finally:
+        await server.stop(0)

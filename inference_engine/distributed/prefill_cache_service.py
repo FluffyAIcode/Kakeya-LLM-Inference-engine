@@ -14,6 +14,12 @@ from inference_engine.distributed.capability import (
     CacheCompatibility,
     NodeCapability,
 )
+from inference_engine.distributed.prefill_auth import (
+    FleetAuthConfig,
+    PrefillAuthError,
+    signed_metadata,
+    verify_metadata,
+)
 from inference_engine.distributed.prefill_cache import (
     CacheBlock,
     PrefixCacheStore,
@@ -32,7 +38,10 @@ def cache_capability(
     *,
     cache_address: str,
     load: float = 0.0,
+    default_compression=None,
+    replication_factor: int = 1,
 ) -> CacheCapability:
+    from inference_engine.distributed.capability import CompressionCodec
     stats = store.stats()
     return CacheCapability(
         compatibility=store.compatibility,
@@ -43,6 +52,12 @@ def cache_capability(
         cache_epoch=stats.cache_epoch,
         load=load,
         tokens_served=stats.tokens_served,
+        default_compression=(
+            CompressionCodec.NONE
+            if default_compression is None
+            else CompressionCodec(default_compression)
+        ),
+        replication_factor=replication_factor,
     )
 
 
@@ -55,19 +70,48 @@ class PrefillCacheServiceServicer(
         *,
         cache_address: str,
         chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+        auth: FleetAuthConfig | None = None,
+        max_payload_bytes: int | None = None,
     ) -> None:
         if chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be > 0")
         self.store = store
         self.cache_address = cache_address
         self.chunk_bytes = int(chunk_bytes)
+        self.auth = auth
+        self.max_payload_bytes = (
+            int(max_payload_bytes)
+            if max_payload_bytes is not None else store.max_bytes
+        )
+        if self.max_payload_bytes <= 0:
+            raise ValueError("max_payload_bytes must be > 0")
+
+    async def _authenticate(self, request, context) -> None:
+        if self.auth is None:
+            return
+        try:
+            verify_metadata(context.invocation_metadata(), request, self.auth)
+        except PrefillAuthError as exc:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, str(exc))
+
+    async def _authorize_compatibility(self, compatibility, context) -> None:
+        if (
+            self.auth is not None
+            and compatibility.tenant_namespace != self.auth.tenant_id
+        ):
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "cache tenant namespace mismatch",
+            )
 
     async def GetCacheSummary(  # noqa: N802
         self,
         request: distributed_pb2.GetCacheSummaryRequest,
         context: grpc.aio.ServicerContext,
     ) -> distributed_pb2.GetCacheSummaryResponse:
+        await self._authenticate(request, context)
         requested = CacheCompatibility.from_proto(request.compatibility)
+        await self._authorize_compatibility(requested, context)
         caches = []
         if requested == self.store.compatibility:
             caches.append(
@@ -86,7 +130,9 @@ class PrefillCacheServiceServicer(
         request: distributed_pb2.LookupPrefixRequest,
         context: grpc.aio.ServicerContext,
     ) -> distributed_pb2.LookupPrefixResponse:
+        await self._authenticate(request, context)
         requested = CacheCompatibility.from_proto(request.compatibility)
+        await self._authorize_compatibility(requested, context)
         if requested != self.store.compatibility:
             return distributed_pb2.LookupPrefixResponse(
                 node_id=self.store.node_id,
@@ -100,6 +146,7 @@ class PrefillCacheServiceServicer(
         request: distributed_pb2.FetchBlocksRequest,
         context: grpc.aio.ServicerContext,
     ):
+        await self._authenticate(request, context)
         try:
             blocks = self.store.fetch(request.lease_id)
         except KeyError as exc:
@@ -130,9 +177,23 @@ class PrefillCacheServiceServicer(
     ) -> distributed_pb2.PublishBlockResponse:
         parts: dict[int, bytes] = {}
         first = None
+        received = 0
         async for chunk in request_iterator:
             if first is None:
                 first = chunk
+                await self._authenticate(first, context)
+                requested = CacheCompatibility.from_proto(first.compatibility)
+                await self._authorize_compatibility(requested, context)
+                if (
+                    first.total_chunks <= 0
+                    or first.total_chunks
+                    > (self.max_payload_bytes + self.chunk_bytes - 1)
+                    // self.chunk_bytes
+                ):
+                    await context.abort(
+                        grpc.StatusCode.RESOURCE_EXHAUSTED,
+                        "publish stream exceeds payload budget",
+                    )
             elif (
                 chunk.block_hash != first.block_hash
                 or chunk.total_chunks != first.total_chunks
@@ -142,7 +203,23 @@ class PrefillCacheServiceServicer(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     "inconsistent publish chunk metadata",
                 )
-            parts[chunk.chunk_index] = bytes(chunk.data)
+            if (
+                chunk.chunk_index >= chunk.total_chunks
+                or chunk.chunk_index in parts
+                or len(chunk.data) > self.chunk_bytes
+            ):
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "invalid or duplicate publish chunk",
+                )
+            data = bytes(chunk.data)
+            received += len(data)
+            if received > self.max_payload_bytes:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    "publish payload exceeds cache allocation budget",
+                )
+            parts[chunk.chunk_index] = data
         if first is None:
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
@@ -185,11 +262,15 @@ def add_prefill_cache_service(
     *,
     cache_address: str,
     chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    auth: FleetAuthConfig | None = None,
+    max_payload_bytes: int | None = None,
 ) -> PrefillCacheServiceServicer:
     servicer = PrefillCacheServiceServicer(
         store,
         cache_address=cache_address,
         chunk_bytes=chunk_bytes,
+        auth=auth,
+        max_payload_bytes=max_payload_bytes,
     )
     distributed_pb2_grpc.add_PrefillCacheServiceServicer_to_server(
         servicer, server,
@@ -220,16 +301,19 @@ async def lookup_peer(
     block_hashes: Sequence[bytes],
     *,
     timeout_s: float = 3.0,
+    auth: FleetAuthConfig | None = None,
 ) -> RemotePrefixHit:
     try:
         async with grpc.aio.insecure_channel(address) as channel:
             stub = distributed_pb2_grpc.PrefillCacheServiceStub(channel)
+            request = distributed_pb2.LookupPrefixRequest(
+                compatibility=compatibility.to_proto(),
+                block_hashes=block_hashes,
+            )
             response = await stub.LookupPrefix(
-                distributed_pb2.LookupPrefixRequest(
-                    compatibility=compatibility.to_proto(),
-                    block_hashes=block_hashes,
-                ),
+                request,
                 timeout=timeout_s,
+                metadata=signed_metadata(request, auth) if auth else None,
             )
     except grpc.aio.AioRpcError:
         return RemotePrefixHit(address, "", "", 0, 0, 0, 0, 0.0, b"")
@@ -252,6 +336,7 @@ async def lookup_best_peer(
     block_hashes: Sequence[bytes],
     *,
     timeout_s: float = 3.0,
+    auth: FleetAuthConfig | None = None,
 ) -> RemotePrefixHit | None:
     """Fan out concurrently and choose longest hit, then smallest transfer."""
     if not peers:
@@ -262,6 +347,7 @@ async def lookup_best_peer(
             compatibility,
             block_hashes,
             timeout_s=timeout_s,
+            auth=auth,
         )
         for peer in peers
     ))
@@ -282,12 +368,15 @@ async def fetch_remote_blocks(
     hit: RemotePrefixHit,
     *,
     timeout_s: float = 30.0,
+    auth: FleetAuthConfig | None = None,
 ) -> list[distributed_pb2.FetchBlocksResponse]:
     async with grpc.aio.insecure_channel(hit.address) as channel:
         stub = distributed_pb2_grpc.PrefillCacheServiceStub(channel)
+        request = distributed_pb2.FetchBlocksRequest(lease_id=hit.lease_id)
         stream = stub.FetchBlocks(
-            distributed_pb2.FetchBlocksRequest(lease_id=hit.lease_id),
+            request,
             timeout=timeout_s,
+            metadata=signed_metadata(request, auth) if auth else None,
         )
         return [chunk async for chunk in stream]
 
@@ -299,6 +388,7 @@ def publish_block_sync(
     *,
     timeout_s: float = 30.0,
     chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    auth: FleetAuthConfig | None = None,
 ) -> bool:
     """Publish one immutable snapshot to a peer (used by background workers)."""
     try:
@@ -306,24 +396,31 @@ def publish_block_sync(
             1, (block.nbytes + chunk_bytes - 1) // chunk_bytes,
         )
 
+        chunk_messages = []
+        for chunk_index in range(total_chunks):
+            start = chunk_index * chunk_bytes
+            chunk_messages.append(distributed_pb2.PublishBlockRequest(
+                block_hash=block.block_hash,
+                token_count=block.token_count,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                data=block.payload[start:start + chunk_bytes],
+                block_sha256=block.payload_sha256,
+                compatibility=compatibility.to_proto(),
+            ))
+
         def chunks():
-            for chunk_index in range(total_chunks):
-                start = chunk_index * chunk_bytes
-                yield distributed_pb2.PublishBlockRequest(
-                    block_hash=block.block_hash,
-                    token_count=block.token_count,
-                    chunk_index=chunk_index,
-                    total_chunks=total_chunks,
-                    data=block.payload[start:start + chunk_bytes],
-                    block_sha256=block.payload_sha256,
-                    compatibility=compatibility.to_proto(),
-                )
+            yield from chunk_messages
 
         with grpc.insecure_channel(address) as channel:
             stub = distributed_pb2_grpc.PrefillCacheServiceStub(channel)
             response = stub.PublishBlock(
                 chunks(),
                 timeout=timeout_s,
+                metadata=(
+                    signed_metadata(chunk_messages[0], auth)
+                    if auth is not None else None
+                ),
             )
     except grpc.RpcError:
         return False

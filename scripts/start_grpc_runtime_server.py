@@ -213,6 +213,10 @@ def _build_capability_registry(
             cache_capability(
                 cache_store,
                 cache_address=args.cache_advertise or args.advertise or args.bind,
+                default_compression=(
+                    2 if args.cache_compression == "zlib" else 1
+                ),
+                replication_factor=args.cache_replication_factor,
             ),
         )
 
@@ -253,6 +257,8 @@ async def _exchange_loop(
     *,
     cache_store=None,
     cache_address: str = "",
+    cache_compression: int = 1,
+    cache_replication_factor: int = 1,
 ) -> None:
     """Periodic gossip with seed peers until the task is cancelled."""
     from inference_engine.distributed.exchange import exchange_once
@@ -269,6 +275,8 @@ async def _exchange_loop(
                     cache_capability(
                         cache_store,
                         cache_address=cache_address,
+                        default_compression=cache_compression,
+                        replication_factor=cache_replication_factor,
                     ),
                 ),
             )
@@ -369,14 +377,23 @@ async def _serve(args: argparse.Namespace) -> int:
 
     prefill_store = None
     prefill_hook = None
+    prefill_auth = None
+    capability_registry_holder = [None]
     if args.enable_prefill_cache:
         if args.backend != "mlx":
             raise SystemExit("--enable-prefill-cache currently requires --backend mlx")
         import hashlib
-        from inference_engine.distributed.capability import CacheCompatibility
+        from inference_engine.distributed.capability import (
+            CacheCompatibility,
+            CompressionCodec,
+        )
+        from inference_engine.distributed.prefill_auth import FleetAuthConfig
         from inference_engine.distributed.prefill_cache import PrefixCacheStore
         from inference_engine.distributed.prefill_cache_runtime import (
             DistributedPrefillCacheHook,
+        )
+        from inference_engine.distributed.prefill_scheduler import (
+            PrefillCostConfig,
         )
 
         geometry = f"{num_layers}:{num_kv_heads}:{head_dim}"
@@ -390,6 +407,9 @@ async def _serve(args: argparse.Namespace) -> int:
             layer_geometry_hash=hashlib.sha256(geometry.encode()).hexdigest(),
             kv_dtype=args.cache_kv_dtype,
             block_size_tokens=args.cache_block_tokens,
+            tenant_namespace=args.cache_tenant_id,
+            sink_size=args.sink,
+            window_size=args.window,
         )
         prefill_store = PrefixCacheStore(
             compatibility,
@@ -397,11 +417,40 @@ async def _serve(args: argparse.Namespace) -> int:
             node_id=args.node_id or (__import__("platform").node() or "localhost"),
         )
         telemetry_callback = _build_token_telemetry_callback(args)
+        if args.fleet_psk_file:
+            prefill_auth = FleetAuthConfig.from_file(
+                args.fleet_psk_file,
+                tenant_id=args.cache_tenant_id,
+                node_id=args.node_id or "primary",
+            )
         prefill_hook = DistributedPrefillCacheHook(
             prefill_store,
             peers=args.cache_peer,
+            registry_provider=lambda: (
+                capability_registry_holder[0].snapshot()
+                if capability_registry_holder[0] is not None else ()
+            ),
             lookup_timeout_s=args.cache_lookup_timeout_s,
             fetch_timeout_s=args.cache_fetch_timeout_s,
+            worker_timeout_s=args.prefill_worker_timeout_s,
+            remote_compute_min_tokens=args.remote_prefill_min_tokens,
+            max_import_bytes=int(args.cache_max_import_gb * (1 << 30)),
+            estimated_snapshot_bytes_per_token=args.cache_estimated_bytes_per_token,
+            compression=(
+                CompressionCodec.ZLIB
+                if args.cache_compression == "zlib"
+                else CompressionCodec.NONE
+            ),
+            replication_factor=args.cache_replication_factor,
+            cost_config=PrefillCostConfig(
+                local_prefill_tps=args.local_prefill_tps,
+                default_worker_tps=args.worker_prefill_tps,
+                link_mbps=args.cache_link_mbps,
+                default_rtt_ms=args.cache_default_rtt_ms,
+                minimum_savings_ratio=args.prefill_min_savings_ratio,
+                primary_compute_penalty_ms=args.primary_prefill_penalty_ms,
+            ),
+            auth=prefill_auth,
             on_reuse=(
                 (lambda count: telemetry_callback(count, count))
                 if telemetry_callback is not None else None
@@ -467,6 +516,7 @@ async def _serve(args: argparse.Namespace) -> int:
             backend=args.backend,
             cache_store=prefill_store,
         )
+        capability_registry_holder[0] = registry
         if args.serve_ngram_proposer:
             from inference_engine.distributed.capability import NGRAM_MODEL_ID
             from inference_engine.distributed.ngram import NGramProposer
@@ -486,6 +536,7 @@ async def _serve(args: argparse.Namespace) -> int:
         proposers=proposers,
         prefill_cache_store=prefill_store,
         prefill_cache_address=args.cache_advertise or args.advertise or args.bind,
+        prefill_auth=prefill_auth,
     )
 
     await server.start()
@@ -532,6 +583,10 @@ async def _serve(args: argparse.Namespace) -> int:
                 args.exchange_interval_s,
                 cache_store=prefill_store,
                 cache_address=args.cache_advertise or args.advertise or args.bind,
+                cache_compression=(
+                    2 if args.cache_compression == "zlib" else 1
+                ),
+                cache_replication_factor=args.cache_replication_factor,
             ),
         )
         _LOG.info(
@@ -563,6 +618,8 @@ async def _serve(args: argparse.Namespace) -> int:
         http_server.should_exit = True
     if http_task is not None:
         await http_task
+    if prefill_hook is not None:
+        prefill_hook.close()
     await server.stop(grace=args.shutdown_grace_s)
     _LOG.info("kakeya gRPC RuntimeService stopped cleanly")
     return 0
@@ -648,7 +705,7 @@ def main() -> int:
                          "Defaults to --advertise/--bind.")
     ap.add_argument("--cache-block-tokens", type=int, default=64,
                     help="Token boundary interval for restorable snapshots.")
-    ap.add_argument("--cache-format-version", default="kakeya-prefill-v1")
+    ap.add_argument("--cache-format-version", default="kakeya-prefill-v2-zlib")
     ap.add_argument("--cache-model-id", default="",
                     help="Logical cache model id; defaults to --verifier-id. "
                          "Use this when verifier-id is a host-specific path.")
@@ -663,6 +720,28 @@ def main() -> int:
                     help="RoPE/position configuration fingerprint.")
     ap.add_argument("--cache-lookup-timeout-s", type=float, default=2.0)
     ap.add_argument("--cache-fetch-timeout-s", type=float, default=30.0)
+    ap.add_argument("--cache-tenant-id", default="default",
+                    help="Tenant namespace included in cache compatibility.")
+    ap.add_argument("--fleet-psk-file", default="",
+                    help="Optional fleet PSK file for authenticated prefill RPCs "
+                         "and tenant-HMAC prefix hashes.")
+    ap.add_argument("--cache-compression", choices=["none", "zlib"],
+                    default="zlib")
+    ap.add_argument("--cache-replication-factor", type=int, default=1)
+    ap.add_argument("--cache-max-import-gb", type=float, default=1.0,
+                    help="Reject remote snapshots whose wire or expanded size "
+                         "would exceed this import budget.")
+    ap.add_argument("--cache-estimated-bytes-per-token", type=int, default=400000)
+    ap.add_argument("--cache-link-mbps", type=float, default=1000.0)
+    ap.add_argument("--cache-default-rtt-ms", type=float, default=2.0)
+    ap.add_argument("--local-prefill-tps", type=float, default=20.0)
+    ap.add_argument("--worker-prefill-tps", type=float, default=20.0)
+    ap.add_argument("--prefill-min-savings-ratio", type=float, default=0.10)
+    ap.add_argument("--primary-prefill-penalty-ms", type=float, default=5000.0,
+                    help="Opportunity cost assigned to blocking the primary "
+                         "with prefill; drives work to compute peers.")
+    ap.add_argument("--remote-prefill-min-tokens", type=int, default=128)
+    ap.add_argument("--prefill-worker-timeout-s", type=float, default=120.0)
     ap.add_argument("--network-label", default="lan",
                     help="Advertised interface: thunderbolt|lan|tailscale|public.")
     ap.add_argument("--network-priority", type=int, default=50)

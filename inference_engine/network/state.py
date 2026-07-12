@@ -95,6 +95,7 @@ class NetworkState:
         for card in self.registry.snapshot():
             registration = registrations.get(card.node_id, {})
             cache = card.caches[0] if card.caches else None
+            worker = card.prefill_workers[0] if card.prefill_workers else None
             endpoint = sorted(
                 card.endpoints,
                 key=lambda item: item.priority,
@@ -132,6 +133,19 @@ class NetworkState:
                     }
                     if cache else None
                 ),
+                "prefill_worker": (
+                    {
+                        "address": worker.worker_address,
+                        "max_concurrent_jobs": worker.max_concurrent_jobs,
+                        "inflight_jobs": worker.inflight_jobs,
+                        "queued_jobs": worker.queued_jobs,
+                        "queued_tokens": worker.queued_tokens,
+                        "load": worker.load,
+                        "tokens_per_second": worker.tokens_per_second_prefill,
+                        "ram_bytes_free": worker.ram_bytes_free,
+                    }
+                    if worker else None
+                ),
                 "endpoint": (
                     {
                         "address": endpoint[0].address,
@@ -160,6 +174,7 @@ class NetworkState:
                     "memory_bytes": 0,
                     "models": [],
                     "cache": None,
+                    "prefill_worker": None,
                     "endpoint": {
                         "address": registration["address"],
                         "network": "pending",

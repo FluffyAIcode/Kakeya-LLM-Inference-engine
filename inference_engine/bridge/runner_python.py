@@ -55,6 +55,14 @@ def workload_python_candidates(
         environ.get("KAKEYA_MAC_PYTHON"),
         expanduser("~/kakeya-venv/bin/python"),
         expanduser("~/.venv/bin/python"),
+        expanduser(
+            "~/Documents/Kakeya-LLM-Inference-engine-pr109/"
+            ".venv-mac/bin/python3.13",
+        ),
+        expanduser(
+            "~/Documents/Kakeya-LLM-Inference-engine-pr109/"
+            ".venv-mac/bin/python",
+        ),
         which("python3.13"),
         which("python3"),
     ]

@@ -4,12 +4,10 @@ name: Integration (Mac M4)
 # tests/integration/ against real Qwen3-0.6B on Apple Silicon.
 #
 # Trigger model:
-#   - Pull-request events. Only fires when the PR carries the
-#     ``needs-mac-m4`` label (auto-applied by .github/workflows/
-#     auto-label-mac.yaml when a PR touches inference_engine/,
-#     sdks/, proto/, or tests/integration/). PRs that don't touch
-#     verifier-dependent code skip this gate entirely so the runner
-#     pool isn't burned on doc-only or CI-only PRs.
+#   - Pull-request events touching runtime/model/proto/integration paths.
+#     Path filtering is used directly instead of depending on an auto-label:
+#     workflows triggered with GITHUB_TOKEN do not recursively trigger the
+#     ``labeled`` event, which previously made the first Mac gate skip.
 #   - Manual workflow_dispatch for re-runs from the Actions UI.
 #
 # Runner requirements (self-hosted):
@@ -27,6 +25,14 @@ on:
     # Only run on PR events for branches targeting main.
     types: [opened, synchronize, reopened, labeled]
     branches: [main]
+    paths:
+      - "inference_engine/**"
+      - "kv_cache_proposer/**"
+      - "proto/**"
+      - "sdks/**"
+      - "tests/integration/**"
+      - "tests/backends/mlx/**"
+      - ".github/workflows/integration.yaml"
   workflow_dispatch: {}
 
 # Cancel superseded runs on the same PR — saves runner time when
@@ -39,16 +45,33 @@ concurrency:
 jobs:
   integration:
     name: pytest -m integration on Mac M4
-    # Only fire on labeled PRs (this saves the runner pool from
-    # doc-only / CI-only PRs that don't touch verifier-dependent
-    # code). The auto-label workflow adds 'needs-mac-m4' on file
-    # paths that warrant the GA gate.
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'needs-mac-m4')
     runs-on: [self-hosted, macOS, ARM64, kakeya-mac-m4]
     timeout-minutes: 90
     steps:
+      - name: Bootstrap git-lfs before checkout
+        # Reused worktrees can retain a git-lfs post-checkout hook. The hook
+        # executes inside checkout@v4, so repair PATH before checkout.
+        run: |
+          set -euo pipefail
+          if [ -x /opt/homebrew/bin/git-lfs ]; then
+            echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          if [ -x /usr/local/bin/git-lfs ]; then
+            echo "/usr/local/bin" >> "$GITHUB_PATH"
+            exit 0
+          fi
+          brew_bin=""
+          for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [ -x "$candidate" ]; then brew_bin="$candidate"; break; fi
+          done
+          if [ -z "$brew_bin" ]; then
+            echo "::error::git-lfs is missing and Homebrew is unavailable."
+            exit 1
+          fi
+          "$brew_bin" install git-lfs
+          echo "$(dirname "$brew_bin")" >> "$GITHUB_PATH"
+
       - uses: actions/checkout@v4
         with:
           # Full history so the runner can compare against base for
@@ -80,23 +103,81 @@ jobs:
           fi
           echo "Found $MODEL_DIR"
 
+      - name: Gate real MLX distributed-prefill continuation equivalence
+        env:
+          KAKEYA_MAC_VERIFIER_PATH_VAR: ${{ vars.KAKEYA_MAC_VERIFIER_PATH || '' }}
+        run: |
+          set -euo pipefail
+          default_verifier="$HOME/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"
+          if [ ! -d "$default_verifier" ]; then
+            default_verifier="models/gemma-4-26B-A4B-it-mlx-4bit"
+          fi
+          export KAKEYA_MAC_VERIFIER_PATH="${KAKEYA_MAC_VERIFIER_PATH_VAR:-$default_verifier}"
+          if [ ! -d "$KAKEYA_MAC_VERIFIER_PATH" ]; then
+            echo "::error::KAKEYA_MAC_VERIFIER_PATH must point to the pre-warmed MLX verifier."
+            exit 1
+          fi
+          PYBIN="$(
+            python3 - <<'PY'
+          import os, shutil, subprocess
+          candidates = [
+              os.environ.get("KAKEYA_MAC_PYTHON"),
+              os.path.expanduser("~/kakeya-venv/bin/python"),
+              os.path.expanduser("~/.venv/bin/python"),
+              os.path.expanduser(
+                  "~/Documents/Kakeya-LLM-Inference-engine-pr109/"
+                  ".venv-mac/bin/python3.13"
+              ),
+              os.path.expanduser(
+                  "~/Documents/Kakeya-LLM-Inference-engine-pr109/"
+                  ".venv-mac/bin/python"
+              ),
+              shutil.which("python3.13"),
+              shutil.which("python3"),
+          ]
+          for candidate in candidates:
+              if not candidate or not os.path.isfile(candidate):
+                  continue
+              if subprocess.run(
+                  [candidate, "-c", "import mlx_lm, torch, pytest"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode == 0:
+                  print(candidate)
+                  break
+          PY
+          )"
+          test -n "$PYBIN"
+          PYTHONPATH=.:sdks/python "$PYBIN" -m pytest \
+            -m integration \
+            tests/integration/test_prefill_snapshot_mlx_equivalence.py \
+            -q
+
       - name: Install Python dependencies
         run: |
-          # The runner is expected to have a long-lived venv.
-          # If a per-run venv is preferred, swap to ``python3 -m venv .venv``.
-          python3 -m pip install --upgrade pip
+          # Keep the legacy Qwen/Transformers-4 suite isolated from both
+          # Homebrew's PEP-668-managed system Python and the Transformers-5 MLX
+          # production venv used by the preceding real-model gate.
+          LEGACY_VENV="$HOME/.kakeya/integration-legacy-venv"
+          if [ ! -x "$LEGACY_VENV/bin/python" ]; then
+            mkdir -p "$(dirname "$LEGACY_VENV")"
+            python3 -m venv "$LEGACY_VENV"
+          fi
+          LEGACY_PY="$LEGACY_VENV/bin/python"
+          "$LEGACY_PY" -m pip install --upgrade pip
           # The repo runs via PYTHONPATH (see ci.yaml) — it is NOT a pip package
           # (no setup.py/pyproject.toml), so install runtime deps from
           # requirements.txt rather than an editable `-e .` (which errors with
           # "does not appear to be a Python project").
-          python3 -m pip install -r requirements.txt
+          "$LEGACY_PY" -m pip install -r requirements.txt
           # The integration suite exercises the legacy dllm-hub Qwen proposer,
           # whose remote modeling file depends on the Transformers 4.x
           # decoder_layer.attention_type API. Keep this runner in the dedicated
           # legacy range; K3/Gemma production paths use requirements.txt's
           # unbounded Transformers 5.x-compatible environment.
-          python3 -m pip install 'transformers>=4.45,<5.0'
-          python3 -m pip install pytest pytest-asyncio pytest-timeout coverage
+          "$LEGACY_PY" -m pip install 'transformers>=4.45,<5.0'
+          "$LEGACY_PY" -m pip install pytest pytest-asyncio pytest-timeout coverage
+          echo "KAKEYA_INTEGRATION_PY=$LEGACY_PY" >> "$GITHUB_ENV"
 
       - name: Run integration suite
         env:
@@ -107,7 +188,7 @@ jobs:
         run: |
           mkdir -p results/platform-tests
           stamp=$(date +%s)
-          python3 -m pytest \
+          "$KAKEYA_INTEGRATION_PY" -m pytest \
             -m integration \
             tests/integration/ \
             --junitxml="results/platform-tests/integration-mac-m4-${stamp}.junit.xml" \

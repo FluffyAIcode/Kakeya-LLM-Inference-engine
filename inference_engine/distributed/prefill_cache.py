@@ -13,6 +13,7 @@ missing suffix locally, and keeps the autoregressive loop local.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import threading
@@ -37,7 +38,10 @@ def compatibility_fingerprint(compatibility: CacheCompatibility) -> bytes:
         "model_revision": compatibility.model_revision,
         "quantization": compatibility.quantization,
         "rope_hash": compatibility.rope_hash,
+        "sink_size": compatibility.sink_size,
+        "tenant_namespace": compatibility.tenant_namespace,
         "tokenizer_revision": compatibility.tokenizer_revision,
+        "window_size": compatibility.window_size,
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(),
@@ -47,6 +51,8 @@ def compatibility_fingerprint(compatibility: CacheCompatibility) -> bytes:
 def chained_block_hashes(
     token_ids: Sequence[int],
     compatibility: CacheCompatibility,
+    *,
+    hmac_key: bytes = b"",
 ) -> list[bytes]:
     """Hash fixed-size token blocks, chaining each hash to its predecessor.
 
@@ -62,7 +68,12 @@ def chained_block_hashes(
     for start in range(0, len(token_ids), size):
         block = token_ids[start:start + size]
         encoded = b"".join(int(t).to_bytes(4, "little", signed=False) for t in block)
-        previous = hashlib.sha256(namespace + previous + encoded).digest()
+        material = namespace + previous + encoded
+        previous = (
+            hmac.new(hmac_key, material, hashlib.sha256).digest()
+            if hmac_key
+            else hashlib.sha256(material).digest()
+        )
         hashes.append(previous)
     return hashes
 
@@ -149,6 +160,7 @@ class PrefixCacheStore:
         if block.nbytes > self.max_bytes:
             raise ValueError("block payload exceeds cache capacity")
         with self._lock:
+            self._expire_leases(time.time())
             existing = self._blocks.get(block.block_hash)
             if existing is not None:
                 if existing.payload_sha256 != block.payload_sha256:
@@ -159,6 +171,10 @@ class PrefixCacheStore:
             self._bytes_used += block.nbytes
             self._epoch += 1
             self._evict_to_budget()
+            if block.block_hash not in self._blocks:
+                raise ValueError(
+                    "cache capacity is pinned by active leases",
+                )
             return True
 
     def put_prefix(
@@ -248,6 +264,19 @@ class PrefixCacheStore:
     def block_hashes(self) -> tuple[bytes, ...]:
         with self._lock:
             return tuple(self._blocks)
+
+    def invalidate(self, block_hash: bytes) -> bool:
+        """Drop a corrupt/rejected snapshot so local recompute can replace it."""
+        with self._lock:
+            block = self._blocks.pop(bytes(block_hash), None)
+            if block is None:
+                return False
+            self._bytes_used -= block.nbytes
+            self._epoch += 1
+            for lease_id, lease in list(self._leases.items()):
+                if bytes(block_hash) in lease.block_hashes:
+                    del self._leases[lease_id]
+            return True
 
     def _expire_leases(self, now: float) -> None:
         for lease_id, lease in list(self._leases.items()):

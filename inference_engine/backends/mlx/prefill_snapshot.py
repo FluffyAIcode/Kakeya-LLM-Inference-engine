@@ -35,6 +35,7 @@ class ImportedPrefillSnapshot:
     token_count: int
     cached_token_ids: tuple[int, ...]
     next_token_logits: Any | None
+    block_hash: bytes = b""
 
 
 def export_mlx_prefill_snapshot(
@@ -44,6 +45,7 @@ def export_mlx_prefill_snapshot(
     cached_token_ids: Sequence[int],
     compatibility: CacheCompatibility,
     next_token_logits: Any | None = None,
+    block_hash: bytes = b"",
 ) -> bytes:
     """Serialize current MLX cache state at one prefix boundary."""
     if token_count <= 0:
@@ -68,6 +70,7 @@ def export_mlx_prefill_snapshot(
             "token_count": int(token_count),
             "cached_token_ids": [int(token) for token in cached_token_ids],
             "layer_count": len(cache),
+            "block_hash": bytes(block_hash).hex(),
         },
     )
 
@@ -108,6 +111,7 @@ def import_mlx_prefill_snapshot(
         token_count=token_count,
         cached_token_ids=tuple(int(t) for t in metadata["cached_token_ids"]),
         next_token_logits=next_logits,
+        block_hash=bytes.fromhex(metadata.get("block_hash", "")),
     )
 
 

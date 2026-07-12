@@ -1,20 +1,19 @@
-"""Multi-host plane for Kakeya (ADR 0009, v0.5-M1).
+"""Multi-host plane for Kakeya (ADR 0009 / 0016 / 0017).
 
 Subpackage layout:
 
 - :mod:`capability` — capability cards + the converging gossip
   registry (``NodeCapability`` / ``ModelCapability`` /
   ``CapabilityRegistry``).
-- :mod:`placement` — deterministic spec-decode placement over a
-  fleet snapshot.
+- :mod:`prefill_worker` — queued prefill-only compute workers.
+- :mod:`prefill_cache` / :mod:`prefill_cache_service` — immutable RAM cache.
+- :mod:`prefill_cache_runtime` — primary-side orchestration and fallback.
+- :mod:`prefill_scheduler` — load/cost-aware worker and replica placement.
+- :mod:`prefill_auth` — fleet-PSK authentication and tenant hash isolation.
 - :mod:`exchange` — ``CapabilityService`` gRPC servicer + the
   ``exchange_once`` gossip client.
-- :mod:`ngram` — model-free prompt-lookup proposer (the always-
-  available proposer capability every node can advertise).
-- :mod:`proposer_service` — ``ProposerService`` gRPC servicer +
-  ``RemoteProposer`` client (drop-in ``DLMProposer`` substitute).
-- :mod:`spec_decode` — pure greedy accept rule +
-  ``DistributedSpeculativeDecoder``.
+- :mod:`ngram`, :mod:`proposer_service`, :mod:`spec_decode` — legacy research
+  proposer paths retained for reproducibility; not the product architecture.
 - :mod:`mlx_ring` — optional ``mlx.distributed`` ring probe
   (bulk-tensor data plane advertisement, ADR 0009 §4 item 4).
 
@@ -26,8 +25,11 @@ to a structured "unavailable" probe off Apple Silicon.
 from inference_engine.distributed.capability import (
     CapabilityRegistry,
     CapabilityRole,
+    CacheCompatibility,
+    CompressionCodec,
     ModelCapability,
     NodeCapability,
+    PrefillWorkerCapability,
 )
 from inference_engine.distributed.placement import (
     PlacementError,
@@ -38,8 +40,11 @@ from inference_engine.distributed.placement import (
 __all__ = [
     "CapabilityRegistry",
     "CapabilityRole",
+    "CacheCompatibility",
+    "CompressionCodec",
     "ModelCapability",
     "NodeCapability",
+    "PrefillWorkerCapability",
     "PlacementError",
     "SpecDecodePlacement",
     "plan_spec_decode_placement",

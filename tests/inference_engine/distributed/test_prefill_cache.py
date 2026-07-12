@@ -104,3 +104,16 @@ def test_pinned_eviction_and_missing_leased_block_guards():
     store._blocks.pop(block.block_hash)
     with pytest.raises(KeyError, match="evicted"):
         store.fetch(lease.lease_id, now=1)
+
+
+def test_put_rejects_when_active_lease_pins_capacity():
+    import time
+
+    store = PrefixCacheStore(_compat(), max_bytes=5, node_id="x")
+    first = CacheBlock.create(bytes(32), 1, b"12345")
+    store.put(first)
+    store.lookup([first.block_hash], now=time.time())
+    second = CacheBlock.create(bytes.fromhex("01" * 32), 1, b"abc")
+    with pytest.raises(ValueError, match="pinned"):
+        store.put(second)
+    assert store.block_hashes() == (first.block_hash,)

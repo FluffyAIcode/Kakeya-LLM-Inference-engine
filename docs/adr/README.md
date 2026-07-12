@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 This directory contains Architecture Decision Records (ADRs) for the
-DLM-proposer + AR-verifier project. Each ADR captures a single architectural
+Kakeya distributed inference runtime. Each ADR captures a single architectural
 decision, the context that led to it, the alternatives considered, and the
 consequences of choosing one path over another.
 
@@ -40,12 +40,13 @@ reader what was *not* chosen.
 | 0006 | [Project positioning as local agent infrastructure](0006-local-agent-infrastructure-positioning.md) | Accepted |
 | 0007 | [Cross-request KV cache reuse for long sessions](0007-cross-request-kv-reuse.md) | Superseded by 0008 |
 | 0008 | [Session-bound runtime + gRPC protocol](0008-session-bound-runtime-and-grpc-protocol.md) | Accepted |
-| 0009 | [Multi-host milestone: AR-verifier / dLM-proposer on mlx.distributed + agent capability exchange](0009-mlx-distributed-spec-decode-and-capability-exchange.md) | Accepted |
+| 0009 | [Multi-host milestone: AR-verifier / dLM-proposer on mlx.distributed + agent capability exchange](0009-mlx-distributed-spec-decode-and-capability-exchange.md) | Capability gossip retained; proposer path legacy |
 | 0012 | [Proposer/verifier value proposition: bounded-memory + recall, platform-forked throughput](0012-proposer-verifier-value-proposition.md) | Accepted |
 | 0013 | [Distributed inference topology: what AR sequentiality allows](0013-distributed-inference-topology.md) | Accepted |
 | 0014 | [Agent-connection capacity & cross-host proposer/verifier topology: test plan & results](0014-agent-connection-capacity-and-cross-host-topology-tests.md) | Accepted |
-| 0015 | [Kakeya Inference Engine: a product-grade vLLM replacement, Kakeya Attention native](0015-kakeya-attention-and-engine-substrate.md) | Accepted |
-| 0016 | [Distributed Prefill KV Cache Network](0016-distributed-prefill-kv-cache-network.md) | Proposed / MVP |
+| 0015 | [Kakeya Inference Engine: a product-grade vLLM replacement, Kakeya Attention native](0015-kakeya-attention-and-engine-substrate.md) | Superseded by 0017 for product architecture |
+| 0016 | [Distributed Prefill KV Cache Network](0016-distributed-prefill-kv-cache-network.md) | Accepted foundation |
+| 0017 | [Primary-decode / distributed-prefill worker orchestration](0017-prefill-compute-worker-orchestration.md) | Accepted / implementation |
 
 Note: ADR numbering is monotonically increasing; in-flight or
 planned numbers (0005) appear in the index so readers can
