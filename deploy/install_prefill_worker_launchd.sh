@@ -87,6 +87,7 @@ cat > "$PLIST" <<EOF
 </dict></plist>
 EOF
 
+chmod 644 "$PLIST"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "installed $LABEL -> $PLIST"

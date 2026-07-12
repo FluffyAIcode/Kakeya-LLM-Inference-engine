@@ -22,6 +22,7 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
         assert f"<string>{flag}</string>" in source
     assert 'PEER="${KAKEYA_WORKER_PEER:-}"' in source
     assert "<string>--peer</string>" in source
+    assert 'chmod 644 "$PLIST"' in source
 
 
 def test_head_runtime_discovers_and_uses_worker_cache_port():

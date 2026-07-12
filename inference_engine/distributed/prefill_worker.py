@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 import grpc
 
@@ -85,9 +85,10 @@ class PrefillJobStore:
 
     def __init__(
         self,
-        engine: PrefillComputeEngine,
+        engine: PrefillComputeEngine | None,
         cache_store: PrefixCacheStore,
         *,
+        engine_factory: Callable[[], PrefillComputeEngine] | None = None,
         max_concurrent_jobs: int = 1,
         max_jobs: int = 128,
         completed_ttl_s: float = 600.0,
@@ -100,7 +101,10 @@ class PrefillJobStore:
             max_prompt_tokens,
         ) <= 0:
             raise ValueError("worker limits must be > 0")
+        if (engine is None) == (engine_factory is None):
+            raise ValueError("provide exactly one of engine or engine_factory")
         self.engine = engine
+        self.engine_factory = engine_factory
         self.cache_store = cache_store
         self.max_concurrent_jobs = int(max_concurrent_jobs)
         self.max_jobs = int(max_jobs)
@@ -109,10 +113,15 @@ class PrefillJobStore:
         self._jobs: dict[str, PrefillJob] = {}
         self._requests: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
+        self._thread_local = threading.local()
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_concurrent_jobs,
             thread_name_prefix="kakeya-prefill-worker",
         )
+
+    def warmup(self) -> None:
+        """Construct a factory-backed engine on its eventual compute thread."""
+        self._executor.submit(self._engine_for_current_thread).result()
 
     def submit(
         self,
@@ -243,7 +252,7 @@ class PrefillJobStore:
                 timer.daemon = True
                 timer.start()
         try:
-            blocks = tuple(self.engine.compute_prefill(
+            blocks = tuple(self._engine_for_current_thread().compute_prefill(
                 job.token_ids,
                 job.block_hashes,
                 compression=job.compression,
@@ -288,6 +297,16 @@ class PrefillJobStore:
             with self._lock:
                 job.compute_ms = (time.perf_counter() - started) * 1000.0
                 job.finished_at = time.time()
+
+    def _engine_for_current_thread(self) -> PrefillComputeEngine:
+        if self.engine is not None:
+            return self.engine
+        engine = getattr(self._thread_local, "engine", None)
+        if engine is None:
+            assert self.engine_factory is not None
+            engine = self.engine_factory()
+            self._thread_local.engine = engine
+        return engine
 
     def _gc_locked(self) -> None:
         cutoff = time.time() - self.completed_ttl_s
