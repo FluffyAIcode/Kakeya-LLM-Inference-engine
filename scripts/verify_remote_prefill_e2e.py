@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one cold-prefix request and prove that a remote prefill worker served it."""
+"""Prove a remote cache hit, or explicitly require remote compute plus import."""
 from __future__ import annotations
 
 import argparse
@@ -18,12 +18,30 @@ def _delta(before: dict, after: dict, key: str) -> int:
     return int(after.get(key, 0)) - int(before.get(key, 0))
 
 
+def _acceptance(
+    before: dict,
+    after: dict,
+    *,
+    minimum_prefix_tokens: int,
+    require_worker: bool,
+) -> tuple[bool, str]:
+    remote_hit = (
+        _delta(before, after, "remote_hits") >= 1
+        and _delta(before, after, "tokens_reused") >= minimum_prefix_tokens
+    )
+    remote_compute = remote_hit and _delta(before, after, "remote_jobs") >= 1
+    path = "remote_compute" if remote_compute else "remote_cache" if remote_hit else "none"
+    return (remote_compute if require_worker else remote_hit), path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default="127.0.0.1:51051")
     parser.add_argument("--dashboard", default="http://127.0.0.1:8090")
     parser.add_argument("--tokenizer-id", required=True)
     parser.add_argument("--minimum-prefix-tokens", type=int, default=128)
+    parser.add_argument("--head-node-id", default="head-runtime")
+    parser.add_argument("--require-worker", action="store_true")
     args = parser.parse_args()
 
     from kakeya import Client
@@ -48,10 +66,22 @@ def main() -> int:
         node for node in nodes
         if node.get("prefill_worker") and node.get("status") == "online"
     ]
-    if not workers:
+    cache_nodes = [
+        node for node in nodes
+        if (
+            node["id"] != args.head_node_id
+            and node.get("cache")
+            and node.get("status") == "online"
+        )
+    ]
+    if not cache_nodes or (args.require_worker and not workers):
         print(json.dumps({
             "ok": False,
-            "reason": "no online prefill worker capability",
+            "reason": (
+                "no online prefill worker capability"
+                if args.require_worker and not workers
+                else "no online remote cache capability"
+            ),
             "nodes": nodes,
         }, indent=2))
         return 2
@@ -68,13 +98,16 @@ def main() -> int:
     elapsed = time.perf_counter() - started
     after = _get_json(f"{args.dashboard}/v1/network/prefill")
 
+    accepted, path = _acceptance(
+        before,
+        after,
+        minimum_prefix_tokens=args.minimum_prefix_tokens,
+        require_worker=args.require_worker,
+    )
     result = {
-        "ok": (
-            _delta(before, after, "remote_jobs") >= 1
-            and _delta(before, after, "remote_hits") >= 1
-            and _delta(before, after, "tokens_reused")
-            >= args.minimum_prefix_tokens
-        ),
+        "ok": accepted,
+        "accepted_path": path,
+        "cache_nodes": [node["id"] for node in cache_nodes],
         "worker_nodes": [node["id"] for node in workers],
         "prefix_tokens": len(token_ids),
         "wall_seconds": elapsed,
