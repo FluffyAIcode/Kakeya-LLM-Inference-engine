@@ -6,8 +6,9 @@ import json
 import secrets
 import threading
 import time
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from inference_engine.distributed.capability import CapabilityRegistry
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
@@ -20,10 +21,12 @@ class NetworkState:
         cache_store: PrefixCacheStore,
         *,
         state_path: str | Path,
+        prefill_stats_provider: Callable[[], Any] | None = None,
     ) -> None:
         self.registry = registry
         self.cache_store = cache_store
         self.state_path = Path(state_path).expanduser()
+        self.prefill_stats_provider = prefill_stats_provider
         self._lock = threading.RLock()
         self._data = self._load()
 
@@ -218,7 +221,16 @@ class NetworkState:
             "local_lookup_hits": cache_stats.lookup_hits,
             "local_lookup_misses": cache_stats.lookup_misses,
             "local_tokens_served": cache_stats.tokens_served,
+            "prefill": self.prefill_stats(),
         }
+
+    def prefill_stats(self) -> dict[str, Any]:
+        if self.prefill_stats_provider is None:
+            return {}
+        stats = self.prefill_stats_provider()
+        if is_dataclass(stats) and not isinstance(stats, type):
+            return asdict(stats)
+        return dict(stats)
 
     def topology(self) -> dict[str, Any]:
         nodes = self.nodes()

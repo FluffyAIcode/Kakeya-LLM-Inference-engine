@@ -9,6 +9,7 @@ from inference_engine.distributed.capability import (
     PrefillWorkerCapability,
 )
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
+from inference_engine.distributed.prefill_cache_runtime import PrefillReuseStats
 from inference_engine.network.state import NetworkState
 
 
@@ -39,6 +40,11 @@ def _state(tmp_path):
         CapabilityRegistry(self_card=card),
         store,
         state_path=tmp_path / "network.json",
+        prefill_stats_provider=lambda: {
+            "remote_jobs": 2,
+            "remote_hits": 1,
+            "tokens_reused": 128,
+        },
     )
 
 
@@ -57,6 +63,8 @@ def test_registration_groups_tokens_and_persistence(tmp_path):
     assert summary["registered_nodes"] == 2
     assert summary["completed_tokens"] == 100
     assert summary["kv_hit_rate"] == 0.7
+    assert summary["prefill"]["remote_jobs"] == 2
+    assert state.prefill_stats()["tokens_reused"] == 128
     assert state.groups()[0]["id"] == group["id"]
     assert state.topology()["edges"][0]["target"] == "peer"
 
@@ -102,3 +110,14 @@ def test_invalid_persisted_state_falls_back_to_empty(tmp_path):
     )
     assert state.groups() == []
     assert state.summary()["completed_tokens"] == 0
+    assert state.prefill_stats() == {}
+
+
+def test_prefill_stats_serializes_runtime_dataclass(tmp_path):
+    state = _state(tmp_path)
+    state.prefill_stats_provider = lambda: PrefillReuseStats(
+        remote_jobs=4,
+        remote_hits=3,
+        tokens_reused=256,
+    )
+    assert state.prefill_stats()["remote_jobs"] == 4

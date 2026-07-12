@@ -126,8 +126,16 @@ export KAKEYA_CACHE_MODEL_ID="gemma-4-26B-A4B-it-mlx-4bit"
 export KAKEYA_MODEL_REVISION="local-4bit-v1"
 export KAKEYA_TOKENIZER_REVISION="gemma4-v1"
 export KAKEYA_WORKER_NODE_ID="prefill-mini-1"
+export KAKEYA_WORKER_BIND="169.254.27.104:53051"
 export KAKEYA_WORKER_ADVERTISE="169.254.27.104:53051"
 export KAKEYA_LAYER_GEOMETRY_HASH="<same-value-as-primary>"
+export KAKEYA_WORKER_SINK="4"
+export KAKEYA_WORKER_WINDOW="2048"
+export KAKEYA_CACHE_BLOCK_TOKENS="64"
+export KAKEYA_WORKER_NETWORK="thunderbolt"
+export KAKEYA_WORKER_PRIORITY="100"
+export KAKEYA_WORKER_RTT_MS="0.55"
+export KAKEYA_WORKER_PEER="169.254.187.239:51051"
 export KAKEYA_FLEET_PSK_FILE="$HOME/.kakeya/fleet.psk"
 export KAKEYA_TENANT_ID="private-fleet"
 bash deploy/install_prefill_worker_launchd.sh
@@ -158,7 +166,7 @@ KEY="$(cat ~/.kakeya/network_api_key)"
 curl -fsS -X POST http://127.0.0.1:8090/v1/network/nodes/register \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $KEY" \
-  -d '{"alias":"peer-mini","address":"169.254.27.104:52051","region":"Private","role":"cache"}'
+  -d '{"alias":"peer-mini","address":"169.254.27.104:53051","region":"Private","role":"hybrid"}'
 ```
 
 Create a paired group:
@@ -192,7 +200,19 @@ Minimal acceptance:
 curl -fsS https://kakeya.ai/healthz
 curl -fsS https://kakeya.ai/v1/network/summary
 curl -fsS https://kakeya.ai/v1/network/tokens
+curl -fsS https://kakeya.ai/v1/network/prefill
+
+PYTHONPATH=.:sdks/python python scripts/verify_remote_prefill_e2e.py \
+  --address 127.0.0.1:51051 \
+  --dashboard http://127.0.0.1:8090 \
+  --tokenizer-id ~/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit
 ```
+
+The verifier exits non-zero unless a live worker capability is present and one
+cold unique prefix increments `remote_jobs`, `remote_hits`, and
+`tokens_reused`. Decode throughput is reported separately; remote prefill is
+accepted on lower TTFT/prefill time and higher request throughput, not a change
+to single-stream decode tokens/s.
 
 ## Rollback
 

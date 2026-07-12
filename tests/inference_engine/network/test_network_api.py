@@ -18,6 +18,11 @@ def _client(tmp_path):
         CapabilityRegistry(NodeCapability(node_id="head", grpc_address="head:1")),
         PrefixCacheStore(compatibility, max_bytes=100, node_id="head"),
         state_path=tmp_path / "state.json",
+        prefill_stats_provider=lambda: {
+            "remote_jobs": 3,
+            "remote_hits": 2,
+            "tokens_reused": 192,
+        },
     )
     client = TestClient(create_network_app(state, api_key="secret"))
     client.network_state = state
@@ -27,13 +32,16 @@ def _client(tmp_path):
 def test_dashboard_health_and_read_apis(tmp_path):
     client = _client(tmp_path)
     assert client.get("/").status_code == 200
-    assert "Kakeya Inference Network" in client.get("/network").text
+    dashboard = client.get("/network").text
+    assert "Kakeya Inference Network" in dashboard
+    assert "Remote prefill jobs" in dashboard
     assert client.get("/healthz").json()["status"] == "ok"
     assert client.get("/v1/network/summary").json()["online_nodes"] == 1
     assert len(client.get("/v1/network/nodes").json()) == 1
     assert client.get("/v1/network/groups").json() == []
     assert "nodes" in client.get("/v1/network/topology").json()
     assert client.get("/v1/network/tokens").json()["completed"] == 0
+    assert client.get("/v1/network/prefill").json()["remote_jobs"] == 3
     events = client.get("/v1/network/events?once=true")
     assert events.status_code == 200
     assert "event: summary" in events.text
