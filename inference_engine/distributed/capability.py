@@ -181,6 +181,9 @@ class CacheCapability:
     bloom_filter: bytes = b""
     default_compression: CompressionCodec = CompressionCodec.NONE
     replication_factor: int = 1
+    evictions: int = 0
+    bytes_evicted: int = 0
+    put_failures: int = 0
 
     def to_proto(self) -> distributed_pb2.CacheCapability:
         return distributed_pb2.CacheCapability(
@@ -195,6 +198,9 @@ class CacheCapability:
             bloom_filter=self.bloom_filter,
             default_compression=int(self.default_compression),
             replication_factor=self.replication_factor,
+            evictions=self.evictions,
+            bytes_evicted=self.bytes_evicted,
+            put_failures=self.put_failures,
         )
 
     @classmethod
@@ -211,6 +217,9 @@ class CacheCapability:
             bloom_filter=msg.bloom_filter,
             default_compression=CompressionCodec(msg.default_compression),
             replication_factor=msg.replication_factor,
+            evictions=msg.evictions,
+            bytes_evicted=msg.bytes_evicted,
+            put_failures=msg.put_failures,
         )
 
 

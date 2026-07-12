@@ -326,9 +326,17 @@ def test_publish_boundary_dispatches_selected_replica(monkeypatch):
     )
     calls = []
 
+    class Future:
+        def result(self):
+            return True
+
+        def add_done_callback(self, callback):
+            callback(self)
+
     class Publisher:
         def submit(self, fn, *args, **kwargs):
             calls.append((fn, args, kwargs))
+            return Future()
 
         def shutdown(self, **kwargs):
             pass
@@ -339,6 +347,17 @@ def test_publish_boundary_dispatches_selected_replica(monkeypatch):
     hashes = chained_block_hashes([1, 2], compatibility)
     hook._publish_boundary(verifier, [1, 2], hashes, 0, 2)
     assert calls and calls[0][1][0] == "peer:1"
+    assert hook.stats.publish_attempts == 1
+    assert hook.stats.publish_successes == 1
+    assert hook.stats.bytes_published > 0
+
+    class FailedFuture:
+        def result(self):
+            raise RuntimeError("publish failed")
+
+    hook._publish_done(FailedFuture(), 10)
+    assert hook.stats.publish_failures == 1
+    assert "publish failed" in hook.stats.last_publish_error
     hook.close()
 
 

@@ -131,6 +131,9 @@ class NetworkState:
                         "entry_count": cache.entry_count,
                         "epoch": cache.cache_epoch,
                         "tokens_served": cache.tokens_served,
+                        "evictions": cache.evictions,
+                        "bytes_evicted": cache.bytes_evicted,
+                        "put_failures": cache.put_failures,
                         "format": cache.compatibility.cache_format_version,
                         "model_id": cache.compatibility.model_id,
                     }
@@ -221,6 +224,15 @@ class NetworkState:
             "local_lookup_hits": cache_stats.lookup_hits,
             "local_lookup_misses": cache_stats.lookup_misses,
             "local_tokens_served": cache_stats.tokens_served,
+            "cache_evictions": sum(
+                (node["cache"] or {}).get("evictions", 0) for node in nodes
+            ),
+            "cache_bytes_evicted": sum(
+                (node["cache"] or {}).get("bytes_evicted", 0) for node in nodes
+            ),
+            "cache_put_failures": sum(
+                (node["cache"] or {}).get("put_failures", 0) for node in nodes
+            ),
             "prefill": self.prefill_stats(),
         }
 

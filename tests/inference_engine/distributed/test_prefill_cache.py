@@ -61,6 +61,10 @@ def test_store_miss_expiry_collision_and_lru():
         store.put(CacheBlock.create(hashes[0], 2, b"zz"))
     store.put(CacheBlock.create(hashes[1], 4, b"bbb"))
     assert hashes[0] not in store.block_hashes()
+    stats = store.stats()
+    assert stats.evictions == 1
+    assert stats.bytes_evicted == 2
+    assert stats.put_failures == 1
     miss = store.lookup([hashes[0]], now=20.0)
     assert not miss.lease_id
     lease = store.lookup([hashes[1]], lease_seconds=1, now=20.0)
@@ -83,6 +87,7 @@ def test_validation_and_stats():
     stats = store.stats()
     assert stats.entry_count == 0
     assert stats.max_bytes == 10
+    assert stats.put_failures == 1
     with pytest.raises(ValueError, match="one payload"):
         store.put_prefix([1, 2, 3], [b"only-one"])
     with pytest.raises(ValueError, match="lease_seconds"):
@@ -117,3 +122,4 @@ def test_put_rejects_when_active_lease_pins_capacity():
     with pytest.raises(ValueError, match="pinned"):
         store.put(second)
     assert store.block_hashes() == (first.block_hash,)
+    assert store.stats().put_failures == 1

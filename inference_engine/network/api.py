@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -13,6 +13,9 @@ from pydantic import BaseModel, Field
 
 from inference_engine.network.dashboard import dashboard_html
 from inference_engine.network.state import NetworkState
+
+if TYPE_CHECKING:
+    from inference_engine.distributed.cache_fill import CacheFillCapture
 
 
 class RegisterNodeRequest(BaseModel):
@@ -33,10 +36,15 @@ class TokenTelemetryRequest(BaseModel):
     kv_assisted: int = Field(default=0, ge=0)
 
 
+class DrainCaptureRequest(BaseModel):
+    max_items: int = Field(default=8, ge=1, le=64)
+
+
 def create_network_app(
     state: NetworkState,
     *,
     api_key: Optional[str] = None,
+    cache_fill_capture: Optional["CacheFillCapture"] = None,
 ) -> FastAPI:
     key = (api_key if api_key is not None else os.environ.get(
         "KAKEYA_NETWORK_API_KEY", "",
@@ -48,6 +56,12 @@ def create_network_app(
     ) -> None:
         if key and x_api_key != key:
             raise HTTPException(status_code=401, detail="invalid X-API-Key")
+
+    def require_maintenance_key(
+        x_api_key: Optional[str] = Header(default=None),
+    ) -> None:
+        if not key or x_api_key != key:
+            raise HTTPException(status_code=401, detail="maintenance API key required")
 
     @app.get("/", response_class=HTMLResponse)
     @app.get("/network", response_class=HTMLResponse)
@@ -105,6 +119,33 @@ def create_network_app(
     @app.get("/v1/network/prefill")
     def prefill():
         return state.prefill_stats()
+
+    @app.get(
+        "/v1/network/maintenance/capture",
+        dependencies=[Depends(require_maintenance_key)],
+    )
+    def capture_status():
+        if cache_fill_capture is None:
+            raise HTTPException(status_code=404, detail="cache-fill capture disabled")
+        return cache_fill_capture.stats()
+
+    @app.post(
+        "/v1/network/maintenance/capture/drain",
+        dependencies=[Depends(require_maintenance_key)],
+    )
+    def drain_capture(request: DrainCaptureRequest):
+        if cache_fill_capture is None:
+            raise HTTPException(status_code=404, detail="cache-fill capture disabled")
+        return {
+            "items": [
+                {
+                    "capture_id": item.capture_id,
+                    "token_count": item.token_count,
+                    "token_ids": list(item.token_ids),
+                }
+                for item in cache_fill_capture.drain(request.max_items)
+            ],
+        }
 
     @app.post(
         "/v1/network/telemetry/tokens",

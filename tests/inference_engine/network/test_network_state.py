@@ -26,6 +26,9 @@ def _state(tmp_path):
                 compatibility,
                 cache_address="head:2",
                 cache_bytes_free=1000,
+                evictions=2,
+                bytes_evicted=300,
+                put_failures=1,
             ),
         ),
         endpoints=(NodeEndpoint("head:2", "thunderbolt", 100, 0.4),),
@@ -64,6 +67,9 @@ def test_registration_groups_tokens_and_persistence(tmp_path):
     assert summary["completed_tokens"] == 100
     assert summary["kv_hit_rate"] == 0.7
     assert summary["prefill"]["remote_jobs"] == 2
+    assert summary["cache_evictions"] == 2
+    assert summary["cache_bytes_evicted"] == 300
+    assert summary["cache_put_failures"] == 1
     assert state.prefill_stats()["tokens_reused"] == 128
     assert state.groups()[0]["id"] == group["id"]
     assert state.topology()["edges"][0]["target"] == "peer"

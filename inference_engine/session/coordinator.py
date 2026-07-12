@@ -48,7 +48,7 @@ Anomaly invariants:
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Protocol
+from typing import Any, Callable, Iterable, List, Protocol
 
 import torch
 
@@ -145,6 +145,7 @@ class AppendTokensCoordinator:
         verifier: VerifierProtocol,
         resolver=None,
         prefill_cache: PrefillCacheHookProtocol | None = None,
+        on_first_append: Callable[[Session, list[int]], None] | None = None,
     ) -> None:
         self._store = store
         self._verifier = verifier
@@ -153,6 +154,7 @@ class AppendTokensCoordinator:
         # for every session (v0.3 single-tenant behaviour, unchanged).
         self._resolver = resolver
         self._prefill_cache = prefill_cache
+        self._on_first_append = on_first_append
 
     def _verifier_for(self, session_id: str) -> "VerifierProtocol":
         return self._resolver(session_id) if self._resolver else self._verifier
@@ -201,7 +203,8 @@ class AppendTokensCoordinator:
         #   - cached_token_sequence is the post-trim parallel sequence
         #   - next_global_position = sum of all tokens ever appended
         #   - next_token_logits predicts position == next_global_position
-        if session.next_global_position == 0:
+        first_append = session.next_global_position == 0
+        if first_append:
             if self._prefill_cache is not None:
                 self._prefill_cache.prepare(verifier, token_list)
             else:
@@ -241,5 +244,7 @@ class AppendTokensCoordinator:
         # so GetSessionInfo.kv_live_bytes reports physical bytes
         # rather than the slab's placeholder zero. PR-E1c.
         _sync_slab_bytes(session, verifier)
+        if first_append and self._on_first_append is not None:
+            self._on_first_append(session, token_list)
 
         return new_history_length

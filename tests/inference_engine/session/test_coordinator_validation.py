@@ -76,6 +76,46 @@ def test_constructor_stores_references_without_calling_them():
     assert coord._verifier is sentinel_verifier
 
 
+def test_first_append_callback_receives_session_and_tokens_once():
+    class Verifier:
+        cached_token_sequence = []
+        next_global_position = 0
+        next_token_logits = None
+
+        def prefill(self, tokens):
+            self.cached_token_sequence = list(tokens)
+            self.next_global_position = len(tokens)
+
+        def forward_block(self, tokens):
+            self.cached_token_sequence.extend(tokens)
+            self.next_global_position += len(tokens)
+            return [type("Row", (), {"clone": lambda self: self})() for _ in tokens]
+
+        def commit_or_truncate(self, *, forwarded, accepted):
+            assert forwarded == accepted
+
+        def k_seq_length(self, _session):
+            return len(self.cached_token_sequence)
+
+        def kv_live_bytes(self, _session):
+            return 0
+
+    verifier = Verifier()
+    store = SessionStore(capacity=1, cache_inspector=verifier)
+    session = store.create_session(client_label="live")
+    observed = []
+    coord = AppendTokensCoordinator(
+        store,
+        verifier,
+        on_first_append=lambda sess, tokens: observed.append(
+            (sess.client_label, list(tokens)),
+        ),
+    )
+    coord.append_tokens(session.session_id, [1, 2])
+    coord.append_tokens(session.session_id, [3])
+    assert observed == [("live", [1, 2])]
+
+
 # Note: tests for the ``_sync_slab_bytes`` helper (PR-E1c addition)
 # live in PR-E1c's own commit. PR-N1 is branched off main; once
 # PR-E1c merges, a follow-up will add the helper's None-branch test

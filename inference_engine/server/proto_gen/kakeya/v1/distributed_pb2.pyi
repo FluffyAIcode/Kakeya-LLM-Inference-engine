@@ -131,7 +131,7 @@ class CacheCompatibility(_message.Message):
     def __init__(self, model_id: _Optional[str] = ..., model_revision: _Optional[str] = ..., tokenizer_revision: _Optional[str] = ..., cache_format_version: _Optional[str] = ..., quantization: _Optional[str] = ..., rope_hash: _Optional[str] = ..., layer_geometry_hash: _Optional[str] = ..., kv_dtype: _Optional[str] = ..., block_size_tokens: _Optional[int] = ..., tenant_namespace: _Optional[str] = ..., sink_size: _Optional[int] = ..., window_size: _Optional[int] = ...) -> None: ...
 
 class CacheCapability(_message.Message):
-    __slots__ = ("compatibility", "cache_address", "cache_bytes_used", "cache_bytes_free", "entry_count", "cache_epoch", "load", "tokens_served", "bloom_filter", "default_compression", "replication_factor")
+    __slots__ = ("compatibility", "cache_address", "cache_bytes_used", "cache_bytes_free", "entry_count", "cache_epoch", "load", "tokens_served", "bloom_filter", "default_compression", "replication_factor", "evictions", "bytes_evicted", "put_failures")
     COMPATIBILITY_FIELD_NUMBER: _ClassVar[int]
     CACHE_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     CACHE_BYTES_USED_FIELD_NUMBER: _ClassVar[int]
@@ -143,6 +143,9 @@ class CacheCapability(_message.Message):
     BLOOM_FILTER_FIELD_NUMBER: _ClassVar[int]
     DEFAULT_COMPRESSION_FIELD_NUMBER: _ClassVar[int]
     REPLICATION_FACTOR_FIELD_NUMBER: _ClassVar[int]
+    EVICTIONS_FIELD_NUMBER: _ClassVar[int]
+    BYTES_EVICTED_FIELD_NUMBER: _ClassVar[int]
+    PUT_FAILURES_FIELD_NUMBER: _ClassVar[int]
     compatibility: CacheCompatibility
     cache_address: str
     cache_bytes_used: int
@@ -154,7 +157,10 @@ class CacheCapability(_message.Message):
     bloom_filter: bytes
     default_compression: CompressionCodec
     replication_factor: int
-    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., cache_address: _Optional[str] = ..., cache_bytes_used: _Optional[int] = ..., cache_bytes_free: _Optional[int] = ..., entry_count: _Optional[int] = ..., cache_epoch: _Optional[int] = ..., load: _Optional[float] = ..., tokens_served: _Optional[int] = ..., bloom_filter: _Optional[bytes] = ..., default_compression: _Optional[_Union[CompressionCodec, str]] = ..., replication_factor: _Optional[int] = ...) -> None: ...
+    evictions: int
+    bytes_evicted: int
+    put_failures: int
+    def __init__(self, compatibility: _Optional[_Union[CacheCompatibility, _Mapping]] = ..., cache_address: _Optional[str] = ..., cache_bytes_used: _Optional[int] = ..., cache_bytes_free: _Optional[int] = ..., entry_count: _Optional[int] = ..., cache_epoch: _Optional[int] = ..., load: _Optional[float] = ..., tokens_served: _Optional[int] = ..., bloom_filter: _Optional[bytes] = ..., default_compression: _Optional[_Union[CompressionCodec, str]] = ..., replication_factor: _Optional[int] = ..., evictions: _Optional[int] = ..., bytes_evicted: _Optional[int] = ..., put_failures: _Optional[int] = ...) -> None: ...
 
 class PrefillWorkerCapability(_message.Message):
     __slots__ = ("compatibility", "worker_address", "max_concurrent_jobs", "inflight_jobs", "queued_jobs", "load", "tokens_per_second_prefill", "ram_bytes_free", "accepts_compute_jobs", "queued_tokens")

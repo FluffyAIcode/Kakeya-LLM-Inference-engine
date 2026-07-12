@@ -52,6 +52,9 @@ def cache_capability(
         cache_epoch=stats.cache_epoch,
         load=load,
         tokens_served=stats.tokens_served,
+        evictions=stats.evictions,
+        bytes_evicted=stats.bytes_evicted,
+        put_failures=stats.put_failures,
         default_compression=(
             CompressionCodec.NONE
             if default_compression is None

@@ -233,6 +233,33 @@ separate Worker A/B/C path; that mode additionally requires `remote_jobs`.
 Decode throughput is reported separately because all autoregressive decode
 remains on the primary.
 
+## Maintenance cache saturation
+
+Enable the bounded, memory-only first-append capture queue on the primary:
+
+```text
+--cache-fill-capture-size 256
+```
+
+The maintenance endpoints require the network API key even when other read
+endpoints are public. Captured token IDs remain in process memory and are
+removed when drained; reports contain only salted capture IDs and token counts.
+
+During a maintenance window, start real gRPC chat sessions and run:
+
+```bash
+PYTHONPATH=.:sdks/python python scripts/fill_prefill_cache_from_live_grpc.py \
+  --tokenizer-id ~/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit \
+  --target-one 0.90 \
+  --target-two 0.95 \
+  --churn-gb 0.9
+```
+
+The harness controls head and allens independently, stops on memory pressure,
+publish failures, fallbacks, or `/tmp/kakeya-cache-fill.stop`, and never expects
+resident fleet usage to exceed the configured 1+8 GiB ceiling. Churn is accepted
+when `bytes_evicted` increases while resident bytes remain bounded.
+
 ## Rollback
 
 The cache is an optimization; inference correctness does not depend on it.

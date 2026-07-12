@@ -9,6 +9,7 @@ blocks are prefetched locally before decode begins.
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -72,6 +73,11 @@ class PrefillReuseStats:
     remote_job_failures: int = 0
     fallbacks: int = 0
     last_fallback_reason: str = ""
+    publish_attempts: int = 0
+    publish_successes: int = 0
+    publish_failures: int = 0
+    bytes_published: int = 0
+    last_publish_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class DistributedPrefillCacheHook:
         self.auth = auth
         self._hash_key = auth.tenant_hash_key() if auth is not None else b""
         self.stats = PrefillReuseStats()
+        self._stats_lock = threading.Lock()
         self._on_reuse = on_reuse
         self._publisher = ThreadPoolExecutor(
             max_workers=4,
@@ -395,7 +402,9 @@ class DistributedPrefillCacheHook:
                 publish_block_sync,
             )
             for peer in peers:
-                self._publisher.submit(
+                with self._stats_lock:
+                    self.stats.publish_attempts += 1
+                future = self._publisher.submit(
                     publish_block_sync,
                     peer,
                     self.compatibility,
@@ -403,6 +412,25 @@ class DistributedPrefillCacheHook:
                     timeout_s=self.fetch_timeout_s,
                     auth=self.auth,
                 )
+                future.add_done_callback(
+                    lambda completed, nbytes=block.nbytes: self._publish_done(
+                        completed,
+                        nbytes,
+                    ),
+                )
+
+    def _publish_done(self, future, nbytes: int) -> None:
+        try:
+            stored = bool(future.result())
+        except Exception as exc:
+            with self._stats_lock:
+                self.stats.publish_failures += 1
+                self.stats.last_publish_error = f"{type(exc).__name__}: {exc}"
+            return
+        with self._stats_lock:
+            self.stats.publish_successes += 1
+            if stored:
+                self.stats.bytes_published += int(nbytes)
 
     def close(self) -> None:
         self._publisher.shutdown(wait=False, cancel_futures=True)

@@ -135,6 +135,9 @@ def test_cache_capability_and_endpoints_proto_round_trip():
                 bloom_filter=b"filter",
                 default_compression=CompressionCodec.ZLIB,
                 replication_factor=2,
+                evictions=5,
+                bytes_evicted=6,
+                put_failures=7,
             ),
         ),
         endpoints=(
