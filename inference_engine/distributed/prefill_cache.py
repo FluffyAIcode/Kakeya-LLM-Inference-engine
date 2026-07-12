@@ -126,6 +126,9 @@ class CacheStats:
     lookup_misses: int
     tokens_served: int
     bytes_served: int
+    evictions: int
+    bytes_evicted: int
+    put_failures: int
 
 
 class PrefixCacheStore:
@@ -153,17 +156,23 @@ class PrefixCacheStore:
         self._lookup_misses = 0
         self._tokens_served = 0
         self._bytes_served = 0
+        self._evictions = 0
+        self._bytes_evicted = 0
+        self._put_failures = 0
         self._lock = threading.RLock()
 
     def put(self, block: CacheBlock) -> bool:
         """Publish one immutable block. Returns False for an identical hit."""
         if block.nbytes > self.max_bytes:
+            with self._lock:
+                self._put_failures += 1
             raise ValueError("block payload exceeds cache capacity")
         with self._lock:
             self._expire_leases(time.time())
             existing = self._blocks.get(block.block_hash)
             if existing is not None:
                 if existing.payload_sha256 != block.payload_sha256:
+                    self._put_failures += 1
                     raise ValueError("content-address collision with different payload")
                 self._blocks.move_to_end(block.block_hash)
                 return False
@@ -172,6 +181,7 @@ class PrefixCacheStore:
             self._epoch += 1
             self._evict_to_budget()
             if block.block_hash not in self._blocks:
+                self._put_failures += 1
                 raise ValueError(
                     "cache capacity is pinned by active leases",
                 )
@@ -259,6 +269,9 @@ class PrefixCacheStore:
                 lookup_misses=self._lookup_misses,
                 tokens_served=self._tokens_served,
                 bytes_served=self._bytes_served,
+                evictions=self._evictions,
+                bytes_evicted=self._bytes_evicted,
+                put_failures=self._put_failures,
             )
 
     def block_hashes(self) -> tuple[bytes, ...]:
@@ -298,6 +311,8 @@ class PrefixCacheStore:
                 break
             block = self._blocks.pop(victim)
             self._bytes_used -= block.nbytes
+            self._evictions += 1
+            self._bytes_evicted += block.nbytes
             self._epoch += 1
 
 

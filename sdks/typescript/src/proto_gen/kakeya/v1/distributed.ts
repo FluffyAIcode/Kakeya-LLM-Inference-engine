@@ -327,6 +327,9 @@ export interface CacheCapability {
   bloomFilter: Uint8Array;
   defaultCompression: CompressionCodec;
   replicationFactor: number;
+  evictions: string;
+  bytesEvicted: string;
+  putFailures: string;
 }
 
 export interface PrefillWorkerCapability {
@@ -1418,6 +1421,9 @@ function createBaseCacheCapability(): CacheCapability {
     bloomFilter: new Uint8Array(0),
     defaultCompression: 0,
     replicationFactor: 0,
+    evictions: "0",
+    bytesEvicted: "0",
+    putFailures: "0",
   };
 }
 
@@ -1455,6 +1461,15 @@ export const CacheCapability: MessageFns<CacheCapability> = {
     }
     if (message.replicationFactor !== 0) {
       writer.uint32(88).uint32(message.replicationFactor);
+    }
+    if (message.evictions !== "0") {
+      writer.uint32(96).uint64(message.evictions);
+    }
+    if (message.bytesEvicted !== "0") {
+      writer.uint32(104).uint64(message.bytesEvicted);
+    }
+    if (message.putFailures !== "0") {
+      writer.uint32(112).uint64(message.putFailures);
     }
     return writer;
   },
@@ -1554,6 +1569,30 @@ export const CacheCapability: MessageFns<CacheCapability> = {
           message.replicationFactor = reader.uint32();
           continue;
         }
+        case 12: {
+          if (tag !== 96) {
+            break;
+          }
+
+          message.evictions = reader.uint64().toString();
+          continue;
+        }
+        case 13: {
+          if (tag !== 104) {
+            break;
+          }
+
+          message.bytesEvicted = reader.uint64().toString();
+          continue;
+        }
+        case 14: {
+          if (tag !== 112) {
+            break;
+          }
+
+          message.putFailures = reader.uint64().toString();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1612,6 +1651,17 @@ export const CacheCapability: MessageFns<CacheCapability> = {
         : isSet(object.replication_factor)
         ? globalThis.Number(object.replication_factor)
         : 0,
+      evictions: isSet(object.evictions) ? globalThis.String(object.evictions) : "0",
+      bytesEvicted: isSet(object.bytesEvicted)
+        ? globalThis.String(object.bytesEvicted)
+        : isSet(object.bytes_evicted)
+        ? globalThis.String(object.bytes_evicted)
+        : "0",
+      putFailures: isSet(object.putFailures)
+        ? globalThis.String(object.putFailures)
+        : isSet(object.put_failures)
+        ? globalThis.String(object.put_failures)
+        : "0",
     };
   },
 
@@ -1650,6 +1700,15 @@ export const CacheCapability: MessageFns<CacheCapability> = {
     if (message.replicationFactor !== 0) {
       obj.replicationFactor = Math.round(message.replicationFactor);
     }
+    if (message.evictions !== "0") {
+      obj.evictions = message.evictions;
+    }
+    if (message.bytesEvicted !== "0") {
+      obj.bytesEvicted = message.bytesEvicted;
+    }
+    if (message.putFailures !== "0") {
+      obj.putFailures = message.putFailures;
+    }
     return obj;
   },
 
@@ -1671,6 +1730,9 @@ export const CacheCapability: MessageFns<CacheCapability> = {
     message.bloomFilter = object.bloomFilter ?? new Uint8Array(0);
     message.defaultCompression = object.defaultCompression ?? 0;
     message.replicationFactor = object.replicationFactor ?? 0;
+    message.evictions = object.evictions ?? "0";
+    message.bytesEvicted = object.bytesEvicted ?? "0";
+    message.putFailures = object.putFailures ?? "0";
     return message;
   },
 };

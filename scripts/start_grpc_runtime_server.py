@@ -488,11 +488,30 @@ async def _serve(args: argparse.Namespace) -> int:
         slab_pool=pool,
     )
     resolver = registry.get if registry is not None else None
+    cache_fill_capture = None
+    if args.cache_fill_capture_size:
+        from inference_engine.distributed.cache_fill import CacheFillCapture
+        cache_fill_capture = CacheFillCapture(
+            max_items=args.cache_fill_capture_size,
+        )
+        _LOG.info(
+            "maintenance cache-fill capture enabled: max_items=%d",
+            args.cache_fill_capture_size,
+        )
     append_coord = AppendTokensCoordinator(
         store,
         verifier,
         resolver=resolver,
         prefill_cache=prefill_hook,
+        on_first_append=(
+            (
+                lambda session, tokens: cache_fill_capture.observe(
+                    client_label=session.client_label,
+                    token_ids=tokens,
+                )
+            )
+            if cache_fill_capture is not None else None
+        ),
     )
     gen_coord = GenerationCoordinator(
         store,
@@ -568,6 +587,7 @@ async def _serve(args: argparse.Namespace) -> int:
             create_network_app(
                 network_state,
                 api_key=args.network_api_key,
+                cache_fill_capture=cache_fill_capture,
             ),
             host=args.network_http_host,
             port=args.network_http_port,
@@ -761,6 +781,13 @@ def main() -> int:
     ap.add_argument("--network-telemetry-url", default="",
                     help="Optional POST endpoint receiving completed token counters.")
     ap.add_argument("--network-telemetry-api-key", default="")
+    ap.add_argument(
+        "--cache-fill-capture-size",
+        type=int,
+        default=0,
+        help="Maintenance-only in-memory first-append capture queue size; "
+             "0 disables capture.",
+    )
     ap.add_argument("--skip-cache-check", action="store_true",
                     help="Skip the HF-cache pre-flight assertion. By "
                          "default the server fails fast if the verifier "

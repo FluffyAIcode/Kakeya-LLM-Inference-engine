@@ -236,6 +236,9 @@ message CacheCapability {
   bytes bloom_filter = 9;
   CompressionCodec default_compression = 10;
   uint32 replication_factor = 11;
+  uint64 evictions = 12;
+  uint64 bytes_evicted = 13;
+  uint64 put_failures = 14;
 }
 
 message PrefillWorkerCapability {
