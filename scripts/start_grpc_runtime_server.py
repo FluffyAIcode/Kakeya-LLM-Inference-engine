@@ -557,6 +557,10 @@ async def _serve(args: argparse.Namespace) -> int:
             registry,
             prefill_store,
             state_path=args.network_state,
+            prefill_stats_provider=(
+                (lambda: prefill_hook.stats)
+                if prefill_hook is not None else None
+            ),
         )
         http_server = uvicorn.Server(uvicorn.Config(
             create_network_app(

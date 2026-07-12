@@ -18,6 +18,16 @@ MODEL_REVISION="${KAKEYA_MODEL_REVISION:-}"
 TOKENIZER_REVISION="${KAKEYA_TOKENIZER_REVISION:-}"
 QUANTIZATION="${KAKEYA_CACHE_QUANTIZATION:-4bit-mlx}"
 ROPE_HASH="${KAKEYA_ROPE_HASH:-}"
+SINK="${KAKEYA_WORKER_SINK:-4}"
+WINDOW="${KAKEYA_WORKER_WINDOW:-64}"
+BLOCK_TOKENS="${KAKEYA_CACHE_BLOCK_TOKENS:-64}"
+PREFILL_TPS="${KAKEYA_WORKER_PREFILL_TPS:-20}"
+NETWORK="${KAKEYA_WORKER_NETWORK:-lan}"
+PRIORITY="${KAKEYA_WORKER_PRIORITY:-50}"
+RTT_MS="${KAKEYA_WORKER_RTT_MS:-1.0}"
+PEER="${KAKEYA_WORKER_PEER:-}"
+MAX_CONCURRENT_JOBS="${KAKEYA_WORKER_MAX_CONCURRENT_JOBS:-1}"
+MAX_PROMPT_TOKENS="${KAKEYA_WORKER_MAX_PROMPT_TOKENS:-131072}"
 LABEL="ai.kakeya.prefill-worker"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/.kakeya"
@@ -26,6 +36,10 @@ mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
 psk_xml=""
 if [[ -n "$PSK_FILE" ]]; then
   psk_xml="<string>--fleet-psk-file</string><string>$PSK_FILE</string>"
+fi
+peer_xml=""
+if [[ -n "$PEER" ]]; then
+  peer_xml="<string>--peer</string><string>$PEER</string>"
 fi
 
 cat > "$PLIST" <<EOF
@@ -49,6 +63,16 @@ cat > "$PLIST" <<EOF
     <string>--layer-geometry-hash</string><string>$KAKEYA_LAYER_GEOMETRY_HASH</string>
     <string>--tenant-id</string><string>$TENANT</string>
     <string>--cache-gb</string><string>$CACHE_GB</string>
+    <string>--sink</string><string>$SINK</string>
+    <string>--window</string><string>$WINDOW</string>
+    <string>--block-size-tokens</string><string>$BLOCK_TOKENS</string>
+    <string>--prefill-tps</string><string>$PREFILL_TPS</string>
+    <string>--network</string><string>$NETWORK</string>
+    <string>--priority</string><string>$PRIORITY</string>
+    <string>--rtt-ms</string><string>$RTT_MS</string>
+    <string>--max-concurrent-jobs</string><string>$MAX_CONCURRENT_JOBS</string>
+    <string>--max-prompt-tokens</string><string>$MAX_PROMPT_TOKENS</string>
+    $peer_xml
     $psk_xml
   </array>
   <key>WorkingDirectory</key><string>$KAKEYA_WORKER_REPO</string>

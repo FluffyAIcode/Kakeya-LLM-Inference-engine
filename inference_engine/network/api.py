@@ -102,6 +102,10 @@ def create_network_app(
             "hit_rate": summary["kv_hit_rate"],
         }
 
+    @app.get("/v1/network/prefill")
+    def prefill():
+        return state.prefill_stats()
+
     @app.post(
         "/v1/network/telemetry/tokens",
         dependencies=[Depends(require_key)],
