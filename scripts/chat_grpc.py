@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import List, Optional
 
 
@@ -92,6 +93,7 @@ def _generate_and_print(
     tokenizer,
     new_tokens: List[int],
     max_tokens: int,
+    max_response_tokens: int = 0,
 ) -> int:
     """Drive one append + generate cycle. Streams tokens to stdout
     as they arrive, returns the count emitted. The generator's
@@ -103,29 +105,52 @@ def _generate_and_print(
     print("kakeya> ", end="", flush=True)
     n = 0
     accumulated = []
+    started = time.perf_counter()
+    server_elapsed = 0.0
+    stop_reason = "unknown"
     try:
-        for token_id in session.generate(max_tokens=max_tokens):
-            n += 1
-            accumulated.append(token_id)
-            # Decode incrementally — tokenizer.decode on the running
-            # buffer gives the right text including BPE merges that
-            # span multiple tokens. We re-decode the full buffer
-            # each time (Qwen3-family tokenizers re-decode in <1ms
-            # for a 64-token buffer; per-token decoding loses some
-            # whitespace correctness on the tokenizer level).
-            text_so_far = tokenizer.decode(
-                accumulated, skip_special_tokens=True,
+        while True:
+            before = n
+            remaining = (
+                min(max_tokens, max_response_tokens - n)
+                if max_response_tokens > 0 else max_tokens
             )
-            # Print only the suffix that's new since last frame.
-            if hasattr(_generate_and_print, "_last_text"):
-                last = _generate_and_print._last_text
-            else:
-                last = ""
-            new_text = text_so_far[len(last):]
-            print(new_text, end="", flush=True)
-            _generate_and_print._last_text = text_so_far
+            if remaining <= 0:
+                stop_reason = "client_safety_limit"
+                break
+            for token_id in session.generate(max_tokens=remaining):
+                n += 1
+                accumulated.append(token_id)
+                # Decode incrementally — tokenizer.decode on the running
+                # buffer gives the right text including BPE merges that
+                # span multiple tokens.
+                text_so_far = tokenizer.decode(
+                    accumulated, skip_special_tokens=True,
+                )
+                if hasattr(_generate_and_print, "_last_text"):
+                    last = _generate_and_print._last_text
+                else:
+                    last = ""
+                new_text = text_so_far[len(last):]
+                print(new_text, end="", flush=True)
+                _generate_and_print._last_text = text_so_far
+            server_elapsed += float(
+                getattr(session, "last_total_duration_seconds", 0.0) or 0.0
+            )
+            stop_reason = {
+                1: "max_tokens",
+                2: "eos",
+                3: "cancelled",
+                4: "truncated",
+            }.get(getattr(session, "last_stop_reason", None), "unknown")
+            if stop_reason != "max_tokens":
+                break
+            if n == before:
+                stop_reason = "no_progress"
+                break
     except KeyboardInterrupt:
         print("\n[interrupted]", file=sys.stderr)
+        stop_reason = "interrupted"
     finally:
         # Reset the per-call decoder state so the next turn starts
         # fresh.
@@ -133,6 +158,21 @@ def _generate_and_print(
             del _generate_and_print._last_text
 
     print()  # final newline
+    elapsed = max(time.perf_counter() - started, 1e-9)
+    measured = server_elapsed or elapsed
+    print(
+        f"[{n} tokens · {measured:.2f}s · {n / measured:.2f} tok/s "
+        f"· stop={stop_reason}]",
+        file=sys.stderr,
+        flush=True,
+    )
+    if stop_reason == "client_safety_limit":
+        print(
+            f"[response reached optional --max-response-tokens "
+            f"{max_response_tokens}]",
+            file=sys.stderr,
+            flush=True,
+        )
     return n
 
 
@@ -161,7 +201,11 @@ def main() -> int:
     )
     ap.add_argument(
         "--max-tokens", type=int, default=64,
-        help="max_tokens per turn",
+        help="tokens per streaming Generate RPC; max_tokens continues automatically",
+    )
+    ap.add_argument(
+        "--max-response-tokens", type=int, default=0,
+        help="optional client safety cap per answer; 0 means continue until EOS",
     )
     ap.add_argument(
         "--system-prompt", default="You are a helpful assistant.",
@@ -250,6 +294,7 @@ def main() -> int:
                         tokenizer=tokenizer,
                         new_tokens=new_tokens,
                         max_tokens=args.max_tokens,
+                        max_response_tokens=args.max_response_tokens,
                     )
                 except KakeyaError as exc:
                     print(f"[runtime error: {exc}]", file=sys.stderr)
