@@ -50,7 +50,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 
 _HELP = """
@@ -60,6 +60,55 @@ Commands:
   /info              show server-side session state
   /exit              quit (or Ctrl-D / empty line)
 """.strip()
+
+
+def _resolve_eos_token_ids(tokenizer) -> List[int]:
+    """Return every tokenizer token that naturally ends a model turn."""
+    resolved = set()
+
+    def _add(values) -> None:
+        if values is None:
+            return
+        if isinstance(values, int):
+            resolved.add(int(values))
+            return
+        if isinstance(values, Iterable) and not isinstance(values, (str, bytes)):
+            resolved.update(int(value) for value in values)
+
+    _add(getattr(tokenizer, "eos_token_ids", None))
+    _add(getattr(tokenizer, "eos_token_id", None))
+    _add(getattr(tokenizer, "eot_token_id", None))
+
+    unk = getattr(tokenizer, "unk_token_id", None)
+    markers = {
+        getattr(tokenizer, "eos_token", None),
+        getattr(tokenizer, "eot_token", None),
+        "<end_of_turn>",
+        "<turn|>",
+        "<|im_end|>",
+    }
+    for marker in markers:
+        if not marker:
+            continue
+        try:
+            token_id = tokenizer.convert_tokens_to_ids(marker)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if isinstance(token_id, int) and token_id >= 0 and token_id != unk:
+            resolved.add(token_id)
+    return sorted(resolved)
+
+
+def _is_degenerate_loop(text: str, unit: int = 16) -> bool:
+    """Detect only a strict three-way consecutive repeated suffix."""
+    if len(text) < unit * 3:
+        return False
+    first = text[-unit:]
+    return (
+        bool(first.strip())
+        and first == text[-2 * unit:-unit]
+        and first == text[-3 * unit:-2 * unit]
+    )
 
 
 def _print_banner(address: str, tokenizer_id: str) -> None:
@@ -118,22 +167,34 @@ def _generate_and_print(
             if remaining <= 0:
                 stop_reason = "client_safety_limit"
                 break
-            for token_id in session.generate(max_tokens=remaining):
-                n += 1
-                accumulated.append(token_id)
-                # Decode incrementally — tokenizer.decode on the running
-                # buffer gives the right text including BPE merges that
-                # span multiple tokens.
-                text_so_far = tokenizer.decode(
-                    accumulated, skip_special_tokens=True,
-                )
-                if hasattr(_generate_and_print, "_last_text"):
-                    last = _generate_and_print._last_text
-                else:
-                    last = ""
-                new_text = text_so_far[len(last):]
-                print(new_text, end="", flush=True)
-                _generate_and_print._last_text = text_so_far
+            stream = session.generate(max_tokens=remaining)
+            try:
+                for token_id in stream:
+                    n += 1
+                    accumulated.append(token_id)
+                    # Decode incrementally — tokenizer.decode on the running
+                    # buffer gives the right text including BPE merges that
+                    # span multiple tokens.
+                    text_so_far = tokenizer.decode(
+                        accumulated, skip_special_tokens=True,
+                    )
+                    if hasattr(_generate_and_print, "_last_text"):
+                        last = _generate_and_print._last_text
+                    else:
+                        last = ""
+                    new_text = text_so_far[len(last):]
+                    print(new_text, end="", flush=True)
+                    _generate_and_print._last_text = text_so_far
+                    if _is_degenerate_loop(text_so_far):
+                        stop_reason = "degenerate_loop"
+                        break
+            finally:
+                if stop_reason == "degenerate_loop":
+                    close = getattr(stream, "close", None)
+                    if close is not None:
+                        close()
+            if stop_reason == "degenerate_loop":
+                break
             server_elapsed += float(
                 getattr(session, "last_total_duration_seconds", 0.0) or 0.0
             )
@@ -170,6 +231,13 @@ def _generate_and_print(
         print(
             f"[response reached optional --max-response-tokens "
             f"{max_response_tokens}]",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif stop_reason == "degenerate_loop":
+        print(
+            "[generation stopped after a strict consecutive repetition; "
+            "use /reset before continuing]",
             file=sys.stderr,
             flush=True,
         )
@@ -222,8 +290,7 @@ def main() -> int:
     print(f"[chat] loading tokenizer {args.tokenizer_id} ...",
           file=sys.stderr, flush=True)
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_id)
-    eos = tokenizer.eos_token_id
-    eos_ids: List[int] = [int(eos)] if eos is not None else []
+    eos_ids = _resolve_eos_token_ids(tokenizer)
 
     _print_banner(args.address, args.tokenizer_id)
 
