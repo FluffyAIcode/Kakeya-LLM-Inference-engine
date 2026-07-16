@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import signal
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 from scripts.agent_gan_inference_demo import (
     _agent_cache_gate,
     _infer,
+    build_critic_evidence,
 )
 from scripts.benchmark_prefill_architecture import (
     _ensure_services,
@@ -46,9 +48,42 @@ class TokenPrinter:
         print(flush=True)
 
 
-def _stage(name: str, warm: dict, actual: dict, text: str) -> dict:
+class PrefillHeartbeat:
+    def __init__(self, label: str, interval_s: float = 30.0) -> None:
+        self.label = label
+        self.interval_s = interval_s
+        self.stop = threading.Event()
+        self.started = 0.0
+        self.thread = None
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_args):
+        self.stop.set()
+        self.thread.join(timeout=1)
+
+    def _run(self):
+        while not self.stop.wait(self.interval_s):
+            elapsed = time.perf_counter() - self.started
+            print(
+                f"[allens] {self.label} Prefill still running: {elapsed:.0f}s",
+                flush=True,
+            )
+
+
+def _stage(
+    name: str,
+    warm: dict,
+    actual: dict,
+    text: str,
+    extra_metrics=None,
+) -> dict:
     delta = actual["delta"]
-    return {
+    stage = {
         **actual,
         "name": f"agent_{name}",
         "agent": name,
@@ -65,6 +100,8 @@ def _stage(name: str, warm: dict, actual: dict, text: str) -> dict:
         "output_chars": len(text),
         "output_hash": hashlib.sha256(text.encode()).hexdigest(),
     }
+    stage.update(extra_metrics or {})
+    return stage
 
 
 def main() -> int:
@@ -82,6 +119,7 @@ def main() -> int:
         default=0,
         help="Optional client response cap; 0 means generate until model EOS.",
     )
+    parser.add_argument("--critic-evidence-tokens", type=int, default=128)
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
 
@@ -160,9 +198,10 @@ def main() -> int:
                     f"[allens] Generator Prefill: {len(generator_ids)} tokens...",
                     flush=True,
                 )
-                _, generator_warm = _infer(
-                    client, eos_ids, generator_ids, 1, get_stats,
-                )
+                with PrefillHeartbeat("Generator"):
+                    _, generator_warm = _infer(
+                        client, eos_ids, generator_ids, 1, get_stats,
+                    )
                 generator_printer = TokenPrinter(tokenizer, "generator")
                 generator_tokens, generator_actual = _infer(
                     client,
@@ -193,6 +232,11 @@ def main() -> int:
                     body={"stages": [generator_stage]},
                 )
 
+                evidence, evidence_metrics = build_critic_evidence(
+                    tokenizer,
+                    generator_text,
+                    args.critic_evidence_tokens,
+                )
                 critic_messages = [
                     {
                         "role": "system",
@@ -203,15 +247,17 @@ def main() -> int:
                             "statement that an open problem has no accepted "
                             "proof. Call an answer incomplete only when its "
                             "completion status is not EOS or its syntax is "
-                            "visibly cut off. Internal run "
-                            f"{run_nonce}."
+                            "visibly cut off. "
+                            "You receive a bounded evidence window; omitted "
+                            "tokens are not evidence of Generator truncation. "
+                            f"Internal run {run_nonce}."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
                             f"Original task:\n{prompt}\n\n"
-                            f"Generator answer:\n{generator_text}\n\n"
+                            f"Generator evidence window:\n{evidence}\n\n"
                             "Generator completion status: "
                             f"{generator_actual['stop_reason']}; "
                             f"complete={generator_actual['complete']}"
@@ -229,9 +275,10 @@ def main() -> int:
                     f"[allens] Critic Prefill: {len(critic_ids)} tokens...",
                     flush=True,
                 )
-                _, critic_warm = _infer(
-                    client, eos_ids, critic_ids, 1, get_stats,
-                )
+                with PrefillHeartbeat("Critic"):
+                    _, critic_warm = _infer(
+                        client, eos_ids, critic_ids, 1, get_stats,
+                    )
                 critic_printer = TokenPrinter(tokenizer, "critic")
                 critic_tokens, critic_actual = _infer(
                     client,
@@ -252,6 +299,7 @@ def main() -> int:
                     critic_warm,
                     critic_actual,
                     critic_text,
+                    extra_metrics=evidence_metrics,
                 )
                 if not critic_stage["ok"]:
                     raise RuntimeError("Critic KV gate failed")

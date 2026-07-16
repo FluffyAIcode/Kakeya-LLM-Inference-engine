@@ -342,6 +342,11 @@ Generator completion status and must not penalize an honest statement that an
 open problem has no accepted proof.
 The REPL ignores external `SIGTERM`; its shell supervisor restarts signal-based
 exits. Only `/quit`, `/exit`, or EOF is treated as approval to stop.
+Generator output is always streamed in full to Terminal. To keep the 16GB
+allens Critic Prefill interactive, Critic receives a labeled extractive evidence
+window (default 128 Generator tokens: beginning + conclusion) with the omitted
+token count and EOS status. It must not interpret evidence-window omission as
+Generator truncation. Long Prefill operations emit a heartbeat every 30 seconds.
 
 ## Rollback
 
