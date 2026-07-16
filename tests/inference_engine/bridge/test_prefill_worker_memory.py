@@ -1,6 +1,6 @@
 import pytest
 
-from scripts.start_prefill_worker_node import adaptive_cache_budget
+from inference_engine.distributed.cache_budget import adaptive_cache_budget
 
 
 def test_adaptive_budget_uses_only_model_headroom():

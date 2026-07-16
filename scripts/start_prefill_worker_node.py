@@ -33,6 +33,7 @@ from inference_engine.distributed.capability import (
     NodeEndpoint,
     PrefillWorkerCapability,
 )
+from inference_engine.distributed.cache_budget import adaptive_cache_budget
 from inference_engine.distributed.exchange import (
     add_capability_service,
     exchange_once,
@@ -66,20 +67,6 @@ def physical_memory_bytes() -> int:
         return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
     except (ValueError, OSError, AttributeError):
         return 0
-
-
-def adaptive_cache_budget(
-    *,
-    total_bytes: int,
-    active_model_bytes: int,
-    ceiling_bytes: int,
-    minimum_bytes: int,
-    reserve_bytes: int,
-) -> int:
-    if min(total_bytes, ceiling_bytes, minimum_bytes) <= 0 or reserve_bytes < 0:
-        raise ValueError("adaptive cache budget inputs are invalid")
-    available = max(0, total_bytes - active_model_bytes - reserve_bytes)
-    return max(minimum_bytes, min(ceiling_bytes, available))
 
 
 def mlx_active_memory_bytes() -> int:
