@@ -141,6 +141,10 @@ export KAKEYA_WORKER_ADVERTISE="<worker-ip>:53051"
 export KAKEYA_LAYER_GEOMETRY_HASH="<same-value-as-primary>"
 export KAKEYA_WORKER_SINK="4"
 export KAKEYA_WORKER_WINDOW="2048"
+export KAKEYA_WORKER_CACHE_GB="8"
+export KAKEYA_WORKER_CACHE_MIN_GB="0.25"
+export KAKEYA_WORKER_MEMORY_RESERVE_GB="2"
+export KAKEYA_WORKER_ADAPTIVE_CACHE="1"
 export KAKEYA_CACHE_BLOCK_TOKENS="64"
 export KAKEYA_CACHE_FORMAT_VERSION="kakeya-prefill-v3-kl-d4-q38"
 export KAKEYA_CACHE_COMPRESSION="kakeyalattice-d4"
@@ -240,7 +244,9 @@ curl -fsS http://127.0.0.1:8090/v1/network/kvfs
 
 The returned `kv://` URI and mount table virtualize naming and management only.
 Payloads remain in each Mac's physical RAM and are copied into Primary once
-before decode; `coherent_shared_memory` is always false.
+before decode; `coherent_shared_memory` is always false. Mounts are marked
+`hot` for Primary and `cold-offload` for worker/cache peers. Remote imports are
+promoted into the hot LRU, while eviction leaves the cold copy untouched.
 
 ## Maintenance cache saturation
 

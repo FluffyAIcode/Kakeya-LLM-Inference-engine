@@ -79,6 +79,9 @@ class PrefillReuseStats:
     publish_failures: int = 0
     bytes_published: int = 0
     last_publish_error: str = ""
+    hot_promotions: int = 0
+    hot_promotion_bytes: int = 0
+    hot_promotion_failures: int = 0
 
 
 class RemotePrefillRequiredError(RuntimeError):
@@ -269,6 +272,7 @@ class DistributedPrefillCacheHook:
                 self.stats.local_hits += 1
             else:
                 self.stats.remote_hits += 1
+                self._promote_remote_hit(hit, payload, reused)
             return reused
         except Exception as exc:
             # Cache is an optimization. A corrupt/expired/unreachable hit must
@@ -279,6 +283,27 @@ class DistributedPrefillCacheHook:
                 self.local_store.invalidate(hit.block_hash)
             verifier.reset()
             return 0
+
+    def _promote_remote_hit(
+        self,
+        hit: _Hit,
+        payload: bytes,
+        token_count: int,
+    ) -> None:
+        if not hit.block_hash:
+            return
+        try:
+            stored = self.local_store.put(CacheBlock.create(
+                hit.block_hash,
+                token_count,
+                payload,
+            ))
+        except ValueError:
+            self.stats.hot_promotion_failures += 1
+            return
+        if stored:
+            self.stats.hot_promotions += 1
+            self.stats.hot_promotion_bytes += len(payload)
 
     def _compute_remote(
         self,

@@ -81,6 +81,11 @@ operator-configured defaults.
 - Cache mounts are exposed as one content-addressed `kv://` namespace for
   management. This virtualizes naming and location only; fetch/import still
   copies the selected snapshot into Primary memory.
+- A successful remote import promotes the complete snapshot into Primary's
+  bounded hot LRU. Primary eviction removes only that hot copy; the worker's
+  cold/offload copy remains available.
+- Worker cache capacity is adaptive: physical memory minus active MLX model
+  bytes and an operator reserve, bounded by configured minimum and ceiling.
 - Snapshot payloads support zlib framing and retain SHA-256 of the uncompressed
   bytes.
 - Replication uses rendezvous hashing and a bounded replication factor instead

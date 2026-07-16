@@ -231,6 +231,23 @@ def test_remote_required_forces_compatible_worker_despite_cost(monkeypatch):
     hook.close()
 
 
+def test_hot_promotion_failure_does_not_break_remote_import():
+    hook = DistributedPrefillCacheHook(PrefixCacheStore(
+        CacheCompatibility(model_id="m"),
+        max_bytes=1,
+        node_id="head",
+    ))
+    hook._promote_remote_hit(
+        _Hit("peer", "lease", 1, 1, 2, block_hash=b"h" * 32),
+        b"too-large",
+        1,
+    )
+    assert hook.stats.hot_promotion_failures == 1
+    hook._promote_remote_hit(_Hit("peer", "lease", 1, 1, 0), b"", 1)
+    assert hook.stats.hot_promotions == 0
+    hook.close()
+
+
 def test_successful_local_import_suffix_and_on_reuse(monkeypatch):
     compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
     store = PrefixCacheStore(compatibility, max_bytes=1024, node_id="head")

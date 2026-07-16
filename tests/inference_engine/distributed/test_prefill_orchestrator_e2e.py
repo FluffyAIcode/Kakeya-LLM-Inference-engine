@@ -158,6 +158,9 @@ async def test_dynamic_worker_computes_remote_prefill_and_head_imports(
         assert verifier.next_token_logits == "logits"
         assert hook.stats.remote_jobs == 1
         assert hook.stats.remote_hits == 1
+        assert hook.stats.hot_promotions == 1
+        assert hook.stats.hot_promotion_bytes > 0
+        assert len(head_store.block_hashes()) == 1
     finally:
         hook.close()
         jobs.close()
