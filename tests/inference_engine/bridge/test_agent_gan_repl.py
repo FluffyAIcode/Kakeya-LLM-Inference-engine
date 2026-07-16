@@ -31,6 +31,8 @@ def test_repl_stage_is_redacted_and_passes_cache_gate():
         "ttft_s": 0.2,
         "decode_s": 0.3,
         "e2e_s": 0.4,
+        "stop_reason": "eos",
+        "complete": True,
         "delta": {
             "local_hits": 1,
             "remote_jobs": 0,
@@ -43,3 +45,9 @@ def test_repl_stage_is_redacted_and_passes_cache_gate():
     assert stage["output_chars"] == 14
     assert len(stage["output_hash"]) == 64
     assert "output" not in stage
+    assert not _stage(
+        "generator",
+        warm,
+        {**actual, "complete": False, "stop_reason": "client_safety_limit"},
+        "cut off",
+    )["ok"]

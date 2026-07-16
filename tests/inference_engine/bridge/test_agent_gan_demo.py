@@ -1,5 +1,6 @@
 from scripts.agent_gan_inference_demo import (
     _agent_cache_gate,
+    _infer,
     _output_metadata,
 )
 
@@ -23,3 +24,66 @@ def test_agent_output_report_is_redacted():
     assert result["output_chars"] == 20
     assert len(result["output_hash"]) == 64
     assert "output" not in result
+
+
+class Session:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.last_stop_reason = None
+        self.calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        pass
+
+    def append(self, token_ids):
+        self.appended = list(token_ids)
+
+    def generate(self, *, max_tokens):
+        tokens, reason = self.chunks[self.calls]
+        self.calls += 1
+        assert len(tokens) <= max_tokens
+        yield from tokens
+        self.last_stop_reason = reason
+
+
+class Client:
+    def __init__(self, session):
+        self.session = session
+
+    def create_session(self, **_kwargs):
+        return self.session
+
+
+def test_infer_continues_chunks_until_eos():
+    session = Session([([1, 2], 1), ([3], 2)])
+    streamed = []
+    tokens, metrics = _infer(
+        Client(session),
+        [],
+        [9],
+        2,
+        lambda: {},
+        on_token=lambda values: streamed.append(list(values)),
+        max_response_tokens=10,
+    )
+    assert tokens == [1, 2, 3]
+    assert streamed == [[1], [1, 2], [1, 2, 3]]
+    assert metrics["stop_reason"] == "eos"
+    assert metrics["complete"] is True
+
+
+def test_infer_reports_explicit_client_safety_limit():
+    tokens, metrics = _infer(
+        Client(Session([([1, 2], 1)])),
+        [],
+        [9],
+        2,
+        lambda: {},
+        max_response_tokens=2,
+    )
+    assert tokens == [1, 2]
+    assert metrics["stop_reason"] == "client_safety_limit"
+    assert metrics["complete"] is False

@@ -334,6 +334,11 @@ Type a prompt at `prompt>`. The terminal prints allens Prefill progress, then
 streams `generator>` and `critic>` tokens as they arrive, followed by KV hit
 rate, decode tok/s, generation latency and E2E tok/s. `/quit` exits; services
 remain running. Reports remain redacted and appear in the Benchmarks tab.
+Generation uses 64-token streaming chunks and automatically continues to the
+model's EOS. `--max-response-tokens` defaults to 512 as an explicit safety cap;
+reaching it marks the stage incomplete instead of presenting a truncated answer
+as successful. The Critic receives the Generator completion status and must not
+penalize an honest statement that an open problem has no accepted proof.
 
 ## Rollback
 

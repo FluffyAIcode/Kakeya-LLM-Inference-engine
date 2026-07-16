@@ -41,6 +41,7 @@ def _infer(
     output_tokens: int,
     get_stats,
     on_token=None,
+    max_response_tokens=None,
 ):
     before = get_stats()
     started = time.perf_counter()
@@ -50,12 +51,30 @@ def _infer(
         append_done = time.perf_counter()
         first_at = None
         generated = []
-        for token in s.generate(max_tokens=output_tokens):
-            generated.append(int(token))
-            if on_token is not None:
-                on_token(generated)
-            if first_at is None:
-                first_at = time.perf_counter()
+        response_limit = int(max_response_tokens or output_tokens)
+        stop_reason = "unknown"
+        while len(generated) < response_limit:
+            before_count = len(generated)
+            chunk = min(output_tokens, response_limit - len(generated))
+            for token in s.generate(max_tokens=chunk):
+                generated.append(int(token))
+                if on_token is not None:
+                    on_token(generated)
+                if first_at is None:
+                    first_at = time.perf_counter()
+            stop_reason = {
+                1: "max_tokens",
+                2: "eos",
+                3: "cancelled",
+                4: "truncated",
+            }.get(s.last_stop_reason, "unknown")
+            if stop_reason != "max_tokens":
+                break
+            if len(generated) == before_count:
+                stop_reason = "no_progress"
+                break
+        if len(generated) >= response_limit and stop_reason == "max_tokens":
+            stop_reason = "client_safety_limit"
         done = time.perf_counter()
     after = get_stats()
     first_at = first_at or done
@@ -67,6 +86,8 @@ def _infer(
         "decode_s": done - append_done,
         "e2e_s": done - started,
         "delta": _delta(before, after),
+        "stop_reason": stop_reason,
+        "complete": stop_reason == "eos",
     }
 
 
@@ -85,6 +106,7 @@ def main() -> int:
              "reliably; larger values require more worker memory or timeout.",
     )
     parser.add_argument("--output-tokens", type=int, default=64)
+    parser.add_argument("--max-response-tokens", type=int, default=512)
     parser.add_argument("--report", default="/tmp/kakeya-agent-gan-demo.json")
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
@@ -113,7 +135,9 @@ def main() -> int:
             "role": "system",
             "content": (
                 "You are the Generator agent. Propose a technically precise "
-                "architecture improvement. Respond with actionable reasoning."
+                "architecture improvement. Respond with actionable reasoning. "
+                "For open or unsolved problems, state the accepted boundary "
+                "honestly and never fabricate a proof."
             ),
         },
         {"role": "user", "content": task},
@@ -123,7 +147,10 @@ def main() -> int:
         "content": (
             "You are the Critic/Discriminator agent. Attack the proposal, "
             "identify false assumptions and bottlenecks, score it from 0 to "
-            "10, and demand specific corrections."
+            "10, and demand specific corrections. Do not call a response "
+            "incomplete merely because it refuses to fabricate a solution to "
+            "an open problem. Claim truncation only when completion_status is "
+            "not EOS or the text is syntactically cut off."
         ),
     }]
 
@@ -139,6 +166,7 @@ def main() -> int:
                 "agents": ["generator", "critic"],
                 "rounds": args.rounds,
                 "output_tokens": args.output_tokens,
+                "max_response_tokens": args.max_response_tokens,
             },
         },
     )
@@ -164,6 +192,7 @@ def main() -> int:
             token_ids,
             args.output_tokens,
             get_stats,
+            max_response_tokens=args.max_response_tokens,
         )
         text = tokenizer.decode(generated, skip_special_tokens=True)
         delta = actual["delta"]
@@ -174,7 +203,7 @@ def main() -> int:
             "agent": name,
             "round": round_index,
             "hit_source": "primary_hot" if delta["local_hits"] else "unknown",
-            "ok": ok,
+            "ok": ok and actual["complete"],
             "warmup_prefix_tokens": warm["prefix_tokens"],
             "warmup_tokens_reused": (
                 warm["delta"]["tokens_reused"]
@@ -194,7 +223,7 @@ def main() -> int:
         )
         all_stages.append(stage)
         print(f"\n[{name.upper()} round {round_index}]\n{text}\n", flush=True)
-        return text
+        return text, stage
 
     try:
         with Client(args.address) as client:
@@ -208,7 +237,7 @@ def main() -> int:
                             + critic_feedback
                         ),
                     })
-                proposal = execute_agent(
+                proposal, generator_stage = execute_agent(
                     client, "generator", round_index, generator_history,
                 )
                 generator_history.append({"role": "assistant", "content": proposal})
@@ -216,9 +245,11 @@ def main() -> int:
                     "role": "user",
                     "content": (
                         f"Architecture task:\n{task}\n\nGenerator proposal:\n{proposal}"
+                        f"\n\ncompletion_status={generator_stage['stop_reason']}; "
+                        f"complete={generator_stage['complete']}"
                     ),
                 })
-                critic_feedback = execute_agent(
+                critic_feedback, _critic_stage = execute_agent(
                     client, "critic", round_index, critic_history,
                 )
                 critic_history.append({
