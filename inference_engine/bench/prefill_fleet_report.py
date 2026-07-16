@@ -65,6 +65,10 @@ def summarize_stages(stages: Sequence[dict[str, Any]]) -> dict[str, Any]:
     sources = {source: 0 for source in HIT_SOURCES}
     for stage in normalized:
         sources[stage["hit_source"]] += 1
+    stop_reasons: dict[str, int] = {}
+    for stage in normalized:
+        reason = str(stage.get("stop_reason", "unknown"))
+        stop_reasons[reason] = stop_reasons.get(reason, 0) + 1
     decode = [stage["decode_tok_s"] for stage in normalized]
     prefix_tokens = sum(stage["prefix_tokens"] for stage in normalized)
     hit_tokens = sum(
@@ -83,6 +87,10 @@ def summarize_stages(stages: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return {
         "stages_total": len(normalized),
         "stages_failed": sum(not stage.get("ok", False) for stage in normalized),
+        "incomplete_stages": sum(
+            not stage.get("complete", True) for stage in normalized
+        ),
+        "stop_reason_counts": stop_reasons,
         "ttft_p50_s": _median(stage["ttft_s"] for stage in normalized),
         "prefill_tok_s_p50": _median(
             stage["prefill_or_restore_tok_s"] for stage in normalized

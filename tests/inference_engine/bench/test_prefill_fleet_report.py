@@ -36,10 +36,17 @@ def test_summary_aggregates_sources_and_medians():
     summary = summarize_stages([
         _stage(),
         _stage("primary_hot_hit", "primary_hot"),
-        {**_stage("allens_cold_restore", "allens_offload"), "ok": False},
+        {
+            **_stage("allens_cold_restore", "allens_offload"),
+            "ok": False,
+            "complete": False,
+            "stop_reason": "client_safety_limit",
+        },
     ])
     assert summary["stages_total"] == 3
     assert summary["stages_failed"] == 1
+    assert summary["incomplete_stages"] == 1
+    assert summary["stop_reason_counts"]["client_safety_limit"] == 1
     assert summary["hit_source_counts"]["remote_worker"] == 1
     assert summary["hit_source_counts"]["primary_hot"] == 1
     assert summary["bytes_received"] == 3000

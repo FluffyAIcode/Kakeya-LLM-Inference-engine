@@ -42,7 +42,7 @@ def _stage(name: str, warm: dict, actual: dict, text: str) -> dict:
         "agent": name,
         "round": 1,
         "hit_source": "primary_hot" if delta["local_hits"] else "unknown",
-        "ok": _agent_cache_gate(warm["delta"], delta),
+        "ok": _agent_cache_gate(warm["delta"], delta) and actual["complete"],
         "warmup_prefix_tokens": warm["prefix_tokens"],
         "warmup_tokens_reused": (
             warm["delta"]["tokens_reused"]
@@ -63,6 +63,7 @@ def main() -> int:
     parser.add_argument("--api-key-file", default="~/.kakeya/network_api_key")
     parser.add_argument("--tokenizer-id", required=True)
     parser.add_argument("--output-tokens", type=int, default=64)
+    parser.add_argument("--max-response-tokens", type=int, default=512)
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
 
@@ -121,7 +122,10 @@ def main() -> int:
                         "role": "system",
                         "content": (
                             "You are the Generator agent. Produce a concrete, "
-                            "technically rigorous answer. Internal run "
+                            "technically rigorous answer. For open or unsolved "
+                            "problems, state the accepted boundary honestly, "
+                            "provide rigorous context, and never fabricate a "
+                            "proof. Internal run "
                             f"{run_nonce}."
                         ),
                     },
@@ -149,6 +153,7 @@ def main() -> int:
                     args.output_tokens,
                     get_stats,
                     on_token=generator_printer,
+                    max_response_tokens=args.max_response_tokens,
                 )
                 generator_printer.finish()
                 generator_text = tokenizer.decode(
@@ -176,7 +181,11 @@ def main() -> int:
                         "content": (
                             "You are the Critic/Discriminator. Score the answer "
                             "0-10, identify false assumptions, and propose "
-                            "specific corrections. Internal run "
+                            "specific corrections. Do not penalize a correct "
+                            "statement that an open problem has no accepted "
+                            "proof. Call an answer incomplete only when its "
+                            "completion status is not EOS or its syntax is "
+                            "visibly cut off. Internal run "
                             f"{run_nonce}."
                         ),
                     },
@@ -184,7 +193,10 @@ def main() -> int:
                         "role": "user",
                         "content": (
                             f"Original task:\n{prompt}\n\n"
-                            f"Generator answer:\n{generator_text}"
+                            f"Generator answer:\n{generator_text}\n\n"
+                            "Generator completion status: "
+                            f"{generator_actual['stop_reason']}; "
+                            f"complete={generator_actual['complete']}"
                         ),
                     },
                 ]
@@ -210,6 +222,7 @@ def main() -> int:
                     args.output_tokens,
                     get_stats,
                     on_token=critic_printer,
+                    max_response_tokens=args.max_response_tokens,
                 )
                 critic_printer.finish()
                 critic_text = tokenizer.decode(
