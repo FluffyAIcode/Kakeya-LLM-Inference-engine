@@ -339,6 +339,8 @@ model's EOS. `--max-response-tokens` defaults to 512 as an explicit safety cap;
 reaching it marks the stage incomplete instead of presenting a truncated answer
 as successful. The Critic receives the Generator completion status and must not
 penalize an honest statement that an open problem has no accepted proof.
+The REPL ignores external `SIGTERM`; its shell supervisor restarts signal-based
+exits. Only `/quit`, `/exit`, or EOF is treated as approval to stop.
 
 ## Rollback
 

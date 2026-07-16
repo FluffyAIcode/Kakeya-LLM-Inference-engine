@@ -1,4 +1,7 @@
-from scripts.agent_gan_repl import TokenPrinter, _stage
+import signal
+from pathlib import Path
+
+from scripts.agent_gan_repl import TokenPrinter, _stage, install_signal_protection
 
 
 class Tokenizer:
@@ -51,3 +54,28 @@ def test_repl_stage_is_redacted_and_passes_cache_gate():
         {**actual, "complete": False, "stop_reason": "client_safety_limit"},
         "cut off",
     )["ok"]
+
+
+def test_external_sigterm_is_ignored_until_user_quits(monkeypatch, capsys):
+    installed = {}
+    monkeypatch.setattr(
+        signal,
+        "signal",
+        lambda number, handler: installed.update({number: handler}),
+    )
+    install_signal_protection()
+    installed[signal.SIGTERM](signal.SIGTERM, None)
+    output = capsys.readouterr().out
+    assert "ignored external signal" in output
+    assert "Type /quit to approve shutdown" in output
+
+
+def test_shell_supervisor_restarts_signal_exits_only():
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "scripts"
+        / "run_agent_gan_repl.sh"
+    ).read_text()
+    assert "trap" in source and "TERM HUP" in source
+    assert '"$status" -eq 143' in source
+    assert "restarting in 2s" in source

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import signal
 import time
 import uuid
 from pathlib import Path
@@ -17,6 +18,17 @@ from scripts.benchmark_prefill_architecture import (
     _ensure_services,
     _json_request,
 )
+
+
+def install_signal_protection() -> None:
+    def ignore_sigterm(signum, _frame):
+        print(
+            f"\n[protected] ignored external signal {signum}. "
+            "Type /quit to approve shutdown.",
+            flush=True,
+        )
+
+    signal.signal(signal.SIGTERM, ignore_sigterm)
 
 
 class TokenPrinter:
@@ -56,6 +68,7 @@ def _stage(name: str, warm: dict, actual: dict, text: str) -> dict:
 
 
 def main() -> int:
+    install_signal_protection()
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker-ssh", default="allens")
     parser.add_argument("--address", default="127.0.0.1:51051")
