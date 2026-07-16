@@ -34,7 +34,14 @@ def _output_metadata(text: str) -> dict:
     }
 
 
-def _infer(client, eos_ids, token_ids, output_tokens: int, get_stats):
+def _infer(
+    client,
+    eos_ids,
+    token_ids,
+    output_tokens: int,
+    get_stats,
+    on_token=None,
+):
     before = get_stats()
     started = time.perf_counter()
     with client.create_session(eos_token_ids=eos_ids, client_label="agent-gan") as s:
@@ -45,6 +52,8 @@ def _infer(client, eos_ids, token_ids, output_tokens: int, get_stats):
         generated = []
         for token in s.generate(max_tokens=output_tokens):
             generated.append(int(token))
+            if on_token is not None:
+                on_token(generated)
             if first_at is None:
                 first_at = time.perf_counter()
         done = time.perf_counter()
