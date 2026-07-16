@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from inference_engine.distributed.capability import CapabilityRegistry
+from inference_engine.distributed.kv_namespace import VirtualKVNamespace
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
 
 
@@ -25,6 +26,7 @@ class NetworkState:
     ) -> None:
         self.registry = registry
         self.cache_store = cache_store
+        self.kv_namespace = VirtualKVNamespace(cache_store.compatibility)
         self.state_path = Path(state_path).expanduser()
         self.prefill_stats_provider = prefill_stats_provider
         self._lock = threading.RLock()
@@ -256,6 +258,9 @@ class NetworkState:
                     "group_id": group["id"],
                 } for target in ids[1:])
         return {"nodes": nodes, "edges": edges}
+
+    def virtual_kv_file(self) -> dict[str, Any]:
+        return self.kv_namespace.describe(self.nodes())
 
     def _load(self) -> dict[str, Any]:
         if self.state_path.exists():

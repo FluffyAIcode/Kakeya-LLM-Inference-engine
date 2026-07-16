@@ -15,9 +15,11 @@ from inference_engine.distributed.prefill_cache import (
 )
 from inference_engine.distributed.prefill_cache_runtime import (
     DistributedPrefillCacheHook,
+    RemotePrefillRequiredError,
     _Hit,
 )
 from inference_engine.distributed.prefill_scheduler import PrefillCostConfig
+from inference_engine.distributed.prefill_worker import PrefillJobState
 from inference_engine.server.proto_gen.kakeya.v1 import distributed_pb2
 
 
@@ -134,6 +136,98 @@ def test_runtime_validation_empty_and_provider_failure():
     )
     assert hook.prepare(_Verifier(), []) == 0
     assert hook._cards() == ()
+    hook.close()
+
+
+def test_remote_required_never_falls_back_to_primary_prefill(monkeypatch):
+    compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
+    store = PrefixCacheStore(compatibility, max_bytes=1024, node_id="head")
+    hook = DistributedPrefillCacheHook(
+        store,
+        require_remote_compute=True,
+        remote_compute_min_tokens=0,
+    )
+    monkeypatch.setattr(hook, "_best_hit", lambda hashes: None)
+    monkeypatch.setattr(hook, "_compute_remote", lambda tokens, hashes: None)
+    verifier = _Verifier()
+    with __import__("pytest").raises(RemotePrefillRequiredError):
+        hook.prepare(verifier, [1, 2])
+    assert verifier.prefill_calls == 0
+    assert hook.stats.tokens_computed == 0
+    hook.close()
+
+
+def test_remote_required_rejects_partial_cache_hit(monkeypatch):
+    compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
+    hook = DistributedPrefillCacheHook(
+        PrefixCacheStore(compatibility, max_bytes=1024, node_id="head"),
+        require_remote_compute=True,
+    )
+    monkeypatch.setattr(
+        hook,
+        "_best_hit",
+        lambda hashes: _Hit("peer", "lease", 1, 2, 10),
+    )
+    monkeypatch.setattr(
+        hook,
+        "_try_import",
+        lambda *args: (_ for _ in ()).throw(AssertionError("partial import")),
+    )
+    monkeypatch.setattr(hook, "_compute_remote", lambda tokens, hashes: None)
+    with __import__("pytest").raises(RemotePrefillRequiredError):
+        hook.prepare(_Verifier(), [1, 2, 3, 4])
+    hook.close()
+
+
+def test_remote_required_forces_compatible_worker_despite_cost(monkeypatch):
+    compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
+    hook = DistributedPrefillCacheHook(
+        PrefixCacheStore(compatibility, max_bytes=1024, node_id="head"),
+        require_remote_compute=True,
+        worker_poll_interval_s=0.001,
+    )
+    capability = type("Capability", (), {
+        "load": 0.0,
+        "queued_tokens": 0,
+        "tokens_per_second_prefill": 0.01,
+    })()
+    target = type("Target", (), {
+        "node_id": "worker",
+        "address": "worker:1",
+        "rtt_ms": 1.0,
+        "capability": capability,
+    })()
+    monkeypatch.setattr(
+        "inference_engine.distributed.prefill_cache_runtime."
+        "compatible_prefill_workers",
+        lambda cards, compat: [target],
+    )
+    monkeypatch.setattr(
+        "inference_engine.distributed.prefill_cache_runtime."
+        "choose_prefill_worker",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cost path")),
+    )
+    monkeypatch.setattr(
+        "inference_engine.distributed.prefill_cache_runtime."
+        "submit_prefill_job_sync",
+        lambda *args, **kwargs: type("Response", (), {"job_id": "j"})(),
+    )
+    monkeypatch.setattr(
+        "inference_engine.distributed.prefill_cache_runtime."
+        "get_prefill_job_sync",
+        lambda *args, **kwargs: type("Status", (), {
+            "status": int(PrefillJobState.COMPLETED),
+            "cache_address": "worker:1",
+            "lease_id": "lease",
+            "tokens_computed": 2,
+            "transfer_bytes": 10,
+            "payload_sha256": b"s" * 32,
+        })(),
+    )
+    hit = hook._compute_remote([1, 2], [b"h" * 32])
+    assert hit is not None, hook.stats.last_fallback_reason
+    assert hit.hit_tokens == 2
+    assert hook.stats.remote_jobs == 1
     hook.close()
 
 

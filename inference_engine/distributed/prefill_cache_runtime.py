@@ -43,6 +43,7 @@ from inference_engine.distributed.prefill_compression import (
 from inference_engine.distributed.prefill_scheduler import (
     PrefillCostConfig,
     choose_prefill_worker,
+    compatible_prefill_workers,
     remote_import_wins,
     select_cache_replicas,
 )
@@ -80,6 +81,10 @@ class PrefillReuseStats:
     last_publish_error: str = ""
 
 
+class RemotePrefillRequiredError(RuntimeError):
+    """Raised when decode-only primary policy cannot obtain a complete KV."""
+
+
 @dataclass(frozen=True)
 class _Hit:
     source: str
@@ -114,6 +119,7 @@ class DistributedPrefillCacheHook:
         cost_config: PrefillCostConfig | None = None,
         auth: FleetAuthConfig | None = None,
         on_reuse=None,
+        require_remote_compute: bool = False,
     ) -> None:
         if min(
             lookup_timeout_s,
@@ -143,6 +149,7 @@ class DistributedPrefillCacheHook:
         self.replication_factor = int(replication_factor)
         self.cost_config = cost_config or PrefillCostConfig()
         self.auth = auth
+        self.require_remote_compute = bool(require_remote_compute)
         self._hash_key = auth.tenant_hash_key() if auth is not None else b""
         self.stats = PrefillReuseStats()
         self._stats_lock = threading.Lock()
@@ -167,14 +174,29 @@ class DistributedPrefillCacheHook:
         )
         hit = self._best_hit(hashes)
         reused = 0
+        if (
+            self.require_remote_compute
+            and hit is not None
+            and hit.hit_tokens != len(tokens)
+        ):
+            hit = None
         if hit is not None:
             reused = self._try_import(verifier, tokens, hit)
-        elif len(tokens) >= self.remote_compute_min_tokens:
+        if reused == 0 and (
+            self.require_remote_compute
+            or len(tokens) >= self.remote_compute_min_tokens
+        ):
             remote_hit = self._compute_remote(tokens, hashes)
             if remote_hit is not None:
                 reused = self._try_import(verifier, tokens, remote_hit)
         if reused == 0:
             self.stats.misses += 1
+        if self.require_remote_compute and reused != len(tokens):
+            verifier.reset()
+            reason = self.stats.last_fallback_reason or (
+                "no compatible remote prefill worker completed the request"
+            )
+            raise RemotePrefillRequiredError(reason)
 
         self._compute_and_publish(verifier, tokens, hashes, reused)
         return reused
@@ -267,15 +289,28 @@ class DistributedPrefillCacheHook:
             card for card in self._cards()
             if card.node_id != self.local_store.node_id
         )
-        target = choose_prefill_worker(
-            cards,
-            self.compatibility,
-            prompt_tokens=len(tokens),
-            estimated_snapshot_bytes=(
-                len(tokens) * self.estimated_snapshot_bytes_per_token
-            ),
-            config=self.cost_config,
-        )
+        if self.require_remote_compute:
+            candidates = compatible_prefill_workers(cards, self.compatibility)
+            target = min(
+                candidates,
+                key=lambda item: (
+                    item.capability.load,
+                    item.capability.queued_tokens,
+                    -item.capability.tokens_per_second_prefill,
+                    item.node_id,
+                ),
+                default=None,
+            )
+        else:
+            target = choose_prefill_worker(
+                cards,
+                self.compatibility,
+                prompt_tokens=len(tokens),
+                estimated_snapshot_bytes=(
+                    len(tokens) * self.estimated_snapshot_bytes_per_token
+                ),
+                config=self.cost_config,
+            )
         if target is None:
             return None
         request = distributed_pb2.SubmitPrefillJobRequest(

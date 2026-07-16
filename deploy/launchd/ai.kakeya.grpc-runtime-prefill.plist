@@ -17,8 +17,8 @@
     <string>--skip-cache-check</string>
     <string>--enable-prefill-cache</string>
     <string>--prefill-cache-gb</string><string>1</string>
-    <string>--peer</string><string>169.254.27.104:52051</string>
-    <string>--cache-peer</string><string>169.254.27.104:52051</string>
+    <string>--peer</string><string>169.254.27.104:53051</string>
+    <string>--cache-peer</string><string>169.254.27.104:53051</string>
     <string>--cache-model-id</string><string>gemma-4-26B-A4B-it-mlx-4bit</string>
     <string>--model-revision</string><string>local-4bit-v1</string>
     <string>--tokenizer-revision</string><string>gemma4-v1</string>
@@ -37,6 +37,9 @@
     <string>--measured-rtt-ms</string><string>0.55</string>
     <string>--cache-link-mbps</string><string>10000</string>
     <string>--cache-default-rtt-ms</string><string>0.55</string>
+    <string>--remote-prefill-min-tokens</string><string>0</string>
+    <string>--prefill-worker-timeout-s</string><string>300</string>
+    <string>--prefill-policy</string><string>remote-required</string>
     <string>--network-http-host</string><string>127.0.0.1</string>
     <string>--network-http-port</string><string>8090</string>
     <string>--network-api-key</string><string>__NETWORK_KEY__</string>
