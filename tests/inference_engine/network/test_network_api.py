@@ -43,6 +43,7 @@ def test_dashboard_health_and_read_apis(tmp_path):
     assert "Kakeya Inference Network" in dashboard
     assert "Remote prefill jobs" in dashboard
     assert "LRU evictions" in dashboard
+    assert "Benchmarks" in dashboard
     assert client.get("/healthz").json()["status"] == "ok"
     assert client.get("/v1/network/summary").json()["online_nodes"] == 1
     assert len(client.get("/v1/network/nodes").json()) == 1
@@ -153,3 +154,60 @@ def test_disabled_capture_and_missing_maintenance_key(tmp_path):
         cache_fill_capture=CacheFillCapture(),
     ))
     assert without_key.get("/v1/network/maintenance/capture").status_code == 401
+
+
+def test_benchmark_api_create_update_list_detail_and_pagination(tmp_path):
+    client = _client(tmp_path)
+    assert client.post(
+        "/v1/network/benchmarks",
+        json={"kind": "test", "config": {}},
+    ).status_code == 401
+    created = client.post(
+        "/v1/network/benchmarks",
+        json={"kind": "distributed_prefill_fleet_benchmark", "config": {}},
+        headers={"X-API-Key": "secret"},
+    ).json()
+    run_id = created["id"]
+    assert client.get("/v1/network/benchmarks/live").json()["id"] == run_id
+    stage = {
+        "name": "remote_compute",
+        "hit_source": "remote_worker",
+        "ok": True,
+        "prefix_tokens": 10,
+        "output_tokens": 2,
+        "append_s": 1,
+        "ttft_s": 1.1,
+        "decode_s": 0.5,
+        "e2e_s": 1.5,
+        "delta": {},
+    }
+    updated = client.patch(
+        f"/v1/network/benchmarks/{run_id}",
+        json={"stages": [stage], "status": "completed", "finished_at": 2},
+        headers={"X-API-Key": "secret"},
+    )
+    assert updated.status_code == 200
+    assert client.get("/v1/network/benchmarks/live").json() is None
+    assert client.get("/v1/network/benchmarks").json()[0]["id"] == run_id
+    assert client.get(f"/v1/network/benchmarks/{run_id}").json()["stages"][0]["ok"]
+    page = client.get(f"/v1/network/benchmarks/{run_id}/stages?offset=0&limit=1")
+    assert page.json()["total"] == 1
+    assert client.get("/v1/network/benchmarks?limit=0").status_code == 400
+    assert client.get(f"/v1/network/benchmarks/{run_id}/stages?offset=-1").status_code == 400
+    assert client.get("/v1/network/benchmarks/missing").status_code == 404
+    assert client.get("/v1/network/benchmarks/missing/stages").status_code == 404
+    assert client.patch(
+        "/v1/network/benchmarks/missing",
+        json={},
+        headers={"X-API-Key": "secret"},
+    ).status_code == 404
+    assert client.patch(
+        f"/v1/network/benchmarks/{run_id}",
+        json={"status": "invalid"},
+        headers={"X-API-Key": "secret"},
+    ).status_code == 400
+    assert client.post(
+        "/v1/network/benchmarks",
+        json={"kind": "bad", "config": {"prompt": "secret"}},
+        headers={"X-API-Key": "secret"},
+    ).status_code == 400

@@ -13,6 +13,11 @@ from typing import Any, Callable
 from inference_engine.distributed.capability import CapabilityRegistry
 from inference_engine.distributed.kv_namespace import VirtualKVNamespace
 from inference_engine.distributed.prefill_cache import PrefixCacheStore
+from inference_engine.bench.prefill_fleet_report import (
+    assert_public_safe,
+    normalize_stage,
+    summarize_stages,
+)
 
 
 class NetworkState:
@@ -93,6 +98,89 @@ class NetworkState:
             counters["completed"] += int(completed)
             counters["kv_assisted"] += int(kv_assisted)
             self._save()
+
+    def create_benchmark(
+        self,
+        *,
+        kind: str,
+        config: dict[str, Any],
+        started_at: float | None = None,
+    ) -> dict[str, Any]:
+        assert_public_safe(config)
+        run = {
+            "id": "br_" + secrets.token_hex(8),
+            "schema_version": 1,
+            "kind": kind,
+            "status": "running",
+            "started_at": float(started_at or time.time()),
+            "finished_at": None,
+            "config": dict(config),
+            "stages": [],
+            "summary": {},
+        }
+        with self._lock:
+            self._data["benchmark_runs"].append(run)
+            self._data["benchmark_runs"] = self._data["benchmark_runs"][-200:]
+            self._data["benchmark_live"] = run["id"]
+            self._save()
+        return dict(run)
+
+    def update_benchmark(
+        self,
+        run_id: str,
+        *,
+        stages: list[dict[str, Any]] | None = None,
+        status: str | None = None,
+        finished_at: float | None = None,
+    ) -> dict[str, Any]:
+        if status not in (None, "running", "completed", "failed"):
+            raise ValueError("invalid benchmark status")
+        with self._lock:
+            run = self._benchmark_locked(run_id)
+            if stages:
+                run["stages"].extend(normalize_stage(stage) for stage in stages)
+            if status is not None:
+                run["status"] = status
+            if finished_at is not None:
+                run["finished_at"] = float(finished_at)
+            run["summary"] = summarize_stages(run["stages"])
+            if run["status"] != "running" and self._data["benchmark_live"] == run_id:
+                self._data["benchmark_live"] = None
+            self._save()
+            return json.loads(json.dumps(run))
+
+    def list_benchmarks(
+        self,
+        *,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 200:
+            raise ValueError("benchmark limit must be in [1, 200]")
+        with self._lock:
+            runs = [
+                run for run in self._data["benchmark_runs"]
+                if status is None or run["status"] == status
+            ][-limit:]
+            return [
+                {
+                    key: run[key]
+                    for key in (
+                        "id", "schema_version", "kind", "status",
+                        "started_at", "finished_at", "config", "summary",
+                    )
+                }
+                for run in reversed(runs)
+            ]
+
+    def get_benchmark(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            return json.loads(json.dumps(self._benchmark_locked(run_id)))
+
+    def live_benchmark(self) -> dict[str, Any] | None:
+        with self._lock:
+            run_id = self._data.get("benchmark_live")
+            return self.get_benchmark(run_id) if run_id else None
 
     def nodes(self) -> list[dict[str, Any]]:
         registrations = {
@@ -272,10 +360,24 @@ class NetworkState:
                 data.setdefault("registrations", [])
                 data.setdefault("groups", [])
                 data.setdefault("tokens", {})
+                data.setdefault("benchmark_runs", [])
+                data.setdefault("benchmark_live", None)
                 return data
             except (OSError, ValueError):
                 pass
-        return {"registrations": [], "groups": [], "tokens": {}}
+        return {
+            "registrations": [],
+            "groups": [],
+            "tokens": {},
+            "benchmark_runs": [],
+            "benchmark_live": None,
+        }
+
+    def _benchmark_locked(self, run_id: str) -> dict[str, Any]:
+        for run in self._data["benchmark_runs"]:
+            if run["id"] == run_id:
+                return run
+        raise KeyError(run_id)
 
     def _save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
