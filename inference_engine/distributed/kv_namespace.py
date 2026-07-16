@@ -16,13 +16,20 @@ class VirtualKVMount:
     bytes_free: int
     entry_count: int
     network: str
+    tier: str
 
 
 class VirtualKVNamespace:
     """Present cache-node RAM as one lookup namespace, never as coherent RAM."""
 
-    def __init__(self, compatibility: CacheCompatibility) -> None:
+    def __init__(
+        self,
+        compatibility: CacheCompatibility,
+        *,
+        primary_node_id: str = "head-runtime",
+    ) -> None:
         self.compatibility = compatibility
+        self.primary_node_id = primary_node_id
         fingerprint = compatibility_fingerprint(compatibility).hex()
         tenant = compatibility.tenant_namespace or "default"
         self.uri = f"kv://{tenant}/{compatibility.model_id}/{fingerprint}"
@@ -41,6 +48,11 @@ class VirtualKVNamespace:
                 bytes_free=int(cache.get("bytes_free", 0)),
                 entry_count=int(cache.get("entry_count", 0)),
                 network=endpoint.get("network", "default"),
+                tier=(
+                    "hot"
+                    if node["id"] == self.primary_node_id
+                    else "cold-offload"
+                ),
             ))
         return {
             "uri": self.uri,

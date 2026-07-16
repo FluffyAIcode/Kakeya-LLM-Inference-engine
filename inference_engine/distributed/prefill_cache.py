@@ -274,6 +274,19 @@ class PrefixCacheStore:
                 put_failures=self._put_failures,
             )
 
+    def resize(self, max_bytes: int) -> bool:
+        """Resize the LRU budget, evicting cold unleased blocks when shrinking."""
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be > 0")
+        with self._lock:
+            previous = self.max_bytes
+            self.max_bytes = int(max_bytes)
+            self._evict_to_budget()
+            if self._bytes_used > self.max_bytes:
+                self.max_bytes = max(previous, self._bytes_used)
+                return False
+            return True
+
     def block_hashes(self) -> tuple[bytes, ...]:
         with self._lock:
             return tuple(self._blocks)

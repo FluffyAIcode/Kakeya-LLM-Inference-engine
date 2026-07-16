@@ -12,6 +12,9 @@ set -euo pipefail
 BIND="${KAKEYA_WORKER_BIND:-0.0.0.0:53051}"
 TENANT="${KAKEYA_TENANT_ID:-default}"
 CACHE_GB="${KAKEYA_WORKER_CACHE_GB:-4}"
+CACHE_MIN_GB="${KAKEYA_WORKER_CACHE_MIN_GB:-0.25}"
+MEMORY_RESERVE_GB="${KAKEYA_WORKER_MEMORY_RESERVE_GB:-2}"
+ADAPTIVE_CACHE="${KAKEYA_WORKER_ADAPTIVE_CACHE:-0}"
 PSK_FILE="${KAKEYA_FLEET_PSK_FILE:-}"
 CACHE_MODEL_ID="${KAKEYA_CACHE_MODEL_ID:-$KAKEYA_WORKER_MODEL}"
 MODEL_REVISION="${KAKEYA_MODEL_REVISION:-}"
@@ -43,6 +46,10 @@ peer_xml=""
 if [[ -n "$PEER" ]]; then
   peer_xml="<string>--peer</string><string>$PEER</string>"
 fi
+adaptive_xml=""
+if [[ "$ADAPTIVE_CACHE" == "1" ]]; then
+  adaptive_xml="<string>--adaptive-cache</string>"
+fi
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -67,6 +74,9 @@ cat > "$PLIST" <<EOF
     <string>--layer-geometry-hash</string><string>$KAKEYA_LAYER_GEOMETRY_HASH</string>
     <string>--tenant-id</string><string>$TENANT</string>
     <string>--cache-gb</string><string>$CACHE_GB</string>
+    <string>--cache-min-gb</string><string>$CACHE_MIN_GB</string>
+    <string>--memory-reserve-gb</string><string>$MEMORY_RESERVE_GB</string>
+    $adaptive_xml
     <string>--sink</string><string>$SINK</string>
     <string>--window</string><string>$WINDOW</string>
     <string>--block-size-tokens</string><string>$BLOCK_TOKENS</string>

@@ -123,3 +123,23 @@ def test_put_rejects_when_active_lease_pins_capacity():
         store.put(second)
     assert store.block_hashes() == (first.block_hash,)
     assert store.stats().put_failures == 1
+
+
+def test_resize_evicts_cold_blocks_and_preserves_pinned_budget():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    first = CacheBlock.create(bytes(32), 1, b"12345")
+    second = CacheBlock.create(bytes.fromhex("01" * 32), 1, b"abc")
+    store.put(first)
+    store.put(second)
+    assert store.resize(4)
+    assert store.block_hashes() == (second.block_hash,)
+    assert store.stats().max_bytes == 4
+    store.lookup([second.block_hash])
+    assert not store.resize(1)
+    assert store.stats().max_bytes == 4
+    try:
+        store.resize(0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected resize validation")

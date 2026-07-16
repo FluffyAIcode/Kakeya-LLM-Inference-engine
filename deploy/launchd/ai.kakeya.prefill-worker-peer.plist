@@ -22,7 +22,10 @@
     <string>--sink</string><string>4</string>
     <string>--window</string><string>2048</string>
     <string>--block-size-tokens</string><string>64</string>
-    <string>--cache-gb</string><string>0.25</string>
+    <string>--cache-gb</string><string>8</string>
+    <string>--cache-min-gb</string><string>0.25</string>
+    <string>--adaptive-cache</string>
+    <string>--memory-reserve-gb</string><string>2</string>
     <string>--prefill-tps</string><string>1</string>
     <string>--max-concurrent-jobs</string><string>1</string>
     <string>--network</string><string>thunderbolt</string>

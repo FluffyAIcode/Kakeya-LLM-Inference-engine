@@ -26,7 +26,10 @@ class NetworkState:
     ) -> None:
         self.registry = registry
         self.cache_store = cache_store
-        self.kv_namespace = VirtualKVNamespace(cache_store.compatibility)
+        self.kv_namespace = VirtualKVNamespace(
+            cache_store.compatibility,
+            primary_node_id=registry.self_card.node_id,
+        )
         self.state_path = Path(state_path).expanduser()
         self.prefill_stats_provider = prefill_stats_provider
         self._lock = threading.RLock()

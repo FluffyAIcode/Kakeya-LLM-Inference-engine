@@ -22,6 +22,8 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
         "--rtt-ms",
         "--max-concurrent-jobs",
         "--max-prompt-tokens",
+        "--cache-min-gb",
+        "--memory-reserve-gb",
     ):
         assert f"<string>{flag}</string>" in source
     assert 'PEER="${KAKEYA_WORKER_PEER:-}"' in source
@@ -59,7 +61,9 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
     worker = WORKER_PLIST.read_text()
     assert "scripts/start_prefill_worker_node.py" in worker
     assert "scripts/start_prefill_cache_node.py" not in worker
-    assert "<string>--cache-gb</string><string>0.25</string>" in worker
+    assert "<string>--cache-gb</string><string>8</string>" in worker
+    assert "<string>--cache-min-gb</string><string>0.25</string>" in worker
+    assert "<string>--adaptive-cache</string>" in worker
     assert "<string>--window</string><string>2048</string>" in worker
     assert "<string>--prefill-tps</string><string>1</string>" in worker
     assert "scripts/start_prefill_cache_node.py" in PEER_PLIST.read_text()

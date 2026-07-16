@@ -68,6 +68,28 @@ def physical_memory_bytes() -> int:
         return 0
 
 
+def adaptive_cache_budget(
+    *,
+    total_bytes: int,
+    active_model_bytes: int,
+    ceiling_bytes: int,
+    minimum_bytes: int,
+    reserve_bytes: int,
+) -> int:
+    if min(total_bytes, ceiling_bytes, minimum_bytes) <= 0 or reserve_bytes < 0:
+        raise ValueError("adaptive cache budget inputs are invalid")
+    available = max(0, total_bytes - active_model_bytes - reserve_bytes)
+    return max(minimum_bytes, min(ceiling_bytes, available))
+
+
+def mlx_active_memory_bytes() -> int:
+    try:
+        import mlx.core as mx
+        return int(mx.get_active_memory())
+    except (AttributeError, RuntimeError):
+        return 0
+
+
 async def serve(args) -> None:
     compatibility = CacheCompatibility(
         model_id=args.cache_model_id or args.model_id,
@@ -96,9 +118,16 @@ async def serve(args) -> None:
             "MLX prefill workers require --max-concurrent-jobs 1 so the "
             "model and its stream remain on one compute thread",
         )
+    minimum_cache_bytes = int(args.cache_min_gb * (1 << 30))
+    cache_ceiling_bytes = int(args.cache_gb * (1 << 30))
+    if minimum_cache_bytes > cache_ceiling_bytes:
+        raise SystemExit("--cache-min-gb must be <= --cache-gb")
     store = PrefixCacheStore(
         compatibility,
-        max_bytes=int(args.cache_gb * (1 << 30)),
+        max_bytes=(
+            minimum_cache_bytes
+            if args.adaptive_cache else cache_ceiling_bytes
+        ),
         node_id=args.node_id,
     )
 
@@ -123,7 +152,29 @@ async def serve(args) -> None:
     )
     jobs.warmup()
 
+    def refresh_cache_budget() -> tuple[int, int]:
+        active = mlx_active_memory_bytes()
+        if args.adaptive_cache:
+            target = adaptive_cache_budget(
+                total_bytes=physical_memory_bytes(),
+                active_model_bytes=active,
+                ceiling_bytes=cache_ceiling_bytes,
+                minimum_bytes=minimum_cache_bytes,
+                reserve_bytes=int(args.memory_reserve_gb * (1 << 30)),
+            )
+            store.resize(target)
+        return active, store.stats().max_bytes
+
+    active_model_bytes, cache_budget_bytes = refresh_cache_budget()
+    _LOG.info(
+        "worker memory tiers: model_active=%d cache_budget=%d reserve=%.2fGiB",
+        active_model_bytes,
+        cache_budget_bytes,
+        args.memory_reserve_gb,
+    )
+
     def card() -> NodeCapability:
+        active_model_bytes, _ = refresh_cache_budget()
         inflight, queued, load, queued_tokens = jobs.stats()
         worker = PrefillWorkerCapability(
             compatibility=compatibility,
@@ -135,7 +186,9 @@ async def serve(args) -> None:
             tokens_per_second_prefill=args.prefill_tps,
             ram_bytes_free=max(
                 0,
-                physical_memory_bytes() - store.stats().bytes_used,
+                physical_memory_bytes()
+                - active_model_bytes
+                - store.stats().bytes_used,
             ),
             queued_tokens=queued_tokens,
         )
@@ -240,6 +293,9 @@ def main() -> None:
     parser.add_argument("--sink", type=int, default=4)
     parser.add_argument("--window", type=int, default=64)
     parser.add_argument("--cache-gb", type=float, default=4.0)
+    parser.add_argument("--cache-min-gb", type=float, default=0.25)
+    parser.add_argument("--adaptive-cache", action="store_true")
+    parser.add_argument("--memory-reserve-gb", type=float, default=2.0)
     parser.add_argument("--cache-compression",
                         choices=["none", "zlib", "kakeyalattice-d4"],
                         default="zlib")

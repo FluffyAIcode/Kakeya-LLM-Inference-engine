@@ -6,7 +6,7 @@ def test_virtual_namespace_aggregates_matching_cache_mounts():
     namespace = VirtualKVNamespace(CacheCompatibility(
         model_id="gemma",
         tenant_namespace="private",
-    ))
+    ), primary_node_id="head")
     result = namespace.describe([
         {
             "id": "head",
@@ -42,6 +42,7 @@ def test_virtual_namespace_aggregates_matching_cache_mounts():
         "bytes_free": 20,
         "entry_count": 2,
         "network": "thunderbolt",
+        "tier": "hot",
     }]
 
 
@@ -54,3 +55,4 @@ def test_virtual_namespace_defaults_tenant_and_endpoint():
     assert result["uri"].startswith("kv://default/m/")
     assert result["mounts"][0]["address"] == ""
     assert result["mounts"][0]["network"] == "default"
+    assert result["mounts"][0]["tier"] == "cold-offload"
