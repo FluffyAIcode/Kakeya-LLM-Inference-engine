@@ -3,7 +3,7 @@
 The cache stores an opaque restorable snapshot at selected token-block
 boundaries. Model-specific adapters own serialization/import; this module owns
 deterministic prefix hashing, exact compatibility matching,
-longest-contiguous-prefix lookup, leases, accounting, and memory-pressure
+longest chained-prefix lookup, leases, accounting, and memory-pressure
 eviction. A hit transfers only the snapshot at the longest matched boundary.
 
 Decode never reads this store. A requester imports a hit once, computes the
@@ -208,30 +208,35 @@ class PrefixCacheStore:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         now: float | None = None,
     ) -> PrefixLease:
-        """Lease the longest contiguous prefix held by this store."""
+        """Lease the longest available chained-prefix snapshot.
+
+        A chained hash at boundary N commits all preceding token blocks, so a
+        promoted final snapshot remains valid even when intermediate boundary
+        snapshots are absent or have been evicted.
+        """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be > 0")
         now = time.time() if now is None else now
         with self._lock:
             self._expire_leases(now)
-            matched: list[CacheBlock] = []
-            for raw_hash in block_hashes:
+            snapshot = None
+            hit_block_count = 0
+            for index, raw_hash in enumerate(block_hashes):
                 block_hash = bytes(raw_hash)
                 block = self._blocks.get(block_hash)
-                if block is None:
-                    break
-                matched.append(block)
-                self._blocks.move_to_end(block_hash)
-            if not matched:
+                if block is not None:
+                    snapshot = block
+                    hit_block_count = index + 1
+            if snapshot is None:
                 self._lookup_misses += 1
                 return PrefixLease("", (), 0, 0, 0, self._epoch, now, bytes(32))
+            self._blocks.move_to_end(snapshot.block_hash)
             self._lookup_hits += 1
             lease_id = secrets.token_urlsafe(18)
-            snapshot = matched[-1]
             lease = PrefixLease(
                 lease_id=lease_id,
                 block_hashes=(snapshot.block_hash,),
-                hit_block_count=len(matched),
+                hit_block_count=hit_block_count,
                 hit_token_count=snapshot.token_count,
                 transfer_bytes=snapshot.nbytes,
                 cache_epoch=self._epoch,

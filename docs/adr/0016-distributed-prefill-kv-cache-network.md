@@ -29,7 +29,7 @@ Remote cache access happens only before decode:
 
 1. Tokenize the request and compute chained fixed-size block hashes.
 2. Query the local cache and compatible live peers concurrently.
-3. Select the longest contiguous prefix whose transfer/import cost is lower
+3. Select the longest available chained-prefix snapshot whose transfer/import cost is lower
    than local prefill recomputation.
 4. Transfer one immutable snapshot at the selected prefix boundary.
 5. Import it, compute the missing suffix locally, then decode entirely locally.
@@ -162,7 +162,9 @@ allowing suffix-only prefill.
 ### Arbitrary block/hole reuse
 
 Rejected. Later K/V depends on the complete preceding token sequence and
-positions. Only the longest contiguous prefix is safe.
+positions. A stored snapshot must cover that complete sequence. Intermediate
+checkpoint entries may be absent, however, because the chained hash and final
+snapshot already commit and contain the full prefix through that boundary.
 
 ### SMB/NFS snapshot files
 

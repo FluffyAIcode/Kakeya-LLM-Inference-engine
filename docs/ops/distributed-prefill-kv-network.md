@@ -206,7 +206,7 @@ Expected invariants:
 
 - both node cards appear within two gossip intervals;
 - stale nodes disappear after TTL;
-- remote lookup returns only the longest contiguous prefix;
+- remote lookup returns the longest available chained-prefix snapshot;
 - imported snapshot checksum and compatibility fingerprint match;
 - remote failure falls back to local prefill;
 - no remote RPC occurs in autoregressive decode;
