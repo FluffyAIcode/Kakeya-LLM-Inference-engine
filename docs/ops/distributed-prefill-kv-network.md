@@ -275,6 +275,33 @@ publish failures, fallbacks, or `/tmp/kakeya-cache-fill.stop`, and never expects
 resident fleet usage to exceed the configured 1+8 GiB ceiling. Churn is accepted
 when `bytes_evicted` increases while resident bytes remain bounded.
 
+## Three-phase architecture benchmark
+
+Run from Primary; services are started only if missing and remain running:
+
+```bash
+bash scripts/run_prefill_architecture_benchmark.sh \
+  --output-tokens 32 \
+  --report /tmp/kakeya-prefill-benchmark.json
+```
+
+The task runs `remote_compute`, `primary_hot_hit`, and
+`allens_cold_restore`, recording client-side append latency, TTFT, decode
+latency/tokens-per-second, E2E throughput, and server-side hit/promotion deltas.
+Reports never persist prompts, token IDs, cache keys, raw addresses, or user
+paths.
+
+Benchmark APIs are public reads and API-key writes:
+
+```bash
+curl -fsS https://kakeya.ai/v1/network/benchmarks
+curl -fsS https://kakeya.ai/v1/network/benchmarks/live
+curl -fsS https://kakeya.ai/v1/network/benchmarks/<run-id>
+```
+
+The `Benchmarks` dashboard tab shows live progress, phase comparison, history,
+and complete redacted stage details.
+
 ## Rollback
 
 The cache is an optimization; inference correctness does not depend on it.

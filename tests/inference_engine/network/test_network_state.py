@@ -127,3 +127,48 @@ def test_prefill_stats_serializes_runtime_dataclass(tmp_path):
         tokens_reused=256,
     )
     assert state.prefill_stats()["remote_jobs"] == 4
+
+
+def test_benchmark_lifecycle_persistence_and_retention(tmp_path):
+    state = _state(tmp_path)
+    run = state.create_benchmark(
+        kind="distributed_prefill_fleet_benchmark",
+        config={"model_id": "gemma"},
+        started_at=10,
+    )
+    assert state.live_benchmark()["id"] == run["id"]
+    stage = {
+        "name": "remote_compute",
+        "hit_source": "remote_worker",
+        "ok": True,
+        "prefix_tokens": 100,
+        "output_tokens": 10,
+        "append_s": 5,
+        "ttft_s": 5.1,
+        "decode_s": 2,
+        "e2e_s": 7,
+        "delta": {},
+    }
+    completed = state.update_benchmark(
+        run["id"],
+        stages=[stage],
+        status="completed",
+        finished_at=20,
+    )
+    assert completed["summary"]["decode_tok_s_p50"] == 5
+    assert state.live_benchmark() is None
+    assert state.list_benchmarks(limit=1)[0]["id"] == run["id"]
+    assert state.list_benchmarks(status="completed")[0]["status"] == "completed"
+    assert _state(tmp_path).get_benchmark(run["id"])["finished_at"] == 20
+    with __import__("pytest").raises(ValueError):
+        state.list_benchmarks(limit=0)
+    with __import__("pytest").raises(ValueError):
+        state.update_benchmark(run["id"], status="invalid")
+    with __import__("pytest").raises(KeyError):
+        state.get_benchmark("missing")
+    with __import__("pytest").raises(ValueError):
+        state.create_benchmark(kind="x", config={"prompt": "private"})
+
+    for index in range(205):
+        state.create_benchmark(kind="retention", config={"index": index})
+    assert len(state._data["benchmark_runs"]) == 200

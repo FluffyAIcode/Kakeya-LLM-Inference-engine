@@ -40,6 +40,18 @@ class DrainCaptureRequest(BaseModel):
     max_items: int = Field(default=8, ge=1, le=64)
 
 
+class BenchmarkCreateRequest(BaseModel):
+    kind: str = Field(default="distributed_prefill_fleet_benchmark", max_length=100)
+    config: dict = Field(default_factory=dict)
+    started_at: Optional[float] = None
+
+
+class BenchmarkUpdateRequest(BaseModel):
+    stages: list[dict] = Field(default_factory=list)
+    status: Optional[str] = None
+    finished_at: Optional[float] = None
+
+
 def create_network_app(
     state: NetworkState,
     *,
@@ -123,6 +135,56 @@ def create_network_app(
     @app.get("/v1/network/prefill")
     def prefill():
         return state.prefill_stats()
+
+    @app.get("/v1/network/benchmarks")
+    def benchmarks(limit: int = 20, status: Optional[str] = None):
+        try:
+            return state.list_benchmarks(limit=limit, status=status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/network/benchmarks/live")
+    def benchmark_live():
+        return state.live_benchmark()
+
+    @app.get("/v1/network/benchmarks/{run_id}")
+    def benchmark_detail(run_id: str):
+        try:
+            return state.get_benchmark(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="benchmark not found") from exc
+
+    @app.get("/v1/network/benchmarks/{run_id}/stages")
+    def benchmark_stages(run_id: str, offset: int = 0, limit: int = 50):
+        if offset < 0 or not 1 <= limit <= 200:
+            raise HTTPException(status_code=400, detail="invalid stage pagination")
+        try:
+            stages = state.get_benchmark(run_id)["stages"]
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="benchmark not found") from exc
+        return {"items": stages[offset:offset + limit], "total": len(stages)}
+
+    @app.post(
+        "/v1/network/benchmarks",
+        dependencies=[Depends(require_key)],
+    )
+    def create_benchmark(request: BenchmarkCreateRequest):
+        try:
+            return state.create_benchmark(**request.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.patch(
+        "/v1/network/benchmarks/{run_id}",
+        dependencies=[Depends(require_key)],
+    )
+    def update_benchmark(run_id: str, request: BenchmarkUpdateRequest):
+        try:
+            return state.update_benchmark(run_id, **request.model_dump())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="benchmark not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(
         "/v1/network/maintenance/capture",
