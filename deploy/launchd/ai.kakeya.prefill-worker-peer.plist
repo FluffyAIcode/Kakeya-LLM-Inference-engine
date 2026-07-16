@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.kakeya.prefill-worker</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/allen/.venv-distwan/bin/python</string>
+    <string>/Users/allen/Kakeya-LLM-Inference-engine/scripts/start_prefill_worker_node.py</string>
+    <string>--node-id</string><string>allens-mini</string>
+    <string>--bind</string><string>169.254.27.104:53051</string>
+    <string>--advertise</string><string>169.254.27.104:53051</string>
+    <string>--model-id</string><string>/Users/allen/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit</string>
+    <string>--cache-model-id</string><string>gemma-4-26B-A4B-it-mlx-4bit</string>
+    <string>--model-revision</string><string>local-4bit-v1</string>
+    <string>--tokenizer-revision</string><string>gemma4-v1</string>
+    <string>--cache-format-version</string><string>kakeya-prefill-v3-kl-d4-q38</string>
+    <string>--cache-compression</string><string>kakeyalattice-d4</string>
+    <string>--quantization</string><string>4bit-mlx</string>
+    <string>--layer-geometry-hash</string><string>93d9585b0f06b60bac8e1cadf50b29df1adbf086c862e61720b6127d22c30e2b</string>
+    <string>--tenant-id</string><string>private-fleet</string>
+    <string>--fleet-psk-file</string><string>/Users/allen/.kakeya/fleet.psk</string>
+    <string>--sink</string><string>4</string>
+    <string>--window</string><string>2048</string>
+    <string>--block-size-tokens</string><string>64</string>
+    <string>--cache-gb</string><string>0.25</string>
+    <string>--prefill-tps</string><string>1</string>
+    <string>--max-concurrent-jobs</string><string>1</string>
+    <string>--network</string><string>thunderbolt</string>
+    <string>--priority</string><string>100</string>
+    <string>--rtt-ms</string><string>0.55</string>
+    <string>--log-level</string><string>INFO</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/allen/Kakeya-LLM-Inference-engine</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/Users/allen/.venv-distwan/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONPATH</key><string>/Users/allen/Kakeya-LLM-Inference-engine:/Users/allen/Kakeya-LLM-Inference-engine/sdks/python</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>/Users/allen/.kakeya/prefill-worker.log</string>
+  <key>StandardErrorPath</key><string>/Users/allen/.kakeya/prefill-worker.log</string>
+</dict></plist>

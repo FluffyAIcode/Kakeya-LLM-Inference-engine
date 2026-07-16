@@ -92,10 +92,9 @@ Use an isolated venv and copy/sync the repository package. The peer plist is:
 deploy/launchd/ai.kakeya.prefill-network-peer.plist
 ```
 
-In the two-Mac profile, `allens-mini` runs this role only. It does not load the
-model or apply a chat template. Snapshots arrive from the primary's fallback
-prefill today, and from separately deployed compute workers when the fleet has
-additional machines.
+The cache-only plist remains available for rollback or additional RAM-only
+nodes. In the strict two-Mac decode/prefill profile, allens instead runs the
+prefill-worker plist below with a co-located cache.
 
 Check from the head over Thunderbolt:
 
@@ -114,10 +113,10 @@ The worker loads the exact same MLX model as the primary, accepts queued
 prefill-only jobs, writes immutable snapshots into its co-located RAM cache and
 never serves user decode.
 
-This is an additional fleet role, not the `allens-mini` cache-only role in the
-two-Mac profile. Deploy it on Worker A/B/C addresses when those machines exist.
-Workers receive canonical token IDs from the scheduler; they do not construct
-their own chat template.
+In the strict two-Mac profile, `allens-mini` runs this role and Primary uses
+`--prefill-policy remote-required`. Workers receive canonical token IDs from
+the scheduler; they do not construct their own chat template. The worker stores
+the resulting snapshots in its co-located content-addressed cache.
 
 Create a fleet PSK once and copy it to every trusted node:
 
@@ -232,6 +231,16 @@ and `tokens_reused` to increase. Use `--require-worker` only when testing the
 separate Worker A/B/C path; that mode additionally requires `remote_jobs`.
 Decode throughput is reported separately because all autoregressive decode
 remains on the primary.
+
+The logical cross-node KV namespace is available at:
+
+```bash
+curl -fsS http://127.0.0.1:8090/v1/network/kvfs
+```
+
+The returned `kv://` URI and mount table virtualize naming and management only.
+Payloads remain in each Mac's physical RAM and are copied into Primary once
+before decode; `coherent_shared_memory` is always false.
 
 ## Maintenance cache saturation
 

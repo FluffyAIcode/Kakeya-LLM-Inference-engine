@@ -378,6 +378,43 @@ async def test_append_tokens_value_error_returns_invalid_argument():
         await server.stop(grace=0.1)
 
 
+async def test_append_tokens_remote_required_error_returns_unavailable():
+    from inference_engine.distributed.prefill_cache_runtime import (
+        RemotePrefillRequiredError,
+    )
+    from inference_engine.session import AppendTokensCoordinator
+
+    class Coordinator(AppendTokensCoordinator):
+        def append_tokens(self, session_id, token_ids):
+            raise RemotePrefillRequiredError("remote worker unavailable")
+
+    class Aborted(Exception):
+        pass
+
+    class Context:
+        code = None
+        detail = ""
+
+        async def abort(self, code, detail):
+            self.code = code
+            self.detail = detail
+            raise Aborted
+
+    store = SessionStore(capacity=1)
+    servicer = RuntimeServiceServicer(
+        store,
+        append_coordinator=Coordinator(store, verifier=None),
+    )
+    context = Context()
+    with pytest.raises(Aborted):
+        await servicer.AppendTokens(
+            runtime_pb2.AppendTokensRequest(session_id="s", token_ids=[1]),
+            context,
+        )
+    assert context.code == grpc.StatusCode.UNAVAILABLE
+    assert "remote worker unavailable" in context.detail
+
+
 async def test_append_tokens_invariant_violation_returns_failed_precondition():
     """InvariantViolation raised by the coordinator → FAILED_PRECONDITION
     on the wire. Verifier is never consulted on this path."""

@@ -48,6 +48,7 @@ def test_dashboard_health_and_read_apis(tmp_path):
     assert len(client.get("/v1/network/nodes").json()) == 1
     assert client.get("/v1/network/groups").json() == []
     assert "nodes" in client.get("/v1/network/topology").json()
+    assert client.get("/v1/network/kvfs").json()["uri"].startswith("kv://")
     assert client.get("/v1/network/tokens").json()["completed"] == 0
     assert client.get("/v1/network/prefill").json()["remote_jobs"] == 3
     assert client.get("/v1/network/maintenance/capture").status_code == 401

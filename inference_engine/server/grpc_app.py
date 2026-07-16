@@ -36,6 +36,9 @@ from typing import Optional
 import grpc
 
 from inference_engine.memory.pool import PoolExhausted
+from inference_engine.distributed.prefill_cache_runtime import (
+    RemotePrefillRequiredError,
+)
 from inference_engine.server.proto_gen.kakeya.v1 import (
     runtime_pb2,
     runtime_pb2_grpc,
@@ -210,6 +213,8 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             )
         except SessionNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+        except RemotePrefillRequiredError as exc:
+            await context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
         except ValueError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         except InvariantViolation as exc:

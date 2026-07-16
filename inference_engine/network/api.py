@@ -107,6 +107,10 @@ def create_network_app(
     def topology():
         return state.topology()
 
+    @app.get("/v1/network/kvfs")
+    def virtual_kv_file():
+        return state.virtual_kv_file()
+
     @app.get("/v1/network/tokens")
     def tokens():
         summary = state.summary()

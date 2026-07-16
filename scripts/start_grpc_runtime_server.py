@@ -453,6 +453,7 @@ async def _serve(args: argparse.Namespace) -> int:
                 primary_compute_penalty_ms=args.primary_prefill_penalty_ms,
             ),
             auth=prefill_auth,
+            require_remote_compute=(args.prefill_policy == "remote-required"),
             on_reuse=(
                 (lambda count: telemetry_callback(count, count))
                 if telemetry_callback is not None else None
@@ -767,6 +768,13 @@ def main() -> int:
                          "with prefill; drives work to compute peers.")
     ap.add_argument("--remote-prefill-min-tokens", type=int, default=128)
     ap.add_argument("--prefill-worker-timeout-s", type=float, default=120.0)
+    ap.add_argument(
+        "--prefill-policy",
+        choices=["local-fallback", "remote-required"],
+        default="local-fallback",
+        help="Use remote workers opportunistically, or require complete remote "
+             "prefill so the primary remains decode-only.",
+    )
     ap.add_argument("--network-label", default="lan",
                     help="Advertised interface: thunderbolt|lan|tailscale|public.")
     ap.add_argument("--network-priority", type=int, default=50)

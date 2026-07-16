@@ -49,6 +49,12 @@ Every remote error (lookup, job, lease, fetch, checksum, decompress, import)
 resets the verifier and falls back to full local prefill. Cache availability
 must never determine request correctness.
 
+For deployments that require a strictly decode-only primary,
+`--prefill-policy remote-required` changes this failure contract: only a
+complete cache hit or completed remote worker job is accepted. Partial hits are
+not extended on Primary, cost gating is bypassed, and worker failure returns
+`UNAVAILABLE` instead of silently running local prefill.
+
 ### Discovery and placement
 
 Capability gossip is the only membership source. Static `--cache-peer` and
@@ -72,6 +78,9 @@ operator-configured defaults.
 
 - Decode KV remains local to the primary.
 - Peer memory is a pre-decode snapshot tier, not coherent remote attention RAM.
+- Cache mounts are exposed as one content-addressed `kv://` namespace for
+  management. This virtualizes naming and location only; fetch/import still
+  copies the selected snapshot into Primary memory.
 - Snapshot payloads support zlib framing and retain SHA-256 of the uncompressed
   bytes.
 - Replication uses rendezvous hashing and a bounded replication factor instead
