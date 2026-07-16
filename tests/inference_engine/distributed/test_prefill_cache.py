@@ -72,6 +72,17 @@ def test_store_miss_expiry_collision_and_lru():
         store.fetch(lease.lease_id, now=22.0)
 
 
+def test_lookup_uses_sparse_promoted_final_snapshot():
+    store = PrefixCacheStore(_compat(), max_bytes=100, node_id="head")
+    hashes = chained_block_hashes([1, 2, 3, 4], _compat())
+    final = CacheBlock.create(hashes[1], 4, b"full-snapshot")
+    store.put(final)
+    lease = store.lookup(hashes)
+    assert lease.hit_block_count == 2
+    assert lease.hit_token_count == 4
+    assert store.fetch(lease.lease_id) == (final,)
+
+
 def test_validation_and_stats():
     with pytest.raises(ValueError, match="max_bytes"):
         PrefixCacheStore(_compat(), max_bytes=0, node_id="x")
