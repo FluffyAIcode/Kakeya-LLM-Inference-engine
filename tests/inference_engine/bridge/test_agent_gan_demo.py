@@ -67,7 +67,7 @@ def test_infer_continues_chunks_until_eos():
         2,
         lambda: {},
         on_token=lambda values: streamed.append(list(values)),
-        max_response_tokens=10,
+        max_response_tokens=0,
     )
     assert tokens == [1, 2, 3]
     assert streamed == [[1], [1, 2], [1, 2, 3]]

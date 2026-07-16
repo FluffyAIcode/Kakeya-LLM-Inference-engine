@@ -51,11 +51,19 @@ def _infer(
         append_done = time.perf_counter()
         first_at = None
         generated = []
-        response_limit = int(max_response_tokens or output_tokens)
+        response_limit = (
+            int(output_tokens)
+            if max_response_tokens is None
+            else int(max_response_tokens) or None
+        )
         stop_reason = "unknown"
-        while len(generated) < response_limit:
+        while response_limit is None or len(generated) < response_limit:
             before_count = len(generated)
-            chunk = min(output_tokens, response_limit - len(generated))
+            chunk = (
+                output_tokens
+                if response_limit is None
+                else min(output_tokens, response_limit - len(generated))
+            )
             for token in s.generate(max_tokens=chunk):
                 generated.append(int(token))
                 if on_token is not None:
@@ -73,7 +81,11 @@ def _infer(
             if len(generated) == before_count:
                 stop_reason = "no_progress"
                 break
-        if len(generated) >= response_limit and stop_reason == "max_tokens":
+        if (
+            response_limit is not None
+            and len(generated) >= response_limit
+            and stop_reason == "max_tokens"
+        ):
             stop_reason = "client_safety_limit"
         done = time.perf_counter()
     after = get_stats()
@@ -106,7 +118,12 @@ def main() -> int:
              "reliably; larger values require more worker memory or timeout.",
     )
     parser.add_argument("--output-tokens", type=int, default=64)
-    parser.add_argument("--max-response-tokens", type=int, default=512)
+    parser.add_argument(
+        "--max-response-tokens",
+        type=int,
+        default=0,
+        help="Optional client response cap; 0 means generate until model EOS.",
+    )
     parser.add_argument("--report", default="/tmp/kakeya-agent-gan-demo.json")
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()

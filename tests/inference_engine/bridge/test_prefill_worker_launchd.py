@@ -49,6 +49,10 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
         in plist
     )
     assert (
+        "<string>--prefill-worker-timeout-s</string><string>900</string>"
+        in plist
+    )
+    assert (
         "<string>--cache-tenant-id</string><string>private-fleet</string>"
         in plist
     )
