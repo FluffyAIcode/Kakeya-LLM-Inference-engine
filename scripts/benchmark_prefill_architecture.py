@@ -20,13 +20,20 @@ PHASE_KEYS = (
 )
 
 
-def _json_request(url: str, *, api_key: str = "", method: str = "GET", body=None):
+def _json_request(
+    url: str,
+    *,
+    api_key: str = "",
+    method: str = "GET",
+    body=None,
+    timeout: float = 10,
+):
     data = None if body is None else json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["X-API-Key"] = api_key
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 

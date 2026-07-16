@@ -6,6 +6,7 @@ from scripts.agent_gan_repl import (
     PrefillHeartbeat,
     TokenPrinter,
     _stage,
+    _telemetry_request,
     install_signal_protection,
 )
 
@@ -124,3 +125,17 @@ def test_stage_includes_evidence_window_metrics():
         extra_metrics={"critic_omitted_tokens": 100},
     )
     assert stage["critic_omitted_tokens"] == 100
+
+
+def test_telemetry_timeout_warns_without_stopping_inference(
+    monkeypatch,
+    capsys,
+):
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("scripts.agent_gan_repl._json_request", timeout)
+    assert _telemetry_request("http://dashboard/metrics") is None
+    output = capsys.readouterr().out
+    assert "telemetry-warning" in output
+    assert "inference will continue" in output
