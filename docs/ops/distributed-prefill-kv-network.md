@@ -302,6 +302,24 @@ curl -fsS https://kakeya.ai/v1/network/benchmarks/<run-id>
 The `Benchmarks` dashboard tab shows live progress, phase comparison, history,
 and complete redacted stage details.
 
+### Generator/Critic Agent GAN demo
+
+Run two logical agents through real multi-round model inference:
+
+```bash
+bash scripts/run_agent_gan_demo.sh \
+  --rounds 2 \
+  --output-tokens 64 \
+  --report /tmp/kakeya-agent-gan-demo.json
+```
+
+For every Generator and Critic turn the task first asks allens to Prefill the
+complete agent context, then performs the actual inference against the promoted
+Primary hot snapshot. Terminal output contains the real proposal/critique;
+persisted reports contain only output length/hash and metrics. The report
+separates inference-only KV hit rate from whole-workload hit rate including
+warmup, plus per-agent and aggregate token throughput/latency.
+
 ## Rollback
 
 The cache is an optimization; inference correctness does not depend on it.

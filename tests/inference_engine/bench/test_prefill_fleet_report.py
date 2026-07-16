@@ -18,7 +18,9 @@ def _stage(name="remote_compute", source="remote_worker"):
         "ttft_s": 5.2,
         "decode_s": 2.0,
         "e2e_s": 7.0,
-        "delta": {"bytes_received": 1000},
+        "delta": {"bytes_received": 1000, "tokens_reused": 100},
+        "warmup_prefix_tokens": 100,
+        "warmup_tokens_reused": 0,
     }
 
 
@@ -41,12 +43,19 @@ def test_summary_aggregates_sources_and_medians():
     assert summary["hit_source_counts"]["remote_worker"] == 1
     assert summary["hit_source_counts"]["primary_hot"] == 1
     assert summary["bytes_received"] == 3000
+    assert summary["inference_kv_token_hit_rate"] == 1.0
+    assert summary["workload_kv_token_hit_rate"] == 0.5
+    assert summary["aggregate_decode_tok_s"] == 5.0
+    assert summary["aggregate_e2e_tok_s"] == 10 / 7
     assert summarize_stages([])["decode_tok_s_p50"] == 0
 
 
 def test_schema_rejects_unknown_and_private_fields():
     with pytest.raises(ValueError, match="unknown benchmark phase"):
         normalize_stage(_stage("bad"))
+    assert normalize_stage(_stage("agent_generator", "primary_hot"))["name"] == (
+        "agent_generator"
+    )
     with pytest.raises(ValueError, match="unknown hit_source"):
         normalize_stage(_stage(source="peer:1"))
     with pytest.raises(ValueError, match="non-negative"):

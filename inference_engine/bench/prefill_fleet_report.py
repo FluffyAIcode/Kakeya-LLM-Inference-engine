@@ -4,7 +4,13 @@ from __future__ import annotations
 import statistics
 from typing import Any, Sequence
 
-PHASES = ("remote_compute", "primary_hot_hit", "allens_cold_restore")
+PHASES = (
+    "remote_compute",
+    "primary_hot_hit",
+    "allens_cold_restore",
+    "agent_generator",
+    "agent_critic",
+)
 HIT_SOURCES = ("remote_worker", "primary_hot", "allens_offload", "unknown")
 _PRIVATE_KEYS = {
     "prompt",
@@ -60,6 +66,20 @@ def summarize_stages(stages: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for stage in normalized:
         sources[stage["hit_source"]] += 1
     decode = [stage["decode_tok_s"] for stage in normalized]
+    prefix_tokens = sum(stage["prefix_tokens"] for stage in normalized)
+    hit_tokens = sum(
+        int(stage.get("delta", {}).get("tokens_reused", 0))
+        for stage in normalized
+    )
+    warmup_prefix_tokens = sum(
+        int(stage.get("warmup_prefix_tokens", 0)) for stage in normalized
+    )
+    warmup_hit_tokens = sum(
+        int(stage.get("warmup_tokens_reused", 0)) for stage in normalized
+    )
+    decode_tokens = sum(stage["output_tokens"] for stage in normalized)
+    decode_seconds = sum(stage["decode_s"] for stage in normalized)
+    e2e_seconds = sum(stage["e2e_s"] for stage in normalized)
     return {
         "stages_total": len(normalized),
         "stages_failed": sum(not stage.get("ok", False) for stage in normalized),
@@ -71,6 +91,20 @@ def summarize_stages(stages: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "e2e_tok_s_p50": _median(stage["e2e_tok_s"] for stage in normalized),
         "generation_latency_ms_p50": _median(
             stage["generation_latency_ms_per_token"] for stage in normalized
+        ),
+        "inference_kv_token_hit_rate": (
+            hit_tokens / prefix_tokens if prefix_tokens else 0.0
+        ),
+        "workload_kv_token_hit_rate": (
+            (hit_tokens + warmup_hit_tokens)
+            / (prefix_tokens + warmup_prefix_tokens)
+            if prefix_tokens + warmup_prefix_tokens else 0.0
+        ),
+        "aggregate_decode_tok_s": (
+            decode_tokens / decode_seconds if decode_seconds else 0.0
+        ),
+        "aggregate_e2e_tok_s": (
+            decode_tokens / e2e_seconds if e2e_seconds else 0.0
         ),
         "bytes_received": sum(
             int(stage.get("delta", {}).get("bytes_received", 0))
