@@ -308,7 +308,7 @@ Run two logical agents through real multi-round model inference:
 
 ```bash
 bash scripts/run_agent_gan_demo.sh \
-  --rounds 2 \
+  --rounds 1 \
   --output-tokens 64 \
   --report /tmp/kakeya-agent-gan-demo.json
 ```
@@ -319,6 +319,10 @@ Primary hot snapshot. Terminal output contains the real proposal/critique;
 persisted reports contain only output length/hash and metrics. The report
 separates inference-only KV hit rate from whole-workload hit rate including
 warmup, plus per-agent and aggregate token throughput/latency.
+
+One Generator/Critic cycle is the safe default for the current 16GB allens
+Gemma worker. Additional rounds grow agent histories and may exceed the strict
+remote-prefill timeout; increase worker memory/timeout before enabling them.
 
 ## Rollback
 

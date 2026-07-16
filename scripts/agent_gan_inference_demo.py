@@ -68,7 +68,13 @@ def main() -> int:
     parser.add_argument("--dashboard", default="http://127.0.0.1:8090")
     parser.add_argument("--api-key-file", default="~/.kakeya/network_api_key")
     parser.add_argument("--tokenizer-id", required=True)
-    parser.add_argument("--rounds", type=int, default=2)
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=1,
+        help="Generator/Critic cycles. The 16GB Gemma worker supports one "
+             "reliably; larger values require more worker memory or timeout.",
+    )
     parser.add_argument("--output-tokens", type=int, default=64)
     parser.add_argument("--report", default="/tmp/kakeya-agent-gan-demo.json")
     parser.add_argument("--skip-ensure", action="store_true")
