@@ -2,6 +2,7 @@ from scripts.agent_gan_inference_demo import (
     _agent_cache_gate,
     _infer,
     _output_metadata,
+    build_critic_evidence,
 )
 
 
@@ -87,3 +88,28 @@ def test_infer_reports_explicit_client_safety_limit():
     assert tokens == [1, 2]
     assert metrics["stop_reason"] == "client_safety_limit"
     assert metrics["complete"] is False
+
+
+class CharTokenizer:
+    def encode(self, text, **_kwargs):
+        return [ord(char) for char in text]
+
+    def decode(self, token_ids, **_kwargs):
+        return "".join(chr(token) for token in token_ids)
+
+
+def test_critic_evidence_is_bounded_and_explicit_about_omission():
+    evidence, metrics = build_critic_evidence(CharTokenizer(), "abcdefghij", 4)
+    assert "ab" in evidence and "ij" in evidence
+    assert "6 generator tokens omitted" in evidence
+    assert metrics["generator_full_tokens"] == 10
+    assert metrics["critic_omitted_tokens"] == 6
+    full, full_metrics = build_critic_evidence(CharTokenizer(), "abc", 4)
+    assert full == "abc"
+    assert full_metrics["critic_omitted_tokens"] == 0
+    try:
+        build_critic_evidence(CharTokenizer(), "abc", 0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected evidence budget validation")

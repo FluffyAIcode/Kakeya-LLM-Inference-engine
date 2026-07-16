@@ -1,7 +1,13 @@
 import signal
+import time
 from pathlib import Path
 
-from scripts.agent_gan_repl import TokenPrinter, _stage, install_signal_protection
+from scripts.agent_gan_repl import (
+    PrefillHeartbeat,
+    TokenPrinter,
+    _stage,
+    install_signal_protection,
+)
 
 
 class Tokenizer:
@@ -79,3 +85,42 @@ def test_shell_supervisor_restarts_signal_exits_only():
     assert "trap" in source and "TERM HUP" in source
     assert '"$status" -eq 143' in source
     assert "restarting in 2s" in source
+
+
+def test_prefill_heartbeat_reports_elapsed_progress(capsys):
+    with PrefillHeartbeat("Critic", interval_s=0.01):
+        time.sleep(0.025)
+    output = capsys.readouterr().out
+    assert "Critic Prefill still running" in output
+
+
+def test_stage_includes_evidence_window_metrics():
+    warm = {
+        "prefix_tokens": 10,
+        "e2e_s": 1,
+        "delta": {"remote_jobs": 1, "remote_hits": 1, "tokens_reused": 10},
+    }
+    actual = {
+        "prefix_tokens": 10,
+        "output_tokens": 1,
+        "append_s": 0.1,
+        "ttft_s": 0.2,
+        "decode_s": 0.3,
+        "e2e_s": 0.4,
+        "stop_reason": "eos",
+        "complete": True,
+        "delta": {
+            "local_hits": 1,
+            "remote_jobs": 0,
+            "tokens_computed": 0,
+            "fallbacks": 0,
+        },
+    }
+    stage = _stage(
+        "critic",
+        warm,
+        actual,
+        "ok",
+        extra_metrics={"critic_omitted_tokens": 100},
+    )
+    assert stage["critic_omitted_tokens"] == 100

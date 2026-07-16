@@ -34,6 +34,36 @@ def _output_metadata(text: str) -> dict:
     }
 
 
+def build_critic_evidence(tokenizer, text: str, max_tokens: int) -> tuple[str, dict]:
+    if max_tokens <= 0:
+        raise ValueError("critic evidence token budget must be > 0")
+    full_ids = tokenizer.encode(text, add_special_tokens=False)
+    if len(full_ids) <= max_tokens:
+        return text, {
+            "generator_full_tokens": len(full_ids),
+            "critic_evidence_tokens": len(full_ids),
+            "critic_omitted_tokens": 0,
+        }
+    head_count = max_tokens // 2
+    tail_count = max_tokens - head_count
+    head = tokenizer.decode(full_ids[:head_count], skip_special_tokens=True)
+    tail = tokenizer.decode(full_ids[-tail_count:], skip_special_tokens=True)
+    omitted = len(full_ids) - max_tokens
+    evidence = (
+        "[BEGIN GENERATOR EVIDENCE]\n"
+        f"{head}\n"
+        f"[... {omitted} generator tokens omitted from Critic context ...]\n"
+        f"{tail}\n"
+        "[END GENERATOR EVIDENCE]"
+    )
+    evidence_tokens = len(tokenizer.encode(evidence, add_special_tokens=False))
+    return evidence, {
+        "generator_full_tokens": len(full_ids),
+        "critic_evidence_tokens": evidence_tokens,
+        "critic_omitted_tokens": omitted,
+    }
+
+
 def _infer(
     client,
     eos_ids,
@@ -124,11 +154,12 @@ def main() -> int:
         default=0,
         help="Optional client response cap; 0 means generate until model EOS.",
     )
+    parser.add_argument("--critic-evidence-tokens", type=int, default=128)
     parser.add_argument("--report", default="/tmp/kakeya-agent-gan-demo.json")
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
-    if args.rounds <= 0 or args.output_tokens <= 0:
-        raise SystemExit("rounds and output-tokens must be > 0")
+    if min(args.rounds, args.output_tokens, args.critic_evidence_tokens) <= 0:
+        raise SystemExit("rounds, output-tokens and critic evidence must be > 0")
 
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -168,6 +199,9 @@ def main() -> int:
             "incomplete merely because it refuses to fabricate a solution to "
             "an open problem. Claim truncation only when completion_status is "
             "not EOS or the text is syntactically cut off."
+            " You receive an explicitly bounded evidence window; omitted "
+            "middle tokens are a transport constraint, not evidence that the "
+            "Generator itself failed to complete."
         ),
     }]
 
@@ -193,7 +227,7 @@ def main() -> int:
     def get_stats():
         return _json_request(f"{args.dashboard}/v1/network/prefill")
 
-    def execute_agent(client, name, round_index, history):
+    def execute_agent(client, name, round_index, history, extra_metrics=None):
         token_ids = tokenizer.apply_chat_template(
             history,
             add_generation_prompt=True,
@@ -230,6 +264,7 @@ def main() -> int:
             "warmup_remote_jobs": warm["delta"]["remote_jobs"],
             **_output_metadata(text),
         }
+        stage.update(extra_metrics or {})
         if not ok:
             raise RuntimeError(f"{name} round {round_index} cache gate failed")
         _json_request(
@@ -258,16 +293,26 @@ def main() -> int:
                     client, "generator", round_index, generator_history,
                 )
                 generator_history.append({"role": "assistant", "content": proposal})
+                evidence, evidence_metrics = build_critic_evidence(
+                    tokenizer,
+                    proposal,
+                    args.critic_evidence_tokens,
+                )
                 critic_history.append({
                     "role": "user",
                     "content": (
-                        f"Architecture task:\n{task}\n\nGenerator proposal:\n{proposal}"
+                        f"Architecture task:\n{task}\n\n"
+                        f"Generator evidence window:\n{evidence}"
                         f"\n\ncompletion_status={generator_stage['stop_reason']}; "
                         f"complete={generator_stage['complete']}"
                     ),
                 })
                 critic_feedback, _critic_stage = execute_agent(
-                    client, "critic", round_index, critic_history,
+                    client,
+                    "critic",
+                    round_index,
+                    critic_history,
+                    extra_metrics=evidence_metrics,
                 )
                 critic_history.append({
                     "role": "assistant",
