@@ -324,6 +324,17 @@ One Generator/Critic cycle is the safe default for the current 16GB allens
 Gemma worker. Additional rounds grow agent histories and may exceed the strict
 remote-prefill timeout; increase worker memory/timeout before enabling them.
 
+For an interactive terminal REPL with real-time token output:
+
+```bash
+bash scripts/run_agent_gan_repl.sh
+```
+
+Type a prompt at `prompt>`. The terminal prints allens Prefill progress, then
+streams `generator>` and `critic>` tokens as they arrive, followed by KV hit
+rate, decode tok/s, generation latency and E2E tok/s. `/quit` exits; services
+remain running. Reports remain redacted and appear in the Benchmarks tab.
+
 ## Rollback
 
 The cache is an optimization; inference correctness does not depend on it.
