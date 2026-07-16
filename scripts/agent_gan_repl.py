@@ -76,7 +76,12 @@ def main() -> int:
     parser.add_argument("--api-key-file", default="~/.kakeya/network_api_key")
     parser.add_argument("--tokenizer-id", required=True)
     parser.add_argument("--output-tokens", type=int, default=64)
-    parser.add_argument("--max-response-tokens", type=int, default=512)
+    parser.add_argument(
+        "--max-response-tokens",
+        type=int,
+        default=0,
+        help="Optional client response cap; 0 means generate until model EOS.",
+    )
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
 

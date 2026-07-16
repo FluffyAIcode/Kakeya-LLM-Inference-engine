@@ -38,7 +38,7 @@
     <string>--cache-link-mbps</string><string>10000</string>
     <string>--cache-default-rtt-ms</string><string>0.55</string>
     <string>--remote-prefill-min-tokens</string><string>0</string>
-    <string>--prefill-worker-timeout-s</string><string>300</string>
+    <string>--prefill-worker-timeout-s</string><string>900</string>
     <string>--prefill-policy</string><string>remote-required</string>
     <string>--network-http-host</string><string>127.0.0.1</string>
     <string>--network-http-port</string><string>8090</string>
