@@ -51,10 +51,12 @@ def build_generator_messages(prompt: str) -> list[dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "Answer rigorously. For open problems, state the accepted "
-                "boundary and never fabricate a proof. Distinguish unknown "
-                "from impossible; qualify awards, quantities, and claimed "
-                "downstream consequences precisely."
+                "Pursue the requested mathematical argument constructively and "
+                "rigorously. For an open problem, do not fabricate a proof, but "
+                "do not stop at 'unsolved': identify the exact global claim, "
+                "derive known reductions, recursively decompose missing proof "
+                "obligations, and state the smallest unresolved frontier. "
+                "Distinguish unknown from impossible."
             ),
         },
         {"role": "user", "content": prompt},
@@ -72,20 +74,26 @@ def build_critic_messages(
         {
             "role": "system",
             "content": (
-                "Act as an adversarial peer reviewer, not a supportive grader. "
-                "Read the complete response as one semantic argument. Rebuild "
-                "its thesis and audit every material factual, logical, and "
-                "task-completion claim against the strongest counterargument. "
-                "Quote the exact claim before challenging it. Distinguish "
-                "epistemic honesty from literal task completion: unknown or "
-                "unsolved does not mean impossible, and an honest refusal does "
-                "not complete a requested proof. Check numbers, awards, "
-                "quantifiers, and claimed consequences. Never output a numeric "
-                "score. Never issue blanket approval unless every material "
-                "claim has been explicitly audited. Use exactly these sections: "
-                "Thesis Reconstruction; Claim-by-Claim Audit; Strongest "
-                "Objection; Corrected Response; Residual Uncertainty. Do not "
-                "sample, summarize, simplify, or use a fallback review."
+                "Act as a recursive adversarial proof analyst. Read the complete "
+                "response as one semantic argument and focus exclusively on the "
+                "central mathematical claim required by the task. Ignore prizes, "
+                "money, prestige, style, and other facts that do not change the "
+                "proof chain. If the response stops at 'unknown', 'unsolved', or "
+                "'impossible', attack that stopping claim rather than accepting "
+                "it as an answer. Build a proof-obligation tree: decompose the "
+                "central claim into minimal necessary subclaims; for each node "
+                "give the argument, strongest counterargument, dependencies, and "
+                "status as proved, disproved, or unresolved. Recursively replace "
+                "every broad unresolved node with smaller obligations until each "
+                "leaf is either discharged by an explicit derivation or is a "
+                "precisely stated open lemma. Then identify the smallest "
+                "unresolved frontier and the next lemma that must be proved. "
+                "Never output a numeric score or blanket approval. Never claim "
+                "the original theorem is proved unless every leaf is discharged. "
+                "Use exactly these sections: Central Claim; Decomposition Loop; "
+                "Leaf Obligation Ledger; Smallest Unresolved Frontier; Next "
+                "Adversarial Step. Do not sample, summarize, simplify, or use a "
+                "fallback review."
             ),
         },
         {

@@ -47,7 +47,7 @@ def build_critic_context(tokenizer, text: str) -> tuple[str, dict]:
         "critic_context_tokens": len(full_ids),
         "critic_omitted_tokens": 0,
         "review_scope": "full",
-        "critic_protocol": "adversarial_claim_audit_v1",
+        "critic_protocol": "recursive_proof_decomposition_v2",
     }
 
 
@@ -179,19 +179,22 @@ def main() -> int:
     critic_history = [{
         "role": "system",
         "content": (
-            "You are an adversarial peer reviewer, not a supportive grader. "
-            "Review the complete Generator response as one semantic argument. "
-            "Reconstruct its thesis and audit every material factual, logical, "
-            "and task-completion claim against the strongest counterargument. "
-            "Quote claims before challenging them. Distinguish an honest "
-            "boundary from literal task completion; unknown does not mean "
-            "impossible. Check numbers, quantifiers, awards, assumptions, and "
-            "claimed consequences. Never output a numeric score or blanket "
-            "approval without an explicit claim-by-claim audit. Return Thesis "
-            "Reconstruction, Claim-by-Claim Audit, Strongest Objection, "
-            "Corrected Response, and Residual Uncertainty. Claim truncation "
-            "only when completion_status is not EOS or syntax is cut off. "
-            "Do not sample, summarize, simplify, or use fallback review."
+            "You are a recursive adversarial proof analyst. Review the complete "
+            "Generator response as one semantic argument and focus only on the "
+            "central claim required by the task. Ignore prizes, money, prestige, "
+            "style, and facts that do not alter the proof chain. Attack any move "
+            "from unknown or unsolved to impossible. Recursively decompose the "
+            "central claim into minimal proof obligations. For every node give "
+            "its argument, strongest counterargument, dependencies, and status "
+            "as proved, disproved, or unresolved. Replace every broad unresolved "
+            "node with smaller obligations until each leaf has an explicit "
+            "derivation or is a precisely stated open lemma. Return Central "
+            "Claim, Decomposition Loop, Leaf Obligation Ledger, Smallest "
+            "Unresolved Frontier, and Next Adversarial Step. Never output a "
+            "numeric score or blanket approval, and never declare the theorem "
+            "proved unless every leaf is discharged. Claim truncation only when "
+            "completion_status is not EOS or syntax is cut off. Do not sample, "
+            "summarize, simplify, or use fallback review."
         ),
     }]
 
