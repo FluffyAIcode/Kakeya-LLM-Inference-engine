@@ -164,11 +164,11 @@ class PrefixCacheStore:
 
     def put(self, block: CacheBlock) -> bool:
         """Publish one immutable block. Returns False for an identical hit."""
-        if block.nbytes > self.max_bytes:
-            with self._lock:
-                self._put_failures += 1
-            raise ValueError("block payload exceeds cache capacity")
         with self._lock:
+            available = self.max_bytes - sum(self._reservations.values())
+            if block.nbytes > available:
+                self._put_failures += 1
+                raise ValueError("block payload exceeds cache capacity")
             self._expire_leases(time.time())
             existing = self._blocks.get(block.block_hash)
             if existing is not None:
@@ -180,7 +180,7 @@ class PrefixCacheStore:
             self._blocks[block.block_hash] = block
             self._bytes_used += block.nbytes
             self._epoch += 1
-            self._evict_to_budget()
+            self._evict_to_limit(available)
             if block.block_hash not in self._blocks:
                 self._put_failures += 1
                 raise ValueError(

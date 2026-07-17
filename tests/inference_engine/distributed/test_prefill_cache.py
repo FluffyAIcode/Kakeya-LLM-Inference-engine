@@ -187,3 +187,67 @@ def test_publish_and_lease_atomically_pins_final_snapshot():
     assert store.fetch(lease.lease_id) == (blocks[-1],)
     assert hashes[-1] in store.block_hashes()
     assert not store.resize(1)
+
+
+def test_reservation_and_atomic_publish_validation_guards():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    with pytest.raises(ValueError, match="reservation id"):
+        store.reserve("", 1)
+    store.reserve("job", 2)
+    with pytest.raises(ValueError, match="duplicate"):
+        store.reserve("job", 1)
+    block = CacheBlock.create(bytes(32), 1, b"abc")
+    with pytest.raises(ValueError, match="one computed snapshot"):
+        store.publish_and_lease([], [], reservation_id="job")
+    with pytest.raises(ValueError, match="lease_seconds"):
+        store.publish_and_lease(
+            [block],
+            [block.block_hash],
+            reservation_id="job",
+            lease_seconds=0,
+        )
+    with pytest.raises(ValueError, match="unknown cache reservation"):
+        store.publish_and_lease(
+            [block],
+            [block.block_hash],
+            reservation_id="missing",
+        )
+    with pytest.raises(ValueError, match="exceeds reservation"):
+        store.publish_and_lease(
+            [block],
+            [block.block_hash],
+            reservation_id="job",
+        )
+    store.release_reservation("job")
+
+
+def test_reservation_and_publish_reject_pinned_capacity():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    pinned = CacheBlock.create(bytes.fromhex("04" * 32), 1, b"12345")
+    store.put(pinned)
+    store.lookup([pinned.block_hash])
+    with pytest.raises(ValueError, match="pinned"):
+        store.reserve("blocked", 6)
+
+    store2 = PrefixCacheStore(_compat(), max_bytes=10, node_id="y")
+    store2.reserve("job", 6)
+    # Simulate a concurrently pinned service block to exercise the atomic
+    # publish guard independently of the reservation-aware public put path.
+    store2._put_locked(pinned)
+    store2.lookup([pinned.block_hash])
+    final = CacheBlock.create(bytes.fromhex("05" * 32), 2, b"final!")
+    with pytest.raises(ValueError, match="pinned"):
+        store2.publish_and_lease(
+            [final],
+            [final.block_hash],
+            reservation_id="job",
+        )
+
+
+def test_internal_put_is_idempotent_and_rejects_collision():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    block = CacheBlock.create(bytes(32), 1, b"abc")
+    assert store._put_locked(block)
+    assert not store._put_locked(block)
+    with pytest.raises(ValueError, match="collision"):
+        store._put_locked(CacheBlock.create(bytes(32), 1, b"xyz"))
