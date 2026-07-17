@@ -24,6 +24,7 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
         "--max-prompt-tokens",
         "--cache-min-gb",
         "--memory-reserve-gb",
+        "--estimated-snapshot-bytes-per-token",
     ):
         assert f"<string>{flag}</string>" in source
     assert 'PEER="${KAKEYA_WORKER_PEER:-}"' in source
@@ -48,6 +49,7 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
         "<string>--prefill-policy</string><string>remote-required</string>"
         in plist
     )
+    assert "<string>--bind</string><string>0.0.0.0:51051</string>" in plist
     assert (
         "<string>--prefill-worker-timeout-s</string><string>3600</string>"
         in plist
@@ -66,7 +68,13 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
     assert "scripts/start_prefill_worker_node.py" in worker
     assert "scripts/start_prefill_cache_node.py" not in worker
     assert "<string>--cache-gb</string><string>8</string>" in worker
-    assert "<string>--cache-min-gb</string><string>0.25</string>" in worker
+    assert "<string>--cache-min-gb</string><string>1</string>" in worker
+    assert "<string>--memory-reserve-gb</string><string>0.5</string>" in worker
+    assert (
+        "<string>--estimated-snapshot-bytes-per-token</string>"
+        "<string>400000</string>"
+        in worker
+    )
     assert "<string>--adaptive-cache</string>" in worker
     assert "<string>--window</string><string>2048</string>" in worker
     assert "<string>--prefill-tps</string><string>1</string>" in worker

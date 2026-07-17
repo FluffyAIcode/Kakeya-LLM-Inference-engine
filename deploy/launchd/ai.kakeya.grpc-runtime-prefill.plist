@@ -9,7 +9,7 @@
     <string>/Users/fluffy314/Documents/Kakeya-LLM-Inference-engine-prefill-kv-network/scripts/start_grpc_runtime_server.py</string>
     <string>--backend</string><string>mlx</string>
     <string>--verifier-id</string><string>/Users/fluffy314/kakeya-models/gemma-4-26B-A4B-it-mlx-4bit</string>
-    <string>--bind</string><string>127.0.0.1:51051</string>
+    <string>--bind</string><string>0.0.0.0:51051</string>
     <string>--capacity</string><string>1</string>
     <string>--sink</string><string>4</string>
     <string>--window</string><string>2048</string>

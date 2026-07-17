@@ -154,3 +154,100 @@ def test_resize_evicts_cold_blocks_and_preserves_pinned_budget():
         pass
     else:
         raise AssertionError("expected resize validation")
+
+
+def test_reservation_blocks_adaptive_shrink_and_rejects_upfront():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    store.reserve("job", 6)
+    assert not store.resize(5)
+    assert store.stats().max_bytes == 10
+    with pytest.raises(ValueError, match="available cache budget"):
+        store.reserve("too-large", 5)
+    store.release_reservation("job")
+    assert store.resize(5)
+
+
+def test_publish_and_lease_atomically_pins_final_snapshot():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    old = CacheBlock.create(bytes.fromhex("03" * 32), 1, b"old!")
+    store.put(old)
+    hashes = chained_block_hashes([1, 2, 3, 4], _compat())
+    blocks = (
+        CacheBlock.create(hashes[0], 2, b"mid"),
+        CacheBlock.create(hashes[1], 4, b"final!"),
+    )
+    store.reserve("job", 6)
+    lease = store.publish_and_lease(
+        blocks,
+        hashes,
+        reservation_id="job",
+    )
+    assert lease.hit_block_count == 2
+    assert lease.hit_token_count == 4
+    assert store.fetch(lease.lease_id) == (blocks[-1],)
+    assert hashes[-1] in store.block_hashes()
+    assert not store.resize(1)
+
+
+def test_reservation_and_atomic_publish_validation_guards():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    with pytest.raises(ValueError, match="reservation id"):
+        store.reserve("", 1)
+    store.reserve("job", 2)
+    with pytest.raises(ValueError, match="duplicate"):
+        store.reserve("job", 1)
+    block = CacheBlock.create(bytes(32), 1, b"abc")
+    with pytest.raises(ValueError, match="one computed snapshot"):
+        store.publish_and_lease([], [], reservation_id="job")
+    with pytest.raises(ValueError, match="lease_seconds"):
+        store.publish_and_lease(
+            [block],
+            [block.block_hash],
+            reservation_id="job",
+            lease_seconds=0,
+        )
+    with pytest.raises(ValueError, match="unknown cache reservation"):
+        store.publish_and_lease(
+            [block],
+            [block.block_hash],
+            reservation_id="missing",
+        )
+    with pytest.raises(ValueError, match="exceeds reservation"):
+        store.publish_and_lease(
+            [block],
+            [block.block_hash],
+            reservation_id="job",
+        )
+    store.release_reservation("job")
+
+
+def test_reservation_and_publish_reject_pinned_capacity():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    pinned = CacheBlock.create(bytes.fromhex("04" * 32), 1, b"12345")
+    store.put(pinned)
+    store.lookup([pinned.block_hash])
+    with pytest.raises(ValueError, match="pinned"):
+        store.reserve("blocked", 6)
+
+    store2 = PrefixCacheStore(_compat(), max_bytes=10, node_id="y")
+    store2.reserve("job", 6)
+    # Simulate a concurrently pinned service block to exercise the atomic
+    # publish guard independently of the reservation-aware public put path.
+    store2._put_locked(pinned)
+    store2.lookup([pinned.block_hash])
+    final = CacheBlock.create(bytes.fromhex("05" * 32), 2, b"final!")
+    with pytest.raises(ValueError, match="pinned"):
+        store2.publish_and_lease(
+            [final],
+            [final.block_hash],
+            reservation_id="job",
+        )
+
+
+def test_internal_put_is_idempotent_and_rejects_collision():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    block = CacheBlock.create(bytes(32), 1, b"abc")
+    assert store._put_locked(block)
+    assert not store._put_locked(block)
+    with pytest.raises(ValueError, match="collision"):
+        store._put_locked(CacheBlock.create(bytes(32), 1, b"xyz"))

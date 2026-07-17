@@ -136,6 +136,9 @@ async def serve(args) -> None:
         max_jobs=args.max_jobs,
         completed_ttl_s=args.job_ttl_s,
         max_prompt_tokens=args.max_prompt_tokens,
+        estimated_snapshot_bytes_per_token=(
+            args.estimated_snapshot_bytes_per_token
+        ),
     )
     jobs.warmup()
 
@@ -290,6 +293,11 @@ def main() -> None:
     parser.add_argument("--max-concurrent-jobs", type=int, default=1)
     parser.add_argument("--max-jobs", type=int, default=128)
     parser.add_argument("--max-prompt-tokens", type=int, default=131072)
+    parser.add_argument(
+        "--estimated-snapshot-bytes-per-token",
+        type=int,
+        default=400_000,
+    )
     parser.add_argument("--job-ttl-s", type=float, default=600.0)
     parser.add_argument("--prefill-tps", type=float, default=20.0)
     parser.add_argument("--max-concurrent-rpcs", type=int, default=32)
