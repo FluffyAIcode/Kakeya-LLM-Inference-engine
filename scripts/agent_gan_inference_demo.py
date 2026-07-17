@@ -18,8 +18,11 @@ from scripts.benchmark_prefill_architecture import (
 
 def _agent_cache_gate(warm_delta: dict, actual_delta: dict) -> bool:
     return (
-        warm_delta["remote_jobs"] >= 1
-        and warm_delta["remote_hits"] >= 1
+        warm_delta["remote_hits"] >= 1
+        and warm_delta["tokens_reused"] >= 1
+        and warm_delta["tokens_computed"] == 0
+        and warm_delta["fallbacks"] == 0
+        and warm_delta["remote_job_failures"] == 0
         and actual_delta["local_hits"] >= 1
         and actual_delta["remote_jobs"] == 0
         and actual_delta["tokens_computed"] == 0
