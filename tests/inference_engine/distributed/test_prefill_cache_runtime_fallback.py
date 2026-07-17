@@ -374,6 +374,7 @@ def test_import_budget_and_remote_worker_failures(monkeypatch):
         lambda *args, **kwargs: type("Status", (), {
             "status": 4,
             "failure_reason": "failed",
+            "tokens_computed": 0,
         })(),
     )
     assert hook._compute_remote([1, 2], [b"a" * 32]) is None
@@ -386,6 +387,7 @@ def test_import_budget_and_remote_worker_failures(monkeypatch):
         lambda *args, **kwargs: type("Status", (), {
             "status": 1,
             "failure_reason": "",
+            "tokens_computed": 0,
         })(),
     )
     assert hook._compute_remote([1, 2], [b"a" * 32]) is None

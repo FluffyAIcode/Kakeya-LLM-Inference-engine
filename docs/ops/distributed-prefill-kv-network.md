@@ -365,6 +365,17 @@ The MLX worker exports and compresses only the final chained-prefix snapshot.
 The final hash commits every preceding token block, so exporting a growing full
 snapshot at every 64-token boundary is redundant and creates quadratic
 serialization/compression work for long Critic contexts.
+Model compute is segmented independently from the 64-token content-addressed
+hash boundary. The default segment is 256 tokens, keeping each allens step below
+the five-minute research budget at the measured Prefill rate. Worker job status
+updates `tokens_computed` after every segment; Terminal heartbeats display
+tokens, percentage, and ETA.
+
+Karpathy-style optimization lives in `autoresearch/prefill/`. Humans edit
+`program.md`, the research agent edits only `candidate.py`, and immutable
+`prepare.py` evaluates full-context correctness plus cold Critic Prefill time.
+Candidates are retained only when every semantic/topology constraint passes and
+the metric improves; `results.tsv` records experiments.
 Interactive prompt templates are deterministic and contain no per-run nonce, so
 repeating the same task can reuse allens cold-tier and Primary hot-tier KV.
 

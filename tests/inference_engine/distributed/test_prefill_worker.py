@@ -77,8 +77,14 @@ def test_mlx_worker_exports_only_final_snapshot(monkeypatch):
             assert forwarded == accepted
 
     verifier = Verifier()
-    engine = MLXPrefillComputeEngine(verifier, COMPAT)
+    engine = MLXPrefillComputeEngine(
+        verifier,
+        COMPAT,
+        compute_chunk_tokens=2,
+    )
     snapshots = []
+    progress = []
+    engine.set_progress_callback(progress.append)
 
     def snapshot(**kwargs):
         snapshots.append(kwargs)
@@ -96,13 +102,17 @@ def test_mlx_worker_exports_only_final_snapshot(monkeypatch):
         compression=CompressionCodec.NONE,
         cancelled=threading.Event(),
     )
+    engine.set_progress_callback(None)
     assert verifier.forwarded == [1, 2, 3, 4, 5]
+    assert progress == [2, 4, 5]
     assert len(blocks) == 1
     assert snapshots == [{
         "token_count": 5,
         "block_hash": hashes[-1],
         "compression": CompressionCodec.NONE,
     }]
+    with pytest.raises(ValueError, match="compute_chunk_tokens"):
+        MLXPrefillComputeEngine(verifier, COMPAT, compute_chunk_tokens=0)
 
 
 @pytest_asyncio.fixture
@@ -358,6 +368,46 @@ def test_job_accepts_final_snapshot_only():
         assert job.state == PrefillJobState.COMPLETED
         assert cache.block_hashes() == (b"b" * 32,)
         assert cache.fetch(job.lease_id)[0].payload == b"final-only"
+    finally:
+        jobs.close()
+
+
+def test_job_store_wires_and_clears_segment_progress_callback():
+    class ProgressEngine:
+        def __init__(self):
+            self.callback = None
+            self.callbacks = []
+
+        def set_progress_callback(self, callback):
+            self.callback = callback
+            self.callbacks.append(callback)
+
+        def compute_prefill(self, token_ids, block_hashes, **_kwargs):
+            self.callback(2)
+            self.callback(4)
+            return [
+                CacheBlock.create(block_hashes[-1], len(token_ids), b"final"),
+            ]
+
+    engine = ProgressEngine()
+    jobs = PrefillJobStore(
+        engine,
+        PrefixCacheStore(COMPAT, max_bytes=1024, node_id="progress"),
+    )
+    try:
+        job = jobs.submit(
+            request_id="progress",
+            tenant_id="tenant",
+            token_ids=[1, 2, 3, 4],
+            block_hashes=[b"a" * 32, b"b" * 32],
+            compatibility=COMPAT,
+            compression=CompressionCodec.NONE,
+        )
+        job.future.result(timeout=1)
+        assert job.state == PrefillJobState.COMPLETED
+        assert job.tokens_computed == 4
+        assert callable(engine.callbacks[0])
+        assert engine.callbacks[-1] is None
     finally:
         jobs.close()
 
