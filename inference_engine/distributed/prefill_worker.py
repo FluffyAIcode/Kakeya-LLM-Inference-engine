@@ -93,12 +93,14 @@ class PrefillJobStore:
         max_jobs: int = 128,
         completed_ttl_s: float = 600.0,
         max_prompt_tokens: int = 131_072,
+        estimated_snapshot_bytes_per_token: int = 16,
     ) -> None:
         if min(
             max_concurrent_jobs,
             max_jobs,
             completed_ttl_s,
             max_prompt_tokens,
+            estimated_snapshot_bytes_per_token,
         ) <= 0:
             raise ValueError("worker limits must be > 0")
         if (engine is None) == (engine_factory is None):
@@ -110,6 +112,9 @@ class PrefillJobStore:
         self.max_jobs = int(max_jobs)
         self.completed_ttl_s = float(completed_ttl_s)
         self.max_prompt_tokens = int(max_prompt_tokens)
+        self.estimated_snapshot_bytes_per_token = int(
+            estimated_snapshot_bytes_per_token,
+        )
         self._jobs: dict[str, PrefillJob] = {}
         self._requests: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
@@ -190,6 +195,14 @@ class PrefillJobStore:
                     if deadline_ms > 0 else 0.0
                 ),
             )
+            estimated_bytes = (
+                len(job.token_ids) * self.estimated_snapshot_bytes_per_token
+            )
+            if estimated_bytes > self.cache_store.max_bytes:
+                raise ValueError(
+                    f"estimated final snapshot {estimated_bytes} exceeds "
+                    f"cache capacity {self.cache_store.max_bytes}",
+                )
             self._jobs[job.job_id] = job
             self._requests[request_key] = job.job_id
             job.future = self._executor.submit(self._run, job.job_id)
@@ -216,6 +229,7 @@ class PrefillJobStore:
             if job.future is not None and job.future.cancel():
                 job.state = PrefillJobState.CANCELLED
                 job.finished_at = time.time()
+                self.cache_store.release_reservation(job.job_id)
             return True
 
     def stats(self) -> tuple[int, int, float, int]:
@@ -239,6 +253,7 @@ class PrefillJobStore:
             if job.cancelled.is_set():
                 job.state = PrefillJobState.CANCELLED
                 job.finished_at = time.time()
+                self.cache_store.release_reservation(job.job_id)
                 return
             job.state = PrefillJobState.RUNNING
         started = time.perf_counter()
@@ -252,6 +267,13 @@ class PrefillJobStore:
                 timer.daemon = True
                 timer.start()
         try:
+            # MLX workers are single-job. Reserve the full current budget
+            # before model compute so adaptive resizing and unrelated
+            # boundaries cannot evict the final snapshot before leasing.
+            self.cache_store.reserve(
+                job.job_id,
+                self.cache_store.max_bytes,
+            )
             blocks = tuple(self._engine_for_current_thread().compute_prefill(
                 job.token_ids,
                 job.block_hashes,
@@ -264,13 +286,11 @@ class PrefillJobStore:
                 raise RuntimeError(
                     "prefill engine must return one snapshot per block hash",
                 )
-            for block in blocks:
-                if job.cancelled.is_set():
-                    raise InterruptedError("prefill job cancelled")
-                self.cache_store.put(block)
-            lease = self.cache_store.lookup(job.block_hashes)
-            if not lease.lease_id:
-                raise RuntimeError("computed snapshot was not discoverable")
+            lease = self.cache_store.publish_and_lease(
+                blocks,
+                job.block_hashes,
+                reservation_id=job.job_id,
+            )
             if job.cancelled.is_set():
                 raise InterruptedError("prefill job cancelled")
             with self._lock:
@@ -292,6 +312,7 @@ class PrefillJobStore:
                 job.state = PrefillJobState.FAILED
                 job.failure_reason = f"{type(exc).__name__}: {exc}"
         finally:
+            self.cache_store.release_reservation(job.job_id)
             if timer is not None:
                 timer.cancel()
             with self._lock:

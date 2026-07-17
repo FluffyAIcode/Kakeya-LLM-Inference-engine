@@ -349,6 +349,11 @@ and semantic fallback are forbidden. A global Critic score is valid only when
 `critic_omitted_tokens=0`. Long Prefill operations emit a heartbeat every 30
 seconds; on the 16GB allens worker, full-context Critic Prefill may take 15–25
 minutes.
+The worker reserves estimated final-snapshot capacity before model compute,
+prevents adaptive shrink from consuming active reservations, then atomically
+publishes and leases the final snapshot before adding optional intermediate
+boundaries. The 16GB allens deployment uses a 1 GiB cache floor and 0.5 GiB
+memory reserve. Capacity failures are rejected before Prefill starts.
 Interactive prompt templates are deterministic and contain no per-run nonce, so
 repeating the same task can reuse allens cold-tier and Primary hot-tier KV.
 

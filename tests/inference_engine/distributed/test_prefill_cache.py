@@ -154,3 +154,36 @@ def test_resize_evicts_cold_blocks_and_preserves_pinned_budget():
         pass
     else:
         raise AssertionError("expected resize validation")
+
+
+def test_reservation_blocks_adaptive_shrink_and_rejects_upfront():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    store.reserve("job", 6)
+    assert not store.resize(5)
+    assert store.stats().max_bytes == 10
+    with pytest.raises(ValueError, match="available cache budget"):
+        store.reserve("too-large", 5)
+    store.release_reservation("job")
+    assert store.resize(5)
+
+
+def test_publish_and_lease_atomically_pins_final_snapshot():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    old = CacheBlock.create(bytes.fromhex("03" * 32), 1, b"old!")
+    store.put(old)
+    hashes = chained_block_hashes([1, 2, 3, 4], _compat())
+    blocks = (
+        CacheBlock.create(hashes[0], 2, b"mid"),
+        CacheBlock.create(hashes[1], 4, b"final!"),
+    )
+    store.reserve("job", 6)
+    lease = store.publish_and_lease(
+        blocks,
+        hashes,
+        reservation_id="job",
+    )
+    assert lease.hit_block_count == 2
+    assert lease.hit_token_count == 4
+    assert store.fetch(lease.lease_id) == (blocks[-1],)
+    assert hashes[-1] in store.block_hashes()
+    assert not store.resize(1)

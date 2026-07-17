@@ -234,6 +234,28 @@ def test_job_store_validation_queue_stats_and_gc():
         completed_jobs.close()
 
 
+def test_job_rejects_snapshot_capacity_before_model_compute():
+    engine = _Engine()
+    jobs = PrefillJobStore(
+        engine,
+        PrefixCacheStore(COMPAT, max_bytes=1024, node_id="small"),
+        estimated_snapshot_bytes_per_token=600,
+    )
+    try:
+        with pytest.raises(ValueError, match="estimated final snapshot"):
+            jobs.submit(
+                request_id="too-large",
+                tenant_id="tenant",
+                token_ids=[1, 2],
+                block_hashes=[b"a" * 32],
+                compatibility=COMPAT,
+                compression=CompressionCodec.NONE,
+            )
+        assert engine.calls == 0
+    finally:
+        jobs.close()
+
+
 def test_factory_engine_is_warmed_and_used_on_same_compute_thread():
     cache = PrefixCacheStore(COMPAT, max_bytes=1024, node_id="w")
     created_on = []
@@ -365,7 +387,7 @@ def test_queued_cancel_post_compute_cancel_and_undiscoverable():
     missing = missing_jobs.submit(request_id="missing", **common)
     missing.future.result(timeout=1)
     assert missing.state == PrefillJobState.FAILED
-    assert "not discoverable" in missing.failure_reason
+    assert "final snapshot hash does not match request" in missing.failure_reason
     missing_jobs.close()
 
     deadline_engine = _Engine()
@@ -396,13 +418,16 @@ def test_cancel_during_publish_and_after_lease():
 
     engine = Engine()
 
-    class CancelOnPutStore(PrefixCacheStore):
-        def put(self, block):
-            result = super().put(block)
+    class CancelBeforeAtomicPublishStore(PrefixCacheStore):
+        def publish_and_lease(self, *args, **kwargs):
             engine.event.set()
-            return result
+            return super().publish_and_lease(*args, **kwargs)
 
-    store = CancelOnPutStore(COMPAT, max_bytes=4096, node_id="put")
+    store = CancelBeforeAtomicPublishStore(
+        COMPAT,
+        max_bytes=4096,
+        node_id="put",
+    )
     jobs = PrefillJobStore(engine, store)
     job = jobs.submit(
         request_id="put",
@@ -418,13 +443,17 @@ def test_cancel_during_publish_and_after_lease():
 
     engine2 = Engine()
 
-    class CancelOnLookupStore(PrefixCacheStore):
-        def lookup(self, *args, **kwargs):
-            lease = super().lookup(*args, **kwargs)
+    class CancelAfterAtomicPublishStore(PrefixCacheStore):
+        def publish_and_lease(self, *args, **kwargs):
+            lease = super().publish_and_lease(*args, **kwargs)
             engine2.event.set()
             return lease
 
-    store2 = CancelOnLookupStore(COMPAT, max_bytes=4096, node_id="lookup")
+    store2 = CancelAfterAtomicPublishStore(
+        COMPAT,
+        max_bytes=4096,
+        node_id="lookup",
+    )
     jobs2 = PrefillJobStore(engine2, store2)
     job2 = jobs2.submit(
         request_id="lookup",
@@ -444,10 +473,10 @@ def test_cancel_during_publish_and_after_lease():
 
         def is_set(self):
             self.calls += 1
-            return self.calls >= 5
+            return self.calls >= 4
 
         def set(self):
-            self.calls = 5
+            self.calls = 4
 
     final_store = PrefixCacheStore(COMPAT, max_bytes=4096, node_id="final")
     final_jobs = PrefillJobStore(_Engine(), final_store)

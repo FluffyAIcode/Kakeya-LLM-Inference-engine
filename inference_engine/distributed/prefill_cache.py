@@ -159,6 +159,7 @@ class PrefixCacheStore:
         self._evictions = 0
         self._bytes_evicted = 0
         self._put_failures = 0
+        self._reservations: dict[str, int] = {}
         self._lock = threading.RLock()
 
     def put(self, block: CacheBlock) -> bool:
@@ -263,6 +264,80 @@ class PrefixCacheStore:
             self._bytes_served += lease.transfer_bytes
             return tuple(blocks)
 
+    def reserve(self, reservation_id: str, byte_count: int) -> None:
+        """Reserve cache capacity before an expensive Prefill job starts."""
+        if not reservation_id or byte_count <= 0:
+            raise ValueError("reservation id and byte count must be positive")
+        with self._lock:
+            if reservation_id in self._reservations:
+                raise ValueError("duplicate cache reservation")
+            requested = int(byte_count)
+            reserved = sum(self._reservations.values()) + requested
+            if reserved > self.max_bytes:
+                raise ValueError(
+                    f"snapshot reservation {requested} exceeds available "
+                    f"cache budget {self.max_bytes - sum(self._reservations.values())}",
+                )
+            self._expire_leases(time.time())
+            self._evict_to_limit(self.max_bytes - reserved)
+            if self._bytes_used > self.max_bytes - reserved:
+                raise ValueError("cache capacity is pinned by active leases")
+            self._reservations[reservation_id] = requested
+
+    def release_reservation(self, reservation_id: str) -> None:
+        with self._lock:
+            self._reservations.pop(reservation_id, None)
+
+    def publish_and_lease(
+        self,
+        blocks: Sequence[CacheBlock],
+        block_hashes: Sequence[bytes],
+        *,
+        reservation_id: str,
+        lease_seconds: float = DEFAULT_LEASE_SECONDS,
+    ) -> PrefixLease:
+        """Atomically publish and pin the final computed snapshot."""
+        if not blocks or len(blocks) != len(block_hashes):
+            raise ValueError("one computed snapshot is required per block hash")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be > 0")
+        final = blocks[-1]
+        if final.block_hash != bytes(block_hashes[-1]):
+            raise ValueError("final snapshot hash does not match request")
+        now = time.time()
+        with self._lock:
+            reserved = self._reservations.get(reservation_id)
+            if reserved is None:
+                raise ValueError("unknown cache reservation")
+            if final.nbytes > reserved:
+                raise ValueError(
+                    f"final snapshot {final.nbytes} exceeds reservation {reserved}",
+                )
+            self._expire_leases(now)
+            self._evict_to_limit(self.max_bytes - final.nbytes)
+            if self._bytes_used > self.max_bytes - final.nbytes:
+                raise ValueError("cache capacity is pinned by active leases")
+            self._put_locked(final)
+            lease_id = secrets.token_urlsafe(18)
+            lease = PrefixLease(
+                lease_id=lease_id,
+                block_hashes=(final.block_hash,),
+                hit_block_count=len(block_hashes),
+                hit_token_count=final.token_count,
+                transfer_bytes=final.nbytes,
+                cache_epoch=self._epoch,
+                expires_at_unix=now + lease_seconds,
+                payload_sha256=final.payload_sha256,
+            )
+            self._leases[lease_id] = lease
+            del self._reservations[reservation_id]
+            # Preserve longest useful boundaries when spare capacity remains.
+            for block in reversed(blocks[:-1]):
+                if block.nbytes + self._bytes_used > self.max_bytes:
+                    continue
+                self._put_locked(block)
+            return lease
+
     def stats(self) -> CacheStats:
         with self._lock:
             return CacheStats(
@@ -285,9 +360,12 @@ class PrefixCacheStore:
             raise ValueError("max_bytes must be > 0")
         with self._lock:
             previous = self.max_bytes
+            reserved = sum(self._reservations.values())
+            if int(max_bytes) < reserved:
+                return False
             self.max_bytes = int(max_bytes)
-            self._evict_to_budget()
-            if self._bytes_used > self.max_bytes:
+            self._evict_to_limit(self.max_bytes - reserved)
+            if self._bytes_used > self.max_bytes - reserved:
                 self.max_bytes = max(previous, self._bytes_used)
                 return False
             return True
@@ -322,8 +400,11 @@ class PrefixCacheStore:
         }
 
     def _evict_to_budget(self) -> None:
+        self._evict_to_limit(self.max_bytes)
+
+    def _evict_to_limit(self, limit: int) -> None:
         pinned = self._pinned_hashes()
-        while self._bytes_used > self.max_bytes and self._blocks:
+        while self._bytes_used > limit and self._blocks:
             victim = next((h for h in self._blocks if h not in pinned), None)
             if victim is None:
                 break
@@ -332,6 +413,19 @@ class PrefixCacheStore:
             self._evictions += 1
             self._bytes_evicted += block.nbytes
             self._epoch += 1
+
+    def _put_locked(self, block: CacheBlock) -> bool:
+        existing = self._blocks.get(block.block_hash)
+        if existing is not None:
+            if existing.payload_sha256 != block.payload_sha256:
+                self._put_failures += 1
+                raise ValueError("content-address collision with different payload")
+            self._blocks.move_to_end(block.block_hash)
+            return False
+        self._blocks[block.block_hash] = block
+        self._bytes_used += block.nbytes
+        self._epoch += 1
+        return True
 
 
 def total_payload_bytes(blocks: Iterable[CacheBlock]) -> int:

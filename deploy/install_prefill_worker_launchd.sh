@@ -12,8 +12,9 @@ set -euo pipefail
 BIND="${KAKEYA_WORKER_BIND:-0.0.0.0:53051}"
 TENANT="${KAKEYA_TENANT_ID:-default}"
 CACHE_GB="${KAKEYA_WORKER_CACHE_GB:-4}"
-CACHE_MIN_GB="${KAKEYA_WORKER_CACHE_MIN_GB:-0.25}"
-MEMORY_RESERVE_GB="${KAKEYA_WORKER_MEMORY_RESERVE_GB:-2}"
+CACHE_MIN_GB="${KAKEYA_WORKER_CACHE_MIN_GB:-1}"
+MEMORY_RESERVE_GB="${KAKEYA_WORKER_MEMORY_RESERVE_GB:-0.5}"
+SNAPSHOT_BYTES_PER_TOKEN="${KAKEYA_SNAPSHOT_BYTES_PER_TOKEN:-400000}"
 ADAPTIVE_CACHE="${KAKEYA_WORKER_ADAPTIVE_CACHE:-0}"
 PSK_FILE="${KAKEYA_FLEET_PSK_FILE:-}"
 CACHE_MODEL_ID="${KAKEYA_CACHE_MODEL_ID:-$KAKEYA_WORKER_MODEL}"
@@ -76,6 +77,7 @@ cat > "$PLIST" <<EOF
     <string>--cache-gb</string><string>$CACHE_GB</string>
     <string>--cache-min-gb</string><string>$CACHE_MIN_GB</string>
     <string>--memory-reserve-gb</string><string>$MEMORY_RESERVE_GB</string>
+    <string>--estimated-snapshot-bytes-per-token</string><string>$SNAPSHOT_BYTES_PER_TOKEN</string>
     $adaptive_xml
     <string>--sink</string><string>$SINK</string>
     <string>--window</string><string>$WINDOW</string>
