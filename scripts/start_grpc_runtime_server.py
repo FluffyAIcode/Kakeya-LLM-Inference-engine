@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import threading
 import logging
 import signal
 import sys
@@ -565,7 +566,7 @@ async def _serve(args: argparse.Namespace) -> int:
     _LOG.info("kakeya gRPC RuntimeService listening on %s", args.bind)
 
     http_server = None
-    http_task = None
+    http_thread = None
     if args.network_http_port:
         if registry is None or prefill_store is None:
             raise SystemExit(
@@ -594,7 +595,12 @@ async def _serve(args: argparse.Namespace) -> int:
             port=args.network_http_port,
             log_level=args.log_level.lower(),
         ))
-        http_task = asyncio.create_task(http_server.serve())
+        http_thread = threading.Thread(
+            target=http_server.run,
+            name="kakeya-network-http",
+            daemon=True,
+        )
+        http_thread.start()
         _LOG.info(
             "inference-network dashboard listening on http://%s:%d/network",
             args.network_http_host,
@@ -641,8 +647,8 @@ async def _serve(args: argparse.Namespace) -> int:
             pass
     if http_server is not None:
         http_server.should_exit = True
-    if http_task is not None:
-        await http_task
+    if http_thread is not None:
+        await asyncio.to_thread(http_thread.join, args.shutdown_grace_s)
     if prefill_hook is not None:
         prefill_hook.close()
     await server.stop(grace=args.shutdown_grace_s)
