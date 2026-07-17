@@ -140,11 +140,13 @@ def test_stage_includes_full_context_metrics():
             "critic_context_tokens": 100,
             "critic_omitted_tokens": 0,
             "review_scope": "full",
+            "critic_protocol": "adversarial_claim_audit_v1",
         },
     )
     assert stage["critic_context_tokens"] == 100
     assert stage["critic_omitted_tokens"] == 0
     assert stage["review_scope"] == "full"
+    assert stage["critic_protocol"] == "adversarial_claim_audit_v1"
 
 
 def test_telemetry_timeout_warns_without_stopping_inference(
@@ -193,5 +195,8 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     combined = repr(generator_a + critic_a)
     assert "Internal run" not in combined
     assert "open problem" in combined
-    assert "Review the complete response" in combined
-    assert "do not sample or summarize" in combined
+    assert "adversarial peer reviewer" in combined
+    assert "Never output a numeric score" in combined
+    assert "Claim-by-Claim Audit" in combined
+    assert "unknown or unsolved does not mean impossible" in combined
+    assert "sample, summarize, simplify" in combined

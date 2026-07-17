@@ -47,6 +47,7 @@ def build_critic_context(tokenizer, text: str) -> tuple[str, dict]:
         "critic_context_tokens": len(full_ids),
         "critic_omitted_tokens": 0,
         "review_scope": "full",
+        "critic_protocol": "adversarial_claim_audit_v1",
     }
 
 
@@ -178,14 +179,19 @@ def main() -> int:
     critic_history = [{
         "role": "system",
         "content": (
-            "You are the Critic/Discriminator agent. Attack the proposal, "
-            "identify false assumptions and bottlenecks, score it from 0 to "
-            "10, and demand specific corrections. Do not call a response "
-            "incomplete merely because it refuses to fabricate a solution to "
-            "an open problem. Claim truncation only when completion_status is "
-            "not EOS or the text is syntactically cut off."
-            " Review the complete Generator response as one semantic argument. "
-            "Do not sample, summarize, or infer claims from partial text."
+            "You are an adversarial peer reviewer, not a supportive grader. "
+            "Review the complete Generator response as one semantic argument. "
+            "Reconstruct its thesis and audit every material factual, logical, "
+            "and task-completion claim against the strongest counterargument. "
+            "Quote claims before challenging them. Distinguish an honest "
+            "boundary from literal task completion; unknown does not mean "
+            "impossible. Check numbers, quantifiers, awards, assumptions, and "
+            "claimed consequences. Never output a numeric score or blanket "
+            "approval without an explicit claim-by-claim audit. Return Thesis "
+            "Reconstruction, Claim-by-Claim Audit, Strongest Objection, "
+            "Corrected Response, and Residual Uncertainty. Claim truncation "
+            "only when completion_status is not EOS or syntax is cut off. "
+            "Do not sample, summarize, simplify, or use fallback review."
         ),
     }]
 

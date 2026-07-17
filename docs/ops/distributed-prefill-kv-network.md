@@ -349,6 +349,11 @@ and semantic fallback are forbidden. A global Critic score is valid only when
 `critic_omitted_tokens=0`. Long Prefill operations emit a heartbeat every 30
 seconds; on the 16GB allens worker, full-context Critic Prefill may take 15–25
 minutes.
+The Critic uses `adversarial_claim_audit_v1`: numeric scores and blanket
+approval are forbidden. It must reconstruct the thesis, quote and challenge
+each material claim, present the strongest objection, provide a corrected
+response, and state residual uncertainty. Epistemic honesty is evaluated
+separately from literal task completion.
 The worker reserves estimated final-snapshot capacity before model compute,
 prevents adaptive shrink from consuming active reservations, then atomically
 publishes and leases the final snapshot before adding optional intermediate

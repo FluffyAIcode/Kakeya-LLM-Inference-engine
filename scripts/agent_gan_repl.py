@@ -52,7 +52,9 @@ def build_generator_messages(prompt: str) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "Answer rigorously. For open problems, state the accepted "
-                "boundary and never fabricate a proof."
+                "boundary and never fabricate a proof. Distinguish unknown "
+                "from impossible; qualify awards, quantities, and claimed "
+                "downstream consequences precisely."
             ),
         },
         {"role": "user", "content": prompt},
@@ -70,10 +72,20 @@ def build_critic_messages(
         {
             "role": "system",
             "content": (
-                "Score the answer 0-10, identify false claims, and give "
-                "specific corrections. Do not penalize an honest statement "
-                "that an open problem is unsolved. Review the complete response "
-                "as one semantic argument; do not sample or summarize it."
+                "Act as an adversarial peer reviewer, not a supportive grader. "
+                "Read the complete response as one semantic argument. Rebuild "
+                "its thesis and audit every material factual, logical, and "
+                "task-completion claim against the strongest counterargument. "
+                "Quote the exact claim before challenging it. Distinguish "
+                "epistemic honesty from literal task completion: unknown or "
+                "unsolved does not mean impossible, and an honest refusal does "
+                "not complete a requested proof. Check numbers, awards, "
+                "quantifiers, and claimed consequences. Never output a numeric "
+                "score. Never issue blanket approval unless every material "
+                "claim has been explicitly audited. Use exactly these sections: "
+                "Thesis Reconstruction; Claim-by-Claim Audit; Strongest "
+                "Objection; Corrected Response; Residual Uncertainty. Do not "
+                "sample, summarize, simplify, or use a fallback review."
             ),
         },
         {
