@@ -97,7 +97,7 @@ def test_prefill_heartbeat_reports_elapsed_progress(capsys):
     assert "Critic Prefill still running" in output
 
 
-def test_stage_includes_evidence_window_metrics():
+def test_stage_includes_full_context_metrics():
     warm = {
         "prefix_tokens": 10,
         "e2e_s": 1,
@@ -124,9 +124,16 @@ def test_stage_includes_evidence_window_metrics():
         warm,
         actual,
         "ok",
-        extra_metrics={"critic_omitted_tokens": 100},
+        extra_metrics={
+            "generator_full_tokens": 100,
+            "critic_context_tokens": 100,
+            "critic_omitted_tokens": 0,
+            "review_scope": "full",
+        },
     )
-    assert stage["critic_omitted_tokens"] == 100
+    assert stage["critic_context_tokens"] == 100
+    assert stage["critic_omitted_tokens"] == 0
+    assert stage["review_scope"] == "full"
 
 
 def test_telemetry_timeout_warns_without_stopping_inference(
@@ -148,13 +155,13 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     generator_b = build_generator_messages("prove RH")
     critic_a = build_critic_messages(
         "prove RH",
-        "bounded evidence",
+        "complete generator response",
         stop_reason="eos",
         complete=True,
     )
     critic_b = build_critic_messages(
         "prove RH",
-        "bounded evidence",
+        "complete generator response",
         stop_reason="eos",
         complete=True,
     )
@@ -163,4 +170,5 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     combined = repr(generator_a + critic_a)
     assert "Internal run" not in combined
     assert "open problem" in combined
-    assert "omitted tokens do not imply truncation" in combined
+    assert "Review the complete response" in combined
+    assert "do not sample or summarize" in combined

@@ -342,11 +342,13 @@ Generator completion status and must not penalize an honest statement that an
 open problem has no accepted proof.
 The REPL ignores external `SIGTERM`; its shell supervisor restarts signal-based
 exits. Only `/quit`, `/exit`, or EOF is treated as approval to stop.
-Generator output is always streamed in full to Terminal. To keep the 16GB
-allens Critic Prefill interactive, Critic receives a labeled extractive evidence
-window (default 64 Generator tokens: beginning + conclusion) with the omitted
-token count and EOS status. It must not interpret evidence-window omission as
-Generator truncation. Long Prefill operations emit a heartbeat every 30 seconds.
+Generator output is always streamed in full to Terminal and passed verbatim to
+the Gemma Critic. Sampling, truncation, summarization, independent chunk scores,
+and semantic fallback are forbidden. A global Critic score is valid only when
+`review_scope=full`, `critic_context_tokens=generator_full_tokens`, and
+`critic_omitted_tokens=0`. Long Prefill operations emit a heartbeat every 30
+seconds; on the 16GB allens worker, full-context Critic Prefill may take 15–25
+minutes.
 Interactive prompt templates are deterministic and contain no per-run nonce, so
 repeating the same task can reuse allens cold-tier and Primary hot-tier KV.
 
