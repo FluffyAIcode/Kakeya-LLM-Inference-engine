@@ -25,6 +25,7 @@ def test_worker_installer_emits_full_cache_compatibility_contract():
         "--cache-min-gb",
         "--memory-reserve-gb",
         "--estimated-snapshot-bytes-per-token",
+        "--prefill-compute-chunk-tokens",
     ):
         assert f"<string>{flag}</string>" in source
     assert 'PEER="${KAKEYA_WORKER_PEER:-}"' in source
@@ -73,6 +74,11 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
     assert (
         "<string>--estimated-snapshot-bytes-per-token</string>"
         "<string>400000</string>"
+        in worker
+    )
+    assert (
+        "<string>--prefill-compute-chunk-tokens</string>"
+        "<string>256</string>"
         in worker
     )
     assert "<string>--adaptive-cache</string>" in worker

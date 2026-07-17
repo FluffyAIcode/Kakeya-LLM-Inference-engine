@@ -72,6 +72,8 @@ class PrefillReuseStats:
     bytes_received: int = 0
     remote_jobs: int = 0
     remote_job_failures: int = 0
+    remote_job_tokens_total: int = 0
+    remote_job_tokens_computed: int = 0
     fallbacks: int = 0
     last_fallback_reason: str = ""
     publish_attempts: int = 0
@@ -356,6 +358,8 @@ class DistributedPrefillCacheHook:
                 auth=self.auth,
             )
             self.stats.remote_jobs += 1
+            self.stats.remote_job_tokens_total = len(tokens)
+            self.stats.remote_job_tokens_computed = 0
             deadline = time.monotonic() + self.worker_timeout_s
             while time.monotonic() < deadline:
                 status_request = distributed_pb2.GetPrefillJobStatusRequest(
@@ -367,6 +371,10 @@ class DistributedPrefillCacheHook:
                     status_request,
                     timeout_s=self.lookup_timeout_s,
                     auth=self.auth,
+                )
+                self.stats.remote_job_tokens_computed = min(
+                    len(tokens),
+                    int(status.tokens_computed),
                 )
                 if status.status == int(PrefillJobState.COMPLETED):
                     return _Hit(

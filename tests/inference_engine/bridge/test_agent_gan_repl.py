@@ -95,10 +95,19 @@ def test_shell_supervisor_restarts_signal_exits_only():
 
 
 def test_prefill_heartbeat_reports_elapsed_progress(capsys):
-    with PrefillHeartbeat("Critic", interval_s=0.01):
+    with PrefillHeartbeat(
+        "Critic",
+        interval_s=0.01,
+        stats_provider=lambda: {
+            "remote_job_tokens_computed": 256,
+            "remote_job_tokens_total": 1024,
+        },
+    ):
         time.sleep(0.025)
     output = capsys.readouterr().out
-    assert "Critic Prefill still running" in output
+    assert "Critic Prefill:" in output
+    assert "256/1024 tokens (25.0%)" in output
+    assert "ETA" in output
 
 
 def test_stage_includes_full_context_metrics():

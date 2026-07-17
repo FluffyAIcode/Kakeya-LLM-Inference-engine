@@ -126,7 +126,11 @@ async def serve(args) -> None:
             dtype=torch.bfloat16,
             device="cpu",
         ))
-        return MLXPrefillComputeEngine(verifier, compatibility)
+        return MLXPrefillComputeEngine(
+            verifier,
+            compatibility,
+            compute_chunk_tokens=args.prefill_compute_chunk_tokens,
+        )
 
     jobs = PrefillJobStore(
         None,
@@ -297,6 +301,11 @@ def main() -> None:
         "--estimated-snapshot-bytes-per-token",
         type=int,
         default=400_000,
+    )
+    parser.add_argument(
+        "--prefill-compute-chunk-tokens",
+        type=int,
+        default=256,
     )
     parser.add_argument("--job-ttl-s", type=float, default=600.0)
     parser.add_argument("--prefill-tps", type=float, default=20.0)

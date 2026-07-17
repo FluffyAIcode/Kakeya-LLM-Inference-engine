@@ -15,6 +15,7 @@ CACHE_GB="${KAKEYA_WORKER_CACHE_GB:-4}"
 CACHE_MIN_GB="${KAKEYA_WORKER_CACHE_MIN_GB:-1}"
 MEMORY_RESERVE_GB="${KAKEYA_WORKER_MEMORY_RESERVE_GB:-0.5}"
 SNAPSHOT_BYTES_PER_TOKEN="${KAKEYA_SNAPSHOT_BYTES_PER_TOKEN:-400000}"
+COMPUTE_CHUNK_TOKENS="${KAKEYA_PREFILL_COMPUTE_CHUNK_TOKENS:-256}"
 ADAPTIVE_CACHE="${KAKEYA_WORKER_ADAPTIVE_CACHE:-0}"
 PSK_FILE="${KAKEYA_FLEET_PSK_FILE:-}"
 CACHE_MODEL_ID="${KAKEYA_CACHE_MODEL_ID:-$KAKEYA_WORKER_MODEL}"
@@ -78,6 +79,7 @@ cat > "$PLIST" <<EOF
     <string>--cache-min-gb</string><string>$CACHE_MIN_GB</string>
     <string>--memory-reserve-gb</string><string>$MEMORY_RESERVE_GB</string>
     <string>--estimated-snapshot-bytes-per-token</string><string>$SNAPSHOT_BYTES_PER_TOKEN</string>
+    <string>--prefill-compute-chunk-tokens</string><string>$COMPUTE_CHUNK_TOKENS</string>
     $adaptive_xml
     <string>--sink</string><string>$SINK</string>
     <string>--window</string><string>$WINDOW</string>

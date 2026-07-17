@@ -258,6 +258,7 @@ class PrefillJobStore:
             job.state = PrefillJobState.RUNNING
         started = time.perf_counter()
         timer = None
+        engine = None
         if job.deadline_at:
             remaining = job.deadline_at - time.time()
             if remaining <= 0:
@@ -274,7 +275,13 @@ class PrefillJobStore:
                 job.job_id,
                 len(job.token_ids) * self.estimated_snapshot_bytes_per_token,
             )
-            blocks = tuple(self._engine_for_current_thread().compute_prefill(
+            engine = self._engine_for_current_thread()
+            set_progress = getattr(engine, "set_progress_callback", None)
+            if callable(set_progress):
+                set_progress(
+                    lambda count: self._update_job_progress(job.job_id, count),
+                )
+            blocks = tuple(engine.compute_prefill(
                 job.token_ids,
                 job.block_hashes,
                 compression=job.compression,
@@ -313,12 +320,24 @@ class PrefillJobStore:
                 job.state = PrefillJobState.FAILED
                 job.failure_reason = f"{type(exc).__name__}: {exc}"
         finally:
+            if engine is not None:
+                set_progress = getattr(engine, "set_progress_callback", None)
+                if callable(set_progress):
+                    set_progress(None)
             self.cache_store.release_reservation(job.job_id)
             if timer is not None:
                 timer.cancel()
             with self._lock:
                 job.compute_ms = (time.perf_counter() - started) * 1000.0
                 job.finished_at = time.time()
+
+    def _update_job_progress(self, job_id: str, token_count: int) -> None:
+        with self._lock:
+            job = self._jobs[job_id]
+            job.tokens_computed = min(
+                len(job.token_ids),
+                max(job.tokens_computed, int(token_count)),
+            )
 
     def _engine_for_current_thread(self) -> PrefillComputeEngine:
         if self.engine is not None:

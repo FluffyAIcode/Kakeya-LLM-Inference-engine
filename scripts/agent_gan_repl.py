@@ -122,9 +122,15 @@ class TokenPrinter:
 
 
 class PrefillHeartbeat:
-    def __init__(self, label: str, interval_s: float = 30.0) -> None:
+    def __init__(
+        self,
+        label: str,
+        interval_s: float = 30.0,
+        stats_provider=None,
+    ) -> None:
         self.label = label
         self.interval_s = interval_s
+        self.stats_provider = stats_provider
         self.stop = threading.Event()
         self.started = 0.0
         self.thread = None
@@ -142,8 +148,23 @@ class PrefillHeartbeat:
     def _run(self):
         while not self.stop.wait(self.interval_s):
             elapsed = time.perf_counter() - self.started
+            progress = ""
+            if self.stats_provider is not None:
+                stats = self.stats_provider()
+                total = int(stats.get("remote_job_tokens_total", 0))
+                computed = int(stats.get("remote_job_tokens_computed", 0))
+                if total > 0:
+                    percent = min(100.0, computed / total * 100.0)
+                    eta = (
+                        elapsed * (total - computed) / computed
+                        if computed > 0 else 0.0
+                    )
+                    progress = (
+                        f" · {computed}/{total} tokens ({percent:.1f}%)"
+                        + (f" · ETA {eta:.0f}s" if computed > 0 else "")
+                    )
             print(
-                f"[allens] {self.label} Prefill still running: {elapsed:.0f}s",
+                f"[allens] {self.label} Prefill: {elapsed:.0f}s{progress}",
                 flush=True,
             )
 
@@ -285,7 +306,7 @@ def main() -> int:
                     f"[allens] Generator Prefill: {len(generator_ids)} tokens...",
                     flush=True,
                 )
-                with PrefillHeartbeat("Generator"):
+                with PrefillHeartbeat("Generator", stats_provider=get_stats):
                     _, generator_warm = _infer(
                         client, eos_ids, generator_ids, 1, get_stats,
                     )
@@ -351,7 +372,7 @@ def main() -> int:
                     f"[allens] Critic Prefill: {len(critic_ids)} tokens...",
                     flush=True,
                 )
-                with PrefillHeartbeat("Critic"):
+                with PrefillHeartbeat("Critic", stats_provider=get_stats):
                     _, critic_warm = _infer(
                         client, eos_ids, critic_ids, 1, get_stats,
                     )
