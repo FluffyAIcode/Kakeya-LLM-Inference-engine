@@ -6,8 +6,15 @@ from scripts.agent_gan_inference_demo import (
 )
 
 
-def test_agent_gate_requires_remote_warmup_and_primary_hot_inference():
-    warm = {"remote_jobs": 1, "remote_hits": 1}
+def test_agent_gate_accepts_remote_compute_or_exact_remote_cache_hit():
+    warm = {
+        "remote_jobs": 1,
+        "remote_hits": 1,
+        "tokens_reused": 10,
+        "tokens_computed": 0,
+        "fallbacks": 0,
+        "remote_job_failures": 0,
+    }
     actual = {
         "local_hits": 1,
         "remote_jobs": 0,
@@ -15,7 +22,11 @@ def test_agent_gate_requires_remote_warmup_and_primary_hot_inference():
         "fallbacks": 0,
     }
     assert _agent_cache_gate(warm, actual)
-    assert not _agent_cache_gate({**warm, "remote_jobs": 0}, actual)
+    assert _agent_cache_gate({**warm, "remote_jobs": 0}, actual)
+    assert not _agent_cache_gate({**warm, "remote_hits": 0}, actual)
+    assert not _agent_cache_gate({**warm, "tokens_reused": 0}, actual)
+    assert not _agent_cache_gate({**warm, "fallbacks": 1}, actual)
+    assert not _agent_cache_gate({**warm, "remote_job_failures": 1}, actual)
     assert not _agent_cache_gate(warm, {**actual, "local_hits": 0})
     assert not _agent_cache_gate(warm, {**actual, "fallbacks": 1})
 

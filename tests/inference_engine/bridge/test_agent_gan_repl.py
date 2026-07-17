@@ -34,6 +34,9 @@ def test_repl_stage_is_redacted_and_passes_cache_gate():
             "remote_jobs": 1,
             "remote_hits": 1,
             "tokens_reused": 10,
+            "tokens_computed": 0,
+            "fallbacks": 0,
+            "remote_job_failures": 0,
         },
     }
     actual = {
@@ -101,7 +104,14 @@ def test_stage_includes_full_context_metrics():
     warm = {
         "prefix_tokens": 10,
         "e2e_s": 1,
-        "delta": {"remote_jobs": 1, "remote_hits": 1, "tokens_reused": 10},
+        "delta": {
+            "remote_jobs": 1,
+            "remote_hits": 1,
+            "tokens_reused": 10,
+            "tokens_computed": 0,
+            "fallbacks": 0,
+            "remote_job_failures": 0,
+        },
     }
     actual = {
         "prefix_tokens": 10,
