@@ -5,6 +5,7 @@ from pathlib import Path
 from scripts.agent_gan_repl import (
     PrefillHeartbeat,
     TokenPrinter,
+    _gate_failure,
     _stage,
     _telemetry_request,
     build_critic_messages,
@@ -158,6 +159,18 @@ def test_telemetry_timeout_warns_without_stopping_inference(
     output = capsys.readouterr().out
     assert "telemetry-warning" in output
     assert "inference will continue" in output
+
+
+def test_gate_failure_exposes_reuse_counters():
+    error = _gate_failure(
+        "Generator",
+        {"delta": {"local_hits": 0, "remote_hits": 0}},
+        {"delta": {"local_hits": 0, "fallbacks": 1}},
+    )
+    message = str(error)
+    assert "Generator KV gate failed" in message
+    assert "'remote_hits': 0" in message
+    assert "'fallbacks': 1" in message
 
 
 def test_interactive_prompts_are_deterministic_for_kv_reuse():

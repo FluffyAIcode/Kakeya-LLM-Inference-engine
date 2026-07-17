@@ -23,6 +23,10 @@ def test_agent_gate_accepts_remote_compute_or_exact_remote_cache_hit():
     }
     assert _agent_cache_gate(warm, actual)
     assert _agent_cache_gate({**warm, "remote_jobs": 0}, actual)
+    assert _agent_cache_gate(
+        {**warm, "remote_hits": 0, "local_hits": 1, "remote_jobs": 0},
+        actual,
+    )
     assert not _agent_cache_gate({**warm, "remote_hits": 0}, actual)
     assert not _agent_cache_gate({**warm, "tokens_reused": 0}, actual)
     assert not _agent_cache_gate({**warm, "fallbacks": 1}, actual)

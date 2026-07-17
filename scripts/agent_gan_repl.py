@@ -157,6 +157,23 @@ def _stage(
     return stage
 
 
+def _gate_failure(name: str, warm: dict, actual: dict) -> RuntimeError:
+    keys = (
+        "local_hits",
+        "remote_hits",
+        "remote_jobs",
+        "tokens_reused",
+        "tokens_computed",
+        "fallbacks",
+        "remote_job_failures",
+    )
+    compact = lambda delta: {key: delta.get(key, 0) for key in keys}
+    return RuntimeError(
+        f"{name} KV gate failed: "
+        f"warm={compact(warm['delta'])} actual={compact(actual['delta'])}",
+    )
+
+
 def main() -> int:
     install_signal_protection()
     parser = argparse.ArgumentParser()
@@ -274,7 +291,11 @@ def main() -> int:
                     generator_text,
                 )
                 if not generator_stage["ok"] and not telemetry_state["degraded"]:
-                    raise RuntimeError("Generator KV gate failed")
+                    raise _gate_failure(
+                        "Generator",
+                        generator_warm,
+                        generator_actual,
+                    )
                 if remote_run:
                     _telemetry_request(
                         f"{args.dashboard}/v1/network/benchmarks/{run_id}",
@@ -337,7 +358,7 @@ def main() -> int:
                     extra_metrics=context_metrics,
                 )
                 if not critic_stage["ok"] and not telemetry_state["degraded"]:
-                    raise RuntimeError("Critic KV gate failed")
+                    raise _gate_failure("Critic", critic_warm, critic_actual)
                 completed = None
                 if remote_run:
                     completed = _telemetry_request(
