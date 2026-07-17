@@ -267,12 +267,12 @@ class PrefillJobStore:
                 timer.daemon = True
                 timer.start()
         try:
-            # MLX workers are single-job. Reserve the full current budget
-            # before model compute so adaptive resizing and unrelated
-            # boundaries cannot evict the final snapshot before leasing.
+            # Reserve a conservative estimate before model compute. Atomic
+            # publish protects the final snapshot without evicting unrelated
+            # content-addressed snapshots needed by later restore requests.
             self.cache_store.reserve(
                 job.job_id,
-                self.cache_store.max_bytes,
+                len(job.token_ids) * self.estimated_snapshot_bytes_per_token,
             )
             blocks = tuple(self._engine_for_current_thread().compute_prefill(
                 job.token_ids,

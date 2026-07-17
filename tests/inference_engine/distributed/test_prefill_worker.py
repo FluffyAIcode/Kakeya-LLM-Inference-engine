@@ -256,6 +256,32 @@ def test_job_rejects_snapshot_capacity_before_model_compute():
         jobs.close()
 
 
+def test_job_reservation_preserves_unrelated_restore_snapshot():
+    cache = PrefixCacheStore(COMPAT, max_bytes=100, node_id="shared")
+    old = CacheBlock.create(b"z" * 32, 2, b"old-snapshot")
+    cache.put(old)
+    jobs = PrefillJobStore(
+        _Engine(),
+        cache,
+        estimated_snapshot_bytes_per_token=10,
+    )
+    try:
+        job = jobs.submit(
+            request_id="new-prefix",
+            tenant_id="tenant",
+            token_ids=[1, 2],
+            block_hashes=[b"a" * 32],
+            compatibility=COMPAT,
+            compression=CompressionCodec.NONE,
+        )
+        job.future.result(timeout=1)
+        assert job.state == PrefillJobState.COMPLETED
+        assert old.block_hash in cache.block_hashes()
+        assert job.block_hash in cache.block_hashes()
+    finally:
+        jobs.close()
+
+
 def test_factory_engine_is_warmed_and_used_on_same_compute_thread():
     cache = PrefixCacheStore(COMPAT, max_bytes=1024, node_id="w")
     created_on = []
