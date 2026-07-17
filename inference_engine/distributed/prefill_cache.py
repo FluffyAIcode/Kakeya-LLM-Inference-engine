@@ -297,8 +297,11 @@ class PrefixCacheStore:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
     ) -> PrefixLease:
         """Atomically publish and pin the final computed snapshot."""
-        if not blocks or len(blocks) != len(block_hashes):
-            raise ValueError("one computed snapshot is required per block hash")
+        if not blocks or len(blocks) not in (1, len(block_hashes)):
+            raise ValueError(
+                "computed snapshots must contain only the final snapshot "
+                "or one snapshot per block hash",
+            )
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be > 0")
         final = blocks[-1]

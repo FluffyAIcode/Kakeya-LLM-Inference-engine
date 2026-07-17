@@ -8,6 +8,7 @@ import grpc
 import pytest
 import pytest_asyncio
 
+from inference_engine.backends.mlx.prefill_worker import MLXPrefillComputeEngine
 from inference_engine.distributed.capability import (
     CacheCompatibility,
     CompressionCodec,
@@ -53,6 +54,55 @@ class _Engine:
             CacheBlock.create(h, min((i + 1) * 2, len(token_ids)), b"kv" + bytes([i]))
             for i, h in enumerate(block_hashes)
         ]
+
+
+def test_mlx_worker_exports_only_final_snapshot(monkeypatch):
+    class Logit:
+        def clone(self):
+            return self
+
+    class Verifier:
+        def __init__(self):
+            self.next_token_logits = None
+            self.forwarded = []
+
+        def prefill(self, tokens):
+            self.forwarded.extend(tokens)
+
+        def forward_block(self, tokens):
+            self.forwarded.extend(tokens)
+            return [Logit() for _ in tokens]
+
+        def commit_or_truncate(self, *, forwarded, accepted):
+            assert forwarded == accepted
+
+    verifier = Verifier()
+    engine = MLXPrefillComputeEngine(verifier, COMPAT)
+    snapshots = []
+
+    def snapshot(**kwargs):
+        snapshots.append(kwargs)
+        return CacheBlock.create(
+            kwargs["block_hash"],
+            kwargs["token_count"],
+            b"final",
+        )
+
+    monkeypatch.setattr(engine, "_snapshot", snapshot)
+    hashes = [b"a" * 32, b"b" * 32, b"c" * 32]
+    blocks = engine.compute_prefill(
+        [1, 2, 3, 4, 5],
+        hashes,
+        compression=CompressionCodec.NONE,
+        cancelled=threading.Event(),
+    )
+    assert verifier.forwarded == [1, 2, 3, 4, 5]
+    assert len(blocks) == 1
+    assert snapshots == [{
+        "token_count": 5,
+        "block_hash": hashes[-1],
+        "compression": CompressionCodec.NONE,
+    }]
 
 
 @pytest_asyncio.fixture
@@ -278,6 +328,36 @@ def test_job_reservation_preserves_unrelated_restore_snapshot():
         assert job.state == PrefillJobState.COMPLETED
         assert old.block_hash in cache.block_hashes()
         assert job.block_hash in cache.block_hashes()
+    finally:
+        jobs.close()
+
+
+def test_job_accepts_final_snapshot_only():
+    class FinalOnlyEngine:
+        def compute_prefill(self, token_ids, block_hashes, **_kwargs):
+            return [
+                CacheBlock.create(
+                    block_hashes[-1],
+                    len(token_ids),
+                    b"final-only",
+                ),
+            ]
+
+    cache = PrefixCacheStore(COMPAT, max_bytes=1024, node_id="final-only")
+    jobs = PrefillJobStore(FinalOnlyEngine(), cache)
+    try:
+        job = jobs.submit(
+            request_id="final-only",
+            tenant_id="tenant",
+            token_ids=[1, 2, 3, 4],
+            block_hashes=[b"a" * 32, b"b" * 32],
+            compatibility=COMPAT,
+            compression=CompressionCodec.NONE,
+        )
+        job.future.result(timeout=1)
+        assert job.state == PrefillJobState.COMPLETED
+        assert cache.block_hashes() == (b"b" * 32,)
+        assert cache.fetch(job.lease_id)[0].payload == b"final-only"
     finally:
         jobs.close()
 

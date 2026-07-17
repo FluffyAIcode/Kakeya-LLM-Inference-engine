@@ -282,9 +282,10 @@ class PrefillJobStore:
             ))
             if job.cancelled.is_set():
                 raise InterruptedError("prefill job cancelled")
-            if len(blocks) != len(job.block_hashes):
+            if len(blocks) not in (1, len(job.block_hashes)):
                 raise RuntimeError(
-                    "prefill engine must return one snapshot per block hash",
+                    "prefill engine must return only the final snapshot "
+                    "or one snapshot per block hash",
                 )
             lease = self.cache_store.publish_and_lease(
                 blocks,
