@@ -120,3 +120,4 @@ def test_critic_context_preserves_complete_generator_response():
     assert metrics["critic_context_tokens"] == 10
     assert metrics["critic_omitted_tokens"] == 0
     assert metrics["review_scope"] == "full"
+    assert metrics["critic_protocol"] == "adversarial_claim_audit_v1"
