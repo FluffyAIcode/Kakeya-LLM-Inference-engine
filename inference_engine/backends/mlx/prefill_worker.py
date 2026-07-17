@@ -45,17 +45,7 @@ class MLXPrefillComputeEngine:
                 raise InterruptedError("prefill job cancelled")
             first_end = min(size, len(tokens))
             self.verifier.prefill(tokens[:first_end])
-            blocks: list[CacheBlock] = [
-                self._snapshot(
-                    token_count=first_end,
-                    block_hash=block_hashes[0],
-                    compression=compression,
-                ),
-            ]
-            for block_index, start in enumerate(
-                range(first_end, len(tokens), size),
-                start=1,
-            ):
+            for start in range(first_end, len(tokens), size):
                 if cancelled.is_set():
                     raise InterruptedError("prefill job cancelled")
                 block = tokens[start:start + size]
@@ -65,12 +55,17 @@ class MLXPrefillComputeEngine:
                     accepted=len(block),
                 )
                 self.verifier.next_token_logits = logits[-1].clone()
-                blocks.append(self._snapshot(
-                    token_count=min(start + size, len(tokens)),
-                    block_hash=block_hashes[block_index],
+            # Export exactly once. Intermediate full snapshots make encoding
+            # and compression quadratic in prompt length and are not required
+            # for correctness because the final chained hash commits every
+            # preceding token block.
+            return (
+                self._snapshot(
+                    token_count=len(tokens),
+                    block_hash=block_hashes[-1],
                     compression=compression,
-                ))
-            return blocks
+                ),
+            )
 
     def _snapshot(
         self,

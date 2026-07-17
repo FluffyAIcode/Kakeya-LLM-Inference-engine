@@ -189,6 +189,21 @@ def test_publish_and_lease_atomically_pins_final_snapshot():
     assert not store.resize(1)
 
 
+def test_publish_and_lease_accepts_final_snapshot_only():
+    store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
+    hashes = chained_block_hashes([1, 2, 3, 4], _compat())
+    final = CacheBlock.create(hashes[-1], 4, b"final!")
+    store.reserve("job", 6)
+    lease = store.publish_and_lease(
+        [final],
+        hashes,
+        reservation_id="job",
+    )
+    assert lease.hit_block_count == 2
+    assert lease.hit_token_count == 4
+    assert store.fetch(lease.lease_id) == (final,)
+
+
 def test_reservation_and_atomic_publish_validation_guards():
     store = PrefixCacheStore(_compat(), max_bytes=10, node_id="x")
     with pytest.raises(ValueError, match="reservation id"):
@@ -197,7 +212,7 @@ def test_reservation_and_atomic_publish_validation_guards():
     with pytest.raises(ValueError, match="duplicate"):
         store.reserve("job", 1)
     block = CacheBlock.create(bytes(32), 1, b"abc")
-    with pytest.raises(ValueError, match="one computed snapshot"):
+    with pytest.raises(ValueError, match="computed snapshots"):
         store.publish_and_lease([], [], reservation_id="job")
     with pytest.raises(ValueError, match="lease_seconds"):
         store.publish_and_lease(

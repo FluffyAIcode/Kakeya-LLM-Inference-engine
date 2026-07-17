@@ -361,6 +361,10 @@ prevents adaptive shrink from consuming active reservations, then atomically
 publishes and leases the final snapshot before adding optional intermediate
 boundaries. The 16GB allens deployment uses a 1 GiB cache floor and 0.5 GiB
 memory reserve. Capacity failures are rejected before Prefill starts.
+The MLX worker exports and compresses only the final chained-prefix snapshot.
+The final hash commits every preceding token block, so exporting a growing full
+snapshot at every 64-token boundary is redundant and creates quadratic
+serialization/compression work for long Critic contexts.
 Interactive prompt templates are deterministic and contain no per-run nonce, so
 repeating the same task can reuse allens cold-tier and Primary hot-tier KV.
 
