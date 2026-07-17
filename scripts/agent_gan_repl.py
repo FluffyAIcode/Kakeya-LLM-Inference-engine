@@ -14,7 +14,7 @@ from pathlib import Path
 from scripts.agent_gan_inference_demo import (
     _agent_cache_gate,
     _infer,
-    build_critic_evidence,
+    build_critic_context,
 )
 from scripts.benchmark_prefill_architecture import (
     _ensure_services,
@@ -61,7 +61,7 @@ def build_generator_messages(prompt: str) -> list[dict[str, str]]:
 
 def build_critic_messages(
     prompt: str,
-    evidence: str,
+    generator_response: str,
     *,
     stop_reason: str,
     complete: bool,
@@ -72,14 +72,14 @@ def build_critic_messages(
             "content": (
                 "Score the answer 0-10, identify false claims, and give "
                 "specific corrections. Do not penalize an honest statement "
-                "that an open problem is unsolved. Evidence is intentionally "
-                "bounded; omitted tokens do not imply truncation."
+                "that an open problem is unsolved. Review the complete response "
+                "as one semantic argument; do not sample or summarize it."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Task:\n{prompt}\n\nEvidence:\n{evidence}\n\n"
+                f"Task:\n{prompt}\n\nComplete response:\n{generator_response}\n\n"
                 f"Completion: {stop_reason}; complete={complete}"
             ),
         },
@@ -172,11 +172,10 @@ def main() -> int:
         default=0,
         help="Optional client response cap; 0 means generate until model EOS.",
     )
-    parser.add_argument("--critic-evidence-tokens", type=int, default=64)
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
-    if min(args.output_tokens, args.critic_evidence_tokens) <= 0:
-        raise SystemExit("output-tokens and critic-evidence-tokens must be > 0")
+    if args.output_tokens <= 0:
+        raise SystemExit("output-tokens must be > 0")
 
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -284,14 +283,19 @@ def main() -> int:
                         body={"stages": [generator_stage]},
                     )
 
-                evidence, evidence_metrics = build_critic_evidence(
+                critic_context, context_metrics = build_critic_context(
                     tokenizer,
                     generator_text,
-                    args.critic_evidence_tokens,
                 )
+                if (
+                    critic_context != generator_text
+                    or context_metrics["critic_omitted_tokens"] != 0
+                    or context_metrics["review_scope"] != "full"
+                ):
+                    raise RuntimeError("Critic full-context invariant violated")
                 critic_messages = build_critic_messages(
                     prompt,
-                    evidence,
+                    critic_context,
                     stop_reason=generator_actual["stop_reason"],
                     complete=generator_actual["complete"],
                 )
@@ -330,7 +334,7 @@ def main() -> int:
                     critic_warm,
                     critic_actual,
                     critic_text,
-                    extra_metrics=evidence_metrics,
+                    extra_metrics=context_metrics,
                 )
                 if not critic_stage["ok"] and not telemetry_state["degraded"]:
                     raise RuntimeError("Critic KV gate failed")

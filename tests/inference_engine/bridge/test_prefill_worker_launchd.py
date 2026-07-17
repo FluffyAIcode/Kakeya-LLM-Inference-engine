@@ -49,7 +49,7 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
         in plist
     )
     assert (
-        "<string>--prefill-worker-timeout-s</string><string>900</string>"
+        "<string>--prefill-worker-timeout-s</string><string>3600</string>"
         in plist
     )
     assert (

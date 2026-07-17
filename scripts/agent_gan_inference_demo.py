@@ -34,33 +34,13 @@ def _output_metadata(text: str) -> dict:
     }
 
 
-def build_critic_evidence(tokenizer, text: str, max_tokens: int) -> tuple[str, dict]:
-    if max_tokens <= 0:
-        raise ValueError("critic evidence token budget must be > 0")
+def build_critic_context(tokenizer, text: str) -> tuple[str, dict]:
     full_ids = tokenizer.encode(text, add_special_tokens=False)
-    if len(full_ids) <= max_tokens:
-        return text, {
-            "generator_full_tokens": len(full_ids),
-            "critic_evidence_tokens": len(full_ids),
-            "critic_omitted_tokens": 0,
-        }
-    head_count = max_tokens // 2
-    tail_count = max_tokens - head_count
-    head = tokenizer.decode(full_ids[:head_count], skip_special_tokens=True)
-    tail = tokenizer.decode(full_ids[-tail_count:], skip_special_tokens=True)
-    omitted = len(full_ids) - max_tokens
-    evidence = (
-        "[BEGIN GENERATOR EVIDENCE]\n"
-        f"{head}\n"
-        f"[... {omitted} generator tokens omitted from Critic context ...]\n"
-        f"{tail}\n"
-        "[END GENERATOR EVIDENCE]"
-    )
-    evidence_tokens = len(tokenizer.encode(evidence, add_special_tokens=False))
-    return evidence, {
+    return text, {
         "generator_full_tokens": len(full_ids),
-        "critic_evidence_tokens": evidence_tokens,
-        "critic_omitted_tokens": omitted,
+        "critic_context_tokens": len(full_ids),
+        "critic_omitted_tokens": 0,
+        "review_scope": "full",
     }
 
 
@@ -154,12 +134,11 @@ def main() -> int:
         default=0,
         help="Optional client response cap; 0 means generate until model EOS.",
     )
-    parser.add_argument("--critic-evidence-tokens", type=int, default=128)
     parser.add_argument("--report", default="/tmp/kakeya-agent-gan-demo.json")
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
-    if min(args.rounds, args.output_tokens, args.critic_evidence_tokens) <= 0:
-        raise SystemExit("rounds, output-tokens and critic evidence must be > 0")
+    if min(args.rounds, args.output_tokens) <= 0:
+        raise SystemExit("rounds and output-tokens must be > 0")
 
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -199,9 +178,8 @@ def main() -> int:
             "incomplete merely because it refuses to fabricate a solution to "
             "an open problem. Claim truncation only when completion_status is "
             "not EOS or the text is syntactically cut off."
-            " You receive an explicitly bounded evidence window; omitted "
-            "middle tokens are a transport constraint, not evidence that the "
-            "Generator itself failed to complete."
+            " Review the complete Generator response as one semantic argument. "
+            "Do not sample, summarize, or infer claims from partial text."
         ),
     }]
 
@@ -293,16 +271,21 @@ def main() -> int:
                     client, "generator", round_index, generator_history,
                 )
                 generator_history.append({"role": "assistant", "content": proposal})
-                evidence, evidence_metrics = build_critic_evidence(
+                critic_context, context_metrics = build_critic_context(
                     tokenizer,
                     proposal,
-                    args.critic_evidence_tokens,
                 )
+                if (
+                    critic_context != proposal
+                    or context_metrics["critic_omitted_tokens"] != 0
+                    or context_metrics["review_scope"] != "full"
+                ):
+                    raise RuntimeError("Critic full-context invariant violated")
                 critic_history.append({
                     "role": "user",
                     "content": (
                         f"Architecture task:\n{task}\n\n"
-                        f"Generator evidence window:\n{evidence}"
+                        f"Complete Generator response:\n{critic_context}"
                         f"\n\ncompletion_status={generator_stage['stop_reason']}; "
                         f"complete={generator_stage['complete']}"
                     ),
@@ -312,7 +295,7 @@ def main() -> int:
                     "critic",
                     round_index,
                     critic_history,
-                    extra_metrics=evidence_metrics,
+                    extra_metrics=context_metrics,
                 )
                 critic_history.append({
                     "role": "assistant",

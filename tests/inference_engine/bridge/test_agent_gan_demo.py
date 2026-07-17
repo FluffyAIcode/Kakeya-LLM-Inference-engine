@@ -2,7 +2,7 @@ from scripts.agent_gan_inference_demo import (
     _agent_cache_gate,
     _infer,
     _output_metadata,
-    build_critic_evidence,
+    build_critic_context,
 )
 
 
@@ -98,18 +98,10 @@ class CharTokenizer:
         return "".join(chr(token) for token in token_ids)
 
 
-def test_critic_evidence_is_bounded_and_explicit_about_omission():
-    evidence, metrics = build_critic_evidence(CharTokenizer(), "abcdefghij", 4)
-    assert "ab" in evidence and "ij" in evidence
-    assert "6 generator tokens omitted" in evidence
+def test_critic_context_preserves_complete_generator_response():
+    context, metrics = build_critic_context(CharTokenizer(), "abcdefghij")
+    assert context == "abcdefghij"
     assert metrics["generator_full_tokens"] == 10
-    assert metrics["critic_omitted_tokens"] == 6
-    full, full_metrics = build_critic_evidence(CharTokenizer(), "abc", 4)
-    assert full == "abc"
-    assert full_metrics["critic_omitted_tokens"] == 0
-    try:
-        build_critic_evidence(CharTokenizer(), "abc", 0)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("expected evidence budget validation")
+    assert metrics["critic_context_tokens"] == 10
+    assert metrics["critic_omitted_tokens"] == 0
+    assert metrics["review_scope"] == "full"
