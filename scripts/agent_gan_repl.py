@@ -46,6 +46,46 @@ def _telemetry_request(url: str, **kwargs):
         return None
 
 
+def build_generator_messages(prompt: str) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Answer rigorously. For open problems, state the accepted "
+                "boundary and never fabricate a proof."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+
+def build_critic_messages(
+    prompt: str,
+    evidence: str,
+    *,
+    stop_reason: str,
+    complete: bool,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Score the answer 0-10, identify false claims, and give "
+                "specific corrections. Do not penalize an honest statement "
+                "that an open problem is unsolved. Evidence is intentionally "
+                "bounded; omitted tokens do not imply truncation."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Task:\n{prompt}\n\nEvidence:\n{evidence}\n\n"
+                f"Completion: {stop_reason}; complete={complete}"
+            ),
+        },
+    ]
+
+
 class TokenPrinter:
     def __init__(self, tokenizer, label: str) -> None:
         self.tokenizer = tokenizer
@@ -132,9 +172,11 @@ def main() -> int:
         default=0,
         help="Optional client response cap; 0 means generate until model EOS.",
     )
-    parser.add_argument("--critic-evidence-tokens", type=int, default=128)
+    parser.add_argument("--critic-evidence-tokens", type=int, default=64)
     parser.add_argument("--skip-ensure", action="store_true")
     args = parser.parse_args()
+    if min(args.output_tokens, args.critic_evidence_tokens) <= 0:
+        raise SystemExit("output-tokens and critic-evidence-tokens must be > 0")
 
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -195,20 +237,7 @@ def main() -> int:
             remote_run = run is not None
             run_id = run["id"] if remote_run else f"local_{run_nonce[:16]}"
             try:
-                generator_messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the Generator agent. Produce a concrete, "
-                            "technically rigorous answer. For open or unsolved "
-                            "problems, state the accepted boundary honestly, "
-                            "provide rigorous context, and never fabricate a "
-                            "proof. Internal run "
-                            f"{run_nonce}."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ]
+                generator_messages = build_generator_messages(prompt)
                 generator_ids = tokenizer.apply_chat_template(
                     generator_messages,
                     add_generation_prompt=True,
@@ -260,33 +289,12 @@ def main() -> int:
                     generator_text,
                     args.critic_evidence_tokens,
                 )
-                critic_messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the Critic/Discriminator. Score the answer "
-                            "0-10, identify false assumptions, and propose "
-                            "specific corrections. Do not penalize a correct "
-                            "statement that an open problem has no accepted "
-                            "proof. Call an answer incomplete only when its "
-                            "completion status is not EOS or its syntax is "
-                            "visibly cut off. "
-                            "You receive a bounded evidence window; omitted "
-                            "tokens are not evidence of Generator truncation. "
-                            f"Internal run {run_nonce}."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Original task:\n{prompt}\n\n"
-                            f"Generator evidence window:\n{evidence}\n\n"
-                            "Generator completion status: "
-                            f"{generator_actual['stop_reason']}; "
-                            f"complete={generator_actual['complete']}"
-                        ),
-                    },
-                ]
+                critic_messages = build_critic_messages(
+                    prompt,
+                    evidence,
+                    stop_reason=generator_actual["stop_reason"],
+                    complete=generator_actual["complete"],
+                )
                 critic_ids = tokenizer.apply_chat_template(
                     critic_messages,
                     add_generation_prompt=True,

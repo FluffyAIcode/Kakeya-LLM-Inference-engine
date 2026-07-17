@@ -7,6 +7,8 @@ from scripts.agent_gan_repl import (
     TokenPrinter,
     _stage,
     _telemetry_request,
+    build_critic_messages,
+    build_generator_messages,
     install_signal_protection,
 )
 
@@ -139,3 +141,26 @@ def test_telemetry_timeout_warns_without_stopping_inference(
     output = capsys.readouterr().out
     assert "telemetry-warning" in output
     assert "inference will continue" in output
+
+
+def test_interactive_prompts_are_deterministic_for_kv_reuse():
+    generator_a = build_generator_messages("prove RH")
+    generator_b = build_generator_messages("prove RH")
+    critic_a = build_critic_messages(
+        "prove RH",
+        "bounded evidence",
+        stop_reason="eos",
+        complete=True,
+    )
+    critic_b = build_critic_messages(
+        "prove RH",
+        "bounded evidence",
+        stop_reason="eos",
+        complete=True,
+    )
+    assert generator_a == generator_b
+    assert critic_a == critic_b
+    combined = repr(generator_a + critic_a)
+    assert "Internal run" not in combined
+    assert "open problem" in combined
+    assert "omitted tokens do not imply truncation" in combined
