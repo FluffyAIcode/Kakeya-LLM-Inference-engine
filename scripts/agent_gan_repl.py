@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import signal
 import sys
 import threading
@@ -481,9 +482,24 @@ def main() -> int:
         default="~/.kakeya/logs/agent_gan_repl.log",
     )
     parser.add_argument("--auto-continue", action="store_true")
+    parser.add_argument(
+        "--no-auto-loop",
+        action="store_false",
+        dest="auto_loop",
+        help="Pause after each successful turn instead of continuing.",
+    )
+    parser.set_defaults(auto_loop=True)
+    parser.add_argument(
+        "--auto-loop-boundary-wait-s",
+        type=float,
+        default=0.5,
+        help="Boundary window for an explicit command before auto-continue.",
+    )
     args = parser.parse_args()
     if args.output_tokens <= 0:
         raise SystemExit("output-tokens must be > 0")
+    if args.auto_loop_boundary_wait_s < 0:
+        raise SystemExit("auto-loop-boundary-wait-s must be >= 0")
     transcript = TimestampedTee(
         sys.stdout,
         Path(args.log_file).expanduser(),
@@ -536,12 +552,19 @@ def main() -> int:
     previous_generator = checkpoint.previous_generator if checkpoint else ""
     previous_critic = checkpoint.previous_critic if checkpoint else ""
     phase = ReplPhase.READY if checkpoint else ReplPhase.WAITING_FOR_GOAL
-    pending_input = "/continue" if args.auto_continue and checkpoint else ""
+    auto_loop_active = bool(args.auto_loop)
+    pending_input = (
+        "/continue"
+        if checkpoint and (args.auto_continue or auto_loop_active)
+        else ""
+    )
     print(
         "Kakeya Agent GAN REPL ready.\n"
         "Commands: /new <goal>, /continue, /steer <text>, /quit.\n"
         "Raw text is accepted only as the initial goal; inference output can "
         "never become implicit steering.\n"
+        f"Auto-loop is {'enabled' if auto_loop_active else 'disabled'}; "
+        "successful turns continue automatically and exceptions pause it.\n"
         "Each turn runs allens Prefill → Primary hot Generator → "
         "allens Prefill → Primary hot Critic.",
         flush=True,
@@ -560,6 +583,19 @@ def main() -> int:
                 raw_input = pending_input
                 pending_input = ""
                 print(f"\nprompt> {raw_input}", flush=True)
+            elif auto_loop_active and phase == ReplPhase.READY:
+                print("\nprompt> ", end="", flush=True)
+                readable, _, _ = select.select(
+                    [sys.stdin],
+                    [],
+                    [],
+                    args.auto_loop_boundary_wait_s,
+                )
+                if readable:
+                    raw_input = input()
+                else:
+                    raw_input = "/continue"
+                    print(raw_input, flush=True)
             else:
                 try:
                     raw_input = input("\nprompt> ")
@@ -584,8 +620,11 @@ def main() -> int:
                     ReplCheckpoint(research_goal=research_goal),
                 )
                 phase = ReplPhase.READY
+                auto_loop_active = bool(args.auto_loop)
                 print(f"[goal] reset: {research_goal}", flush=True)
             steering = command.payload if command.action == "steer" else ""
+            if command.action in {"continue", "steer"} and args.auto_loop:
+                auto_loop_active = True
             phase = ReplPhase.RUNNING
             run_nonce = uuid.uuid4().hex
             telemetry_state["degraded"] = False
@@ -776,6 +815,12 @@ def main() -> int:
                     ),
                 )
                 phase = ReplPhase.READY
+                if auto_loop_active:
+                    print(
+                        "[auto-loop] successful turn complete; "
+                        "/continue queued",
+                        flush=True,
+                    )
             except Exception as exc:
                 if remote_run:
                     _telemetry_request(
@@ -791,6 +836,12 @@ def main() -> int:
                     flush=True,
                 )
                 phase = ReplPhase.READY
+                auto_loop_active = False
+                print(
+                    "[auto-loop-paused] inference exception; checkpoint "
+                    "preserved. Use /continue after remediation.",
+                    flush=True,
+                )
     transcript.log_only("[session-end]")
     return 0
 

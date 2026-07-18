@@ -351,6 +351,12 @@ Completed Generator/Critic text is atomically checkpointed with mode `0600` at
 `--recover-run <id> --recover-log <path> --auto-continue` reconstructs a
 checkpoint from a complete timestamped run and resumes without using any
 partial Terminal echo.
+Continuous `auto-loop` is enabled by default. After every successful
+Generator/Critic turn, the READY state internally queues `/continue`; it does
+not wait for Terminal automation. A short boundary window still accepts an
+explicit whitelisted command such as `/quit` or `/steer`. Any inference
+exception pauses auto-loop and preserves the last complete checkpoint.
+`--no-auto-loop` restores manual one-turn-at-a-time operation.
 Generator output is always streamed in full to Terminal and passed verbatim to
 the Gemma Critic. Sampling, truncation, summarization, independent chunk scores,
 and semantic fallback are forbidden. A global Critic score is valid only when
