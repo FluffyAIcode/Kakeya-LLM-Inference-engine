@@ -13,7 +13,9 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 from scripts.agent_gan_inference_demo import (
@@ -118,6 +120,135 @@ _RUNTIME_ARTIFACT = re.compile(
 def is_runtime_artifact_prompt(text: str) -> bool:
     lines = [line for line in text.splitlines() if line.strip()]
     return bool(lines) and bool(_RUNTIME_ARTIFACT.match(lines[0]))
+
+
+class ReplPhase(str, Enum):
+    WAITING_FOR_GOAL = "waiting_for_goal"
+    READY = "ready"
+    RUNNING = "running"
+
+
+@dataclass(frozen=True)
+class ReplCommand:
+    action: str
+    payload: str = ""
+
+
+@dataclass
+class ReplCheckpoint:
+    research_goal: str
+    previous_generator: str = ""
+    previous_critic: str = ""
+    last_run_id: str = ""
+    schema_version: int = 1
+
+
+def parse_repl_command(raw: str, phase: ReplPhase) -> ReplCommand:
+    text = raw.strip()
+    lower = text.lower()
+    if lower in {"/quit", "/exit"}:
+        return ReplCommand("quit")
+    if lower.startswith("/new"):
+        goal = text[4:].strip()
+        if not goal:
+            raise ValueError("usage: /new <goal>")
+        return ReplCommand("new", goal)
+    if phase == ReplPhase.WAITING_FOR_GOAL:
+        if text.startswith("/"):
+            raise ValueError("set a goal with /new <goal>")
+        if not text:
+            raise ValueError("research goal must be non-empty")
+        return ReplCommand("new", text)
+    if phase == ReplPhase.RUNNING:
+        raise ValueError("inference is running; input is disabled")
+    if lower == "/continue":
+        return ReplCommand("continue")
+    if lower.startswith("/steer"):
+        steering = text[6:].strip()
+        if not steering:
+            raise ValueError("usage: /steer <text>")
+        return ReplCommand("steer", steering)
+    raise ValueError(
+        "command rejected; use /continue, /steer <text>, "
+        "/new <goal>, or /quit",
+    )
+
+
+def save_checkpoint(path: Path, checkpoint: ReplCheckpoint) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(asdict(checkpoint), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def load_checkpoint(path: Path) -> ReplCheckpoint | None:
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    checkpoint = ReplCheckpoint(**raw)
+    if checkpoint.schema_version != 1 or not checkpoint.research_goal:
+        raise ValueError("invalid Agent GAN checkpoint")
+    return checkpoint
+
+
+_TIMESTAMP_PREFIX = re.compile(r"^\[[^\]]+\]\s?")
+
+
+def recover_checkpoint_from_log(
+    log_path: Path,
+    run_id: str,
+) -> ReplCheckpoint:
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    goal = ""
+    active = False
+    section = ""
+    generator: list[str] = []
+    critic: list[str] = []
+    for raw_line in lines:
+        line = _TIMESTAMP_PREFIX.sub("", raw_line, count=1)
+        if line.startswith("[goal] anchored:"):
+            goal = line.split(":", 1)[1].strip()
+        if line.startswith("[goal] reset:"):
+            goal = line.split(":", 1)[1].strip()
+        if f"[inference-start]" in line and f"run={run_id}" in line:
+            active = True
+            section = ""
+            generator = []
+            critic = []
+            continue
+        if not active:
+            continue
+        if line.startswith("generator>"):
+            section = "generator"
+            generator.append(line.removeprefix("generator>").lstrip())
+            continue
+        if line.startswith("[allens] Critic Prefill:"):
+            section = ""
+            continue
+        if line.startswith("critic>"):
+            section = "critic"
+            critic.append(line.removeprefix("critic>").lstrip())
+            continue
+        if line.startswith("[metrics]"):
+            break
+        if section == "generator":
+            generator.append(line)
+        elif section == "critic":
+            critic.append(line)
+    generator_text = "\n".join(generator).strip()
+    critic_text = "\n".join(critic).strip()
+    if not goal or not generator_text or not critic_text:
+        raise ValueError(f"complete run {run_id!r} not found in transcript")
+    return ReplCheckpoint(
+        research_goal=goal,
+        previous_generator=generator_text,
+        previous_critic=critic_text,
+        last_run_id=run_id,
+    )
 
 
 def build_generator_messages(
@@ -339,6 +470,17 @@ def main() -> int:
         default="~/.kakeya/logs/agent_gan_repl.log",
         help="Timestamped local transcript log.",
     )
+    parser.add_argument(
+        "--state-file",
+        default="~/.kakeya/agent_gan_state.json",
+        help="Private resumable Generator/Critic checkpoint.",
+    )
+    parser.add_argument("--recover-run", default="")
+    parser.add_argument(
+        "--recover-log",
+        default="~/.kakeya/logs/agent_gan_repl.log",
+    )
+    parser.add_argument("--auto-continue", action="store_true")
     args = parser.parse_args()
     if args.output_tokens <= 0:
         raise SystemExit("output-tokens must be > 0")
@@ -376,58 +518,75 @@ def main() -> int:
         telemetry_state["last_stats"] = stats
         return stats
 
+    state_path = Path(args.state_file).expanduser()
+    if args.recover_run:
+        recovered = recover_checkpoint_from_log(
+            Path(args.recover_log).expanduser(),
+            args.recover_run,
+        )
+        save_checkpoint(state_path, recovered)
+        print(
+            f"[state-recovered] run={recovered.last_run_id} "
+            f"generator_chars={len(recovered.previous_generator)} "
+            f"critic_chars={len(recovered.previous_critic)}",
+            flush=True,
+        )
+    checkpoint = load_checkpoint(state_path)
+    research_goal = checkpoint.research_goal if checkpoint else ""
+    previous_generator = checkpoint.previous_generator if checkpoint else ""
+    previous_critic = checkpoint.previous_critic if checkpoint else ""
+    phase = ReplPhase.READY if checkpoint else ReplPhase.WAITING_FOR_GOAL
+    pending_input = "/continue" if args.auto_continue and checkpoint else ""
     print(
-        "Kakeya Agent GAN REPL ready. First prompt sets the immutable goal.\n"
-        "Use /continue to apply Critic feedback, /new <goal> to reset, "
-        "and /quit to exit.\n"
+        "Kakeya Agent GAN REPL ready.\n"
+        "Commands: /new <goal>, /continue, /steer <text>, /quit.\n"
+        "Raw text is accepted only as the initial goal; inference output can "
+        "never become implicit steering.\n"
         "Each turn runs allens Prefill → Primary hot Generator → "
         "allens Prefill → Primary hot Critic.",
         flush=True,
     )
     print(f"[log] {transcript.log_path}", flush=True)
-    research_goal = ""
-    previous_generator = ""
-    previous_critic = ""
+    print(f"[state] {state_path} phase={phase.value}", flush=True)
+    if checkpoint:
+        print(
+            f"[state-restored] run={checkpoint.last_run_id or '(none)'} "
+            f"goal={hashlib.sha256(research_goal.encode()).hexdigest()}",
+            flush=True,
+        )
     with Client(args.address) as client:
         while True:
+            if pending_input:
+                raw_input = pending_input
+                pending_input = ""
+                print(f"\nprompt> {raw_input}", flush=True)
+            else:
+                try:
+                    raw_input = input("\nprompt> ")
+                except EOFError:
+                    print("\n[bye]")
+                    break
+            transcript.log_only(f"[input] {raw_input or '(empty)'}")
             try:
-                prompt = input("\nprompt> ").strip()
-            except EOFError:
-                print("\n[bye]")
-                break
-            transcript.log_only(f"[input] {prompt or '(empty)'}")
-            if not prompt:
+                command = parse_repl_command(raw_input, phase)
+            except ValueError as exc:
+                print(f"[input-rejected] {exc}", flush=True)
                 continue
-            if prompt.lower() in {"/quit", "/exit"}:
+            if command.action == "quit":
                 print("[bye]")
                 break
-            if prompt.lower().startswith("/new"):
-                new_goal = prompt[4:].strip()
-                research_goal = new_goal
+            if command.action == "new":
+                research_goal = command.payload
                 previous_generator = ""
                 previous_critic = ""
-                if not research_goal:
-                    print("[goal] cleared; enter a new research goal", flush=True)
-                    continue
-                prompt = research_goal
-                print(f"[goal] reset: {research_goal}", flush=True)
-            elif prompt.lower() == "/continue":
-                if not research_goal:
-                    print("[goal-error] no active research goal", flush=True)
-                    continue
-                prompt = ""
-            elif is_runtime_artifact_prompt(prompt):
-                print(
-                    "[input-rejected] runtime output cannot become a research "
-                    "prompt; use /continue or /new <goal>",
-                    flush=True,
+                save_checkpoint(
+                    state_path,
+                    ReplCheckpoint(research_goal=research_goal),
                 )
-                continue
-            elif not research_goal:
-                research_goal = prompt
-                print(f"[goal] anchored: {research_goal}", flush=True)
-                prompt = ""
-            steering = prompt
+                phase = ReplPhase.READY
+                print(f"[goal] reset: {research_goal}", flush=True)
+            steering = command.payload if command.action == "steer" else ""
+            phase = ReplPhase.RUNNING
             run_nonce = uuid.uuid4().hex
             telemetry_state["degraded"] = False
             run = _telemetry_request(
@@ -607,6 +766,16 @@ def main() -> int:
                     f"run={run_id}",
                     flush=True,
                 )
+                save_checkpoint(
+                    state_path,
+                    ReplCheckpoint(
+                        research_goal=research_goal,
+                        previous_generator=previous_generator,
+                        previous_critic=previous_critic,
+                        last_run_id=run_id,
+                    ),
+                )
+                phase = ReplPhase.READY
             except Exception as exc:
                 if remote_run:
                     _telemetry_request(
@@ -621,6 +790,7 @@ def main() -> int:
                     f"run={run_id} error={type(exc).__name__}: {exc}",
                     flush=True,
                 )
+                phase = ReplPhase.READY
     transcript.log_only("[session-end]")
     return 0
 

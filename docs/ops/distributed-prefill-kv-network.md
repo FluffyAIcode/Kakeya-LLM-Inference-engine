@@ -342,6 +342,15 @@ Generator completion status and must not penalize an honest statement that an
 open problem has no accepted proof.
 The REPL ignores external `SIGTERM`; its shell supervisor restarts signal-based
 exits. Only `/quit`, `/exit`, or EOF is treated as approval to stop.
+The REPL input boundary is a strict state machine. Before a goal exists, raw
+text sets the initial immutable goal. Afterwards only `/continue`,
+`/steer <text>`, `/new <goal>`, and `/quit` are accepted; bare text and copied
+runtime output are rejected. No stdin is read while inference is running.
+Completed Generator/Critic text is atomically checkpointed with mode `0600` at
+`~/.kakeya/agent_gan_state.json`, allowing an exact `/continue` after restart.
+`--recover-run <id> --recover-log <path> --auto-continue` reconstructs a
+checkpoint from a complete timestamped run and resumes without using any
+partial Terminal echo.
 Generator output is always streamed in full to Terminal and passed verbatim to
 the Gemma Critic. Sampling, truncation, summarization, independent chunk scores,
 and semantic fallback are forbidden. A global Critic score is valid only when

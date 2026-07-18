@@ -5,6 +5,8 @@ from pathlib import Path
 
 from scripts.agent_gan_repl import (
     PrefillHeartbeat,
+    ReplCheckpoint,
+    ReplPhase,
     TimestampedTee,
     TokenPrinter,
     _gate_failure,
@@ -14,6 +16,10 @@ from scripts.agent_gan_repl import (
     build_generator_messages,
     install_signal_protection,
     is_runtime_artifact_prompt,
+    load_checkpoint,
+    parse_repl_command,
+    recover_checkpoint_from_log,
+    save_checkpoint,
 )
 
 
@@ -259,3 +265,72 @@ def test_runtime_output_cannot_replace_research_goal():
     ):
         assert is_runtime_artifact_prompt(text)
     assert not is_runtime_artifact_prompt("证明黎曼猜想")
+
+
+def test_command_state_machine_requires_explicit_ready_commands():
+    assert parse_repl_command(
+        "证明黎曼猜想",
+        ReplPhase.WAITING_FOR_GOAL,
+    ).action == "new"
+    assert parse_repl_command("/continue", ReplPhase.READY).action == "continue"
+    steering = parse_repl_command(
+        "/steer analyze the explicit formula",
+        ReplPhase.READY,
+    )
+    assert steering.action == "steer"
+    assert steering.payload == "analyze the explicit formula"
+    assert parse_repl_command("/new new goal", ReplPhase.READY).payload == (
+        "new goal"
+    )
+    assert parse_repl_command("/quit", ReplPhase.READY).action == "quit"
+    for raw, phase in (
+        ("Operator output fragment", ReplPhase.READY),
+        ("critic> copied output", ReplPhase.READY),
+        ("/continue", ReplPhase.WAITING_FOR_GOAL),
+        ("/continue", ReplPhase.RUNNING),
+        ("/steer", ReplPhase.READY),
+        ("/new", ReplPhase.READY),
+    ):
+        try:
+            parse_repl_command(raw, phase)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected rejection for {raw!r} in {phase}")
+
+
+def test_checkpoint_round_trip_is_private(tmp_path):
+    path = tmp_path / "state.json"
+    expected = ReplCheckpoint(
+        research_goal="prove RH",
+        previous_generator="full generator",
+        previous_critic="full critic",
+        last_run_id="br_ok",
+    )
+    save_checkpoint(path, expected)
+    assert load_checkpoint(path) == expected
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert load_checkpoint(tmp_path / "missing.json") is None
+
+
+def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):
+    path = tmp_path / "agent.log"
+    path.write_text(
+        "\n".join((
+            "[t] [goal] anchored: prove RH",
+            "[t] [inference-start] time=t run=br_good goal=hash",
+            "[t] generator> first generator line",
+            "[t] second generator line",
+            "[t] [allens] Critic Prefill: 100 tokens...",
+            "[t] critic> first critic line",
+            "[t] second critic line",
+            "[t] [metrics] run=br_good",
+        )),
+    )
+    recovered = recover_checkpoint_from_log(path, "br_good")
+    assert recovered.research_goal == "prove RH"
+    assert recovered.previous_generator == (
+        "first generator line\nsecond generator line"
+    )
+    assert recovered.previous_critic == "first critic line\nsecond critic line"
+    assert recovered.last_run_id == "br_good"
