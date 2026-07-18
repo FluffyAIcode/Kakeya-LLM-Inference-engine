@@ -18,7 +18,7 @@ def _report(**overrides):
         "generator_full_tokens": 900,
         "critic_context_tokens": 900,
         "critic_omitted_tokens": 0,
-        "critic_protocol": "recursive_proof_decomposition_v2",
+        "critic_protocol": "goal_anchored_recursive_gan_v3",
         "delta": {"fallbacks": 0, "remote_job_failures": 0},
     }
     stage.update(overrides)

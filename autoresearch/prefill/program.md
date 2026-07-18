@@ -17,7 +17,7 @@ Minimize `metric_cold_critic_prefill_s`. Lower is better.
 - Every compute segment must remain at or below 300 seconds.
 - Critic must receive the complete Generator response.
 - `critic_omitted_tokens` must equal zero.
-- Protocol must be `recursive_proof_decomposition_v2`.
+- Protocol must be `goal_anchored_recursive_gan_v3`.
 - Snapshot mode must remain `final_only`.
 - No fallback, local Primary Prefill, failed remote job, sampling, summary, or
   semantic simplification is allowed.

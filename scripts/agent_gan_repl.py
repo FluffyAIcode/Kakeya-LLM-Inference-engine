@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import signal
 import threading
 import time
@@ -46,7 +47,37 @@ def _telemetry_request(url: str, **kwargs):
         return None
 
 
-def build_generator_messages(prompt: str) -> list[dict[str, str]]:
+_RUNTIME_ARTIFACT = re.compile(
+    r"^\s*(?:generator>|critic>|prompt>|\[(?:metrics|allens|error|"
+    r"telemetry-warning|protected|supervisor)\]|Traceback\b)",
+    re.IGNORECASE,
+)
+
+
+def is_runtime_artifact_prompt(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return bool(lines) and bool(_RUNTIME_ARTIFACT.match(lines[0]))
+
+
+def build_generator_messages(
+    goal: str,
+    *,
+    steering: str = "",
+    previous_generator: str = "",
+    previous_critic: str = "",
+) -> list[dict[str, str]]:
+    feedback = ""
+    if previous_generator or previous_critic:
+        feedback = (
+            "\n\nComplete previous Generator response:\n"
+            f"{previous_generator}\n\nComplete previous Critic correction:\n"
+            f"{previous_critic}\n\nApply the Critic's Next Adversarial Step "
+            "while remaining anchored to the immutable goal."
+        )
+    steering_text = (
+        f"\n\nCurrent human steering (subordinate to the goal):\n{steering}"
+        if steering else ""
+    )
     return [
         {
             "role": "system",
@@ -59,14 +90,21 @@ def build_generator_messages(prompt: str) -> list[dict[str, str]]:
                 "Distinguish unknown from impossible."
             ),
         },
-        {"role": "user", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                f"IMMUTABLE RESEARCH GOAL:\n{goal}"
+                f"{feedback}{steering_text}"
+            ),
+        },
     ]
 
 
 def build_critic_messages(
-    prompt: str,
+    goal: str,
     generator_response: str,
     *,
+    steering: str = "",
     stop_reason: str,
     complete: bool,
 ) -> list[dict[str, str]]:
@@ -94,12 +132,17 @@ def build_critic_messages(
                 "Leaf Obligation Ledger; Smallest Unresolved Frontier; Next "
                 "Adversarial Step. Do not sample, summarize, simplify, or use a "
                 "fallback review."
+                " Begin with `Goal Alignment: ALIGNED` or `Goal Alignment: "
+                "DRIFTED`. If drifted, discard the off-topic branch and restore "
+                "the proof-obligation frontier for the immutable goal."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Task:\n{prompt}\n\nComplete response:\n{generator_response}\n\n"
+                f"IMMUTABLE RESEARCH GOAL:\n{goal}\n\n"
+                f"Current steering:\n{steering or '(none)'}\n\n"
+                f"Complete response:\n{generator_response}\n\n"
                 f"Completion: {stop_reason}; complete={complete}"
             ),
         },
@@ -257,11 +300,16 @@ def main() -> int:
         return stats
 
     print(
-        "Kakeya Agent GAN REPL ready. Type a prompt; /quit exits.\n"
+        "Kakeya Agent GAN REPL ready. First prompt sets the immutable goal.\n"
+        "Use /continue to apply Critic feedback, /new <goal> to reset, "
+        "and /quit to exit.\n"
         "Each turn runs allens Prefill → Primary hot Generator → "
         "allens Prefill → Primary hot Critic.",
         flush=True,
     )
+    research_goal = ""
+    previous_generator = ""
+    previous_critic = ""
     with Client(args.address) as client:
         while True:
             try:
@@ -274,6 +322,33 @@ def main() -> int:
             if prompt.lower() in {"/quit", "/exit"}:
                 print("[bye]")
                 break
+            if prompt.lower().startswith("/new"):
+                new_goal = prompt[4:].strip()
+                research_goal = new_goal
+                previous_generator = ""
+                previous_critic = ""
+                if not research_goal:
+                    print("[goal] cleared; enter a new research goal", flush=True)
+                    continue
+                prompt = research_goal
+                print(f"[goal] reset: {research_goal}", flush=True)
+            elif prompt.lower() == "/continue":
+                if not research_goal:
+                    print("[goal-error] no active research goal", flush=True)
+                    continue
+                prompt = ""
+            elif is_runtime_artifact_prompt(prompt):
+                print(
+                    "[input-rejected] runtime output cannot become a research "
+                    "prompt; use /continue or /new <goal>",
+                    flush=True,
+                )
+                continue
+            elif not research_goal:
+                research_goal = prompt
+                print(f"[goal] anchored: {research_goal}", flush=True)
+                prompt = ""
+            steering = prompt
             run_nonce = uuid.uuid4().hex
             telemetry_state["degraded"] = False
             run = _telemetry_request(
@@ -288,13 +363,22 @@ def main() -> int:
                         "agents": ["generator", "critic"],
                         "rounds": 1,
                         "output_tokens": args.output_tokens,
+                        "goal_anchor": hashlib.sha256(
+                            research_goal.encode(),
+                        ).hexdigest(),
+                        "feedback_applied": bool(previous_critic),
                     },
                 },
             )
             remote_run = run is not None
             run_id = run["id"] if remote_run else f"local_{run_nonce[:16]}"
             try:
-                generator_messages = build_generator_messages(prompt)
+                generator_messages = build_generator_messages(
+                    research_goal,
+                    steering=steering,
+                    previous_generator=previous_generator,
+                    previous_critic=previous_critic,
+                )
                 generator_ids = tokenizer.apply_chat_template(
                     generator_messages,
                     add_generation_prompt=True,
@@ -348,6 +432,7 @@ def main() -> int:
                 critic_context, context_metrics = build_critic_context(
                     tokenizer,
                     generator_text,
+                    protocol="goal_anchored_recursive_gan_v3",
                 )
                 if (
                     critic_context != generator_text
@@ -356,8 +441,9 @@ def main() -> int:
                 ):
                     raise RuntimeError("Critic full-context invariant violated")
                 critic_messages = build_critic_messages(
-                    prompt,
+                    research_goal,
                     critic_context,
+                    steering=steering,
                     stop_reason=generator_actual["stop_reason"],
                     complete=generator_actual["complete"],
                 )
@@ -400,6 +486,8 @@ def main() -> int:
                 )
                 if not critic_stage["ok"] and not telemetry_state["degraded"]:
                     raise _gate_failure("Critic", critic_warm, critic_actual)
+                previous_generator = generator_text
+                previous_critic = critic_text
                 completed = None
                 if remote_run:
                     completed = _telemetry_request(

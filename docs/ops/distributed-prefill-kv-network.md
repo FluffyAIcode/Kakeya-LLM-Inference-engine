@@ -349,13 +349,20 @@ and semantic fallback are forbidden. A global Critic score is valid only when
 `critic_omitted_tokens=0`. Long Prefill operations emit a heartbeat every 30
 seconds; on the 16GB allens worker, full-context Critic Prefill may take 15–25
 minutes.
-The Critic uses `recursive_proof_decomposition_v2`: numeric scores and blanket
+The interactive Critic uses `goal_anchored_recursive_gan_v3`: numeric scores and blanket
 approval are forbidden. It ignores prizes, money, prestige, style, and other
 proof-irrelevant facts. It attacks the central stopping claim, recursively
 decomposes it into proof obligations, records arguments/counterarguments and
 dependencies for every node, and loops until every leaf is either explicitly
 derived or a precisely stated open lemma. It then reports the smallest
 unresolved frontier and next adversarial step.
+The first substantive REPL input becomes an immutable research goal. `/continue`
+feeds the complete previous Generator and Critic outputs into the next
+Generator turn; `/new <goal>` is the only way to switch topics. Inputs beginning
+with `generator>`, `critic>`, `prompt>`, `[metrics]`, `[allens]`, errors, or
+tracebacks are rejected so Terminal output cannot contaminate the research
+objective. Every Critic turn emits an explicit `Goal Alignment` decision and
+restores the anchored proof frontier when drift is detected.
 The worker reserves estimated final-snapshot capacity before model compute,
 prevents adaptive shrink from consuming active reservations, then atomically
 publishes and leases the final snapshot before adding optional intermediate

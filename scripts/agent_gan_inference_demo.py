@@ -40,14 +40,19 @@ def _output_metadata(text: str) -> dict:
     }
 
 
-def build_critic_context(tokenizer, text: str) -> tuple[str, dict]:
+def build_critic_context(
+    tokenizer,
+    text: str,
+    *,
+    protocol: str = "recursive_proof_decomposition_v2",
+) -> tuple[str, dict]:
     full_ids = tokenizer.encode(text, add_special_tokens=False)
     return text, {
         "generator_full_tokens": len(full_ids),
         "critic_context_tokens": len(full_ids),
         "critic_omitted_tokens": 0,
         "review_scope": "full",
-        "critic_protocol": "recursive_proof_decomposition_v2",
+        "critic_protocol": protocol,
     }
 
 
