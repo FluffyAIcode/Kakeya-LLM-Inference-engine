@@ -363,6 +363,13 @@ with `generator>`, `critic>`, `prompt>`, `[metrics]`, `[allens]`, errors, or
 tracebacks are rejected so Terminal output cannot contaminate the research
 objective. Every Critic turn emits an explicit `Goal Alignment` decision and
 restores the anchored proof frontier when drift is detected.
+Every REPL session mirrors its complete Terminal transcript to
+`~/.kakeya/logs/agent_gan_repl.log` by default. Log lines use local ISO-8601
+timestamps and include user input, immutable goal hash, run ID, Generator and
+Critic streaming output, heartbeats, metrics, and explicit
+`inference-start`/`inference-complete`/`inference-failed` markers. Writes flush
+immediately for post-failure review. Use `--log-file PATH` to override the
+destination.
 The worker reserves estimated final-snapshot capacity before model compute,
 prevents adaptive shrink from consuming active reservations, then atomically
 publishes and leases the final snapshot before adding optional intermediate

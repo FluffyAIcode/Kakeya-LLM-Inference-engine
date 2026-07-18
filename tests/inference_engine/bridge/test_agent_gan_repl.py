@@ -1,9 +1,11 @@
+import io
 import signal
 import time
 from pathlib import Path
 
 from scripts.agent_gan_repl import (
     PrefillHeartbeat,
+    TimestampedTee,
     TokenPrinter,
     _gate_failure,
     _stage,
@@ -18,6 +20,27 @@ from scripts.agent_gan_repl import (
 class Tokenizer:
     def decode(self, token_ids, **_kwargs):
         return "".join(chr(96 + token) for token in token_ids)
+
+
+def test_timestamped_tee_preserves_terminal_and_flushes_log(tmp_path):
+    terminal = io.StringIO()
+    timestamps = iter(("t1", "t2", "t3"))
+    path = tmp_path / "agent.log"
+    tee = TimestampedTee(
+        terminal,
+        path,
+        timestamp_fn=lambda: next(timestamps),
+    )
+    tee.write("generator> hel")
+    tee.write("lo\nnext line\n")
+    tee.log_only("[input] prove RH")
+    tee.close_log()
+    assert terminal.getvalue() == "generator> hello\nnext line\n"
+    assert path.read_text() == (
+        "[t1] generator> hello\n"
+        "[t2] next line\n"
+        "[t3] [input] prove RH\n"
+    )
 
 
 def test_token_printer_streams_only_new_suffix(capsys):

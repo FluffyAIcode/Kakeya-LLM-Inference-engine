@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
+import os
 import re
 import signal
+import sys
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from scripts.agent_gan_inference_demo import (
@@ -22,6 +26,63 @@ from scripts.benchmark_prefill_architecture import (
     _json_request,
 )
 from inference_engine.bench.prefill_fleet_report import summarize_stages
+
+
+class TimestampedTee:
+    """Mirror Terminal output to a line-timestamped, immediately flushed log."""
+
+    def __init__(self, terminal, log_path: Path, timestamp_fn=None) -> None:
+        self.terminal = terminal
+        self.log_path = log_path
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log = self.log_path.open("a", encoding="utf-8")
+        self.timestamp_fn = timestamp_fn or (
+            lambda: datetime.now().astimezone().isoformat(timespec="milliseconds")
+        )
+        self._line_start = True
+        self._lock = threading.RLock()
+
+    @property
+    def encoding(self):
+        return getattr(self.terminal, "encoding", "utf-8")
+
+    def fileno(self):
+        return self.terminal.fileno()
+
+    def isatty(self):
+        return self.terminal.isatty()
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        with self._lock:
+            self.terminal.write(text)
+            for part in text.splitlines(keepends=True):
+                if self._line_start:
+                    self.log.write(f"[{self.timestamp_fn()}] ")
+                self.log.write(part)
+                self._line_start = part.endswith(("\n", "\r"))
+            self.log.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        with self._lock:
+            self.terminal.flush()
+            self.log.flush()
+
+    def log_only(self, event: str) -> None:
+        with self._lock:
+            if not self._line_start:
+                self.log.write("\n")
+            self.log.write(f"[{self.timestamp_fn()}] {event.rstrip()}\n")
+            self.log.flush()
+            self._line_start = True
+
+    def close_log(self) -> None:
+        with self._lock:
+            if not self.log.closed:
+                self.log.flush()
+                self.log.close()
 
 
 def install_signal_protection() -> None:
@@ -259,7 +320,6 @@ def _gate_failure(name: str, warm: dict, actual: dict) -> RuntimeError:
 
 
 def main() -> int:
-    install_signal_protection()
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker-ssh", default="allens")
     parser.add_argument("--address", default="127.0.0.1:51051")
@@ -274,9 +334,26 @@ def main() -> int:
         help="Optional client response cap; 0 means generate until model EOS.",
     )
     parser.add_argument("--skip-ensure", action="store_true")
+    parser.add_argument(
+        "--log-file",
+        default="~/.kakeya/logs/agent_gan_repl.log",
+        help="Timestamped local transcript log.",
+    )
     args = parser.parse_args()
     if args.output_tokens <= 0:
         raise SystemExit("output-tokens must be > 0")
+    transcript = TimestampedTee(
+        sys.stdout,
+        Path(args.log_file).expanduser(),
+    )
+    sys.stdout = transcript
+    sys.stderr = transcript
+    atexit.register(transcript.close_log)
+    install_signal_protection()
+    transcript.log_only(
+        f"[session-start] pid={os.getpid()} "
+        f"log={transcript.log_path}",
+    )
 
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -307,6 +384,7 @@ def main() -> int:
         "allens Prefill → Primary hot Critic.",
         flush=True,
     )
+    print(f"[log] {transcript.log_path}", flush=True)
     research_goal = ""
     previous_generator = ""
     previous_critic = ""
@@ -317,6 +395,7 @@ def main() -> int:
             except EOFError:
                 print("\n[bye]")
                 break
+            transcript.log_only(f"[input] {prompt or '(empty)'}")
             if not prompt:
                 continue
             if prompt.lower() in {"/quit", "/exit"}:
@@ -372,6 +451,14 @@ def main() -> int:
             )
             remote_run = run is not None
             run_id = run["id"] if remote_run else f"local_{run_nonce[:16]}"
+            started_at = datetime.now().astimezone().isoformat(
+                timespec="milliseconds",
+            )
+            print(
+                f"[inference-start] time={started_at} run={run_id} "
+                f"goal={hashlib.sha256(research_goal.encode()).hexdigest()}",
+                flush=True,
+            )
             try:
                 generator_messages = build_generator_messages(
                     research_goal,
@@ -514,6 +601,12 @@ def main() -> int:
                     f"run={run_id}",
                     flush=True,
                 )
+                print(
+                    f"[inference-complete] time="
+                    f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+                    f"run={run_id}",
+                    flush=True,
+                )
             except Exception as exc:
                 if remote_run:
                     _telemetry_request(
@@ -522,7 +615,13 @@ def main() -> int:
                         method="PATCH",
                         body={"status": "failed", "finished_at": time.time()},
                     )
-                print(f"[error] {type(exc).__name__}: {exc}", flush=True)
+                print(
+                    f"[inference-failed] time="
+                    f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+                    f"run={run_id} error={type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+    transcript.log_only("[session-end]")
     return 0
 
 
