@@ -390,6 +390,10 @@ prevents adaptive shrink from consuming active reservations, then atomically
 publishes and leases the final snapshot before adding optional intermediate
 boundaries. The 16GB allens deployment uses a 1 GiB cache floor and 0.5 GiB
 memory reserve. Capacity failures are rejected before Prefill starts.
+Snapshot capacity estimation uses retained KV tokens, not unbounded history:
+`min(prompt_tokens, sink + window) * estimated_bytes_per_token`. Long
+auto-loop histories therefore stop increasing the reservation once the MLX
+sliding window is full.
 The MLX worker exports and compresses only the final chained-prefix snapshot.
 The final hash commits every preceding token block, so exporting a growing full
 snapshot at every 64-token boundary is redundant and creates quadratic

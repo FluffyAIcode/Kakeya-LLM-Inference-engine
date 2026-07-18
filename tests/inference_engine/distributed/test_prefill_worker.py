@@ -23,6 +23,7 @@ from inference_engine.distributed.prefill_worker import (
     PrefillJobState,
     PrefillJobStore,
     add_prefill_worker_service,
+    estimate_final_snapshot_bytes,
     get_prefill_job_sync,
     submit_prefill_job_sync,
 )
@@ -37,6 +38,25 @@ COMPAT = CacheCompatibility(
     block_size_tokens=2,
 )
 AUTH = FleetAuthConfig(b"k" * 32, "tenant", "client")
+
+
+def test_snapshot_estimate_caps_at_sink_plus_sliding_window():
+    compatibility = CacheCompatibility(
+        model_id="m",
+        block_size_tokens=64,
+        sink_size=4,
+        window_size=2048,
+    )
+    assert estimate_final_snapshot_bytes(2731, compatibility, 400_000) == (
+        820_800_000
+    )
+    assert estimate_final_snapshot_bytes(1000, compatibility, 400_000) == (
+        400_000_000
+    )
+    no_window = CacheCompatibility(model_id="m", window_size=0)
+    assert estimate_final_snapshot_bytes(2731, no_window, 10) == 27_310
+    with pytest.raises(ValueError, match="must be > 0"):
+        estimate_final_snapshot_bytes(0, compatibility, 400_000)
 
 
 class _Engine:

@@ -56,6 +56,23 @@ class PrefillComputeEngine(Protocol):
     ) -> Sequence[CacheBlock]: ...
 
 
+def estimate_final_snapshot_bytes(
+    token_count: int,
+    compatibility: CacheCompatibility,
+    bytes_per_token: int,
+) -> int:
+    """Estimate retained KV, capped by sink + sliding-window capacity."""
+    if token_count <= 0 or bytes_per_token <= 0:
+        raise ValueError("token_count and bytes_per_token must be > 0")
+    retained_tokens = int(token_count)
+    if compatibility.window_size > 0:
+        retained_tokens = min(
+            retained_tokens,
+            compatibility.sink_size + compatibility.window_size,
+        )
+    return retained_tokens * int(bytes_per_token)
+
+
 @dataclass
 class PrefillJob:
     job_id: str
@@ -195,8 +212,10 @@ class PrefillJobStore:
                     if deadline_ms > 0 else 0.0
                 ),
             )
-            estimated_bytes = (
-                len(job.token_ids) * self.estimated_snapshot_bytes_per_token
+            estimated_bytes = estimate_final_snapshot_bytes(
+                len(job.token_ids),
+                self.cache_store.compatibility,
+                self.estimated_snapshot_bytes_per_token,
             )
             if estimated_bytes > self.cache_store.max_bytes:
                 raise ValueError(
@@ -273,7 +292,11 @@ class PrefillJobStore:
             # content-addressed snapshots needed by later restore requests.
             self.cache_store.reserve(
                 job.job_id,
-                len(job.token_ids) * self.estimated_snapshot_bytes_per_token,
+                estimate_final_snapshot_bytes(
+                    len(job.token_ids),
+                    self.cache_store.compatibility,
+                    self.estimated_snapshot_bytes_per_token,
+                ),
             )
             engine = self._engine_for_current_thread()
             set_progress = getattr(engine, "set_progress_callback", None)
