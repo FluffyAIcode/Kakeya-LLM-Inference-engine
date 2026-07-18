@@ -46,7 +46,7 @@ def evaluate(report: dict, candidate) -> dict:
         ),
         "recursive_protocol": (
             critic.get("critic_protocol")
-            == "recursive_proof_decomposition_v2"
+            == "goal_anchored_recursive_gan_v3"
         ),
         "no_fallback": int(delta.get("fallbacks", 0)) == 0,
         "no_job_failure": int(delta.get("remote_job_failures", 0)) == 0,

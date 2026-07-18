@@ -11,6 +11,7 @@ from scripts.agent_gan_repl import (
     build_critic_messages,
     build_generator_messages,
     install_signal_protection,
+    is_runtime_artifact_prompt,
 )
 
 
@@ -149,13 +150,13 @@ def test_stage_includes_full_context_metrics():
             "critic_context_tokens": 100,
             "critic_omitted_tokens": 0,
             "review_scope": "full",
-            "critic_protocol": "recursive_proof_decomposition_v2",
+            "critic_protocol": "goal_anchored_recursive_gan_v3",
         },
     )
     assert stage["critic_context_tokens"] == 100
     assert stage["critic_omitted_tokens"] == 0
     assert stage["review_scope"] == "full"
-    assert stage["critic_protocol"] == "recursive_proof_decomposition_v2"
+    assert stage["critic_protocol"] == "goal_anchored_recursive_gan_v3"
 
 
 def test_telemetry_timeout_warns_without_stopping_inference(
@@ -185,17 +186,24 @@ def test_gate_failure_exposes_reuse_counters():
 
 
 def test_interactive_prompts_are_deterministic_for_kv_reuse():
-    generator_a = build_generator_messages("prove RH")
-    generator_b = build_generator_messages("prove RH")
+    kwargs = {
+        "steering": "continue the zero-free-region branch",
+        "previous_generator": "previous complete argument",
+        "previous_critic": "previous complete correction",
+    }
+    generator_a = build_generator_messages("prove RH", **kwargs)
+    generator_b = build_generator_messages("prove RH", **kwargs)
     critic_a = build_critic_messages(
         "prove RH",
         "complete generator response",
+        steering=kwargs["steering"],
         stop_reason="eos",
         complete=True,
     )
     critic_b = build_critic_messages(
         "prove RH",
         "complete generator response",
+        steering=kwargs["steering"],
         stop_reason="eos",
         complete=True,
     )
@@ -203,6 +211,10 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     assert critic_a == critic_b
     combined = repr(generator_a + critic_a)
     assert "Internal run" not in combined
+    assert "IMMUTABLE RESEARCH GOAL" in combined
+    assert "previous complete correction" in combined
+    assert "Goal Alignment: ALIGNED" in combined
+    assert "Goal Alignment: DRIFTED" in combined
     assert "open problem" in combined
     assert "recursive adversarial proof analyst" in combined
     assert "Never output a numeric score" in combined
@@ -212,3 +224,15 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     assert "Ignore prizes, money, prestige" in combined
     assert "smallest unresolved frontier" in combined
     assert "sample, summarize, simplify" in combined
+
+
+def test_runtime_output_cannot_replace_research_goal():
+    for text in (
+        "critic> ### Central Claim",
+        "[metrics] KV hit=100%",
+        "[allens] Critic Prefill: 30s",
+        "prompt> ",
+        "Traceback (most recent call last):",
+    ):
+        assert is_runtime_artifact_prompt(text)
+    assert not is_runtime_artifact_prompt("证明黎曼猜想")
