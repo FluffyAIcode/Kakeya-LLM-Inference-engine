@@ -299,6 +299,21 @@ def test_command_state_machine_requires_explicit_ready_commands():
             raise AssertionError(f"expected rejection for {raw!r} in {phase}")
 
 
+def test_continuous_auto_loop_is_default_and_exception_pauses():
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "scripts"
+        / "agent_gan_repl.py"
+    ).read_text()
+    assert 'parser.set_defaults(auto_loop=True)' in source
+    assert "select.select(" in source
+    assert 'raw_input = "/continue"' in source
+    assert '"/continue queued"' in source
+    assert "auto_loop_active = False" in source
+    assert "[auto-loop-paused]" in source
+    assert '"--no-auto-loop"' in source
+
+
 def test_checkpoint_round_trip_is_private(tmp_path):
     path = tmp_path / "state.json"
     expected = ReplCheckpoint(
