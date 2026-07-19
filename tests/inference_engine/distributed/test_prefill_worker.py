@@ -252,6 +252,8 @@ def test_job_store_validation_queue_stats_and_gc():
         PrefillJobStore(None, cache)
     with pytest.raises(ValueError, match="exactly one"):
         PrefillJobStore(_Engine(), cache, engine_factory=_Engine)
+    with pytest.raises(ValueError, match="max_retained_tokens"):
+        PrefillJobStore(_Engine(), cache, max_retained_tokens=-1)
     blocking = _Engine()
     blocking.block.set()
     jobs = PrefillJobStore(blocking, cache, max_jobs=1, max_prompt_tokens=4)
