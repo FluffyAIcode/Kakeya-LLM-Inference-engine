@@ -1,10 +1,12 @@
 import io
+import json
 import signal
 import time
 from pathlib import Path
 
 from scripts.agent_gan_repl import (
     PrefillHeartbeat,
+    CriticIssueBatch,
     ReplCheckpoint,
     ReplPhase,
     TimestampedTee,
@@ -16,9 +18,13 @@ from scripts.agent_gan_repl import (
     build_generator_messages,
     install_signal_protection,
     is_runtime_artifact_prompt,
+    consume_critic_issue_batch,
+    format_critic_issue_injection,
     load_checkpoint,
+    load_pending_critic_issues,
     parse_repl_command,
     recover_checkpoint_from_log,
+    save_critic_issue_batch,
     save_checkpoint,
 )
 
@@ -326,6 +332,32 @@ def test_checkpoint_round_trip_is_private(tmp_path):
     assert load_checkpoint(path) == expected
     assert path.stat().st_mode & 0o777 == 0o600
     assert load_checkpoint(tmp_path / "missing.json") is None
+
+
+def test_critic_issue_inbox_retries_until_successful_consumption(tmp_path):
+    path = tmp_path / "critic-inbox.json"
+    batch = CriticIssueBatch(
+        issue_id="math-review-1",
+        issues=[
+            "Do not identify -zeta'/zeta with xi.",
+            "Prove zero convergence before invoking Hurwitz.",
+        ],
+    )
+    save_critic_issue_batch(path, batch)
+    loaded = load_pending_critic_issues(path)
+    assert loaded == batch
+    assert path.stat().st_mode & 0o777 == 0o600
+    injection = format_critic_issue_injection(loaded)
+    assert "math-review-1" in injection
+    assert "1. Do not identify" in injection
+    assert "2. Prove zero convergence" in injection
+    # Merely loading/injecting does not consume the issues.
+    assert load_pending_critic_issues(path).status == "pending"
+    consume_critic_issue_batch(path, loaded, "br_success")
+    assert load_pending_critic_issues(path) is None
+    persisted = json.loads(path.read_text())
+    assert persisted["status"] == "consumed"
+    assert persisted["consumed_by_run"] == "br_success"
 
 
 def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):

@@ -357,6 +357,13 @@ not wait for Terminal automation. A short boundary window still accepts an
 explicit whitelisted command such as `/quit` or `/steer`. Any inference
 exception pauses auto-loop and preserves the last complete checkpoint.
 `--no-auto-loop` restores manual one-turn-at-a-time operation.
+Rigorous mathematical problems discovered outside the running turn can be
+queued in `~/.kakeya/agent_gan_critic_inbox.json`. The next turn appends every
+pending issue to the previous Critic correction for Generator remediation and
+to the new Critic steering for verification. The full issue list is timestamped
+in the Critic log and recorded by ID/count in benchmark config. Issues remain
+pending across failures and are marked consumed only after a complete,
+successful Generator/Critic turn.
 Generator output is always streamed in full to Terminal and passed verbatim to
 the Gemma Critic. Sampling, truncation, summarization, independent chunk scores,
 and semantic fallback are forbidden. A global Critic score is valid only when
