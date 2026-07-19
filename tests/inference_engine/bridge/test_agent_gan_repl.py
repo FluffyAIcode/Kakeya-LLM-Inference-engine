@@ -7,6 +7,8 @@ from pathlib import Path
 from scripts.agent_gan_repl import (
     PrefillHeartbeat,
     CriticIssueBatch,
+    ProofObligation,
+    ProofObligationLedger,
     ReplCheckpoint,
     ReplPhase,
     TimestampedTee,
@@ -19,12 +21,18 @@ from scripts.agent_gan_repl import (
     install_signal_protection,
     is_runtime_artifact_prompt,
     consume_critic_issue_batch,
+    apply_critic_verdicts,
     format_critic_issue_injection,
+    format_proof_ledger,
+    generator_issue_coverage,
     load_checkpoint,
     load_pending_critic_issues,
+    load_proof_ledger,
+    pending_obligations,
     parse_repl_command,
     recover_checkpoint_from_log,
     save_critic_issue_batch,
+    save_proof_ledger,
     save_checkpoint,
 )
 
@@ -225,6 +233,7 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
         "steering": "continue the zero-free-region branch",
         "previous_generator": "previous complete argument",
         "previous_critic": "previous complete correction",
+        "proof_ledger": "PROOF OBLIGATION LEDGER id=rh-ledger",
     }
     generator_a = build_generator_messages("prove RH", **kwargs)
     generator_b = build_generator_messages("prove RH", **kwargs)
@@ -232,6 +241,7 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
         "prove RH",
         "complete generator response",
         steering=kwargs["steering"],
+        proof_ledger=kwargs["proof_ledger"],
         stop_reason="eos",
         complete=True,
     )
@@ -239,6 +249,7 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
         "prove RH",
         "complete generator response",
         steering=kwargs["steering"],
+        proof_ledger=kwargs["proof_ledger"],
         stop_reason="eos",
         complete=True,
     )
@@ -248,6 +259,7 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     assert "Internal run" not in combined
     assert "IMMUTABLE RESEARCH GOAL" in combined
     assert "previous complete correction" in combined
+    assert "PROOF OBLIGATION LEDGER" in combined
     assert "Goal Alignment: ALIGNED" in combined
     assert "Goal Alignment: DRIFTED" in combined
     assert "open problem" in combined
@@ -358,6 +370,73 @@ def test_critic_issue_inbox_retries_until_successful_consumption(tmp_path):
     persisted = json.loads(path.read_text())
     assert persisted["status"] == "consumed"
     assert persisted["consumed_by_run"] == "br_success"
+
+
+def test_proof_ledger_carries_unresolved_and_closes_valid_verdicts(tmp_path):
+    path = tmp_path / "proof-ledger.json"
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger-v1",
+        obligations=[
+            ProofObligation("RH-C1", "Separate xi from -zeta'/zeta."),
+            ProofObligation("RH-C2", "Prove zero convergence."),
+        ],
+    )
+    save_proof_ledger(path, ledger)
+    loaded = load_proof_ledger(path)
+    assert loaded == ledger
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert [item.obligation_id for item in pending_obligations(loaded)] == [
+        "RH-C1",
+        "RH-C2",
+    ]
+    rendered = format_proof_ledger(loaded)
+    assert "### ISSUE_RESPONSE <ID>" in rendered
+    covered, missing = generator_issue_coverage(
+        "### ISSUE_RESPONSE RH-C1\nCorrection: fixed",
+        pending_obligations(loaded),
+    )
+    assert covered == {"RH-C1"}
+    assert missing == {"RH-C2"}
+    critic = """
+### ISSUE_VERDICT RH-C1
+Status: PROVED
+Evidence: This is a sufficiently detailed derivation that distinguishes the two analytic objects.
+Missing lemma: none
+
+### ISSUE_VERDICT RH-C2
+Status: UNRESOLVED
+Evidence: No locally uniform convergence theorem was supplied.
+Missing lemma: A valid zero-convergence theorem.
+"""
+    verdicts = apply_critic_verdicts(loaded, critic, "br_review")
+    assert verdicts == {"RH-C1": "PROVED", "RH-C2": "UNRESOLVED"}
+    assert [item.obligation_id for item in pending_obligations(loaded)] == [
+        "RH-C2",
+    ]
+    save_proof_ledger(path, loaded)
+    assert load_proof_ledger(path).version == 2
+
+
+def test_proof_ledger_rejects_weak_or_missing_closure():
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[
+            ProofObligation("RH-C1", "Issue one"),
+            ProofObligation("RH-C2", "Issue two"),
+        ],
+    )
+    critic = """
+### ISSUE_VERDICT RH-C1
+Status: PROVED
+Evidence: too short
+Missing lemma: none
+"""
+    verdicts = apply_critic_verdicts(ledger, critic, "br_weak")
+    assert verdicts == {
+        "RH-C1": "UNRESOLVED",
+        "RH-C2": "UNRESOLVED",
+    }
+    assert len(pending_obligations(ledger)) == 2
 
 
 def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):

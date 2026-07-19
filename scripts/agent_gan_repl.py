@@ -153,6 +153,162 @@ class CriticIssueBatch:
     schema_version: int = 1
 
 
+@dataclass
+class ProofObligation:
+    obligation_id: str
+    statement: str
+    status: str = "UNRESOLVED"
+    parent_id: str = ""
+    last_run_id: str = ""
+    last_evidence: str = ""
+
+
+@dataclass
+class ProofObligationLedger:
+    ledger_id: str
+    obligations: list[ProofObligation]
+    version: int = 1
+    schema_version: int = 1
+
+
+def save_proof_ledger(path: Path, ledger: ProofObligationLedger) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    payload = asdict(ledger)
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def load_proof_ledger(path: Path) -> ProofObligationLedger | None:
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    obligations = [
+        ProofObligation(**item) for item in raw.pop("obligations", [])
+    ]
+    ledger = ProofObligationLedger(obligations=obligations, **raw)
+    if (
+        ledger.schema_version != 1
+        or not ledger.ledger_id
+        or not ledger.obligations
+        or len({item.obligation_id for item in ledger.obligations})
+        != len(ledger.obligations)
+    ):
+        raise ValueError("invalid proof obligation ledger")
+    return ledger
+
+
+def pending_obligations(
+    ledger: ProofObligationLedger | None,
+) -> list[ProofObligation]:
+    if ledger is None:
+        return []
+    return [
+        item for item in ledger.obligations
+        if item.status == "UNRESOLVED"
+    ]
+
+
+def format_proof_ledger(ledger: ProofObligationLedger) -> str:
+    items = "\n".join(
+        f"- {item.obligation_id}: {item.statement}"
+        for item in pending_obligations(ledger)
+    )
+    return (
+        f"PROOF OBLIGATION LEDGER id={ledger.ledger_id} "
+        f"version={ledger.version}\n{items}\n"
+        "Generator requirement: emit `### ISSUE_RESPONSE <ID>` for every "
+        "pending ID, with `Correction:`, `Derivation:`, and `Remaining gap:`. "
+        "Critic requirement: emit `### ISSUE_VERDICT <ID>` for every pending "
+        "ID, with `Status: PROVED|DISPROVED|UNRESOLVED`, `Evidence:`, and "
+        "`Missing lemma:`."
+    )
+
+
+_ISSUE_RESPONSE = re.compile(
+    r"^### ISSUE_RESPONSE\s+(\S+)",
+    re.MULTILINE,
+)
+_ISSUE_VERDICT = re.compile(
+    r"^### ISSUE_VERDICT\s+(\S+)\s*$"
+    r"(?P<body>.*?)(?=^### ISSUE_VERDICT\s+|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def generator_issue_coverage(
+    text: str,
+    obligations: list[ProofObligation],
+) -> tuple[set[str], set[str]]:
+    required = {item.obligation_id for item in obligations}
+    covered = set(_ISSUE_RESPONSE.findall(text)) & required
+    return covered, required - covered
+
+
+def apply_critic_verdicts(
+    ledger: ProofObligationLedger,
+    critic_text: str,
+    run_id: str,
+) -> dict[str, str]:
+    pending_ids = {
+        item.obligation_id for item in pending_obligations(ledger)
+    }
+    verdicts: dict[str, tuple[str, str]] = {}
+    for match in _ISSUE_VERDICT.finditer(critic_text):
+        obligation_id = match.group(1)
+        if obligation_id not in pending_ids:
+            continue
+        body = match.group("body")
+        status_match = re.search(
+            r"^Status:\s*(PROVED|DISPROVED|UNRESOLVED)\s*$",
+            body,
+            re.MULTILINE,
+        )
+        evidence_match = re.search(
+            r"^Evidence:\s*(.+)$",
+            body,
+            re.MULTILINE,
+        )
+        missing_match = re.search(
+            r"^Missing lemma:\s*(.*)$",
+            body,
+            re.MULTILINE,
+        )
+        if not status_match or not evidence_match or missing_match is None:
+            continue
+        status = status_match.group(1)
+        evidence = evidence_match.group(1).strip()
+        missing = missing_match.group(1).strip().lower()
+        if status in {"PROVED", "DISPROVED"} and (
+            len(evidence) < 40
+            or missing not in {"", "none", "(none)"}
+        ):
+            status = "UNRESOLVED"
+            evidence = (
+                "Closure rejected: proof/counterexample evidence was too "
+                "short or a missing lemma remained."
+            )
+        verdicts[obligation_id] = (status, evidence)
+    applied: dict[str, str] = {}
+    for item in ledger.obligations:
+        if item.obligation_id not in pending_ids:
+            continue
+        status, evidence = verdicts.get(
+            item.obligation_id,
+            ("UNRESOLVED", "Critic supplied no structurally valid verdict."),
+        )
+        item.status = status
+        item.last_evidence = evidence
+        item.last_run_id = run_id
+        applied[item.obligation_id] = status
+    ledger.version += 1
+    return applied
+
+
 def save_critic_issue_batch(path: Path, batch: CriticIssueBatch) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -317,6 +473,7 @@ def build_generator_messages(
     steering: str = "",
     previous_generator: str = "",
     previous_critic: str = "",
+    proof_ledger: str = "",
 ) -> list[dict[str, str]]:
     feedback = ""
     if previous_generator or previous_critic:
@@ -329,6 +486,9 @@ def build_generator_messages(
     steering_text = (
         f"\n\nCurrent human steering (subordinate to the goal):\n{steering}"
         if steering else ""
+    )
+    ledger_text = (
+        f"\n\n{proof_ledger}" if proof_ledger else ""
     )
     return [
         {
@@ -346,7 +506,7 @@ def build_generator_messages(
             "role": "user",
             "content": (
                 f"IMMUTABLE RESEARCH GOAL:\n{goal}"
-                f"{feedback}{steering_text}"
+                f"{feedback}{steering_text}{ledger_text}"
             ),
         },
     ]
@@ -357,9 +517,13 @@ def build_critic_messages(
     generator_response: str,
     *,
     steering: str = "",
+    proof_ledger: str = "",
     stop_reason: str,
     complete: bool,
 ) -> list[dict[str, str]]:
+    ledger_text = (
+        f"\n\n{proof_ledger}" if proof_ledger else ""
+    )
     return [
         {
             "role": "system",
@@ -386,7 +550,9 @@ def build_critic_messages(
                 "fallback review."
                 " Begin with `Goal Alignment: ALIGNED` or `Goal Alignment: "
                 "DRIFTED`. If drifted, discard the off-topic branch and restore "
-                "the proof-obligation frontier for the immutable goal."
+                "the proof-obligation frontier for the immutable goal. When a "
+                "PROOF OBLIGATION LEDGER is present, adjudicate every pending "
+                "ID with the exact ISSUE_VERDICT format before any new frontier."
             ),
         },
         {
@@ -396,6 +562,7 @@ def build_critic_messages(
                 f"Current steering:\n{steering or '(none)'}\n\n"
                 f"Complete response:\n{generator_response}\n\n"
                 f"Completion: {stop_reason}; complete={complete}"
+                f"{ledger_text}"
             ),
         },
     ]
@@ -540,6 +707,11 @@ def main() -> int:
         default="~/.kakeya/agent_gan_critic_inbox.json",
         help="Private pending rigorous-math issues for the next turn.",
     )
+    parser.add_argument(
+        "--proof-ledger",
+        default="~/.kakeya/agent_gan_proof_ledger.json",
+        help="Private persistent mathematical proof obligations.",
+    )
     parser.add_argument("--recover-run", default="")
     parser.add_argument(
         "--recover-log",
@@ -600,6 +772,7 @@ def main() -> int:
 
     state_path = Path(args.state_file).expanduser()
     critic_inbox_path = Path(args.critic_inbox).expanduser()
+    proof_ledger_path = Path(args.proof_ledger).expanduser()
     if args.recover_run:
         recovered = recover_checkpoint_from_log(
             Path(args.recover_log).expanduser(),
@@ -637,6 +810,7 @@ def main() -> int:
     print(f"[log] {transcript.log_path}", flush=True)
     print(f"[state] {state_path} phase={phase.value}", flush=True)
     print(f"[critic-inbox] {critic_inbox_path}", flush=True)
+    print(f"[proof-ledger] {proof_ledger_path}", flush=True)
     if checkpoint:
         print(
             f"[state-restored] run={checkpoint.last_run_id or '(none)'} "
@@ -699,6 +873,25 @@ def main() -> int:
                 format_critic_issue_injection(critic_issue_batch)
                 if critic_issue_batch is not None else ""
             )
+            proof_ledger = load_proof_ledger(proof_ledger_path)
+            turn_obligations = pending_obligations(proof_ledger)
+            proof_ledger_text = (
+                format_proof_ledger(proof_ledger)
+                if turn_obligations else ""
+            )
+            if proof_ledger is not None:
+                print(
+                    f"[proof-ledger-loaded] id={proof_ledger.ledger_id} "
+                    f"version={proof_ledger.version} "
+                    f"pending={len(turn_obligations)}",
+                    flush=True,
+                )
+                for item in turn_obligations:
+                    print(
+                        f"[proof-obligation-pending] "
+                        f"id={item.obligation_id} {item.statement}",
+                        flush=True,
+                    )
             if critic_issue_batch is not None:
                 print(
                     f"[critic-issue-injection] id="
@@ -740,6 +933,15 @@ def main() -> int:
                             len(critic_issue_batch.issues)
                             if critic_issue_batch is not None else 0
                         ),
+                        "proof_ledger_id": (
+                            proof_ledger.ledger_id
+                            if proof_ledger is not None else ""
+                        ),
+                        "proof_ledger_version": (
+                            proof_ledger.version
+                            if proof_ledger is not None else 0
+                        ),
+                        "proof_obligations_pending": len(turn_obligations),
                     },
                 },
             )
@@ -761,6 +963,7 @@ def main() -> int:
                     previous_critic=(
                         previous_critic + critic_issue_injection
                     ),
+                    proof_ledger=proof_ledger_text,
                 )
                 generator_ids = tokenizer.apply_chat_template(
                     generator_messages,
@@ -792,6 +995,18 @@ def main() -> int:
                     generator_tokens,
                     skip_special_tokens=True,
                 )
+                covered_issues, missing_issues = generator_issue_coverage(
+                    generator_text,
+                    turn_obligations,
+                )
+                if turn_obligations:
+                    print(
+                        f"[generator-issue-coverage] "
+                        f"covered={len(covered_issues)}/"
+                        f"{len(turn_obligations)} "
+                        f"missing={','.join(sorted(missing_issues)) or '(none)'}",
+                        flush=True,
+                    )
                 generator_stage = _stage(
                     "generator",
                     generator_warm,
@@ -827,6 +1042,11 @@ def main() -> int:
                     research_goal,
                     critic_context,
                     steering=steering + critic_issue_injection,
+                    proof_ledger=proof_ledger_text + (
+                        "\nGENERATOR COVERAGE FAILURE: missing "
+                        + ", ".join(sorted(missing_issues))
+                        if missing_issues else ""
+                    ),
                     stop_reason=generator_actual["stop_reason"],
                     complete=generator_actual["complete"],
                 )
@@ -860,12 +1080,43 @@ def main() -> int:
                     critic_tokens,
                     skip_special_tokens=True,
                 )
+                applied_verdicts = {}
+                if proof_ledger is not None and turn_obligations:
+                    applied_verdicts = apply_critic_verdicts(
+                        proof_ledger,
+                        critic_text,
+                        run_id,
+                    )
+                    for obligation_id, status in applied_verdicts.items():
+                        print(
+                            f"[critic-verdict] id={obligation_id} "
+                            f"status={status}",
+                            flush=True,
+                        )
+                    print(
+                        f"[proof-ledger-result] id={proof_ledger.ledger_id} "
+                        f"version={proof_ledger.version} "
+                        f"unresolved={len(pending_obligations(proof_ledger))}",
+                        flush=True,
+                    )
                 critic_stage = _stage(
                     "critic",
                     critic_warm,
                     critic_actual,
                     critic_text,
-                    extra_metrics=context_metrics,
+                    extra_metrics={
+                        **context_metrics,
+                        "proof_ledger_id": (
+                            proof_ledger.ledger_id
+                            if proof_ledger is not None else ""
+                        ),
+                        "proof_obligations_total": len(turn_obligations),
+                        "proof_obligations_covered": len(covered_issues),
+                        "proof_obligations_unresolved": (
+                            len(pending_obligations(proof_ledger))
+                            if proof_ledger is not None else 0
+                        ),
+                    },
                 )
                 if not critic_stage["ok"] and not telemetry_state["degraded"]:
                     raise _gate_failure("Critic", critic_warm, critic_actual)
@@ -912,6 +1163,27 @@ def main() -> int:
                         last_run_id=run_id,
                     ),
                 )
+                if proof_ledger is not None and turn_obligations:
+                    save_proof_ledger(proof_ledger_path, proof_ledger)
+                    for item in proof_ledger.obligations:
+                        if item.obligation_id not in applied_verdicts:
+                            continue
+                        event = (
+                            "proof-obligation-carried"
+                            if item.status == "UNRESOLVED"
+                            else "proof-obligation-closed"
+                        )
+                        print(
+                            f"[{event}] id={item.obligation_id} "
+                            f"status={item.status} run={run_id}",
+                            flush=True,
+                        )
+                    print(
+                        f"[proof-ledger-checkpoint] "
+                        f"id={proof_ledger.ledger_id} "
+                        f"version={proof_ledger.version}",
+                        flush=True,
+                    )
                 if critic_issue_batch is not None:
                     consume_critic_issue_batch(
                         critic_inbox_path,

@@ -364,6 +364,13 @@ to the new Critic steering for verification. The full issue list is timestamped
 in the Critic log and recorded by ID/count in benchmark config. Issues remain
 pending across failures and are marked consumed only after a complete,
 successful Generator/Critic turn.
+Mathematical closure is tracked separately in
+`~/.kakeya/agent_gan_proof_ledger.json`. Each unresolved obligation has a stable
+ID and is injected through a dedicated `PROOF OBLIGATION LEDGER` section, never
+through Terminal input. Generator must emit one `ISSUE_RESPONSE` per ID; Critic
+must emit a structured `ISSUE_VERDICT` with status, evidence, and missing lemma.
+Missing or structurally weak verdicts remain `UNRESOLVED` and are carried into
+the next auto-loop turn. Infrastructure success does not close proof issues.
 Generator output is always streamed in full to Terminal and passed verbatim to
 the Gemma Critic. Sampling, truncation, summarization, independent chunk scores,
 and semantic fallback are forbidden. A global Critic score is valid only when
