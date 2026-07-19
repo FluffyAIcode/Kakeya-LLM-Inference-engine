@@ -60,15 +60,22 @@ def estimate_final_snapshot_bytes(
     token_count: int,
     compatibility: CacheCompatibility,
     bytes_per_token: int,
+    *,
+    max_retained_tokens: int = 0,
 ) -> int:
     """Estimate retained KV, capped by sink + sliding-window capacity."""
     if token_count <= 0 or bytes_per_token <= 0:
         raise ValueError("token_count and bytes_per_token must be > 0")
     retained_tokens = int(token_count)
-    if compatibility.window_size > 0:
+    retained_limit = int(max_retained_tokens)
+    if retained_limit <= 0 and compatibility.window_size > 0:
+        retained_limit = (
+            compatibility.sink_size + compatibility.window_size
+        )
+    if retained_limit > 0:
         retained_tokens = min(
             retained_tokens,
-            compatibility.sink_size + compatibility.window_size,
+            retained_limit,
         )
     return retained_tokens * int(bytes_per_token)
 
@@ -111,6 +118,7 @@ class PrefillJobStore:
         completed_ttl_s: float = 600.0,
         max_prompt_tokens: int = 131_072,
         estimated_snapshot_bytes_per_token: int = 16,
+        max_retained_tokens: int = 0,
     ) -> None:
         if min(
             max_concurrent_jobs,
@@ -120,6 +128,8 @@ class PrefillJobStore:
             estimated_snapshot_bytes_per_token,
         ) <= 0:
             raise ValueError("worker limits must be > 0")
+        if max_retained_tokens < 0:
+            raise ValueError("max_retained_tokens must be >= 0")
         if (engine is None) == (engine_factory is None):
             raise ValueError("provide exactly one of engine or engine_factory")
         self.engine = engine
@@ -132,6 +142,7 @@ class PrefillJobStore:
         self.estimated_snapshot_bytes_per_token = int(
             estimated_snapshot_bytes_per_token,
         )
+        self.max_retained_tokens = int(max_retained_tokens)
         self._jobs: dict[str, PrefillJob] = {}
         self._requests: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
@@ -216,6 +227,7 @@ class PrefillJobStore:
                 len(job.token_ids),
                 self.cache_store.compatibility,
                 self.estimated_snapshot_bytes_per_token,
+                max_retained_tokens=self.max_retained_tokens,
             )
             if estimated_bytes > self.cache_store.max_bytes:
                 raise ValueError(
@@ -296,6 +308,7 @@ class PrefillJobStore:
                     len(job.token_ids),
                     self.cache_store.compatibility,
                     self.estimated_snapshot_bytes_per_token,
+                    max_retained_tokens=self.max_retained_tokens,
                 ),
             )
             engine = self._engine_for_current_thread()

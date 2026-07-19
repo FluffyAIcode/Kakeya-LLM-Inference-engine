@@ -143,6 +143,7 @@ async def serve(args) -> None:
         estimated_snapshot_bytes_per_token=(
             args.estimated_snapshot_bytes_per_token
         ),
+        max_retained_tokens=args.sink + args.window,
     )
     jobs.warmup()
 

@@ -85,3 +85,10 @@ def test_two_mac_deployment_uses_allens_as_prefill_only():
     assert "<string>--window</string><string>2048</string>" in worker
     assert "<string>--prefill-tps</string><string>1</string>" in worker
     assert "scripts/start_prefill_cache_node.py" in PEER_PLIST.read_text()
+
+
+def test_worker_injects_explicit_retained_token_cap():
+    source = (
+        ROOT / "scripts" / "start_prefill_worker_node.py"
+    ).read_text()
+    assert "max_retained_tokens=args.sink + args.window" in source
