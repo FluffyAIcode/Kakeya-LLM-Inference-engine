@@ -417,6 +417,10 @@ hash boundary. The default segment is 256 tokens, keeping each allens step below
 the five-minute research budget at the measured Prefill rate. Worker job status
 updates `tokens_computed` after every segment; Terminal heartbeats display
 tokens, percentage, and ETA.
+The worker injects `sink + window` as an explicit immutable retained-token cap
+into `PrefillJobStore`. Snapshot capacity checks therefore remain window-aware
+even if an RPC compatibility object omits its window field; long prompts cannot
+fall back to full-length estimates after deployment or process restart.
 
 Karpathy-style optimization lives in `autoresearch/prefill/`. Humans edit
 `program.md`, the research agent edits only `candidate.py`, and immutable
