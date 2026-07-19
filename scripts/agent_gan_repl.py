@@ -144,6 +144,65 @@ class ReplCheckpoint:
     schema_version: int = 1
 
 
+@dataclass
+class CriticIssueBatch:
+    issue_id: str
+    issues: list[str]
+    status: str = "pending"
+    consumed_by_run: str = ""
+    schema_version: int = 1
+
+
+def save_critic_issue_batch(path: Path, batch: CriticIssueBatch) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(asdict(batch), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def load_pending_critic_issues(path: Path) -> CriticIssueBatch | None:
+    if not path.exists():
+        return None
+    batch = CriticIssueBatch(
+        **json.loads(path.read_text(encoding="utf-8")),
+    )
+    if (
+        batch.schema_version != 1
+        or not batch.issue_id
+        or not batch.issues
+        or any(not str(issue).strip() for issue in batch.issues)
+    ):
+        raise ValueError("invalid Critic issue inbox")
+    return batch if batch.status == "pending" else None
+
+
+def format_critic_issue_injection(batch: CriticIssueBatch) -> str:
+    items = "\n".join(
+        f"{index}. {issue.strip()}"
+        for index, issue in enumerate(batch.issues, start=1)
+    )
+    return (
+        "\n\nEXTERNAL RIGOROUS MATHEMATICAL ISSUES "
+        f"(id={batch.issue_id}):\n{items}\n"
+        "The Generator must address every issue explicitly. The Critic must "
+        "verify every correction and keep unresolved items in the frontier."
+    )
+
+
+def consume_critic_issue_batch(
+    path: Path,
+    batch: CriticIssueBatch,
+    run_id: str,
+) -> None:
+    batch.status = "consumed"
+    batch.consumed_by_run = run_id
+    save_critic_issue_batch(path, batch)
+
+
 def parse_repl_command(raw: str, phase: ReplPhase) -> ReplCommand:
     text = raw.strip()
     lower = text.lower()
@@ -476,6 +535,11 @@ def main() -> int:
         default="~/.kakeya/agent_gan_state.json",
         help="Private resumable Generator/Critic checkpoint.",
     )
+    parser.add_argument(
+        "--critic-inbox",
+        default="~/.kakeya/agent_gan_critic_inbox.json",
+        help="Private pending rigorous-math issues for the next turn.",
+    )
     parser.add_argument("--recover-run", default="")
     parser.add_argument(
         "--recover-log",
@@ -535,6 +599,7 @@ def main() -> int:
         return stats
 
     state_path = Path(args.state_file).expanduser()
+    critic_inbox_path = Path(args.critic_inbox).expanduser()
     if args.recover_run:
         recovered = recover_checkpoint_from_log(
             Path(args.recover_log).expanduser(),
@@ -571,6 +636,7 @@ def main() -> int:
     )
     print(f"[log] {transcript.log_path}", flush=True)
     print(f"[state] {state_path} phase={phase.value}", flush=True)
+    print(f"[critic-inbox] {critic_inbox_path}", flush=True)
     if checkpoint:
         print(
             f"[state-restored] run={checkpoint.last_run_id or '(none)'} "
@@ -626,6 +692,28 @@ def main() -> int:
             if command.action in {"continue", "steer"} and args.auto_loop:
                 auto_loop_active = True
             phase = ReplPhase.RUNNING
+            critic_issue_batch = load_pending_critic_issues(
+                critic_inbox_path,
+            )
+            critic_issue_injection = (
+                format_critic_issue_injection(critic_issue_batch)
+                if critic_issue_batch is not None else ""
+            )
+            if critic_issue_batch is not None:
+                print(
+                    f"[critic-issue-injection] id="
+                    f"{critic_issue_batch.issue_id} "
+                    f"count={len(critic_issue_batch.issues)}",
+                    flush=True,
+                )
+                for index, issue in enumerate(
+                    critic_issue_batch.issues,
+                    start=1,
+                ):
+                    print(
+                        f"[critic-issue-{index}] {issue}",
+                        flush=True,
+                    )
             run_nonce = uuid.uuid4().hex
             telemetry_state["degraded"] = False
             run = _telemetry_request(
@@ -644,6 +732,14 @@ def main() -> int:
                             research_goal.encode(),
                         ).hexdigest(),
                         "feedback_applied": bool(previous_critic),
+                        "critic_issue_id": (
+                            critic_issue_batch.issue_id
+                            if critic_issue_batch is not None else ""
+                        ),
+                        "critic_issue_count": (
+                            len(critic_issue_batch.issues)
+                            if critic_issue_batch is not None else 0
+                        ),
                     },
                 },
             )
@@ -662,7 +758,9 @@ def main() -> int:
                     research_goal,
                     steering=steering,
                     previous_generator=previous_generator,
-                    previous_critic=previous_critic,
+                    previous_critic=(
+                        previous_critic + critic_issue_injection
+                    ),
                 )
                 generator_ids = tokenizer.apply_chat_template(
                     generator_messages,
@@ -728,7 +826,7 @@ def main() -> int:
                 critic_messages = build_critic_messages(
                     research_goal,
                     critic_context,
-                    steering=steering,
+                    steering=steering + critic_issue_injection,
                     stop_reason=generator_actual["stop_reason"],
                     complete=generator_actual["complete"],
                 )
@@ -814,6 +912,17 @@ def main() -> int:
                         last_run_id=run_id,
                     ),
                 )
+                if critic_issue_batch is not None:
+                    consume_critic_issue_batch(
+                        critic_inbox_path,
+                        critic_issue_batch,
+                        run_id,
+                    )
+                    print(
+                        f"[critic-issues-consumed] id="
+                        f"{critic_issue_batch.issue_id} run={run_id}",
+                        flush=True,
+                    )
                 phase = ReplPhase.READY
                 if auto_loop_active:
                     print(
