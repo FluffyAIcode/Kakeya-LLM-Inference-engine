@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -242,17 +243,46 @@ def run_gan_experiment(
         "--candidate-file", str(candidate_path),
         "--state-file", str(state_path),
     ]
-    result = subprocess.run(
+    process = subprocess.Popen(
         command,
-        input="/continue\n/quit\n",
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        capture_output=True,
-        timeout=timeout_s,
+        bufsize=1,
         cwd=repo,
     )
-    output = result.stdout + result.stderr
-    if result.returncode != 0:
-        raise RuntimeError(f"GAN experiment failed ({result.returncode}): {output[-4000:]}")
+    assert process.stdin is not None
+    assert process.stdout is not None
+    process.stdin.write("/continue\n/quit\n")
+    process.stdin.flush()
+    process.stdin.close()
+    timed_out = threading.Event()
+
+    def terminate_on_timeout() -> None:
+        timed_out.set()
+        process.kill()
+
+    timer = threading.Timer(timeout_s, terminate_on_timeout)
+    timer.daemon = True
+    timer.start()
+    lines: list[str] = []
+    try:
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+        returncode = process.wait()
+    finally:
+        timer.cancel()
+    output = "".join(lines)
+    if timed_out.is_set():
+        raise TimeoutError(
+            f"GAN experiment exceeded {timeout_s}s: {output[-4000:]}",
+        )
+    if returncode != 0:
+        raise RuntimeError(
+            f"GAN experiment failed ({returncode}): {output[-4000:]}",
+        )
     matches = re.findall(r"run=(br_[0-9a-f]+)", output)
     if not matches:
         raise RuntimeError("GAN experiment produced no benchmark run id")
