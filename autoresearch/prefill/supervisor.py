@@ -77,6 +77,118 @@ def validate_candidate(candidate: dict) -> None:
         raise ValueError("candidate must forbid fallback")
 
 
+def _select_repair_target(current: dict, ledger: dict) -> str:
+    leaves = _pending_leaf_ids(ledger)
+    if not leaves:
+        raise ValueError("proof ledger has no unresolved leaf")
+    current_target = str(current.get("target_obligation_id", ""))
+    if current_target in leaves:
+        return current_target
+    parents = {
+        str(item.get("obligation_id", "")): str(item.get("parent_id", ""))
+        for item in ledger.get("obligations", [])
+    }
+
+    def distance_from_current(obligation_id: str) -> int:
+        distance = 0
+        cursor = obligation_id
+        visited = set()
+        while cursor and cursor not in visited:
+            if cursor == current_target:
+                return distance
+            visited.add(cursor)
+            cursor = parents.get(cursor, "")
+            distance += 1
+        return -1
+
+    descendants = [
+        (distance_from_current(obligation_id), obligation_id)
+        for obligation_id in leaves
+        if distance_from_current(obligation_id) >= 0
+    ]
+    if descendants:
+        return max(descendants)[1]
+    return leaves[0]
+
+
+def repair_candidate_schema(
+    candidate: dict,
+    *,
+    current: dict,
+    ledger: dict,
+) -> tuple[dict, list[str]]:
+    aliases = {
+        "candidate_id": ("id", "strategy_id"),
+        "target_obligation_id": (
+            "target", "target_id", "obligation_id",
+        ),
+        "hypothesis": ("strategy_hypothesis",),
+        "generator_directive": (
+            "generator", "generator_prompt", "generator_strategy",
+        ),
+        "critic_directive": (
+            "critic", "critic_prompt", "critic_strategy",
+        ),
+        "prefill_compute_chunk_tokens": (
+            "chunk_tokens", "compute_chunk_tokens",
+        ),
+    }
+    normalized = {
+        str(key).strip().lower().replace("-", "_"): value
+        for key, value in candidate.items()
+    }
+    repaired = dict(candidate)
+    changed: list[str] = []
+    for field, field_aliases in aliases.items():
+        if repaired.get(field):
+            continue
+        for alias in (field, *field_aliases):
+            value = normalized.get(alias)
+            if value not in (None, ""):
+                repaired[field] = value
+                changed.append(field)
+                break
+    target = str(repaired.get("target_obligation_id", ""))
+    leaves = _pending_leaf_ids(ledger)
+    if target not in leaves:
+        repaired["target_obligation_id"] = _select_repair_target(
+            current,
+            ledger,
+        )
+        if "target_obligation_id" not in changed:
+            changed.append("target_obligation_id")
+    target = repaired["target_obligation_id"]
+    statement = next(
+        str(item.get("statement", ""))
+        for item in ledger.get("obligations", [])
+        if item.get("obligation_id") == target
+    )
+    hypothesis = str(repaired.get("hypothesis", "")).strip()
+    if not repaired.get("generator_directive") and hypothesis:
+        repaired["generator_directive"] = (
+            f"Focus exclusively on {target}: {statement} "
+            f"Construct and test this hypothesis: {hypothesis}"
+        )
+        changed.append("generator_directive")
+    if not repaired.get("critic_directive") and hypothesis:
+        repaired["critic_directive"] = (
+            f"Attempt to falsify the {target} hypothesis: {hypothesis} "
+            "Identify the first invalid inference and one strictly smaller "
+            "missing lemma."
+        )
+        changed.append("critic_directive")
+    if not repaired.get("prefill_compute_chunk_tokens"):
+        repaired["prefill_compute_chunk_tokens"] = int(
+            current["prefill_compute_chunk_tokens"],
+        )
+        changed.append("prefill_compute_chunk_tokens")
+    else:
+        repaired["prefill_compute_chunk_tokens"] = int(
+            repaired["prefill_compute_chunk_tokens"],
+        )
+    return repaired, changed
+
+
 def render_candidate(candidate: dict) -> str:
     validate_candidate(candidate)
     return (
@@ -319,9 +431,24 @@ def propose_candidate(
                 raise RuntimeError(
                     f"strategy agent did not reach EOS: {session.last_stop_reason}",
                 )
-    candidate = _extract_json(
-        tokenizer.decode(generated, skip_special_tokens=True),
+    strategy_output = tokenizer.decode(generated, skip_special_tokens=True)
+    print(
+        f"[autoresearch] Strategy Output: {strategy_output.strip()}",
+        flush=True,
     )
+    candidate = _extract_json(strategy_output)
+    candidate, repaired_fields = repair_candidate_schema(
+        candidate,
+        current=current,
+        ledger=ledger,
+    )
+    if repaired_fields:
+        print(
+            "[autoresearch] phase=strategy-schema-repair "
+            f"fields={','.join(sorted(set(repaired_fields)))} "
+            f"target={candidate.get('target_obligation_id', '')}",
+            flush=True,
+        )
     candidate.update({
         "snapshot_mode": "final_only",
         "max_segment_seconds": 300.0,
