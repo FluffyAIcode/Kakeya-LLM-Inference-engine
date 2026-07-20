@@ -546,6 +546,44 @@ def test_host_generated_autoresearch_verdict_uses_new_child_frontier():
     assert verdict["created_obligation_ids"] == ["RH-C2-child"]
 
 
+def test_critic_leaf_table_creates_all_target_children_only():
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[
+            ProofObligation("RH-C1", "Operator construction."),
+            ProofObligation("RH-C2", "Zero convergence."),
+        ],
+    )
+    critic = """
+### Leaf Obligation Ledger
+| ID | Status | Evidence/Argument | Missing Lemma/Requirement |
+| :--- | :--- | :--- | :--- |
+| **RH-C2-1** | UNRESOLVED | No compact convergence proof. | Prove locally uniform convergence on compact subsets. |
+| **RH-C2-2** | UNRESOLVED | Hurwitz does not cover poles. | Prove a singular-limit zero-counting theorem. |
+| **RH-C1-1** | UNRESOLVED | Unrelated operator issue. | Construct a self-adjoint operator. |
+"""
+    applied = apply_critic_verdicts(
+        ledger,
+        critic,
+        "br_table",
+        {"RH-C2"},
+    )
+    created = create_child_obligations(
+        ledger,
+        critic,
+        "br_table",
+        {"RH-C2"},
+    )
+    assert applied == {"RH-C2": "UNRESOLVED"}
+    assert len(created) == 2
+    assert all(item.parent_id == "RH-C2" for item in created)
+    assert ledger.obligations[0].last_run_id == ""
+    assert pending_obligations(ledger) == [
+        ledger.obligations[0],
+        *created,
+    ]
+
+
 def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):
     path = tmp_path / "agent.log"
     path.write_text(
