@@ -19,6 +19,7 @@ from scripts.agent_gan_repl import (
     _telemetry_request,
     build_critic_messages,
     build_generator_messages,
+    extract_obligation_history,
     install_signal_protection,
     is_runtime_artifact_prompt,
     consume_critic_issue_batch,
@@ -290,6 +291,37 @@ def test_interactive_prompts_are_deterministic_for_kv_reuse():
     assert "Ignore prizes, money, prestige" in combined
     assert "smallest unresolved frontier" in combined
     assert "sample, summarize, simplify" in combined
+
+
+def test_generator_history_is_scoped_to_target_leaf():
+    history = """
+### ISSUE_RESPONSE RH-C1
+Correction: unrelated operator branch.
+
+### ISSUE_VERDICT RH-C1
+Status: UNRESOLVED
+Missing lemma: unrelated operator lemma.
+
+### ISSUE_RESPONSE RH-C2-child
+Correction: target convergence branch.
+
+### ISSUE_VERDICT RH-C2-child
+Status: UNRESOLVED
+Missing lemma: target compact convergence lemma.
+"""
+    scoped = extract_obligation_history(history, "RH-C2-child")
+    assert "target convergence branch" in scoped
+    assert "target compact convergence lemma" in scoped
+    assert "RH-C1" not in scoped
+    messages = build_generator_messages(
+        "prove RH",
+        previous_generator=history,
+        previous_critic=history,
+        target_obligation_id="RH-C2-child",
+    )
+    prompt = messages[-1]["content"]
+    assert "target convergence branch" in prompt
+    assert "unrelated operator branch" not in prompt
 
 
 def test_runtime_output_cannot_replace_research_goal():
