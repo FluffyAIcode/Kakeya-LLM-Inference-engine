@@ -106,6 +106,39 @@ def _extract_json(text: str) -> dict:
     return json.loads(stripped[start:end + 1])
 
 
+def parse_research_verdict(output: str, candidate_id: str) -> dict:
+    matches = list(re.finditer(
+        r"^(?:critic>\s*)?### AUTORESEARCH_VERDICT\s*$"
+        r"(?P<body>.*?)(?=^### |\Z)",
+        output,
+        re.MULTILINE | re.DOTALL,
+    ))
+    if not matches:
+        raise ValueError("Critic emitted no AUTORESEARCH_VERDICT")
+    body = matches[-1].group("body")
+    fields = {}
+    for name in ("Candidate ID", "Outcome", "Evidence", "New frontier"):
+        match = re.search(
+            rf"^{re.escape(name)}:\s*(.+)$",
+            body,
+            re.MULTILINE,
+        )
+        if not match:
+            raise ValueError(f"research verdict missing {name}")
+        fields[name] = match.group(1).strip()
+    if fields["Candidate ID"] != candidate_id:
+        raise ValueError("research verdict candidate ID mismatch")
+    if fields["Outcome"] not in {"SUPPORTED", "FALSIFIED", "INCONCLUSIVE"}:
+        raise ValueError("invalid research verdict outcome")
+    if len(fields["Evidence"]) < 40 or len(fields["New frontier"]) < 30:
+        raise ValueError("research verdict lacks substantive evidence/frontier")
+    return {
+        "outcome": fields["Outcome"],
+        "evidence": fields["Evidence"],
+        "new_frontier": fields["New frontier"],
+    }
+
+
 def propose_candidate(
     *,
     address: str,
@@ -127,6 +160,9 @@ def propose_candidate(
         + ", ".join(REQUIRED_CANDIDATE_FIELDS)
         + ". Allowed prefill_compute_chunk_tokens: 64, 128, 256. "
         "Do not weaken full context, final-only snapshots, or no-fallback rules."
+        " The hypothesis must not repeat any hypothesis or hash in RESULTS. "
+        "It must either construct a concrete object or attempt a concrete "
+        "counterexample for one smaller decomposition leaf."
         f"\n\nPROGRAM:\n{program}\n\nCURRENT:\n{json.dumps(current)}"
         f"\n\nRESULTS:\n{results_text[-12000:]}"
         f"\n\nLEDGER:\n{json.dumps(ledger)}"
@@ -318,17 +354,15 @@ def best_kept(results: list[dict]) -> dict | None:
 def should_keep(result: dict, baseline: dict | None) -> bool:
     if not result["accepted"]:
         return False
+    if result.get("research_outcome") not in {"SUPPORTED", "FALSIFIED"}:
+        return False
+    if not result.get("hypothesis_novel", False):
+        return False
     if baseline is None:
         return True
-    new_key = (
-        int(result["proof_obligations_unresolved"]),
-        float(result["metric_cold_critic_prefill_s"]),
+    return int(result["proof_obligations_unresolved"]) <= int(
+        baseline["proof_obligations_unresolved"],
     )
-    old_key = (
-        int(baseline["proof_obligations_unresolved"]),
-        float(baseline["metric_cold_critic_prefill_s"]),
-    )
-    return new_key < old_key
 
 
 RESULT_FIELDS = (
@@ -338,11 +372,33 @@ RESULT_FIELDS = (
     "proof_obligations_total", "proof_obligations_covered",
     "proof_obligations_unresolved", "compute_chunk_tokens",
     "candidate_sha256", "report_path",
+    "hypothesis_sha256", "research_outcome", "research_evidence",
+    "new_frontier",
 )
 
 
 def append_result(path: Path, row: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            old_fields = tuple(reader.fieldnames or ())
+            old_rows = list(reader)
+        if old_fields != RESULT_FIELDS:
+            temporary = path.with_suffix(path.suffix + ".migrating")
+            with temporary.open("w", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=RESULT_FIELDS,
+                    delimiter="\t",
+                )
+                writer.writeheader()
+                for old_row in old_rows:
+                    writer.writerow({
+                        field: old_row.get(field, "")
+                        for field in RESULT_FIELDS
+                    })
+            temporary.replace(path)
     write_header = not path.exists()
     with path.open("a", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS, delimiter="\t")
@@ -412,6 +468,16 @@ def run_iteration(args, iteration: int) -> dict:
             )
             clear_primary_cache()
         validate_candidate(proposed)
+        hypothesis_sha256 = hashlib.sha256(
+            proposed["hypothesis"].strip().lower().encode(),
+        ).hexdigest()
+        seen_hypotheses = {
+            row.get("hypothesis_sha256", "")
+            for row in results
+            if row.get("hypothesis_sha256")
+        }
+        if hypothesis_sha256 in seen_hypotheses:
+            raise ValueError("strategy agent repeated a previous hypothesis")
         experiment_id = (
             f"ar_{int(time.time())}_{iteration}_"
             f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"
@@ -421,7 +487,7 @@ def run_iteration(args, iteration: int) -> dict:
             f"[autoresearch] phase=gan-experiment id={experiment_id}",
             flush=True,
         )
-        run_id, report, _ = run_gan_experiment(
+        run_id, report, gan_output = run_gan_experiment(
             repo=root,
             candidate_path=candidate_path,
             state_path=state_path,
@@ -430,10 +496,21 @@ def run_iteration(args, iteration: int) -> dict:
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         candidate_module = _load_candidate(candidate_path)
         result = evaluate(report, candidate_module)
+        verdict = parse_research_verdict(
+            gan_output,
+            proposed["candidate_id"],
+        )
+        result.update({
+            "research_outcome": verdict["outcome"],
+            "research_evidence": verdict["evidence"],
+            "new_frontier": verdict["new_frontier"],
+            "hypothesis_novel": True,
+        })
         keep = should_keep(result, baseline)
         print(
             f"[autoresearch] phase=evaluate accepted={result['accepted']} "
             f"unresolved={result['proof_obligations_unresolved']} "
+            f"outcome={verdict['outcome']} "
             f"prefill_s={result['metric_cold_critic_prefill_s']:.3f} "
             f"decision={'keep' if keep else 'revert'}",
             flush=True,
@@ -463,6 +540,10 @@ def run_iteration(args, iteration: int) -> dict:
                 candidate_path.read_bytes(),
             ).hexdigest(),
             "report_path": str(report_path),
+            "hypothesis_sha256": hypothesis_sha256,
+            "research_outcome": verdict["outcome"],
+            "research_evidence": verdict["evidence"],
+            "new_frontier": verdict["new_frontier"],
         }
         append_result(results_path, row)
         if not keep:
