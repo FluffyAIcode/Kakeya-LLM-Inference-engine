@@ -6,6 +6,7 @@ from autoresearch.prefill.supervisor import (
     read_results,
     render_candidate,
     should_keep,
+    StrategyPrefillHeartbeat,
     validate_candidate,
 )
 from pathlib import Path
@@ -162,6 +163,29 @@ def test_worker_deploy_waits_for_unload_and_readiness(monkeypatch):
     assert "launchctl bootstrap" in remote
     assert "nc -G 2 -z 127.0.0.1 53051" in remote
     assert "a[i+1]='128'" in remote
+
+
+def test_strategy_prefill_heartbeat_reports_delta(monkeypatch, capsys):
+    heartbeat = StrategyPrefillHeartbeat(interval_s=0.01)
+    heartbeat._baseline = {
+        "remote_job_tokens_total": 100,
+        "remote_job_tokens_computed": 100,
+        "remote_hits": 2,
+        "tokens_reused": 20,
+    }
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: {"prefill": {
+            "remote_job_tokens_total": 300,
+            "remote_job_tokens_computed": 228,
+            "remote_hits": 3,
+            "tokens_reused": 84,
+        }},
+    )
+    heartbeat._emit()
+    output = capsys.readouterr().out
+    assert "128/200 tokens (64.0%)" in output
+    assert "remote_hits=1 reused=64" in output
 
 
 def test_supervisor_predeploys_before_real_strategy_proposal():
