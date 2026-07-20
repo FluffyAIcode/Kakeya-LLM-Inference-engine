@@ -1,6 +1,7 @@
 from autoresearch.prefill.supervisor import (
     append_result,
     best_kept,
+    parse_research_verdict,
     read_results,
     render_candidate,
     should_keep,
@@ -42,31 +43,52 @@ def test_candidate_render_is_executable_and_strict(tmp_path):
         raise AssertionError("fallback candidate must be rejected")
 
 
-def test_keep_is_lexicographic_on_proof_then_prefill():
+def test_keep_requires_novel_mathematical_advancement():
     baseline = {
         "proof_obligations_unresolved": "5",
         "metric_cold_critic_prefill_s": "500",
     }
     assert should_keep({
         "accepted": True,
+        "research_outcome": "SUPPORTED",
+        "hypothesis_novel": True,
         "proof_obligations_unresolved": 4,
         "metric_cold_critic_prefill_s": 900,
     }, baseline)
     assert should_keep({
         "accepted": True,
+        "research_outcome": "FALSIFIED",
+        "hypothesis_novel": True,
         "proof_obligations_unresolved": 5,
-        "metric_cold_critic_prefill_s": 499,
+        "metric_cold_critic_prefill_s": 900,
     }, baseline)
     assert not should_keep({
         "accepted": True,
+        "research_outcome": "INCONCLUSIVE",
+        "hypothesis_novel": True,
         "proof_obligations_unresolved": 5,
-        "metric_cold_critic_prefill_s": 501,
+        "metric_cold_critic_prefill_s": 1,
     }, baseline)
     assert not should_keep({
         "accepted": False,
+        "research_outcome": "SUPPORTED",
+        "hypothesis_novel": True,
         "proof_obligations_unresolved": 0,
         "metric_cold_critic_prefill_s": 1,
     }, baseline)
+
+
+def test_parse_research_verdict_uses_last_complete_critic_block():
+    output = """
+critic> ### AUTORESEARCH_VERDICT
+Candidate ID: candidate-v3
+Outcome: FALSIFIED
+Evidence: The proposed positivity implication fails for the explicit test function at n=7.
+New frontier: Characterize the admissible test functions for which the implication remains valid.
+"""
+    verdict = parse_research_verdict(output, "candidate-v3")
+    assert verdict["outcome"] == "FALSIFIED"
+    assert "admissible test functions" in verdict["new_frontier"]
 
 
 def test_results_are_append_only_and_best_is_selected(tmp_path):
@@ -100,6 +122,21 @@ def test_results_are_append_only_and_best_is_selected(tmp_path):
     rows = read_results(path)
     assert len(rows) == 2
     assert best_kept(rows)["candidate_id"] == "c2"
+
+
+def test_append_result_migrates_legacy_results_header(tmp_path):
+    path = tmp_path / "results.tsv"
+    path.write_text("timestamp\tcandidate_id\n1\tlegacy\n")
+    append_result(path, {
+        "timestamp": 2,
+        "candidate_id": "new",
+        "hypothesis_sha256": "sha",
+        "research_outcome": "FALSIFIED",
+    })
+    rows = read_results(path)
+    assert rows[0]["candidate_id"] == "legacy"
+    assert rows[0]["research_outcome"] == ""
+    assert rows[1]["hypothesis_sha256"] == "sha"
 
 
 def test_supervisor_predeploys_before_real_strategy_proposal():

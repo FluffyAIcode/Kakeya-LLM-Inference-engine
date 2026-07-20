@@ -12,8 +12,11 @@ You are optimizing the two-Mac full-context RH proof research system.
 
 Use a lexicographic objective:
 
-1. Minimize unresolved Proof Obligation Ledger items.
-2. With equal unresolved count, minimize `metric_cold_critic_prefill_s`.
+1. Close an unresolved Proof Obligation Ledger item when an experiment supports
+   a proof step.
+2. Otherwise, require a novel falsified hypothesis or a novel, strictly smaller
+   proof frontier. Rewording an existing obligation is not progress.
+3. Subject to (1)-(2), minimize `metric_cold_critic_prefill_s`.
 
 ## Hard constraints
 
@@ -29,19 +32,20 @@ Use a lexicographic objective:
 ## Experiment loop
 
 1. Read `candidate.py` and `results.tsv`.
-2. State one concrete performance hypothesis.
+2. State one concrete mathematical hypothesis for one unresolved leaf.
 3. Modify only `candidate.py`.
 4. Deploy the candidate to allens.
 5. Clear Primary and allens caches.
 6. Run the fixed full-context acceptance workload.
 7. Run `prepare.py` against the resulting report.
-8. Keep the candidate only if every hard constraint passes and cold Critic
-   Prefill time improves. Otherwise restore the previous candidate.
+8. Keep the candidate only if every hard constraint passes and it closes an
+   obligation, falsifies a novel hypothesis, or creates a novel smaller
+   frontier. Otherwise restore the previous candidate.
 9. Append the result and repeat.
 
 Every candidate must target one current unresolved proof obligation and contain
 a falsifiable hypothesis plus distinct Generator and Critic directives.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
-content. Optimize only measured Prefill execution while preserving the complete
-semantic contract.
+content. Prefill performance is a tertiary objective after mathematical
+decomposition progress, while preserving the complete semantic contract.

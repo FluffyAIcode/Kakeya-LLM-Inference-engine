@@ -883,6 +883,14 @@ def main() -> int:
                 )))
                 critic_strategy = str(
                     research_candidate.CRITIC_DIRECTIVE,
+                ) + (
+                    "\n\nAt the end, emit exactly:\n"
+                    "### AUTORESEARCH_VERDICT\n"
+                    f"Candidate ID: {research_candidate.CANDIDATE_ID}\n"
+                    "Outcome: SUPPORTED|FALSIFIED|INCONCLUSIVE\n"
+                    "Evidence: <specific derivation, counterexample, or failed lemma>\n"
+                    "New frontier: <one concrete smaller proof obligation that "
+                    "is not a restatement of the current obligation>"
                 )
             if command.action in {"continue", "steer"} and args.auto_loop:
                 auto_loop_active = True
