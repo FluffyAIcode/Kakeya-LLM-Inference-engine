@@ -60,6 +60,8 @@ class TimestampedTee:
             return 0
         with self._lock:
             self.terminal.write(text)
+            if self.log.closed:
+                return len(text)
             for part in text.splitlines(keepends=True):
                 if self._line_start:
                     self.log.write(f"[{self.timestamp_fn()}] ")
@@ -71,10 +73,13 @@ class TimestampedTee:
     def flush(self) -> None:
         with self._lock:
             self.terminal.flush()
-            self.log.flush()
+            if not self.log.closed:
+                self.log.flush()
 
     def log_only(self, event: str) -> None:
         with self._lock:
+            if self.log.closed:
+                return
             if not self._line_start:
                 self.log.write("\n")
             self.log.write(f"[{self.timestamp_fn()}] {event.rstrip()}\n")
@@ -83,6 +88,10 @@ class TimestampedTee:
 
     def close_log(self) -> None:
         with self._lock:
+            if sys.stdout is self:
+                sys.stdout = self.terminal
+            if sys.stderr is self:
+                sys.stderr = self.terminal
             if not self.log.closed:
                 self.log.flush()
                 self.log.close()
