@@ -200,12 +200,22 @@ def load_proof_ledger(path: Path) -> ProofObligationLedger | None:
         ProofObligation(**item) for item in raw.pop("obligations", [])
     ]
     ledger = ProofObligationLedger(obligations=obligations, **raw)
+    obligation_ids = {
+        item.obligation_id for item in ledger.obligations
+    }
     if (
         ledger.schema_version != 1
         or not ledger.ledger_id
         or not ledger.obligations
-        or len({item.obligation_id for item in ledger.obligations})
-        != len(ledger.obligations)
+        or len(obligation_ids) != len(ledger.obligations)
+        or any(
+            item.parent_id
+            and (
+                item.parent_id not in obligation_ids
+                or item.parent_id == item.obligation_id
+            )
+            for item in ledger.obligations
+        )
     ):
         raise ValueError("invalid proof obligation ledger")
     return ledger
@@ -216,16 +226,30 @@ def pending_obligations(
 ) -> list[ProofObligation]:
     if ledger is None:
         return []
+    unresolved_parent_ids = {
+        item.parent_id
+        for item in ledger.obligations
+        if item.status == "UNRESOLVED" and item.parent_id
+    }
     return [
         item for item in ledger.obligations
-        if item.status == "UNRESOLVED"
+        if (
+            item.status == "UNRESOLVED"
+            and item.obligation_id not in unresolved_parent_ids
+        )
     ]
 
 
-def format_proof_ledger(ledger: ProofObligationLedger) -> str:
+def format_proof_ledger(
+    ledger: ProofObligationLedger,
+    obligations: list[ProofObligation] | None = None,
+) -> str:
+    selected = obligations if obligations is not None else pending_obligations(ledger)
     items = "\n".join(
-        f"- {item.obligation_id}: {item.statement}"
-        for item in pending_obligations(ledger)
+        f"- {item.obligation_id}"
+        f"{f' (parent={item.parent_id})' if item.parent_id else ''}: "
+        f"{item.statement}"
+        for item in selected
     )
     return (
         f"PROOF OBLIGATION LEDGER id={ledger.ledger_id} "
@@ -273,17 +297,18 @@ def apply_critic_verdicts(
             continue
         body = match.group("body")
         status_match = re.search(
-            r"^Status:\s*(PROVED|DISPROVED|UNRESOLVED)\s*$",
+            r"^\*{0,2}Status:\*{0,2}\s*"
+            r"(PROVED|DISPROVED|UNRESOLVED)\s*$",
             body,
             re.MULTILINE,
         )
         evidence_match = re.search(
-            r"^Evidence:\s*(.+)$",
+            r"^\*{0,2}Evidence:\*{0,2}\s*(.+)$",
             body,
             re.MULTILINE,
         )
         missing_match = re.search(
-            r"^Missing lemma:\s*(.*)$",
+            r"^\*{0,2}Missing lemma:\*{0,2}\s*(.*)$",
             body,
             re.MULTILINE,
         )
@@ -316,6 +341,134 @@ def apply_critic_verdicts(
         applied[item.obligation_id] = status
     ledger.version += 1
     return applied
+
+
+def _normalize_obligation_statement(statement: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", statement.lower()))
+
+
+def create_child_obligations(
+    ledger: ProofObligationLedger,
+    critic_text: str,
+    run_id: str,
+    parent_ids: set[str],
+) -> list[ProofObligation]:
+    existing = {
+        (item.parent_id, _normalize_obligation_statement(item.statement))
+        for item in ledger.obligations
+    }
+    created: list[ProofObligation] = []
+    for match in _ISSUE_VERDICT.finditer(critic_text):
+        parent_id = match.group(1)
+        if parent_id not in parent_ids:
+            continue
+        body = match.group("body")
+        status_match = re.search(
+            r"^\*{0,2}Status:\*{0,2}\s*"
+            r"(PROVED|DISPROVED|UNRESOLVED)\s*$",
+            body,
+            re.MULTILINE,
+        )
+        missing_match = re.search(
+            r"^\*{0,2}Missing lemma:\*{0,2}\s*(.+)$",
+            body,
+            re.MULTILINE,
+        )
+        if (
+            status_match is None
+            or status_match.group(1) != "UNRESOLVED"
+            or missing_match is None
+        ):
+            continue
+        statement = missing_match.group(1).strip()
+        normalized = _normalize_obligation_statement(statement)
+        parent = next(
+            item for item in ledger.obligations
+            if item.obligation_id == parent_id
+        )
+        if (
+            not normalized
+            or normalized in {"none", "no missing lemma"}
+            or normalized == _normalize_obligation_statement(parent.statement)
+            or (parent_id, normalized) in existing
+        ):
+            continue
+        suffix = hashlib.sha256(
+            f"{parent_id}:{normalized}".encode(),
+        ).hexdigest()[:10]
+        child = ProofObligation(
+            obligation_id=f"{parent_id}-{suffix}",
+            statement=statement,
+            parent_id=parent_id,
+            last_run_id=run_id,
+            last_evidence="Created from Critic missing lemma.",
+        )
+        ledger.obligations.append(child)
+        existing.add((parent_id, normalized))
+        created.append(child)
+    if created:
+        ledger.version += 1
+    return created
+
+
+def build_autoresearch_verdict(
+    candidate,
+    ledger: ProofObligationLedger,
+    applied_verdicts: dict[str, str],
+    created: list[ProofObligation],
+) -> dict:
+    target_id = str(candidate.TARGET_OBLIGATION_ID)
+    target = next(
+        (item for item in ledger.obligations if item.obligation_id == target_id),
+        None,
+    )
+    status = applied_verdicts.get(target_id, "UNRESOLVED")
+    target_children = [item for item in created if item.parent_id == target_id]
+    if status == "PROVED":
+        outcome = "SUPPORTED"
+        evidence = target.last_evidence if target is not None else (
+            "The targeted proof obligation was closed by the Critic."
+        )
+        frontier = (
+            "Integrate the proved leaf into its parent proof obligation and "
+            "audit every dependency."
+        )
+    elif status == "DISPROVED":
+        outcome = "FALSIFIED"
+        evidence = target.last_evidence if target is not None else (
+            "The targeted hypothesis was disproved by the Critic."
+        )
+        frontier = (
+            "Exclude the falsified approach and construct a distinct "
+            "hypothesis for the same proof obligation."
+        )
+    elif target_children:
+        outcome = "DECOMPOSED"
+        evidence = (
+            "The Critic kept the target unresolved and isolated a concrete "
+            f"missing lemma: {target_children[0].statement}"
+        )
+        frontier = target_children[0].statement
+    else:
+        outcome = "INCONCLUSIVE"
+        evidence = (
+            target.last_evidence if target is not None else
+            "The Critic supplied no structurally valid target verdict."
+        )
+        frontier = (
+            target.statement if target is not None else
+            "Construct a concrete smaller proof obligation."
+        )
+    return {
+        "candidate_id": str(candidate.CANDIDATE_ID),
+        "target_obligation_id": target_id,
+        "outcome": outcome,
+        "evidence": evidence,
+        "new_frontier": frontier,
+        "created_obligation_ids": [
+            item.obligation_id for item in target_children
+        ],
+    }
 
 
 def save_critic_issue_batch(path: Path, batch: CriticIssueBatch) -> None:
@@ -890,17 +1043,7 @@ def main() -> int:
                     steering,
                     str(research_candidate.GENERATOR_DIRECTIVE),
                 )))
-                critic_strategy = str(
-                    research_candidate.CRITIC_DIRECTIVE,
-                ) + (
-                    "\n\nAt the end, emit exactly:\n"
-                    "### AUTORESEARCH_VERDICT\n"
-                    f"Candidate ID: {research_candidate.CANDIDATE_ID}\n"
-                    "Outcome: SUPPORTED|FALSIFIED|INCONCLUSIVE\n"
-                    "Evidence: <specific derivation, counterexample, or failed lemma>\n"
-                    "New frontier: <one concrete smaller proof obligation that "
-                    "is not a restatement of the current obligation>"
-                )
+                critic_strategy = str(research_candidate.CRITIC_DIRECTIVE)
             if command.action in {"continue", "steer"} and args.auto_loop:
                 auto_loop_active = True
             phase = ReplPhase.RUNNING
@@ -913,8 +1056,18 @@ def main() -> int:
             )
             proof_ledger = load_proof_ledger(proof_ledger_path)
             turn_obligations = pending_obligations(proof_ledger)
+            if research_candidate is not None and turn_obligations:
+                target_id = str(research_candidate.TARGET_OBLIGATION_ID)
+                turn_obligations = [
+                    item for item in turn_obligations
+                    if item.obligation_id == target_id
+                ]
+                if not turn_obligations:
+                    raise ValueError(
+                        f"candidate target is not an unresolved leaf: {target_id}",
+                    )
             proof_ledger_text = (
-                format_proof_ledger(proof_ledger)
+                format_proof_ledger(proof_ledger, turn_obligations)
                 if turn_obligations else ""
             )
             if proof_ledger is not None:
@@ -1131,16 +1284,49 @@ def main() -> int:
                     skip_special_tokens=True,
                 )
                 applied_verdicts = {}
+                created_obligations = []
                 if proof_ledger is not None and turn_obligations:
                     applied_verdicts = apply_critic_verdicts(
                         proof_ledger,
                         critic_text,
                         run_id,
                     )
+                    created_obligations = create_child_obligations(
+                        proof_ledger,
+                        critic_text,
+                        run_id,
+                        {
+                            item.obligation_id
+                            for item in turn_obligations
+                        },
+                    )
                     for obligation_id, status in applied_verdicts.items():
                         print(
                             f"[critic-verdict] id={obligation_id} "
                             f"status={status}",
+                            flush=True,
+                        )
+                    for item in created_obligations:
+                        print(
+                            f"[proof-obligation-created] "
+                            f"id={item.obligation_id} "
+                            f"parent={item.parent_id} "
+                            f"{item.statement}",
+                            flush=True,
+                        )
+                    if research_candidate is not None:
+                        print(
+                            "[autoresearch-verdict] "
+                            + json.dumps(
+                                build_autoresearch_verdict(
+                                    research_candidate,
+                                    proof_ledger,
+                                    applied_verdicts,
+                                    created_obligations,
+                                ),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
                             flush=True,
                         )
                     print(

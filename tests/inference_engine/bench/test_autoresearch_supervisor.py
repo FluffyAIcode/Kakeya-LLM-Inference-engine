@@ -7,6 +7,7 @@ from autoresearch.prefill.supervisor import (
     render_candidate,
     should_keep,
     StrategyPrefillHeartbeat,
+    _pending_leaf_ids,
     validate_candidate,
 )
 from pathlib import Path
@@ -64,6 +65,13 @@ def test_keep_requires_novel_mathematical_advancement():
         "proof_obligations_unresolved": 5,
         "metric_cold_critic_prefill_s": 900,
     }, baseline)
+    assert should_keep({
+        "accepted": True,
+        "research_outcome": "DECOMPOSED",
+        "hypothesis_novel": True,
+        "proof_obligations_unresolved": 5,
+        "metric_cold_critic_prefill_s": 900,
+    }, baseline)
     assert not should_keep({
         "accepted": True,
         "research_outcome": "INCONCLUSIVE",
@@ -91,6 +99,30 @@ New frontier: Characterize the admissible test functions for which the implicati
     verdict = parse_research_verdict(output, "candidate-v3")
     assert verdict["outcome"] == "FALSIFIED"
     assert "admissible test functions" in verdict["new_frontier"]
+
+
+def test_parse_host_generated_research_verdict_event():
+    output = (
+        '[autoresearch-verdict] {"candidate_id":"candidate-v4",'
+        '"outcome":"DECOMPOSED",'
+        '"evidence":"The Critic isolated a concrete missing convergence lemma.",'
+        '"new_frontier":"Prove locally uniform convergence on compact subsets."}'
+    )
+    verdict = parse_research_verdict(output, "candidate-v4")
+    assert verdict["outcome"] == "DECOMPOSED"
+
+
+def test_pending_leaf_ids_excludes_unresolved_parents():
+    ledger = {"obligations": [
+        {"obligation_id": "RH-C1", "status": "UNRESOLVED", "parent_id": ""},
+        {
+            "obligation_id": "RH-C1-child",
+            "status": "UNRESOLVED",
+            "parent_id": "RH-C1",
+        },
+        {"obligation_id": "RH-C2", "status": "UNRESOLVED", "parent_id": ""},
+    ]}
+    assert _pending_leaf_ids(ledger) == ["RH-C1-child", "RH-C2"]
 
 
 def test_results_are_append_only_and_best_is_selected(tmp_path):
@@ -201,6 +233,8 @@ def test_supervisor_predeploys_before_real_strategy_proposal():
     )
     assert "phase=predeploy-current" in body
     assert "phase=strategy-proposal real-gemma" in body
+    assert "if not gan_completed:" in body
+    assert "phase=completed-run-preserved" in body
 
 
 def test_gan_subprocess_output_is_streamed_not_captured():

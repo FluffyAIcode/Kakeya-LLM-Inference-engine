@@ -23,6 +23,8 @@ from scripts.agent_gan_repl import (
     is_runtime_artifact_prompt,
     consume_critic_issue_batch,
     apply_critic_verdicts,
+    build_autoresearch_verdict,
+    create_child_obligations,
     format_critic_issue_injection,
     format_proof_ledger,
     generator_issue_coverage,
@@ -454,6 +456,62 @@ Missing lemma: none
         "RH-C2": "UNRESOLVED",
     }
     assert len(pending_obligations(ledger)) == 2
+
+
+def test_missing_lemma_creates_deduplicated_child_and_selects_leaf():
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[ProofObligation("RH-C2", "Prove zero convergence.")],
+    )
+    critic = """
+### ISSUE_VERDICT RH-C2
+**Status:** UNRESOLVED
+**Evidence:** The proposed convergence argument does not control zeros on compact subsets.
+**Missing lemma:** Prove locally uniform convergence on every compact subset of the critical strip.
+"""
+    apply_critic_verdicts(ledger, critic, "br_first")
+    created = create_child_obligations(
+        ledger,
+        critic,
+        "br_first",
+        {"RH-C2"},
+    )
+    assert len(created) == 1
+    assert created[0].parent_id == "RH-C2"
+    assert pending_obligations(ledger) == created
+    assert create_child_obligations(
+        ledger,
+        critic,
+        "br_repeat",
+        {"RH-C2"},
+    ) == []
+
+
+def test_host_generated_autoresearch_verdict_uses_new_child_frontier():
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[
+            ProofObligation("RH-C2", "Prove zero convergence."),
+            ProofObligation(
+                "RH-C2-child",
+                "Prove locally uniform convergence on compact subsets.",
+                parent_id="RH-C2",
+            ),
+        ],
+    )
+
+    class Candidate:
+        CANDIDATE_ID = "candidate-v4"
+        TARGET_OBLIGATION_ID = "RH-C2"
+
+    verdict = build_autoresearch_verdict(
+        Candidate,
+        ledger,
+        {"RH-C2": "UNRESOLVED"},
+        [ledger.obligations[1]],
+    )
+    assert verdict["outcome"] == "DECOMPOSED"
+    assert verdict["created_obligation_ids"] == ["RH-C2-child"]
 
 
 def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):

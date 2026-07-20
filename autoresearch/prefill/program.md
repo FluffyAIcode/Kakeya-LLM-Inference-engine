@@ -43,8 +43,12 @@ Use a lexicographic objective:
    frontier. Otherwise restore the previous candidate.
 9. Append the result and repeat.
 
-Every candidate must target one current unresolved proof obligation and contain
-a falsifiable hypothesis plus distinct Generator and Critic directives.
+Every candidate must target exactly one current unresolved leaf obligation and
+contain a falsifiable hypothesis plus distinct Generator and Critic directives.
+An unresolved Critic verdict must isolate one strictly smaller missing lemma;
+the host records that lemma as a deduplicated child obligation. Completed GAN
+runs, transcripts, checkpoints, and ledger updates remain durable even when the
+candidate strategy is reverted or fixed evaluation fails.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical
