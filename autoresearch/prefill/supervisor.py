@@ -107,6 +107,29 @@ def _extract_json(text: str) -> dict:
 
 
 def parse_research_verdict(output: str, candidate_id: str) -> dict:
+    event_matches = re.findall(
+        r"^\[autoresearch-verdict\]\s+(\{.*\})\s*$",
+        output,
+        re.MULTILINE,
+    )
+    if event_matches:
+        fields = json.loads(event_matches[-1])
+        if fields.get("candidate_id") != candidate_id:
+            raise ValueError("research verdict candidate ID mismatch")
+        if fields.get("outcome") not in {
+            "SUPPORTED", "FALSIFIED", "DECOMPOSED", "INCONCLUSIVE",
+        }:
+            raise ValueError("invalid research verdict outcome")
+        if (
+            len(str(fields.get("evidence", ""))) < 40
+            or len(str(fields.get("new_frontier", ""))) < 30
+        ):
+            raise ValueError("research verdict lacks substantive evidence/frontier")
+        return {
+            "outcome": fields["outcome"],
+            "evidence": fields["evidence"],
+            "new_frontier": fields["new_frontier"],
+        }
     matches = list(re.finditer(
         r"^(?:critic>\s*)?### AUTORESEARCH_VERDICT\s*$"
         r"(?P<body>.*?)(?=^### |\Z)",
@@ -137,6 +160,24 @@ def parse_research_verdict(output: str, candidate_id: str) -> dict:
         "evidence": fields["Evidence"],
         "new_frontier": fields["New frontier"],
     }
+
+
+def _pending_leaf_ids(ledger: dict) -> list[str]:
+    obligations = ledger.get("obligations", [])
+    unresolved = {
+        str(item.get("obligation_id", ""))
+        for item in obligations
+        if item.get("status") == "UNRESOLVED"
+    }
+    unresolved_parents = {
+        str(item.get("parent_id", ""))
+        for item in obligations
+        if (
+            item.get("status") == "UNRESOLVED"
+            and item.get("parent_id")
+        )
+    }
+    return sorted(unresolved - unresolved_parents)
 
 
 class StrategyPrefillHeartbeat:
@@ -232,10 +273,12 @@ def propose_candidate(
         "Do not weaken full context, final-only snapshots, or no-fallback rules."
         " The hypothesis must not repeat any hypothesis or hash in RESULTS. "
         "It must either construct a concrete object or attempt a concrete "
-        "counterexample for one smaller decomposition leaf."
+        "counterexample for one smaller decomposition leaf. The "
+        "target_obligation_id must be one of PENDING_LEAF_IDS."
         f"\n\nPROGRAM:\n{program}\n\nCURRENT:\n{json.dumps(current)}"
         f"\n\nRESULTS:\n{results_text[-12000:]}"
         f"\n\nLEDGER:\n{json.dumps(ledger)}"
+        f"\n\nPENDING_LEAF_IDS:\n{json.dumps(_pending_leaf_ids(ledger))}"
     )
     ids = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
@@ -396,7 +439,7 @@ def run_gan_experiment(
     candidate_path: Path,
     state_path: Path,
     timeout_s: float,
-) -> tuple[str, dict, str]:
+) -> tuple[str, str]:
     command = [
         "bash", str(repo / "scripts/run_agent_gan_repl.sh"),
         "--skip-ensure", "--no-auto-loop",
@@ -447,12 +490,7 @@ def run_gan_experiment(
     if not matches:
         raise RuntimeError("GAN experiment produced no benchmark run id")
     run_id = matches[-1]
-    report = _json_request(
-        f"http://127.0.0.1:8090/v1/network/benchmarks/{run_id}",
-    )
-    if report.get("status") != "completed":
-        raise RuntimeError(f"GAN benchmark is not completed: {report.get('status')}")
-    return run_id, report, output
+    return run_id, output
 
 
 def read_results(path: Path) -> list[dict]:
@@ -478,7 +516,9 @@ def best_kept(results: list[dict]) -> dict | None:
 def should_keep(result: dict, baseline: dict | None) -> bool:
     if not result["accepted"]:
         return False
-    if result.get("research_outcome") not in {"SUPPORTED", "FALSIFIED"}:
+    if result.get("research_outcome") not in {
+        "SUPPORTED", "FALSIFIED", "DECOMPOSED",
+    }:
         return False
     if not result.get("hypothesis_novel", False):
         return False
@@ -497,7 +537,7 @@ RESULT_FIELDS = (
     "proof_obligations_unresolved", "compute_chunk_tokens",
     "candidate_sha256", "report_path",
     "hypothesis_sha256", "research_outcome", "research_evidence",
-    "new_frontier",
+    "new_frontier", "transcript_path", "error",
 )
 
 
@@ -551,6 +591,13 @@ def run_iteration(args, iteration: int) -> dict:
     previous_chunk = int(current["prefill_compute_chunk_tokens"])
 
     proposed = current
+    gan_completed = False
+    run_id = ""
+    experiment_id = ""
+    report_path = reports_dir / "not-started.json"
+    transcript_path = reports_dir / "not-started.log"
+    hypothesis_sha256 = ""
+    candidate_sha256 = hashlib.sha256(previous_candidate).hexdigest()
     try:
         print(
             f"[autoresearch] iteration={iteration} "
@@ -569,6 +616,7 @@ def run_iteration(args, iteration: int) -> dict:
                 "[autoresearch] phase=strategy-proposal real-gemma",
                 flush=True,
             )
+            ledger_data = json.loads(ledger_path.read_text())
             proposed = propose_candidate(
                 address=args.address,
                 tokenizer_id=args.tokenizer_id,
@@ -577,8 +625,14 @@ def run_iteration(args, iteration: int) -> dict:
                 results_text=(
                     results_path.read_text() if results_path.exists() else ""
                 ),
-                ledger=json.loads(ledger_path.read_text()),
+                ledger=ledger_data,
             )
+            if proposed["target_obligation_id"] not in _pending_leaf_ids(
+                ledger_data,
+            ):
+                raise ValueError(
+                    "strategy agent targeted a non-leaf proof obligation",
+                )
             candidate_path.write_text(render_candidate(proposed))
             print(
                 f"[autoresearch] phase=candidate-written "
@@ -602,21 +656,34 @@ def run_iteration(args, iteration: int) -> dict:
         }
         if hypothesis_sha256 in seen_hypotheses:
             raise ValueError("strategy agent repeated a previous hypothesis")
+        candidate_sha256 = hashlib.sha256(
+            candidate_path.read_bytes(),
+        ).hexdigest()
         experiment_id = (
             f"ar_{int(time.time())}_{iteration}_"
             f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"
         )
         report_path = reports_dir / f"{experiment_id}.json"
+        transcript_path = reports_dir / f"{experiment_id}.log"
         print(
             f"[autoresearch] phase=gan-experiment id={experiment_id}",
             flush=True,
         )
-        run_id, report, gan_output = run_gan_experiment(
+        run_id, gan_output = run_gan_experiment(
             repo=root,
             candidate_path=candidate_path,
             state_path=state_path,
             timeout_s=args.experiment_timeout_s,
         )
+        gan_completed = True
+        transcript_path.write_text(gan_output)
+        report = _json_request(
+            f"http://127.0.0.1:8090/v1/network/benchmarks/{run_id}",
+        )
+        if report.get("status") != "completed":
+            raise RuntimeError(
+                f"GAN benchmark is not completed: {report.get('status')}",
+            )
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         candidate_module = _load_candidate(candidate_path)
         result = evaluate(report, candidate_module)
@@ -628,6 +695,7 @@ def run_iteration(args, iteration: int) -> dict:
             "research_outcome": verdict["outcome"],
             "research_evidence": verdict["evidence"],
             "new_frontier": verdict["new_frontier"],
+            "transcript_path": str(transcript_path),
             "hypothesis_novel": True,
         })
         keep = should_keep(result, baseline)
@@ -660,22 +728,23 @@ def run_iteration(args, iteration: int) -> dict:
                 "proof_obligations_unresolved"
             ],
             "compute_chunk_tokens": result["compute_chunk_tokens"],
-            "candidate_sha256": hashlib.sha256(
-                candidate_path.read_bytes(),
-            ).hexdigest(),
+            "candidate_sha256": candidate_sha256,
             "report_path": str(report_path),
             "hypothesis_sha256": hypothesis_sha256,
             "research_outcome": verdict["outcome"],
             "research_evidence": verdict["evidence"],
             "new_frontier": verdict["new_frontier"],
+            "transcript_path": str(transcript_path),
         }
         append_result(results_path, row)
         if not keep:
             candidate_path.write_bytes(previous_candidate)
-            _restore(state_path, previous_state)
-            _restore(ledger_path, previous_ledger)
             deploy_candidate(args.worker_ssh, previous_chunk)
-            print("[autoresearch] phase=reverted", flush=True)
+            print(
+                "[autoresearch] phase=candidate-reverted "
+                "completed-run-preserved",
+                flush=True,
+            )
         else:
             print("[autoresearch] phase=kept", flush=True)
         return row
@@ -685,8 +754,9 @@ def run_iteration(args, iteration: int) -> dict:
             flush=True,
         )
         candidate_path.write_bytes(previous_candidate)
-        _restore(state_path, previous_state)
-        _restore(ledger_path, previous_ledger)
+        if not gan_completed:
+            _restore(state_path, previous_state)
+            _restore(ledger_path, previous_ledger)
         try:
             deploy_candidate(args.worker_ssh, previous_chunk)
         except Exception as rollback_exc:
@@ -695,7 +765,37 @@ def run_iteration(args, iteration: int) -> dict:
                 f"error={type(rollback_exc).__name__}: {rollback_exc}",
                 flush=True,
             )
-        raise
+        if not gan_completed:
+            raise
+        row = {
+            "timestamp": time.time(),
+            "experiment_id": experiment_id,
+            "run_id": run_id,
+            "candidate_id": proposed.get("candidate_id", ""),
+            "target_obligation_id": proposed.get("target_obligation_id", ""),
+            "constraints_pass": False,
+            "accepted": False,
+            "kept": False,
+            "baseline_metric_s": (
+                baseline["metric_cold_critic_prefill_s"] if baseline else ""
+            ),
+            "compute_chunk_tokens": proposed.get(
+                "prefill_compute_chunk_tokens",
+                "",
+            ),
+            "candidate_sha256": candidate_sha256,
+            "report_path": str(report_path),
+            "hypothesis_sha256": hypothesis_sha256,
+            "research_outcome": "EVALUATION_FAILED",
+            "transcript_path": str(transcript_path),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        append_result(results_path, row)
+        print(
+            f"[autoresearch] phase=completed-run-preserved run={run_id}",
+            flush=True,
+        )
+        return row
 
 
 def main() -> int:
