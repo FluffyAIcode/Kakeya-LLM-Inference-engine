@@ -4,6 +4,7 @@ from autoresearch.prefill.supervisor import (
     deploy_candidate,
     parse_research_verdict,
     read_results,
+    repair_candidate_schema,
     render_candidate,
     should_keep,
     StrategyPrefillHeartbeat,
@@ -44,6 +45,84 @@ def test_candidate_render_is_executable_and_strict(tmp_path):
         pass
     else:
         raise AssertionError("fallback candidate must be rejected")
+
+
+def test_strategy_schema_repair_prefers_current_branch_leaf():
+    current = _candidate()
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C1",
+            "statement": "Operator construction.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "RH-C1-child",
+            "statement": "Prove the operator is self-adjoint.",
+            "status": "UNRESOLVED",
+            "parent_id": "RH-C1",
+        },
+        {
+            "obligation_id": "RH-C2",
+            "statement": "Zero convergence.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+    ]}
+    repaired, fields = repair_candidate_schema(
+        {
+            "candidate_id": "trial-child",
+            "hypothesis": "The proposed domain yields a symmetric operator.",
+        },
+        current=current,
+        ledger=ledger,
+    )
+    assert repaired["target_obligation_id"] == "RH-C1-child"
+    assert repaired["prefill_compute_chunk_tokens"] == 256
+    assert "RH-C1-child" in repaired["generator_directive"]
+    assert "strictly smaller" in repaired["critic_directive"]
+    assert set(fields) == {
+        "target_obligation_id",
+        "generator_directive",
+        "critic_directive",
+        "prefill_compute_chunk_tokens",
+    }
+
+
+def test_strategy_schema_repair_accepts_uppercase_and_alias_keys():
+    repaired, fields = repair_candidate_schema(
+        {
+            "CANDIDATE_ID": "alias-trial",
+            "TARGET": "RH-C2",
+            "HYPOTHESIS": "Test convergence.",
+            "GENERATOR_PROMPT": "Construct the approximation.",
+            "CRITIC_PROMPT": "Falsify the approximation.",
+            "CHUNK_TOKENS": "128",
+        },
+        current=_candidate(),
+        ledger={"obligations": [{
+            "obligation_id": "RH-C2",
+            "statement": "Zero convergence.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        }]},
+    )
+    validate_candidate({
+        **repaired,
+        "snapshot_mode": "final_only",
+        "require_full_context": True,
+        "allow_fallback": False,
+    })
+    assert repaired["candidate_id"] == "alias-trial"
+    assert repaired["prefill_compute_chunk_tokens"] == 128
+    assert set(fields) == {
+        "candidate_id",
+        "target_obligation_id",
+        "hypothesis",
+        "generator_directive",
+        "critic_directive",
+        "prefill_compute_chunk_tokens",
+    }
 
 
 def test_keep_requires_novel_mathematical_advancement():
