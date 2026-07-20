@@ -139,6 +139,76 @@ def parse_research_verdict(output: str, candidate_id: str) -> dict:
     }
 
 
+class StrategyPrefillHeartbeat:
+    def __init__(
+        self,
+        dashboard: str = "http://127.0.0.1:8090",
+        interval_s: float = 10.0,
+    ) -> None:
+        self.dashboard = dashboard.rstrip("/")
+        self.interval_s = interval_s
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._baseline: dict = {}
+        self._last: tuple | None = None
+
+    def __enter__(self):
+        try:
+            self._baseline = _json_request(
+                f"{self.dashboard}/v1/network/summary",
+            ).get("prefill", {})
+        except Exception as exc:
+            print(
+                "[autoresearch] Strategy Prefill telemetry warning: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval_s + 2)
+        self._emit()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_s):
+            self._emit()
+
+    def _delta(self, current: dict, name: str) -> int:
+        return max(
+            0,
+            int(current.get(name, 0)) - int(self._baseline.get(name, 0)),
+        )
+
+    def _emit(self) -> None:
+        try:
+            current = _json_request(
+                f"{self.dashboard}/v1/network/summary",
+            ).get("prefill", {})
+        except Exception:
+            return
+        total = self._delta(current, "remote_job_tokens_total")
+        computed = self._delta(current, "remote_job_tokens_computed")
+        state = (
+            computed,
+            total,
+            self._delta(current, "remote_hits"),
+            self._delta(current, "tokens_reused"),
+        )
+        if not total or state == self._last:
+            return
+        self._last = state
+        percent = min(100.0, 100.0 * computed / total)
+        print(
+            f"[autoresearch] Strategy Prefill: {computed}/{total} tokens "
+            f"({percent:.1f}%) · remote_hits={state[2]} reused={state[3]}",
+            flush=True,
+        )
+
+
 def propose_candidate(
     *,
     address: str,
@@ -175,15 +245,29 @@ def propose_candidate(
         enable_thinking=False,
     )
     generated: list[int] = []
+    print(
+        f"[autoresearch] Strategy Prefill: 0/{len(ids)} tokens (0.0%)",
+        flush=True,
+    )
     with Client(address) as client:
         with client.create_session(
             eos_token_ids=_resolve_eos_token_ids(tokenizer),
             client_label="autoresearch-strategy",
         ) as session:
-            session.append(ids)
+            with StrategyPrefillHeartbeat():
+                session.append(ids)
+            print(
+                f"[autoresearch] Strategy Prefill complete: {len(ids)} tokens",
+                flush=True,
+            )
             while len(generated) < 2048:
                 before = len(generated)
                 generated.extend(int(token) for token in session.generate(max_tokens=64))
+                print(
+                    f"[autoresearch] Strategy Decode: {len(generated)} tokens "
+                    f"stop_reason={session.last_stop_reason}",
+                    flush=True,
+                )
                 if session.last_stop_reason != 1:
                     break
                 if len(generated) == before:
