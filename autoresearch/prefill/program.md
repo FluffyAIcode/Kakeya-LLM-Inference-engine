@@ -34,8 +34,8 @@ Use a lexicographic objective:
 1. Read `candidate.py` and `results.tsv`.
 2. State one concrete mathematical hypothesis for one unresolved leaf.
 3. Modify only `candidate.py`.
-4. Deploy the candidate to allens.
-5. Clear Primary and allens caches.
+4. Verify Primary and allens health without restarting either service.
+5. Preserve all KV caches across decomposition iterations.
 6. Run the fixed full-context acceptance workload.
 7. Run `prepare.py` against the resulting report.
 8. Keep the candidate only if every hard constraint passes and it closes an
@@ -49,6 +49,13 @@ An unresolved Critic verdict must isolate one strictly smaller missing lemma;
 the host records that lemma as a deduplicated child obligation. Completed GAN
 runs, transcripts, checkpoints, and ledger updates remain durable even when the
 candidate strategy is reverted or fixed evaluation fails.
+
+Worker lifecycle and cache policy belong to the inference serving plane, not
+the proof experiment. `prefill_compute_chunk_tokens` is immutable during this
+loop. Never invoke launchctl, restart Primary/allens, clear KV, or run a cold
+benchmark here. Model/tokenizer/quantization/rope/window/cache-format changes
+must be deployed outside this supervisor. Cold benchmarks are explicit,
+separate invocations of `scripts/benchmark_prefill_architecture.py`.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical

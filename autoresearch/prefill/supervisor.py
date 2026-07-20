@@ -8,7 +8,6 @@ import csv
 import hashlib
 import json
 import os
-import plistlib
 import re
 import shutil
 import socket
@@ -239,15 +238,20 @@ def repair_candidate_schema(
             "missing lemma."
         )
         changed.append("critic_directive")
-    if not repaired.get("prefill_compute_chunk_tokens"):
-        repaired["prefill_compute_chunk_tokens"] = int(
-            current["prefill_compute_chunk_tokens"],
-        )
+    fixed_chunk_tokens = int(current["prefill_compute_chunk_tokens"])
+    proposed_chunk_tokens = repaired.get("prefill_compute_chunk_tokens")
+    try:
+        proposed_chunk_tokens = int(proposed_chunk_tokens)
+    except (TypeError, ValueError):
+        proposed_chunk_tokens = None
+    if (
+        proposed_chunk_tokens is None
+        or int(proposed_chunk_tokens) != fixed_chunk_tokens
+    ):
+        repaired["prefill_compute_chunk_tokens"] = fixed_chunk_tokens
         changed.append("prefill_compute_chunk_tokens")
     else:
-        repaired["prefill_compute_chunk_tokens"] = int(
-            repaired["prefill_compute_chunk_tokens"],
-        )
+        repaired["prefill_compute_chunk_tokens"] = fixed_chunk_tokens
     return repaired, changed
 
 
@@ -502,7 +506,8 @@ def propose_candidate(
         "program exactly. Select one unresolved proof obligation and propose "
         "one falsifiable GAN strategy experiment. Return JSON only with keys: "
         + ", ".join(REQUIRED_CANDIDATE_FIELDS)
-        + ". Allowed prefill_compute_chunk_tokens: 64, 128, 256. "
+        + ". prefill_compute_chunk_tokens is immutable and must equal "
+        f"{current['prefill_compute_chunk_tokens']}. "
         "Do not weaken full context, final-only snapshots, or no-fallback rules."
         " The hypothesis must not repeat any hypothesis or hash in RESULTS. "
         "It must either construct a concrete object or attempt a concrete "
@@ -585,91 +590,20 @@ def propose_candidate(
     return candidate
 
 
-def deploy_candidate(worker_ssh: str, chunk_tokens: int) -> None:
-    remote = f"""python3 - <<'PY'
-import os, plistlib
-from pathlib import Path
-p=Path.home()/'Library/LaunchAgents/ai.kakeya.prefill-worker.plist'
-d=plistlib.loads(p.read_bytes())
-a=d['ProgramArguments']
-i=a.index('--prefill-compute-chunk-tokens')
-a[i+1]='{chunk_tokens}'
-t=p.with_suffix('.plist.tmp')
-t.write_bytes(plistlib.dumps(d))
-os.chmod(t,0o644)
-t.replace(p)
-PY
-domain=gui/$(id -u)
-label=ai.kakeya.prefill-worker
-service=\"$domain/$label\"
-plist=\"$HOME/Library/LaunchAgents/$label.plist\"
-launchctl bootout \"$service\" 2>/dev/null || true
-for delay in 1 1 2 3 5; do
-    if ! launchctl print \"$service\" >/dev/null 2>&1; then
-        break
-    fi
-    sleep \"$delay\"
-done
-if launchctl print \"$service\" >/dev/null 2>&1; then
-    echo \"worker service did not unload\" >&2
-    exit 70
-fi
-loaded=0
-for delay in 1 2 3 5; do
-    if launchctl bootstrap \"$domain\" \"$plist\"; then
-        loaded=1
-        break
-    fi
-    if launchctl print \"$service\" >/dev/null 2>&1; then
-        loaded=1
-        break
-    fi
-    sleep \"$delay\"
-done
-if [ \"$loaded\" -ne 1 ]; then
-    echo \"worker service did not bootstrap\" >&2
-    exit 71
-fi
-launchctl kickstart -k \"$service\"
-for attempt in $(seq 1 120); do
-    if nc -G 2 -z 127.0.0.1 53051 >/dev/null 2>&1; then
-        exit 0
-    fi
-    if ! launchctl print \"$service\" >/dev/null 2>&1; then
-        echo \"worker service disappeared during startup\" >&2
-        exit 72
-    fi
-    sleep 1
-done
-echo \"worker did not become ready on port 53051\" >&2
-exit 73
-"""
-    subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", worker_ssh, remote],
-        check=True,
-    )
-    _wait_port("169.254.27.104", 53051)
-    probe = subprocess.run(
-        ["ssh", worker_ssh, "ps -ax -o command="],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    expected = f"--prefill-compute-chunk-tokens {chunk_tokens}"
-    if expected not in probe:
-        raise RuntimeError("deployed worker chunk size verification failed")
-
-
-def clear_primary_cache() -> None:
-    subprocess.run(
-        [
-            "launchctl", "kickstart", "-k",
-            f"gui/{os.getuid()}/ai.kakeya.grpc-runtime-prefill",
-        ],
-        check=True,
-    )
+def check_runtime_health(
+    worker_address: str,
+    dashboard: str = "http://127.0.0.1:8090",
+) -> dict:
+    worker_host, worker_port_text = worker_address.rsplit(":", 1)
+    _wait_port(worker_host, int(worker_port_text))
     _wait_port("127.0.0.1", 51051)
     _wait_port("127.0.0.1", 8090)
+    summary = _json_request(
+        f"{dashboard.rstrip('/')}/v1/network/summary",
+    )
+    if int(summary.get("online_nodes", 0)) < 1:
+        raise RuntimeError("prefill fleet has no online worker")
+    return summary
 
 
 def _backup(path: Path) -> bytes | None:
@@ -841,7 +775,6 @@ def run_iteration(args, iteration: int) -> dict:
     previous_candidate = candidate_path.read_bytes()
     previous_state = _backup(state_path)
     previous_ledger = _backup(ledger_path)
-    previous_chunk = int(current["prefill_compute_chunk_tokens"])
 
     proposed = current
     gan_completed = False
@@ -854,11 +787,19 @@ def run_iteration(args, iteration: int) -> dict:
     try:
         print(
             f"[autoresearch] iteration={iteration} "
-            f"phase=predeploy-current candidate={current['candidate_id']}",
+            f"phase=runtime-health-check candidate={current['candidate_id']}",
             flush=True,
         )
-        deploy_candidate(args.worker_ssh, previous_chunk)
-        clear_primary_cache()
+        health = check_runtime_health(
+            args.worker_address,
+            args.dashboard,
+        )
+        print(
+            "[autoresearch] phase=runtime-healthy "
+            f"online_nodes={health.get('online_nodes', 0)} "
+            f"kv_hit_rate={health.get('kv_hit_rate', 0):.1%}",
+            flush=True,
+        )
         if baseline is None and iteration == 0:
             print(
                 "[autoresearch] phase=baseline using current candidate",
@@ -893,11 +834,6 @@ def run_iteration(args, iteration: int) -> dict:
                 f"target={proposed['target_obligation_id']}",
                 flush=True,
             )
-            deploy_candidate(
-                args.worker_ssh,
-                proposed["prefill_compute_chunk_tokens"],
-            )
-            clear_primary_cache()
         validate_candidate(proposed)
         hypothesis_sha256 = hashlib.sha256(
             proposed["hypothesis"].strip().lower().encode(),
@@ -992,7 +928,6 @@ def run_iteration(args, iteration: int) -> dict:
         append_result(results_path, row)
         if not keep:
             candidate_path.write_bytes(previous_candidate)
-            deploy_candidate(args.worker_ssh, previous_chunk)
             print(
                 "[autoresearch] phase=candidate-reverted "
                 "completed-run-preserved",
@@ -1010,14 +945,6 @@ def run_iteration(args, iteration: int) -> dict:
         if not gan_completed:
             _restore(state_path, previous_state)
             _restore(ledger_path, previous_ledger)
-        try:
-            deploy_candidate(args.worker_ssh, previous_chunk)
-        except Exception as rollback_exc:
-            print(
-                "[autoresearch] phase=rollback-worker-failed "
-                f"error={type(rollback_exc).__name__}: {rollback_exc}",
-                flush=True,
-            )
         if not gan_completed:
             raise
         row = {
@@ -1054,8 +981,12 @@ def run_iteration(args, iteration: int) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=1)
-    parser.add_argument("--worker-ssh", default="allens")
+    parser.add_argument(
+        "--worker-address",
+        default="169.254.27.104:53051",
+    )
     parser.add_argument("--address", default="127.0.0.1:51051")
+    parser.add_argument("--dashboard", default="http://127.0.0.1:8090")
     parser.add_argument(
         "--tokenizer-id",
         default=str(
