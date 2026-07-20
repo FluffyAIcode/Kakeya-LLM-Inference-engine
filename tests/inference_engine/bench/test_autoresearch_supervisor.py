@@ -1,7 +1,7 @@
 from autoresearch.prefill.supervisor import (
     append_result,
     best_kept,
-    deploy_candidate,
+    check_runtime_health,
     parse_research_verdict,
     read_results,
     repair_candidate_schema,
@@ -115,7 +115,7 @@ def test_strategy_schema_repair_accepts_uppercase_and_alias_keys():
         "allow_fallback": False,
     })
     assert repaired["candidate_id"] == "alias-trial"
-    assert repaired["prefill_compute_chunk_tokens"] == 128
+    assert repaired["prefill_compute_chunk_tokens"] == 256
     assert set(fields) == {
         "candidate_id",
         "target_obligation_id",
@@ -329,28 +329,23 @@ def test_append_result_migrates_legacy_results_header(tmp_path):
     assert rows[1]["hypothesis_sha256"] == "sha"
 
 
-def test_worker_deploy_waits_for_unload_and_readiness(monkeypatch):
-    captured = []
-
-    class Result:
-        stdout = "--prefill-compute-chunk-tokens 128"
-
-    def fake_run(command, **kwargs):
-        captured.append((command, kwargs))
-        return Result()
-
+def test_runtime_health_check_is_read_only(monkeypatch):
+    ports = []
     monkeypatch.setattr(
         "autoresearch.prefill.supervisor._wait_port",
-        lambda *_args: None,
+        lambda host, port: ports.append((host, port)),
     )
-    monkeypatch.setattr("subprocess.run", fake_run)
-    deploy_candidate("allens", 128)
-    remote = captured[0][0][-1]
-    assert captured[0][1]["check"] is True
-    assert "worker service did not unload" in remote
-    assert "launchctl bootstrap" in remote
-    assert "nc -G 2 -z 127.0.0.1 53051" in remote
-    assert "a[i+1]='128'" in remote
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: {"online_nodes": 1, "kv_hit_rate": 0.75},
+    )
+    summary = check_runtime_health("169.254.27.104:53051")
+    assert summary["kv_hit_rate"] == 0.75
+    assert ports == [
+        ("169.254.27.104", 53051),
+        ("127.0.0.1", 51051),
+        ("127.0.0.1", 8090),
+    ]
 
 
 def test_strategy_prefill_heartbeat_reports_delta(monkeypatch, capsys):
@@ -376,7 +371,7 @@ def test_strategy_prefill_heartbeat_reports_delta(monkeypatch, capsys):
     assert "remote_hits=1 reused=64" in output
 
 
-def test_supervisor_predeploys_before_real_strategy_proposal():
+def test_supervisor_preserves_runtime_and_cache_across_iterations():
     source = (
         Path(__file__).resolve().parents[3]
         / "autoresearch"
@@ -384,13 +379,17 @@ def test_supervisor_predeploys_before_real_strategy_proposal():
         / "supervisor.py"
     ).read_text()
     body = source[source.index("def run_iteration"):source.index("def main")]
-    assert body.index("deploy_candidate(args.worker_ssh, previous_chunk)") < (
+    assert body.index("check_runtime_health(") < (
         body.index("proposed = propose_candidate")
     )
-    assert "phase=predeploy-current" in body
+    assert "phase=runtime-health-check" in body
     assert "phase=strategy-proposal real-gemma" in body
     assert "if not gan_completed:" in body
     assert "phase=completed-run-preserved" in body
+    assert "deploy_candidate" not in source
+    assert "clear_primary_cache" not in source
+    assert "launchctl" not in source
+    assert "bootout" not in source
 
 
 def test_gan_subprocess_output_is_streamed_not_captured():
