@@ -340,27 +340,57 @@ def run_iteration(args, iteration: int) -> dict:
     previous_ledger = _backup(ledger_path)
     previous_chunk = int(current["prefill_compute_chunk_tokens"])
 
-    if baseline is None and iteration == 0:
-        proposed = current
-    else:
-        proposed = propose_candidate(
-            address=args.address,
-            tokenizer_id=args.tokenizer_id,
-            program=program,
-            current=current,
-            results_text=results_path.read_text() if results_path.exists() else "",
-            ledger=json.loads(ledger_path.read_text()),
-        )
-        candidate_path.write_text(render_candidate(proposed))
-    validate_candidate(proposed)
-    experiment_id = (
-        f"ar_{int(time.time())}_{iteration}_"
-        f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"
-    )
-    report_path = reports_dir / f"{experiment_id}.json"
+    proposed = current
     try:
-        deploy_candidate(args.worker_ssh, proposed["prefill_compute_chunk_tokens"])
+        print(
+            f"[autoresearch] iteration={iteration} "
+            f"phase=predeploy-current candidate={current['candidate_id']}",
+            flush=True,
+        )
+        deploy_candidate(args.worker_ssh, previous_chunk)
         clear_primary_cache()
+        if baseline is None and iteration == 0:
+            print(
+                "[autoresearch] phase=baseline using current candidate",
+                flush=True,
+            )
+        else:
+            print(
+                "[autoresearch] phase=strategy-proposal real-gemma",
+                flush=True,
+            )
+            proposed = propose_candidate(
+                address=args.address,
+                tokenizer_id=args.tokenizer_id,
+                program=program,
+                current=current,
+                results_text=(
+                    results_path.read_text() if results_path.exists() else ""
+                ),
+                ledger=json.loads(ledger_path.read_text()),
+            )
+            candidate_path.write_text(render_candidate(proposed))
+            print(
+                f"[autoresearch] phase=candidate-written "
+                f"candidate={proposed['candidate_id']} "
+                f"target={proposed['target_obligation_id']}",
+                flush=True,
+            )
+            deploy_candidate(
+                args.worker_ssh,
+                proposed["prefill_compute_chunk_tokens"],
+            )
+            clear_primary_cache()
+        validate_candidate(proposed)
+        experiment_id = (
+            f"ar_{int(time.time())}_{iteration}_"
+            f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"
+        )
+        report_path = reports_dir / f"{experiment_id}.json"
+        print(
+            f"[autoresearch] phase=gan-experiment id={experiment_id}",
+            flush=True,
+        )
         run_id, report, _ = run_gan_experiment(
             repo=root,
             candidate_path=candidate_path,
@@ -371,6 +401,13 @@ def run_iteration(args, iteration: int) -> dict:
         candidate_module = _load_candidate(candidate_path)
         result = evaluate(report, candidate_module)
         keep = should_keep(result, baseline)
+        print(
+            f"[autoresearch] phase=evaluate accepted={result['accepted']} "
+            f"unresolved={result['proof_obligations_unresolved']} "
+            f"prefill_s={result['metric_cold_critic_prefill_s']:.3f} "
+            f"decision={'keep' if keep else 'revert'}",
+            flush=True,
+        )
         row = {
             "timestamp": time.time(),
             "experiment_id": experiment_id,
@@ -403,8 +440,15 @@ def run_iteration(args, iteration: int) -> dict:
             _restore(state_path, previous_state)
             _restore(ledger_path, previous_ledger)
             deploy_candidate(args.worker_ssh, previous_chunk)
+            print("[autoresearch] phase=reverted", flush=True)
+        else:
+            print("[autoresearch] phase=kept", flush=True)
         return row
-    except Exception:
+    except Exception as exc:
+        print(
+            f"[autoresearch] phase=failed error={type(exc).__name__}: {exc}",
+            flush=True,
+        )
         candidate_path.write_bytes(previous_candidate)
         _restore(state_path, previous_state)
         _restore(ledger_path, previous_ledger)
