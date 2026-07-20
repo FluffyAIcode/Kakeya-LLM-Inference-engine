@@ -54,6 +54,10 @@ def evaluate(report: dict, candidate) -> dict:
             estimated_max_segment_s <= candidate.MAX_SEGMENT_SECONDS
         ),
         "final_only_snapshot": candidate.SNAPSHOT_MODE == "final_only",
+        "candidate_requires_full_context": (
+            candidate.REQUIRE_FULL_CONTEXT is True
+        ),
+        "candidate_forbids_fallback": candidate.ALLOW_FALLBACK is False,
     }
     return {
         "accepted": all(constraints.values()),
@@ -61,6 +65,17 @@ def evaluate(report: dict, candidate) -> dict:
         "measured_prefill_tps": measured_tps,
         "estimated_max_segment_s": estimated_max_segment_s,
         "compute_chunk_tokens": candidate.PREFILL_COMPUTE_CHUNK_TOKENS,
+        "candidate_id": candidate.CANDIDATE_ID,
+        "target_obligation_id": candidate.TARGET_OBLIGATION_ID,
+        "proof_obligations_total": int(
+            critic.get("proof_obligations_total", 0),
+        ),
+        "proof_obligations_covered": int(
+            critic.get("proof_obligations_covered", 0),
+        ),
+        "proof_obligations_unresolved": int(
+            critic.get("proof_obligations_unresolved", 0),
+        ),
         "constraints": constraints,
     }
 

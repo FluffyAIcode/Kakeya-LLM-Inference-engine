@@ -712,6 +712,11 @@ def main() -> int:
         default="~/.kakeya/agent_gan_proof_ledger.json",
         help="Private persistent mathematical proof obligations.",
     )
+    parser.add_argument(
+        "--candidate-file",
+        default="",
+        help="AutoResearch candidate strategy applied to this experiment.",
+    )
     parser.add_argument("--recover-run", default="")
     parser.add_argument(
         "--recover-log",
@@ -736,6 +741,12 @@ def main() -> int:
         raise SystemExit("output-tokens must be > 0")
     if args.auto_loop_boundary_wait_s < 0:
         raise SystemExit("auto-loop-boundary-wait-s must be >= 0")
+    research_candidate = None
+    if args.candidate_file:
+        from autoresearch.prefill.prepare import _load_candidate
+        research_candidate = _load_candidate(
+            Path(args.candidate_file).expanduser(),
+        )
     transcript = TimestampedTee(
         sys.stdout,
         Path(args.log_file).expanduser(),
@@ -863,6 +874,16 @@ def main() -> int:
                 auto_loop_active = bool(args.auto_loop)
                 print(f"[goal] reset: {research_goal}", flush=True)
             steering = command.payload if command.action == "steer" else ""
+            generator_steering = steering
+            critic_strategy = ""
+            if research_candidate is not None:
+                generator_steering = "\n\n".join(filter(None, (
+                    steering,
+                    str(research_candidate.GENERATOR_DIRECTIVE),
+                )))
+                critic_strategy = str(
+                    research_candidate.CRITIC_DIRECTIVE,
+                )
             if command.action in {"continue", "steer"} and args.auto_loop:
                 auto_loop_active = True
             phase = ReplPhase.RUNNING
@@ -942,6 +963,14 @@ def main() -> int:
                             if proof_ledger is not None else 0
                         ),
                         "proof_obligations_pending": len(turn_obligations),
+                        "autoresearch_candidate_id": (
+                            str(research_candidate.CANDIDATE_ID)
+                            if research_candidate is not None else ""
+                        ),
+                        "autoresearch_target_obligation": (
+                            str(research_candidate.TARGET_OBLIGATION_ID)
+                            if research_candidate is not None else ""
+                        ),
                     },
                 },
             )
@@ -958,7 +987,7 @@ def main() -> int:
             try:
                 generator_messages = build_generator_messages(
                     research_goal,
-                    steering=steering,
+                    steering=generator_steering,
                     previous_generator=previous_generator,
                     previous_critic=(
                         previous_critic + critic_issue_injection
@@ -1041,7 +1070,11 @@ def main() -> int:
                 critic_messages = build_critic_messages(
                     research_goal,
                     critic_context,
-                    steering=steering + critic_issue_injection,
+                    steering="\n\n".join(filter(None, (
+                        steering,
+                        critic_strategy,
+                        critic_issue_injection,
+                    ))),
                     proof_ledger=proof_ledger_text + (
                         "\nGENERATOR COVERAGE FAILURE: missing "
                         + ", ".join(sorted(missing_issues))
