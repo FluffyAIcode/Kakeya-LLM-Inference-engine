@@ -1,6 +1,7 @@
 import io
 import json
 import signal
+import sys
 import time
 from pathlib import Path
 
@@ -61,6 +62,22 @@ def test_timestamped_tee_preserves_terminal_and_flushes_log(tmp_path):
         "[t2] next line\n"
         "[t3] [input] prove RH\n"
     )
+
+
+def test_timestamped_tee_shutdown_restores_streams_and_flush_is_safe(
+    tmp_path,
+    monkeypatch,
+):
+    terminal = io.StringIO()
+    tee = TimestampedTee(terminal, tmp_path / "agent.log")
+    monkeypatch.setattr(sys, "stdout", tee)
+    monkeypatch.setattr(sys, "stderr", tee)
+    tee.close_log()
+    assert sys.stdout is terminal
+    assert sys.stderr is terminal
+    tee.flush()
+    tee.write("after-close")
+    assert terminal.getvalue() == "after-close"
 
 
 def test_token_printer_streams_only_new_suffix(capsys):
