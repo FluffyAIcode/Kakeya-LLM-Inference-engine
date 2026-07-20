@@ -115,3 +115,20 @@ def test_supervisor_predeploys_before_real_strategy_proposal():
     )
     assert "phase=predeploy-current" in body
     assert "phase=strategy-proposal real-gemma" in body
+
+
+def test_gan_subprocess_output_is_streamed_not_captured():
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "autoresearch"
+        / "prefill"
+        / "supervisor.py"
+    ).read_text()
+    body = source[
+        source.index("def run_gan_experiment"):
+        source.index("def read_results")
+    ]
+    assert "subprocess.Popen(" in body
+    assert "stderr=subprocess.STDOUT" in body
+    assert 'print(line, end="", flush=True)' in body
+    assert "capture_output=True" not in body
