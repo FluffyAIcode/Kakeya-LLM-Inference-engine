@@ -1,6 +1,7 @@
 from autoresearch.prefill.supervisor import (
     append_result,
     best_kept,
+    deploy_candidate,
     parse_research_verdict,
     read_results,
     render_candidate,
@@ -137,6 +138,30 @@ def test_append_result_migrates_legacy_results_header(tmp_path):
     assert rows[0]["candidate_id"] == "legacy"
     assert rows[0]["research_outcome"] == ""
     assert rows[1]["hypothesis_sha256"] == "sha"
+
+
+def test_worker_deploy_waits_for_unload_and_readiness(monkeypatch):
+    captured = []
+
+    class Result:
+        stdout = "--prefill-compute-chunk-tokens 128"
+
+    def fake_run(command, **kwargs):
+        captured.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._wait_port",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr("subprocess.run", fake_run)
+    deploy_candidate("allens", 128)
+    remote = captured[0][0][-1]
+    assert captured[0][1]["check"] is True
+    assert "worker service did not unload" in remote
+    assert "launchctl bootstrap" in remote
+    assert "nc -G 2 -z 127.0.0.1 53051" in remote
+    assert "a[i+1]='128'" in remote
 
 
 def test_supervisor_predeploys_before_real_strategy_proposal():

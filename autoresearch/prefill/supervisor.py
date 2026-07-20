@@ -219,10 +219,50 @@ t.write_bytes(plistlib.dumps(d))
 os.chmod(t,0o644)
 t.replace(p)
 PY
-launchctl bootout gui/$(id -u)/ai.kakeya.prefill-worker 2>/dev/null || true
-sleep 3
-launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/ai.kakeya.prefill-worker.plist\"
-launchctl kickstart -k gui/$(id -u)/ai.kakeya.prefill-worker
+domain=gui/$(id -u)
+label=ai.kakeya.prefill-worker
+service=\"$domain/$label\"
+plist=\"$HOME/Library/LaunchAgents/$label.plist\"
+launchctl bootout \"$service\" 2>/dev/null || true
+for delay in 1 1 2 3 5; do
+    if ! launchctl print \"$service\" >/dev/null 2>&1; then
+        break
+    fi
+    sleep \"$delay\"
+done
+if launchctl print \"$service\" >/dev/null 2>&1; then
+    echo \"worker service did not unload\" >&2
+    exit 70
+fi
+loaded=0
+for delay in 1 2 3 5; do
+    if launchctl bootstrap \"$domain\" \"$plist\"; then
+        loaded=1
+        break
+    fi
+    if launchctl print \"$service\" >/dev/null 2>&1; then
+        loaded=1
+        break
+    fi
+    sleep \"$delay\"
+done
+if [ \"$loaded\" -ne 1 ]; then
+    echo \"worker service did not bootstrap\" >&2
+    exit 71
+fi
+launchctl kickstart -k \"$service\"
+for attempt in $(seq 1 120); do
+    if nc -G 2 -z 127.0.0.1 53051 >/dev/null 2>&1; then
+        exit 0
+    fi
+    if ! launchctl print \"$service\" >/dev/null 2>&1; then
+        echo \"worker service disappeared during startup\" >&2
+        exit 72
+    fi
+    sleep 1
+done
+echo \"worker did not become ready on port 53051\" >&2
+exit 73
 """
     subprocess.run(
         ["ssh", "-o", "BatchMode=yes", worker_ssh, remote],
@@ -563,7 +603,14 @@ def run_iteration(args, iteration: int) -> dict:
         candidate_path.write_bytes(previous_candidate)
         _restore(state_path, previous_state)
         _restore(ledger_path, previous_ledger)
-        deploy_candidate(args.worker_ssh, previous_chunk)
+        try:
+            deploy_candidate(args.worker_ssh, previous_chunk)
+        except Exception as rollback_exc:
+            print(
+                "[autoresearch] phase=rollback-worker-failed "
+                f"error={type(rollback_exc).__name__}: {rollback_exc}",
+                flush=True,
+            )
         raise
 
 
