@@ -64,7 +64,24 @@ def _candidate_snapshot(module) -> dict:
 
 
 def validate_candidate(candidate: dict) -> None:
-    missing = [field for field in REQUIRED_CANDIDATE_FIELDS if not candidate.get(field)]
+    text_fields = {
+        "candidate_id",
+        "target_obligation_id",
+        "hypothesis",
+        "generator_directive",
+        "critic_directive",
+    }
+    missing = [
+        field
+        for field in REQUIRED_CANDIDATE_FIELDS
+        if (
+            not candidate.get(field)
+            or (
+                field in text_fields
+                and not isinstance(candidate.get(field), str)
+            )
+        )
+    ]
     if missing:
         raise ValueError(f"candidate missing fields: {missing}")
     if candidate["prefill_compute_chunk_tokens"] not in (64, 128, 256):
@@ -148,6 +165,41 @@ def repair_candidate_schema(
                 repaired[field] = value
                 changed.append(field)
                 break
+    nested_hypothesis = repaired.get("hypothesis")
+    if isinstance(nested_hypothesis, dict):
+        nested_target = (
+            nested_hypothesis.get("target_obligation")
+            or nested_hypothesis.get("target_obligation_id")
+            or nested_hypothesis.get("target")
+        )
+        if nested_target and not repaired.get("target_obligation_id"):
+            repaired["target_obligation_id"] = str(nested_target).strip()
+            changed.append("target_obligation_id")
+        repaired["hypothesis"] = str(
+            nested_hypothesis.get("statement")
+            or nested_hypothesis.get("text")
+            or nested_hypothesis.get("claim")
+            or ""
+        ).strip()
+        changed.append("hypothesis")
+    for field in (
+        "candidate_id",
+        "target_obligation_id",
+        "generator_directive",
+        "critic_directive",
+    ):
+        value = repaired.get(field)
+        if isinstance(value, dict):
+            repaired[field] = str(
+                value.get("statement")
+                or value.get("text")
+                or value.get("content")
+                or ""
+            ).strip()
+            changed.append(field)
+        elif value is not None and not isinstance(value, str):
+            repaired[field] = str(value).strip()
+            changed.append(field)
     target = str(repaired.get("target_obligation_id", ""))
     leaves = _pending_leaf_ids(ledger)
     if target not in leaves:
@@ -164,10 +216,19 @@ def repair_candidate_schema(
         if item.get("obligation_id") == target
     )
     hypothesis = str(repaired.get("hypothesis", "")).strip()
+    repaired["hypothesis"] = hypothesis
+    plan = repaired.get("plan", {})
+    plan_steps = plan.get("steps", []) if isinstance(plan, dict) else []
+    plan_text = " ".join(
+        f"Step {index}: {str(step).strip()}"
+        for index, step in enumerate(plan_steps, start=1)
+        if str(step).strip()
+    )
     if not repaired.get("generator_directive") and hypothesis:
         repaired["generator_directive"] = (
             f"Focus exclusively on {target}: {statement} "
-            f"Construct and test this hypothesis: {hypothesis}"
+            f"Construct and test this hypothesis: {hypothesis} "
+            f"{plan_text}"
         )
         changed.append("generator_directive")
     if not repaired.get("critic_directive") and hypothesis:

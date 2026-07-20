@@ -125,6 +125,54 @@ def test_strategy_schema_repair_accepts_uppercase_and_alias_keys():
     }
 
 
+def test_strategy_schema_repair_flattens_nested_hypothesis_and_plan():
+    repaired, fields = repair_candidate_schema(
+        {
+            "candidate_id": "candidate-v2-c2-sub-01",
+            "hypothesis": {
+                "statement": "Construct regularized analytic continuations.",
+                "target_obligation": "RH-C2-child",
+            },
+            "plan": {
+                "steps": [
+                    "Define a regularization kernel.",
+                    "Attempt to prove compact convergence.",
+                ],
+            },
+        },
+        current={**_candidate(), "target_obligation_id": "RH-C2"},
+        ledger={"obligations": [
+            {
+                "obligation_id": "RH-C2",
+                "statement": "Zero convergence.",
+                "status": "UNRESOLVED",
+                "parent_id": "",
+            },
+            {
+                "obligation_id": "RH-C2-child",
+                "statement": "Prove regularized compact convergence.",
+                "status": "UNRESOLVED",
+                "parent_id": "RH-C2",
+            },
+        ]},
+    )
+    assert repaired["hypothesis"] == (
+        "Construct regularized analytic continuations."
+    )
+    assert repaired["target_obligation_id"] == "RH-C2-child"
+    assert "Step 1: Define a regularization kernel." in (
+        repaired["generator_directive"]
+    )
+    assert isinstance(repaired["hypothesis"], str)
+    assert {
+        "hypothesis",
+        "target_obligation_id",
+        "generator_directive",
+        "critic_directive",
+        "prefill_compute_chunk_tokens",
+    }.issubset(set(fields))
+
+
 def test_keep_requires_novel_mathematical_advancement():
     baseline = {
         "proof_obligations_unresolved": "5",
