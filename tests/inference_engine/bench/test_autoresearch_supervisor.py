@@ -6,6 +6,7 @@ from autoresearch.prefill.supervisor import (
     should_keep,
     validate_candidate,
 )
+from pathlib import Path
 
 
 def _candidate():
@@ -99,3 +100,18 @@ def test_results_are_append_only_and_best_is_selected(tmp_path):
     rows = read_results(path)
     assert len(rows) == 2
     assert best_kept(rows)["candidate_id"] == "c2"
+
+
+def test_supervisor_predeploys_before_real_strategy_proposal():
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "autoresearch"
+        / "prefill"
+        / "supervisor.py"
+    ).read_text()
+    body = source[source.index("def run_iteration"):source.index("def main")]
+    assert body.index("deploy_candidate(args.worker_ssh, previous_chunk)") < (
+        body.index("proposed = propose_candidate")
+    )
+    assert "phase=predeploy-current" in body
+    assert "phase=strategy-proposal real-gemma" in body
