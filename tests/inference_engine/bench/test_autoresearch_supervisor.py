@@ -8,6 +8,7 @@ from autoresearch.prefill.supervisor import (
     render_candidate,
     should_keep,
     StrategyPrefillHeartbeat,
+    _extract_json,
     _pending_leaf_ids,
     validate_candidate,
 )
@@ -171,6 +172,34 @@ def test_strategy_schema_repair_flattens_nested_hypothesis_and_plan():
         "critic_directive",
         "prefill_compute_chunk_tokens",
     }.issubset(set(fields))
+
+
+def test_strategy_parser_converts_prose_plan_and_ignores_latex_braces():
+    output = r"""
+The next step is to address the pending leaf: **RH-C2-wrong**.
+
+### Plan for Next Run
+1. **Objective**: Formulate the mathematical framework for the Zero-Exclusion Lemma.
+2. **Mathematical Strategy**:
+   * Investigate $\tilde{F}_N(s)$ using Rouché's Theorem.
+   * Determine conditions for $Z(\tilde{F}_N,D) \to P(F,D)$.
+3. **Constraint**: Do not assume RH.
+
+**Targeting Leaf**: `RH-C2-correct`
+"""
+    candidate = _extract_json(output)
+    assert candidate["strategy_parse_mode"] == "prose"
+    assert candidate["target_obligation_id"] == "RH-C2-correct"
+    assert "Zero-Exclusion Lemma" in candidate["hypothesis"]
+    assert len(candidate["plan"]["steps"]) >= 2
+
+
+def test_strategy_parser_accepts_python_literal_candidate():
+    candidate = _extract_json(
+        "```python\n{'candidate_id': 'trial', 'hypothesis': 'test'}\n```",
+    )
+    assert candidate["candidate_id"] == "trial"
+    assert candidate["strategy_parse_mode"] == "python-literal"
 
 
 def test_keep_requires_novel_mathematical_advancement():

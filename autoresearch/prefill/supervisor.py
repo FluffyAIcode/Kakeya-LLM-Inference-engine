@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import hashlib
 import json
@@ -270,13 +271,72 @@ def render_candidate(candidate: dict) -> str:
 
 def _extract_json(text: str) -> dict:
     stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\\s*", "", stripped)
-        stripped = re.sub(r"\\s*```$", "", stripped)
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("strategy agent returned no JSON object")
-    return json.loads(stripped[start:end + 1])
+    decoder = json.JSONDecoder()
+    for start, character in enumerate(stripped):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stripped[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            value["strategy_parse_mode"] = "json"
+            return value
+    for block in re.findall(
+        r"```(?:json|python)?\s*(.*?)```",
+        stripped,
+        re.DOTALL | re.IGNORECASE,
+    ):
+        try:
+            value = ast.literal_eval(block.strip())
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(value, dict):
+            value["strategy_parse_mode"] = "python-literal"
+            return value
+    target_matches = re.findall(
+        r"(?:Targeting\s+Leaf|pending\s+leaf)\*{0,2}\s*:?\s*"
+        r"(?:\*\*)?`?([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)`?(?:\*\*)?",
+        stripped,
+        re.IGNORECASE,
+    )
+    objective_match = re.search(
+        r"Objective\*{0,2}\s*:\s*(.+)$",
+        stripped,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    steps = [
+        re.sub(r"^\s*(?:[-*]|\d+\.)\s*", "", line).strip()
+        for line in stripped.splitlines()
+        if re.match(r"^\s*(?:[-*]|\d+\.)\s+\S", line)
+        and "Objective" not in line
+        and "Constraint" not in line
+    ]
+    objective = (
+        objective_match.group(1).strip()
+        if objective_match is not None
+        else ""
+    )
+    if not objective:
+        prose = [
+            line.strip()
+            for line in stripped.splitlines()
+            if line.strip()
+            and not line.strip().startswith(("#", "```"))
+        ]
+        objective = " ".join(prose[:3])[:1200]
+    if not objective:
+        raise ValueError("strategy agent returned no usable candidate")
+    digest = hashlib.sha256(stripped.encode()).hexdigest()[:12]
+    return {
+        "candidate_id": f"candidate-prose-{digest}",
+        "target_obligation_id": (
+            target_matches[-1] if target_matches else ""
+        ),
+        "hypothesis": objective,
+        "plan": {"steps": steps[:8]},
+        "strategy_parse_mode": "prose",
+    }
 
 
 def parse_research_verdict(output: str, candidate_id: str) -> dict:
@@ -498,6 +558,11 @@ def propose_candidate(
         flush=True,
     )
     candidate = _extract_json(strategy_output)
+    parse_mode = candidate.pop("strategy_parse_mode", "unknown")
+    print(
+        f"[autoresearch] phase=strategy-parse mode={parse_mode}",
+        flush=True,
+    )
     candidate, repaired_fields = repair_candidate_schema(
         candidate,
         current=current,
