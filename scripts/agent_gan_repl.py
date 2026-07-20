@@ -636,7 +636,17 @@ def build_generator_messages(
     previous_generator: str = "",
     previous_critic: str = "",
     proof_ledger: str = "",
+    target_obligation_id: str = "",
 ) -> list[dict[str, str]]:
+    if target_obligation_id:
+        previous_generator = extract_obligation_history(
+            previous_generator,
+            target_obligation_id,
+        )
+        previous_critic = extract_obligation_history(
+            previous_critic,
+            target_obligation_id,
+        )
     feedback = ""
     if previous_generator or previous_critic:
         feedback = (
@@ -672,6 +682,22 @@ def build_generator_messages(
             ),
         },
     ]
+
+
+_OBLIGATION_HISTORY_SECTION = re.compile(
+    r"^### (?:ISSUE_RESPONSE|ISSUE_VERDICT)\s+(\S+)\s*$"
+    r"(?P<body>.*?)(?=^### |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def extract_obligation_history(text: str, obligation_id: str) -> str:
+    sections = [
+        match.group(0).strip()
+        for match in _OBLIGATION_HISTORY_SECTION.finditer(text)
+        if match.group(1) == obligation_id
+    ]
+    return "\n\n".join(sections)
 
 
 def build_critic_messages(
@@ -1157,12 +1183,19 @@ def main() -> int:
             try:
                 generator_messages = build_generator_messages(
                     research_goal,
-                    steering=generator_steering,
+                    steering="\n\n".join(filter(None, (
+                        generator_steering,
+                        critic_issue_injection,
+                    ))),
                     previous_generator=previous_generator,
-                    previous_critic=(
-                        previous_critic + critic_issue_injection
-                    ),
+                    previous_critic=previous_critic,
                     proof_ledger=proof_ledger_text,
+                    target_obligation_id=(
+                        turn_obligations[0].obligation_id
+                        if research_candidate is not None
+                        and len(turn_obligations) == 1
+                        else ""
+                    ),
                 )
                 generator_ids = tokenizer.apply_chat_template(
                     generator_messages,
