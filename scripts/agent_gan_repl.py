@@ -286,10 +286,15 @@ def apply_critic_verdicts(
     ledger: ProofObligationLedger,
     critic_text: str,
     run_id: str,
+    obligation_ids: set[str] | None = None,
 ) -> dict[str, str]:
-    pending_ids = {
-        item.obligation_id for item in pending_obligations(ledger)
-    }
+    pending_ids = (
+        obligation_ids
+        if obligation_ids is not None
+        else {
+            item.obligation_id for item in pending_obligations(ledger)
+        }
+    )
     verdicts: dict[str, tuple[str, str]] = {}
     for match in _ISSUE_VERDICT.finditer(critic_text):
         obligation_id = match.group(1)
@@ -358,6 +363,35 @@ def create_child_obligations(
         for item in ledger.obligations
     }
     created: list[ProofObligation] = []
+
+    def add_child(parent_id: str, statement: str, evidence: str) -> None:
+        statement = statement.strip().strip("`")
+        normalized = _normalize_obligation_statement(statement)
+        parent = next(
+            item for item in ledger.obligations
+            if item.obligation_id == parent_id
+        )
+        if (
+            not normalized
+            or normalized in {"none", "no missing lemma"}
+            or normalized == _normalize_obligation_statement(parent.statement)
+            or (parent_id, normalized) in existing
+        ):
+            return
+        suffix = hashlib.sha256(
+            f"{parent_id}:{normalized}".encode(),
+        ).hexdigest()[:10]
+        child = ProofObligation(
+            obligation_id=f"{parent_id}-{suffix}",
+            statement=statement,
+            parent_id=parent_id,
+            last_run_id=run_id,
+            last_evidence=evidence,
+        )
+        ledger.obligations.append(child)
+        existing.add((parent_id, normalized))
+        created.append(child)
+
     for match in _ISSUE_VERDICT.finditer(critic_text):
         parent_id = match.group(1)
         if parent_id not in parent_ids:
@@ -380,32 +414,39 @@ def create_child_obligations(
             or missing_match is None
         ):
             continue
-        statement = missing_match.group(1).strip()
-        normalized = _normalize_obligation_statement(statement)
-        parent = next(
-            item for item in ledger.obligations
-            if item.obligation_id == parent_id
+        add_child(
+            parent_id,
+            missing_match.group(1),
+            "Created from Critic ISSUE_VERDICT missing lemma.",
         )
-        if (
-            not normalized
-            or normalized in {"none", "no missing lemma"}
-            or normalized == _normalize_obligation_statement(parent.statement)
-            or (parent_id, normalized) in existing
-        ):
+    for line in critic_text.splitlines():
+        if not line.strip().startswith("|"):
             continue
-        suffix = hashlib.sha256(
-            f"{parent_id}:{normalized}".encode(),
-        ).hexdigest()[:10]
-        child = ProofObligation(
-            obligation_id=f"{parent_id}-{suffix}",
-            statement=statement,
-            parent_id=parent_id,
-            last_run_id=run_id,
-            last_evidence="Created from Critic missing lemma.",
+        cells = [
+            cell.strip().strip("*").strip()
+            for cell in line.strip().strip("|").split("|")
+        ]
+        if len(cells) < 4 or cells[1].upper() != "UNRESOLVED":
+            continue
+        model_leaf_id, _, evidence, missing = cells[:4]
+        parent_id = next(
+            (
+                parent
+                for parent in sorted(parent_ids, key=len, reverse=True)
+                if (
+                    model_leaf_id == parent
+                    or model_leaf_id.startswith(f"{parent}-")
+                )
+            ),
+            "",
         )
-        ledger.obligations.append(child)
-        existing.add((parent_id, normalized))
-        created.append(child)
+        if not parent_id:
+            continue
+        add_child(
+            parent_id,
+            missing,
+            f"Created from Critic leaf table: {evidence}",
+        )
     if created:
         ledger.version += 1
     return created
@@ -1323,6 +1364,10 @@ def main() -> int:
                         proof_ledger,
                         critic_text,
                         run_id,
+                        {
+                            item.obligation_id
+                            for item in turn_obligations
+                        },
                     )
                     created_obligations = create_child_obligations(
                         proof_ledger,
