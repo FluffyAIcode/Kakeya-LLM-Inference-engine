@@ -2,9 +2,13 @@ from autoresearch.prefill.prepare import evaluate
 
 
 class Candidate:
+    CANDIDATE_ID = "test"
+    TARGET_OBLIGATION_ID = "RH-C1"
     PREFILL_COMPUTE_CHUNK_TOKENS = 256
     SNAPSHOT_MODE = "final_only"
     MAX_SEGMENT_SECONDS = 300
+    REQUIRE_FULL_CONTEXT = True
+    ALLOW_FALLBACK = False
 
 
 def _report(**overrides):
@@ -19,6 +23,9 @@ def _report(**overrides):
         "critic_context_tokens": 900,
         "critic_omitted_tokens": 0,
         "critic_protocol": "goal_anchored_recursive_gan_v3",
+        "proof_obligations_total": 5,
+        "proof_obligations_covered": 5,
+        "proof_obligations_unresolved": 5,
         "delta": {"fallbacks": 0, "remote_job_failures": 0},
     }
     stage.update(overrides)
@@ -38,6 +45,10 @@ def test_autoresearch_rejects_slow_segment_or_semantic_regression():
         "PREFILL_COMPUTE_CHUNK_TOKENS": 512,
         "SNAPSHOT_MODE": "final_only",
         "MAX_SEGMENT_SECONDS": 300,
+        "CANDIDATE_ID": "slow",
+        "TARGET_OBLIGATION_ID": "RH-C1",
+        "REQUIRE_FULL_CONTEXT": True,
+        "ALLOW_FALLBACK": False,
     })
     assert not evaluate(_report(), slow)["accepted"]
     assert not evaluate(

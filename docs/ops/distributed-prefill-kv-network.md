@@ -427,6 +427,20 @@ Karpathy-style optimization lives in `autoresearch/prefill/`. Humans edit
 `prepare.py` evaluates full-context correctness plus cold Critic Prefill time.
 Candidates are retained only when every semantic/topology constraint passes and
 the metric improves; `results.tsv` records experiments.
+`autoresearch/prefill/supervisor.py` is the top-level runtime: it uses a real
+Gemma strategy-agent call to rewrite `candidate.py`, deploys the selected chunk
+strategy to allens, clears both cache tiers, runs one real full-context
+Generator/Critic/Proof-Ledger experiment, evaluates the fixed report, compares
+the lexicographic proof/prefill baseline, atomically keeps or restores
+candidate/state/ledger, appends `results.tsv`, and repeats. Any proposal,
+deployment, telemetry, GAN, evaluator, or restore failure terminates the
+supervisor; there is no fallback path.
+
+Run:
+
+```bash
+bash scripts/run_autoresearch_gan.sh --iterations 1
+```
 Interactive prompt templates are deterministic and contain no per-run nonce, so
 repeating the same task can reuse allens cold-tier and Primary hot-tier KV.
 

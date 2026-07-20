@@ -1,6 +1,6 @@
 # Prefill AutoResearch Program
 
-You are optimizing the two-Mac full-context Prefill system.
+You are optimizing the two-Mac full-context RH proof research system.
 
 ## Ownership
 
@@ -10,7 +10,10 @@ You are optimizing the two-Mac full-context Prefill system.
 
 ## Objective
 
-Minimize `metric_cold_critic_prefill_s`. Lower is better.
+Use a lexicographic objective:
+
+1. Minimize unresolved Proof Obligation Ledger items.
+2. With equal unresolved count, minimize `metric_cold_critic_prefill_s`.
 
 ## Hard constraints
 
@@ -35,6 +38,9 @@ Minimize `metric_cold_critic_prefill_s`. Lower is better.
 8. Keep the candidate only if every hard constraint passes and cold Critic
    Prefill time improves. Otherwise restore the previous candidate.
 9. Append the result and repeat.
+
+Every candidate must target one current unresolved proof obligation and contain
+a falsifiable hypothesis plus distinct Generator and Critic directives.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Optimize only measured Prefill execution while preserving the complete
