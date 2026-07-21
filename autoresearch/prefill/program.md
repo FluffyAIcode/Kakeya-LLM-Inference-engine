@@ -86,6 +86,13 @@ new assumption, narrower domain, or falsifiable conclusion. Existing semantic
 duplicates and all descendants beneath them are retained for audit but marked
 `REJECTED_DUPLICATE`; they are not pending leaves and do not reset stagnation.
 
+Every proposed minimum leaf must include one safe Lean theorem signature with
+explicit typed variables, hypotheses, and conclusion. The host compiles it
+against pinned Lean/mathlib before persistence and records `FORMALIZED` plus a
+signature hash. Missing, unsafe, ill-typed, or duplicate signatures reject the
+child. `FORMALIZED` is not `PROVED`: closure still requires a separate proof
+with no `sorry` and no added axioms.
+
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical
 decomposition progress, while preserving the complete semantic contract.
