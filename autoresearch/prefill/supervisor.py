@@ -626,7 +626,7 @@ def propose_candidate(
     current: dict,
     results_text: str,
     ledger: dict,
-    max_prefill_tokens: int = 8192,
+    max_prefill_tokens: int = 8448,
 ) -> dict:
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -1117,7 +1117,7 @@ def main() -> int:
     parser.add_argument(
         "--strategy-max-prefill-tokens",
         type=int,
-        default=8192,
+        default=8448,
     )
     parser.add_argument(
         "--tokenizer-id",
