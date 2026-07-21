@@ -105,6 +105,31 @@ def test_infer_reports_explicit_client_safety_limit():
     assert metrics["complete"] is False
 
 
+def test_infer_stops_repeated_nonsemantic_chunks():
+    session = Session([
+        ([32, 10], 1),
+        ([10, 32], 1),
+        ([32, 32], 1),
+        ([65], 2),
+    ])
+    tokens, metrics = _infer(
+        Client(session),
+        [],
+        [9],
+        2,
+        lambda: {},
+        max_response_tokens=0,
+        semantic_progress=lambda chunk: bool(
+            "".join(chr(token) for token in chunk).strip()
+        ),
+        max_semantic_stall_chunks=3,
+    )
+    assert tokens == [32, 10, 10, 32, 32, 32]
+    assert metrics["stop_reason"] == "semantic_stall"
+    assert metrics["complete"] is False
+    assert session.calls == 3
+
+
 class CharTokenizer:
     def encode(self, text, **_kwargs):
         return [ord(char) for char in text]

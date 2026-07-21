@@ -1674,6 +1674,12 @@ def main() -> int:
                     get_stats,
                     on_token=generator_printer,
                     max_response_tokens=args.max_response_tokens,
+                    semantic_progress=lambda chunk: bool(
+                        tokenizer.decode(
+                            chunk,
+                            skip_special_tokens=True,
+                        ).strip()
+                    ),
                 )
                 generator_printer.finish()
                 generator_text = tokenizer.decode(
@@ -1768,6 +1774,12 @@ def main() -> int:
                     get_stats,
                     on_token=critic_printer,
                     max_response_tokens=args.max_response_tokens,
+                    semantic_progress=lambda chunk: bool(
+                        tokenizer.decode(
+                            chunk,
+                            skip_special_tokens=True,
+                        ).strip()
+                    ),
                 )
                 critic_printer.finish()
                 critic_text = tokenizer.decode(
@@ -1810,8 +1822,10 @@ def main() -> int:
                         print(
                             "[lean-signature-gate] "
                             f"target={lean_target} "
-                            f"status={'FORMALIZED' if lean_result.ok else 'REJECTED'} "
+                            f"status={lean_result.status} "
                             f"hash={lean_result.signature_hash or '(none)'} "
+                            f"attempts={lean_result.attempts} "
+                            f"elapsed_s={lean_result.elapsed_s:.2f} "
                             f"error={lean_result.error or '(none)'}",
                             flush=True,
                         )

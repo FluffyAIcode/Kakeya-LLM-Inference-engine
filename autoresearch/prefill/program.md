@@ -92,6 +92,14 @@ against pinned Lean/mathlib before persistence and records `FORMALIZED` plus a
 signature hash. Missing, unsafe, ill-typed, or duplicate signatures reject the
 child. `FORMALIZED` is not `PROVED`: closure still requires a separate proof
 with no `sorry` and no added axioms.
+The supervisor prewarms Lean. Signature checks use a 45-second first attempt;
+on timeout the entire Lean process group is killed, the environment is warmed
+again, and one 120-second retry is allowed. Distinguish `TYPECHECK_FAILED`,
+`TYPECHECK_TIMEOUT`, `UNSAFE_REJECTED`, and `ENVIRONMENT_FAILED`.
+
+Generator/Critic decode must also make semantic progress. Three consecutive
+chunks containing only whitespace or empty decoded text terminate the turn as
+`semantic_stall`; never accept an unterminated partial Lean block.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical
