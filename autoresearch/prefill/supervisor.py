@@ -6,6 +6,7 @@ import argparse
 import ast
 import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -328,7 +329,7 @@ def _extract_json(text: str) -> dict:
             if line.strip()
             and not line.strip().startswith(("#", "```"))
         ]
-        objective = " ".join(prose[:3])[:1200]
+        objective = " ".join(prose)
     if not objective:
         raise ValueError("strategy agent returned no usable candidate")
     digest = hashlib.sha256(stripped.encode()).hexdigest()[:12]
@@ -338,7 +339,7 @@ def _extract_json(text: str) -> dict:
             target_matches[-1] if target_matches else ""
         ),
         "hypothesis": objective,
-        "plan": {"steps": steps[:8]},
+        "plan": {"steps": steps},
         "strategy_parse_mode": "prose",
     }
 
@@ -415,6 +416,106 @@ def _pending_leaf_ids(ledger: dict) -> list[str]:
         )
     }
     return sorted(unresolved - unresolved_parents)
+
+
+def build_strategy_research_state(
+    *,
+    current: dict,
+    ledger: dict,
+    results_text: str,
+) -> dict:
+    target_id = _select_repair_target(current, ledger)
+    obligations = {
+        str(item.get("obligation_id", "")): item
+        for item in ledger.get("obligations", [])
+    }
+    ancestry = []
+    cursor = target_id
+    visited = set()
+    while cursor and cursor not in visited:
+        visited.add(cursor)
+        item = obligations[cursor]
+        ancestry.append({
+            "obligation_id": cursor,
+            "statement": item.get("statement", ""),
+            "status": item.get("status", ""),
+            "parent_id": item.get("parent_id", ""),
+            "last_run_id": item.get("last_run_id", ""),
+            "last_evidence": item.get("last_evidence", ""),
+        })
+        cursor = str(item.get("parent_id", ""))
+    ancestry.reverse()
+    ancestry_ids = {
+        item["obligation_id"] for item in ancestry
+    }
+    relevant_results = []
+    if results_text.strip():
+        for row in csv.DictReader(
+            io.StringIO(results_text),
+            delimiter="\t",
+        ):
+            if row.get("target_obligation_id") not in ancestry_ids:
+                continue
+            relevant_results.append({
+                "candidate_id": row.get("candidate_id", ""),
+                "target_obligation_id": row.get(
+                    "target_obligation_id",
+                    "",
+                ),
+                "hypothesis_sha256": row.get("hypothesis_sha256", ""),
+                "research_outcome": row.get("research_outcome", ""),
+                "research_evidence": row.get("research_evidence", ""),
+                "new_frontier": row.get("new_frontier", ""),
+                "kept": row.get("kept", ""),
+                "error": row.get("error", ""),
+            })
+    return {
+        "target_leaf_id": target_id,
+        "target_ancestry": ancestry,
+        "relevant_experiments": relevant_results,
+        "current_candidate": {
+            "candidate_id": current.get("candidate_id", ""),
+            "target_obligation_id": current.get(
+                "target_obligation_id",
+                "",
+            ),
+            "hypothesis": current.get("hypothesis", ""),
+            "prefill_compute_chunk_tokens": current.get(
+                "prefill_compute_chunk_tokens",
+            ),
+        },
+    }
+
+
+def build_strategy_prompt(
+    *,
+    program: str,
+    current: dict,
+    results_text: str,
+    ledger: dict,
+) -> str:
+    research_state = build_strategy_research_state(
+        current=current,
+        ledger=ledger,
+        results_text=results_text,
+    )
+    return (
+        "You are the AutoResearch strategy agent. Follow the human-owned "
+        "program exactly. Attack TARGET_LEAF_ID and propose "
+        "one falsifiable GAN strategy experiment. Return JSON only with keys: "
+        + ", ".join(REQUIRED_CANDIDATE_FIELDS)
+        + ". prefill_compute_chunk_tokens is immutable and must equal "
+        f"{current['prefill_compute_chunk_tokens']}. "
+        "Do not weaken full context, final-only snapshots, or no-fallback rules."
+        " The hypothesis must not repeat any hypothesis hash in RESEARCH_STATE. "
+        "It must either construct a concrete object or attempt a concrete "
+        "counterexample for the target leaf. target_obligation_id must equal "
+        "TARGET_LEAF_ID. Every statement and evidence item below is complete; "
+        "do not infer omitted text from unrelated branches."
+        f"\n\nPROGRAM:\n{program}"
+        "\n\nRESEARCH_STATE:\n"
+        f"{json.dumps(research_state, ensure_ascii=False)}"
+    )
 
 
 class StrategyPrefillHeartbeat:
@@ -495,28 +596,18 @@ def propose_candidate(
     current: dict,
     results_text: str,
     ledger: dict,
+    max_prefill_tokens: int = 4096,
 ) -> dict:
     from kakeya import Client
     from transformers import AutoTokenizer
     from scripts.chat_grpc import _resolve_eos_token_ids
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_id)
-    prompt = (
-        "You are the AutoResearch strategy agent. Follow the human-owned "
-        "program exactly. Select one unresolved proof obligation and propose "
-        "one falsifiable GAN strategy experiment. Return JSON only with keys: "
-        + ", ".join(REQUIRED_CANDIDATE_FIELDS)
-        + ". prefill_compute_chunk_tokens is immutable and must equal "
-        f"{current['prefill_compute_chunk_tokens']}. "
-        "Do not weaken full context, final-only snapshots, or no-fallback rules."
-        " The hypothesis must not repeat any hypothesis or hash in RESULTS. "
-        "It must either construct a concrete object or attempt a concrete "
-        "counterexample for one smaller decomposition leaf. The "
-        "target_obligation_id must be one of PENDING_LEAF_IDS."
-        f"\n\nPROGRAM:\n{program}\n\nCURRENT:\n{json.dumps(current)}"
-        f"\n\nRESULTS:\n{results_text[-12000:]}"
-        f"\n\nLEDGER:\n{json.dumps(ledger)}"
-        f"\n\nPENDING_LEAF_IDS:\n{json.dumps(_pending_leaf_ids(ledger))}"
+    prompt = build_strategy_prompt(
+        program=program,
+        current=current,
+        results_text=results_text,
+        ledger=ledger,
     )
     ids = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
@@ -525,6 +616,11 @@ def propose_candidate(
         return_dict=False,
         enable_thinking=False,
     )
+    if len(ids) > max_prefill_tokens:
+        raise ValueError(
+            "Strategy Prefill token budget exceeded without truncation: "
+            f"{len(ids)} > {max_prefill_tokens}",
+        )
     generated: list[int] = []
     print(
         f"[autoresearch] Strategy Prefill: 0/{len(ids)} tokens (0.0%)",
@@ -820,6 +916,7 @@ def run_iteration(args, iteration: int) -> dict:
                     results_path.read_text() if results_path.exists() else ""
                 ),
                 ledger=ledger_data,
+                max_prefill_tokens=args.strategy_max_prefill_tokens,
             )
             if proposed["target_obligation_id"] not in _pending_leaf_ids(
                 ledger_data,
@@ -988,6 +1085,11 @@ def main() -> int:
     parser.add_argument("--address", default="127.0.0.1:51051")
     parser.add_argument("--dashboard", default="http://127.0.0.1:8090")
     parser.add_argument(
+        "--strategy-max-prefill-tokens",
+        type=int,
+        default=4096,
+    )
+    parser.add_argument(
         "--tokenizer-id",
         default=str(
             Path.home()
@@ -1014,6 +1116,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.iterations <= 0:
         raise SystemExit("iterations must be > 0")
+    if args.strategy_max_prefill_tokens <= 0:
+        raise SystemExit("strategy-max-prefill-tokens must be > 0")
     for iteration in range(args.iterations):
         row = run_iteration(args, iteration)
         print(json.dumps(row, indent=2, sort_keys=True))

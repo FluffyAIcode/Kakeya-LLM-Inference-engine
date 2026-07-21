@@ -1,6 +1,7 @@
 from autoresearch.prefill.supervisor import (
     append_result,
     best_kept,
+    build_strategy_research_state,
     check_runtime_health,
     parse_research_verdict,
     read_results,
@@ -281,6 +282,51 @@ def test_pending_leaf_ids_excludes_unresolved_parents():
     assert _pending_leaf_ids(ledger) == ["RH-C1-child", "RH-C2"]
 
 
+def test_strategy_state_keeps_complete_active_ancestry_only():
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C1",
+            "statement": "unrelated root",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+            "last_evidence": "unrelated evidence",
+        },
+        {
+            "obligation_id": "RH-C2",
+            "statement": "exact root statement",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+            "last_evidence": "exact root evidence",
+        },
+        {
+            "obligation_id": "RH-C2-child",
+            "statement": "exact child statement",
+            "status": "UNRESOLVED",
+            "parent_id": "RH-C2",
+            "last_evidence": "exact child evidence",
+        },
+    ]}
+    results = (
+        "candidate_id\ttarget_obligation_id\tresearch_outcome\t"
+        "research_evidence\tnew_frontier\tkept\terror\t"
+        "hypothesis_sha256\n"
+        "c1\tRH-C1\tINCONCLUSIVE\tunrelated result\tx\tFalse\t\th1\n"
+        "c2\tRH-C2-child\tDECOMPOSED\texact result\tfrontier\tTrue\t\th2\n"
+    )
+    state = build_strategy_research_state(
+        current={**_candidate(), "target_obligation_id": "RH-C2"},
+        ledger=ledger,
+        results_text=results,
+    )
+    assert state["target_leaf_id"] == "RH-C2-child"
+    serialized = str(state)
+    assert "exact root statement" in serialized
+    assert "exact child evidence" in serialized
+    assert "exact result" in serialized
+    assert "unrelated root" not in serialized
+    assert "unrelated result" not in serialized
+
+
 def test_results_are_append_only_and_best_is_selected(tmp_path):
     path = tmp_path / "results.tsv"
     common = {
@@ -390,6 +436,7 @@ def test_supervisor_preserves_runtime_and_cache_across_iterations():
     assert "clear_primary_cache" not in source
     assert "launchctl" not in source
     assert "bootout" not in source
+    assert "results_text[-" not in source
 
 
 def test_gan_subprocess_output_is_streamed_not_captured():
