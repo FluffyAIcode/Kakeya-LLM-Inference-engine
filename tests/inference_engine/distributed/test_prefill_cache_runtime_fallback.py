@@ -283,6 +283,82 @@ def test_successful_local_import_suffix_and_on_reuse(monkeypatch):
     hook.close()
 
 
+def test_worker_proxy_import_uses_returned_snapshot_state():
+    compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
+    hook = DistributedPrefillCacheHook(
+        PrefixCacheStore(
+            compatibility,
+            max_bytes=1024,
+            node_id="head",
+        ),
+        compression=CompressionCodec.NONE,
+    )
+    block_hash = chained_block_hashes([1, 2], compatibility)[0]
+
+    class WorkerProxy(_Verifier):
+        def import_snapshot(self, payload, imported_compatibility):
+            assert payload == b"worker-snapshot"
+            assert imported_compatibility == compatibility
+            return {
+                "next_global_position": 2,
+                "cached_token_ids": [1, 2],
+                "block_hash": block_hash.hex(),
+            }
+
+    verifier = WorkerProxy()
+    reused = hook._try_import(
+        verifier,
+        [1, 2],
+        _Hit(
+            "local",
+            "lease",
+            1,
+            2,
+            len(b"worker-snapshot"),
+            b"worker-snapshot",
+            block_hash=block_hash,
+        ),
+    )
+    assert reused == 2
+    assert verifier.cached_token_sequence == [1, 2]
+    assert verifier.next_global_position == 2
+    assert hook.stats.local_hits == 1
+    hook.close()
+
+
+def test_worker_proxy_append_path_skips_snapshot_publication(monkeypatch):
+    compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
+    hook = DistributedPrefillCacheHook(
+        PrefixCacheStore(
+            compatibility,
+            max_bytes=1024,
+            node_id="head",
+        ),
+    )
+    published = []
+    monkeypatch.setattr(
+        hook,
+        "_publish_boundary",
+        lambda *args: published.append(args),
+    )
+
+    class WorkerProxy(_Verifier):
+        is_decode_worker_proxy = True
+
+        def append_accepted_tokens(self, tokens):
+            self.cached_token_sequence.extend(tokens)
+            self.next_global_position += len(tokens)
+
+    verifier = WorkerProxy()
+    verifier.prefill([1, 2])
+    hashes = chained_block_hashes([1, 2, 3, 4], compatibility)
+    hook._compute_and_publish(verifier, [1, 2, 3, 4], hashes, reused=2)
+    assert verifier.cached_token_sequence == [1, 2, 3, 4]
+    assert hook.stats.tokens_computed == 2
+    assert published == []
+    hook.close()
+
+
 def test_import_budget_and_remote_worker_failures(monkeypatch):
     compatibility = CacheCompatibility(model_id="m", block_size_tokens=2)
     store = PrefixCacheStore(compatibility, max_bytes=1024, node_id="head")
