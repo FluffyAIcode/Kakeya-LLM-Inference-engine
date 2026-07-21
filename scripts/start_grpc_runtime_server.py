@@ -37,6 +37,7 @@ import asyncio
 import json
 import threading
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -596,6 +597,36 @@ async def _serve(args: argparse.Namespace) -> int:
         on_tokens=_build_token_telemetry_callback(args),
         liveness=liveness,
     )
+    acceptance_server = None
+    if args.decode_worker_acceptance_socket:
+        if worker_client is None:
+            raise SystemExit(
+                "--decode-worker-acceptance-socket requires --decode-worker"
+            )
+        from inference_engine.backends.mlx.decode_worker_acceptance import (
+            DecodeWorkerAcceptanceServer,
+        )
+
+        acceptance_server = DecodeWorkerAcceptanceServer(
+            socket_path=args.decode_worker_acceptance_socket,
+            worker=worker_client,
+            runtime_pid=os.getpid(),
+            active_sessions=lambda: store.active_count,
+            active_generations=lambda: gen_coord.active_count,
+            process_footprint=lambda: (
+                process_footprint_bytes()
+                + (
+                    process_footprint_bytes(worker_client.pid)
+                    if worker_client.pid is not None
+                    else 0
+                )
+            ),
+        )
+        acceptance_server.start()
+        _LOG.warning(
+            "local decode acceptance control enabled at %s",
+            acceptance_server.socket_path,
+        )
 
     # Multi-host capability plane (ADR 0009): only constructed when
     # the operator opts in via --enable-capability-exchange (implied
@@ -778,6 +809,8 @@ async def _serve(args: argparse.Namespace) -> int:
     if prefill_hook is not None:
         prefill_hook.close()
     await server.stop(grace=args.shutdown_grace_s)
+    if acceptance_server is not None:
+        acceptance_server.close()
     if worker_client is not None:
         worker_client.close()
     _LOG.info("kakeya gRPC RuntimeService stopped cleanly")
@@ -833,6 +866,14 @@ def main() -> int:
     ap.add_argument("--decode-worker-timeout-s", type=float, default=120.0)
     ap.add_argument(
         "--decode-worker-startup-timeout-s", type=float, default=180.0,
+    )
+    ap.add_argument(
+        "--decode-worker-acceptance-socket",
+        default="",
+        help=(
+            "Enable mode-0600 local acceptance controls on this UDS. "
+            "Never expose this test-only interface on a network listener."
+        ),
     )
     ap.add_argument("--shutdown-grace-s", type=float, default=5.0,
                     help="Seconds to give in-flight RPCs to finish on "

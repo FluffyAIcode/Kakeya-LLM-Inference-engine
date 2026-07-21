@@ -302,15 +302,15 @@ class Harness:
         )
 
     def hang(self) -> GateResult:
-        before = self.control.snapshot()
-        injected = self.control.call(
-            "inject_hang",
-            phase="next_forward",
-            expected_worker_pid=int(before["worker_pid"]),
-        )
         with self.Client(self.args.grpc_address) as client:
             session = client.create_session(eos_token_ids=self.eos_ids)
             session.append(self._tokens(SHORT_PROMPTS[0]))
+            before = self.control.snapshot()
+            injected = self.control.call(
+                "inject_hang",
+                phase="next_forward",
+                expected_worker_pid=int(before["worker_pid"]),
+            )
             thread = threading.Thread(
                 target=lambda: list(
                     session.generate(
@@ -429,7 +429,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--settle-timeout-s", type=float, default=30.0)
     parser.add_argument("--footprint-settle-s", type=float, default=5.0)
     parser.add_argument("--probe-start-timeout-s", type=float, default=15.0)
-    parser.add_argument("--control-timeout-s", type=float, default=10.0)
+    parser.add_argument("--control-timeout-s", type=float, default=240.0)
     parser.add_argument("--poll-interval-s", type=float, default=0.25)
     return parser
 

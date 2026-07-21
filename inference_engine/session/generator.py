@@ -132,6 +132,11 @@ class GenerationCoordinator:
         self._guard_lock = threading.Lock()
         self._active_sessions: set[str] = set()
 
+    @property
+    def active_count(self) -> int:
+        with self._guard_lock:
+            return len(self._active_sessions)
+
     def _verifier_for(self, session_id: str) -> "VerifierProtocol":
         return self._resolver(session_id) if self._resolver else self._verifier
 

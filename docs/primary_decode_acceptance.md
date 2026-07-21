@@ -20,6 +20,31 @@ PYTHONPATH=.:sdks/python python3 \
   --junit-output results/platform-tests/primary_decode_acceptance.xml
 ```
 
+Start the runtime with its test-only, mode-0600 UDS enabled:
+
+```bash
+PYTHONPATH=.:sdks/python python3 scripts/start_grpc_runtime_server.py \
+  --backend mlx \
+  --verifier-id Qwen/Qwen3-0.6B \
+  --bind 127.0.0.1:50051 \
+  --capacity 128 --sink 4 --window 64 \
+  --decode-worker \
+  --decode-worker-timeout-s 110 \
+  --decode-worker-acceptance-socket /tmp/kakeya-decode-acceptance.sock
+```
+
+The corresponding adapter command is:
+
+```bash
+PYTHONPATH=. python3 \
+  scripts/bench_agentic/decode_worker_acceptance_adapter.py \
+  --socket /tmp/kakeya-decode-acceptance.sock
+```
+
+Run `footprint`, `disconnect`, `hang`, `kv-restore`, and `latency` separately
+for pre-CI/hardware checks. Reserve `--mode all` for the blocking release run:
+it deliberately includes the four-hour endurance workload.
+
 Short development runs can override `--session-count` and
 `--endurance-duration-s`, but the gates remain fixed at 100 sessions and
 14,400 seconds. A shortened run therefore emits useful diagnostics while
@@ -27,7 +52,8 @@ remaining failed and cannot be mistaken for release evidence.
 
 ## Decode-worker adapter contract
 
-The worker branch must provide a local executable passed through
+The runtime provides
+`scripts/bench_agentic/decode_worker_acceptance_adapter.py`, passed through
 `--worker-control-command`. The harness starts it once per operation, writes
 one JSON object to stdin, and expects one JSON object on stdout:
 

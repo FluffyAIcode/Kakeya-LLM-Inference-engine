@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -59,6 +60,13 @@ class FakeDecodeVerifier:
     def import_snapshot(self, payload, _compatibility):
         tokens = json.loads(payload)["tokens"]
         self.prefill(tokens)
+
+    def export_snapshot(self, _compatibility):
+        return json.dumps({"tokens": self.cached_token_sequence}).encode()
+
+    def logits_sha256(self):
+        next_token = ((self.cached_token_sequence or [0])[-1] + 1) % 1000
+        return hashlib.sha256(f"fake-int64:[1]:{next_token}".encode()).hexdigest()
 
 
 def build_fake_verifier(config):
@@ -213,6 +221,42 @@ def test_recycle_lazily_restores_other_sessions(tmp_path):
         # Second must notice the worker generation and restore independently.
         assert second.generate_step() == 92
         assert second.cached_token_sequence == [90, 91, 92]
+    finally:
+        client.close()
+
+
+def test_acceptance_snapshot_hang_and_kv_restore_interfaces(tmp_path):
+    client = _client(tmp_path, timeout=0.2)
+    try:
+        snapshot = client.acceptance_snapshot(
+            runtime_pid=100,
+            process_footprint_bytes=200,
+            active_sessions=3,
+            active_generations=1,
+        )
+        assert snapshot == {
+            "runtime_pid": 100,
+            "worker_pid": client.pid,
+            "worker_restart_count": 0,
+            "process_footprint_bytes": 200,
+            "active_sessions": 3,
+            "active_generations": 1,
+        }
+
+        old_pid = client.pid
+        session = client.get("hang")
+        session.prefill([1, 2])
+        assert client.inject_hang(old_pid)["accepted"] is True
+        session.append_accepted_tokens([3])
+        assert session.generate_step() == 4
+        assert client.pid != old_pid
+        assert client.restart_count == 1
+
+        parity = client.kv_restore_parity([10, 11, 12])
+        assert parity["baseline_first_token_id"] == 13
+        assert parity["restored_first_token_id"] == 13
+        assert parity["baseline_logits_sha256"] == parity["restored_logits_sha256"]
+        assert parity["restore_source"] == "allens_kv+proof_checkpoint"
     finally:
         client.close()
 

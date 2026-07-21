@@ -191,11 +191,42 @@ def _state(verifier: Any) -> dict[str, Any]:
     }
 
 
+def _canonical_logits_sha256(verifier: Any) -> str:
+    """Hash the current last-token logits without losing dtype metadata."""
+    custom = getattr(verifier, "logits_sha256", None)
+    if custom is not None:
+        return str(custom())
+    logits = getattr(verifier, "_next_token_logits_mx", None)
+    if logits is None:
+        logits = verifier.next_token_logits
+    if logits is None:
+        raise RuntimeError("decode worker session has no next-token logits")
+    from inference_engine.distributed.tensor_codec import (
+        mlx_to_wire,
+        to_proto_fields,
+        torch_to_wire,
+    )
+
+    wire = (
+        torch_to_wire(logits)
+        if hasattr(logits, "detach")
+        else mlx_to_wire(logits)
+    )
+    dtype, shape, data = to_proto_fields(wire)
+    metadata = json.dumps(
+        {"dtype": dtype, "shape": [int(value) for value in shape]},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(metadata + b"\0" + data).hexdigest()
+
+
 class _WorkerRuntime:
     def __init__(self, config: dict[str, Any], factory_path: str) -> None:
         self.template = _resolve(factory_path)(config)
         self.sessions: dict[str, Any] = {}
         self.started_at = time.time()
+        self._hang_next_forward = False
         try:
             self.dimensions = _model_dimensions(self.template)
         except (AttributeError, TypeError):
@@ -212,13 +243,20 @@ class _WorkerRuntime:
             raise RuntimeError("decode worker verifier must implement spawn()")
         return spawn()
 
+    def _before_forward(self) -> None:
+        if not self._hang_next_forward:
+            return
+        self._hang_next_forward = False
+        while True:
+            time.sleep(60.0)
+
     def dispatch(
         self,
         operation: str,
         session_id: str,
         arguments: dict[str, Any],
         payload: bytes,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | tuple[dict[str, Any], bytes]:
         if operation == "Health":
             memory = (0, 0, 0)
             try:
@@ -245,6 +283,14 @@ class _WorkerRuntime:
                 "mlx_cache_bytes": memory[1],
                 "mlx_peak_bytes": memory[2],
             }
+        if operation == "InjectHang":
+            expected_pid = int(arguments["expected_worker_pid"])
+            if expected_pid != os.getpid():
+                return {"accepted": False, "worker_pid": os.getpid()}
+            if self._hang_next_forward:
+                return {"accepted": False, "worker_pid": os.getpid()}
+            self._hang_next_forward = True
+            return {"accepted": True, "worker_pid": os.getpid()}
         if not session_id:
             raise ValueError(f"{operation} requires session_id")
         if operation == "Init":
@@ -252,6 +298,7 @@ class _WorkerRuntime:
             self.sessions[session_id] = verifier
             tokens = [int(token) for token in arguments.get("token_ids", ())]
             if tokens:
+                self._before_forward()
                 verifier.prefill(tokens)
             return _state(verifier)
         if operation == "Close":
@@ -293,16 +340,54 @@ class _WorkerRuntime:
                 "token_count": imported.token_count,
                 "block_hash": imported.block_hash.hex(),
             }
+        if operation == "ExportSnapshot":
+            compatibility = dict(arguments["compatibility"])
+            custom_export = getattr(verifier, "export_snapshot", None)
+            if custom_export is not None:
+                snapshot = bytes(custom_export(compatibility))
+            else:
+                from inference_engine.backends.mlx.prefill_snapshot import (
+                    export_mlx_prefill_snapshot,
+                )
+                from inference_engine.distributed.capability import CacheCompatibility
+
+                next_token_logits = getattr(
+                    verifier, "_next_token_logits_mx", None
+                )
+                if next_token_logits is None:
+                    next_token_logits = verifier.next_token_logits
+                snapshot = export_mlx_prefill_snapshot(
+                    verifier.cache,
+                    token_count=int(verifier.next_global_position),
+                    cached_token_ids=verifier.cached_token_sequence,
+                    compatibility=CacheCompatibility(**compatibility),
+                    next_token_logits=next_token_logits,
+                )
+            return (
+                {
+                    **_state(verifier),
+                    "first_token_id": int(verifier.greedy_next_token_id()),
+                    "logits_sha256": _canonical_logits_sha256(verifier),
+                },
+                snapshot,
+            )
         if operation == "Append":
             tokens = [int(token) for token in arguments["token_ids"]]
             if not tokens:
                 raise ValueError("Append token_ids must be non-empty")
+            self._before_forward()
             verifier.append_accepted_tokens(tokens)
             return _state(verifier)
         if operation == "GenerateStep":
             token_id = int(verifier.greedy_next_token_id())
+            input_logits_sha256 = _canonical_logits_sha256(verifier)
+            self._before_forward()
             verifier.append_accepted_tokens([token_id])
-            return {**_state(verifier), "token_id": token_id}
+            return {
+                **_state(verifier),
+                "token_id": token_id,
+                "input_logits_sha256": input_logits_sha256,
+            }
         raise ValueError(f"unknown decode worker operation {operation!r}")
 
 
@@ -337,12 +422,15 @@ def _serve_worker(
                             dict(request.get("arguments", {})),
                             payload,
                         )
+                        response_payload = b""
+                        if isinstance(result, tuple):
+                            result, response_payload = result
                         _send_frame(connection, {
                             "version": PROTOCOL_VERSION,
                             "request_id": request_id,
                             "ok": True,
                             "result": result,
-                        })
+                        }, response_payload)
                     except BaseException as exc:
                         _send_frame(connection, {
                             "version": PROTOCOL_VERSION,
@@ -451,6 +539,80 @@ class DecodeWorkerClient:
             self._health = self._request_locked("Health", "", {}, b"")
             return dict(self._health)
 
+    def inject_hang(self, expected_worker_pid: int) -> dict[str, Any]:
+        with self._lock:
+            return self._request_locked(
+                "InjectHang",
+                "",
+                {"expected_worker_pid": int(expected_worker_pid)},
+                b"",
+            )
+
+    def acceptance_snapshot(
+        self,
+        *,
+        runtime_pid: int,
+        process_footprint_bytes: int,
+        active_sessions: int,
+        active_generations: int,
+    ) -> dict[str, Any]:
+        return {
+            "runtime_pid": int(runtime_pid),
+            "worker_pid": int(self.pid or 0),
+            "worker_restart_count": int(self.restart_count),
+            "process_footprint_bytes": int(process_footprint_bytes),
+            "active_sessions": int(active_sessions),
+            "active_generations": int(active_generations),
+        }
+
+    def kv_restore_parity(self, prompt_token_ids: list[int]) -> dict[str, Any]:
+        """Exercise an Allens snapshot plus router proof-checkpoint restore."""
+        tokens = [int(token) for token in prompt_token_ids]
+        if not tokens:
+            raise ValueError("kv_restore_parity requires prompt_token_ids")
+        from inference_engine.distributed.capability import CacheCompatibility
+
+        compatibility = CacheCompatibility(
+            model_id=self.config.model_id,
+            sink_size=self.config.sink_size,
+            window_size=self.config.window_size,
+        )
+        compat = asdict(compatibility)
+        session_id = f"acceptance-{uuid.uuid4().hex}"
+        session = self.get(session_id)
+        try:
+            session.prefill(tokens)
+            with self._lock:
+                baseline, snapshot = self._request_with_payload_locked(
+                    "ExportSnapshot",
+                    session_id,
+                    {"compatibility": compat},
+                    b"",
+                )
+                checkpoint = self._checkpoints[session_id]
+                checkpoint.snapshot = snapshot
+                checkpoint.compatibility = compat
+                checkpoint.replay_token_ids = []
+                checkpoint.initialized = True
+                self._restored_generation[session_id] = self._generation
+            self.hard_kill()
+            restored = self._session_request(
+                session_id,
+                "GenerateStep",
+                {},
+            )
+            return {
+                "baseline_first_token_id": int(baseline["first_token_id"]),
+                "restored_first_token_id": int(restored["token_id"]),
+                "baseline_logits_sha256": str(baseline["logits_sha256"]),
+                "restored_logits_sha256": str(
+                    restored["input_logits_sha256"]
+                ),
+                "restore_source": "allens_kv+proof_checkpoint",
+            }
+        finally:
+            self.close_session(session_id)
+
     def get(self, session_id: str) -> "DecodeWorkerSession":
         with self._lock:
             proxy = self._proxies.get(session_id)
@@ -524,6 +686,26 @@ class DecodeWorkerClient:
         timeout_s: float | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        result, _ = self._request_with_payload_locked(
+            operation,
+            session_id,
+            arguments,
+            payload,
+            timeout_s=timeout_s,
+            cancel_event=cancel_event,
+        )
+        return result
+
+    def _request_with_payload_locked(
+        self,
+        operation: str,
+        session_id: str,
+        arguments: dict[str, Any],
+        payload: bytes,
+        *,
+        timeout_s: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[dict[str, Any], bytes]:
         if self._socket is None:
             raise DecodeWorkerUnavailable("decode worker is not connected")
         request_id = uuid.uuid4().hex
@@ -555,7 +737,7 @@ class DecodeWorkerClient:
                 )
                 if ready:
                     break
-            response, _ = _recv_frame(self._socket)
+            response, response_payload = _recv_frame(self._socket)
         except OperationCancelledError:
             raise
         except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
@@ -573,7 +755,7 @@ class DecodeWorkerClient:
             if error_type == "ValueError":
                 raise ValueError(message)
             raise DecodeWorkerRemoteError(error_type, message)
-        return dict(response.get("result", {}))
+        return dict(response.get("result", {})), response_payload
 
     def _session_request(
         self,

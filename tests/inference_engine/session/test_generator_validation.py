@@ -188,13 +188,16 @@ def test_generate_rejects_concurrent_stream_for_same_session():
     first = coordinator.generate(
         sess.session_id, max_tokens=1, cancel_event=cancelled,
     )
+    assert coordinator.active_count == 0
     assert next(first).stop_reason == "cancelled"
+    assert coordinator.active_count == 1
     second = coordinator.generate(
         sess.session_id, max_tokens=1, cancel_event=cancelled,
     )
     with pytest.raises(SessionGenerationBusyError):
         next(second)
     first.close()
+    assert coordinator.active_count == 0
 
 
 def test_generate_prefers_on_device_argmax_and_last_logits_fast_path():
