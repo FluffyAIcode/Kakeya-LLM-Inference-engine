@@ -335,6 +335,36 @@ def test_host_candidate_targets_deepest_current_branch_leaf():
     assert candidate["prefill_compute_chunk_tokens"] == 256
 
 
+def test_host_candidate_rolls_back_to_nearest_valid_ancestor():
+    rejected_target = "RH-C2-duplicate-child"
+    current = {
+        **_candidate(),
+        "target_obligation_id": rejected_target,
+    }
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C1",
+            "statement": "Unrelated leaf.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "RH-C2-gap",
+            "statement": "Falsify the density-singularity implication.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": rejected_target,
+            "statement": "Renamed density-singularity implication.",
+            "status": "REJECTED_DUPLICATE",
+            "parent_id": "RH-C2-gap",
+        },
+    ]}
+    candidate = build_host_candidate(current, ledger)
+    assert candidate["target_obligation_id"] == "RH-C2-gap"
+
+
 def test_strategy_is_triggered_only_by_events(tmp_path):
     progress = {
         "kept": "True",
@@ -546,6 +576,9 @@ def test_supervisor_preserves_runtime_and_cache_across_iterations():
         / "supervisor.py"
     ).read_text()
     body = source[source.index("def run_iteration"):source.index("def main")]
+    assert body.index("audit_ledger_semantic_duplicates(") < body.index(
+        "previous_ledger = _backup",
+    )
     assert body.index("check_runtime_health(") < body.index(
         "strategy_trigger_reason(",
     )
