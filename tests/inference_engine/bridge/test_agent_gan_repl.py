@@ -20,6 +20,7 @@ from scripts.agent_gan_repl import (
     build_critic_messages,
     build_generator_messages,
     extract_obligation_history,
+    enforce_prefill_token_budget,
     install_signal_protection,
     is_runtime_artifact_prompt,
     consume_critic_issue_batch,
@@ -322,6 +323,19 @@ Missing lemma: target compact convergence lemma.
     prompt = messages[-1]["content"]
     assert "target convergence branch" in prompt
     assert "unrelated operator branch" not in prompt
+
+
+def test_prefill_budget_rejects_whole_input_without_truncation():
+    token_ids = list(range(7))
+    enforce_prefill_token_budget("Generator", token_ids, 7)
+    try:
+        enforce_prefill_token_budget("Critic", token_ids, 6)
+    except ValueError as exc:
+        assert "without truncation" in str(exc)
+        assert "7 > 6" in str(exc)
+    else:
+        raise AssertionError("over-budget Prefill must be rejected")
+    assert token_ids == list(range(7))
 
 
 def test_runtime_output_cannot_replace_research_goal():

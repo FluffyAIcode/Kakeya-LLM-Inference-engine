@@ -670,6 +670,19 @@ def recover_checkpoint_from_log(
     )
 
 
+def enforce_prefill_token_budget(
+    stage: str,
+    token_ids,
+    max_tokens: int,
+) -> None:
+    token_count = len(token_ids)
+    if token_count > max_tokens:
+        raise ValueError(
+            f"{stage} Prefill token budget exceeded without truncation: "
+            f"{token_count} > {max_tokens}",
+        )
+
+
 def build_generator_messages(
     goal: str,
     *,
@@ -915,6 +928,12 @@ def main() -> int:
     parser.add_argument("--tokenizer-id", required=True)
     parser.add_argument("--output-tokens", type=int, default=64)
     parser.add_argument(
+        "--max-prefill-tokens",
+        type=int,
+        default=6144,
+        help="Hard per-stage Prefill budget; over-budget input is rejected.",
+    )
+    parser.add_argument(
         "--max-response-tokens",
         type=int,
         default=0,
@@ -968,6 +987,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.output_tokens <= 0:
         raise SystemExit("output-tokens must be > 0")
+    if args.max_prefill_tokens <= 0:
+        raise SystemExit("max-prefill-tokens must be > 0")
     if args.auto_loop_boundary_wait_s < 0:
         raise SystemExit("auto-loop-boundary-wait-s must be >= 0")
     research_candidate = None
@@ -1245,6 +1266,11 @@ def main() -> int:
                     return_dict=False,
                     enable_thinking=False,
                 )
+                enforce_prefill_token_budget(
+                    "Generator",
+                    generator_ids,
+                    args.max_prefill_tokens,
+                )
                 print(
                     f"[allens] Generator Prefill: {len(generator_ids)} tokens...",
                     flush=True,
@@ -1333,6 +1359,11 @@ def main() -> int:
                     tokenize=True,
                     return_dict=False,
                     enable_thinking=False,
+                )
+                enforce_prefill_token_budget(
+                    "Critic",
+                    critic_ids,
+                    args.max_prefill_tokens,
                 )
                 print(
                     f"[allens] Critic Prefill: {len(critic_ids)} tokens...",

@@ -57,6 +57,14 @@ benchmark here. Model/tokenizer/quantization/rope/window/cache-format changes
 must be deployed outside this supervisor. Cold benchmarks are explicit,
 separate invocations of `scripts/benchmark_prefill_architecture.py`.
 
+Prefill budgets are hard admission limits, never truncation instructions.
+Strategy input must fit 4096 tokens by carrying the complete active leaf
+ancestry and its exact experiment records. Generator and Critic inputs must fit
+6144 tokens; the Critic always receives the complete current Generator output.
+If any complete semantic unit exceeds its budget, reject it before remote
+Prefill and preserve the checkpoint. Never slice, sample, summarize, or drop
+the tail of an over-budget input.
+
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical
 decomposition progress, while preserving the complete semantic contract.
