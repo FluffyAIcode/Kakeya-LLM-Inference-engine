@@ -397,23 +397,25 @@ def test_runtime_health_check_is_read_only(monkeypatch):
 def test_strategy_prefill_heartbeat_reports_delta(monkeypatch, capsys):
     heartbeat = StrategyPrefillHeartbeat(interval_s=0.01)
     heartbeat._baseline = {
-        "remote_job_tokens_total": 100,
-        "remote_job_tokens_computed": 100,
+        "remote_jobs": 10,
+        "remote_job_tokens_total": 300,
+        "remote_job_tokens_computed": 300,
         "remote_hits": 2,
         "tokens_reused": 20,
     }
     monkeypatch.setattr(
         "autoresearch.prefill.supervisor._json_request",
         lambda _url: {"prefill": {
+            "remote_jobs": 11,
             "remote_job_tokens_total": 300,
-            "remote_job_tokens_computed": 228,
+            "remote_job_tokens_computed": 128,
             "remote_hits": 3,
             "tokens_reused": 84,
         }},
     )
     heartbeat._emit()
     output = capsys.readouterr().out
-    assert "128/200 tokens (64.0%)" in output
+    assert "128/300 tokens (42.7%)" in output
     assert "remote_hits=1 reused=64" in output
 
 
