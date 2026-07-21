@@ -148,6 +148,33 @@ class MLXSinkWindowVerifier:
                 for num_kv_heads, head_dim, _layer_type in geometry
             )
 
+    def spawn(self) -> "MLXSinkWindowVerifier":
+        """Create an empty session verifier sharing this instance's model.
+
+        Decode-worker mode owns one loaded model and one lightweight verifier
+        adapter per session.  Constructing through ``__init__`` would call
+        ``mlx_lm.load`` for every session, so copy only immutable model
+        metadata and initialize independent KV/logit state here.
+        """
+        child = object.__new__(type(self))
+        child.config = self.config
+        child.model = self.model
+        child.tokenizer = self.tokenizer
+        child._mx_dtype = self._mx_dtype
+        child.cache = None
+        child.cache_logical_size = 0
+        child.next_global_position = 0
+        child._next_token_logits_mx = None
+        child._next_token_id_mx = None
+        child._next_token_logits_torch = None
+        child.cached_token_sequence = []
+        child.quantization = self.quantization
+        child.stats = VerifierStats(
+            weight_bytes=self.quantization.total_weight_bytes,
+        )
+        child._bytes_per_kv_token = self._bytes_per_kv_token
+        return child
+
     # ---------------------------- public API ---------------------------- #
 
     @property

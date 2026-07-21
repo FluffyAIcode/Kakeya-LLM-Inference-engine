@@ -55,6 +55,8 @@ from inference_engine.server.runtime_health import (
     DecodeLiveness,
     PrimaryMemoryGovernor,
     create_runtime_health_app,
+    mlx_memory_bytes,
+    process_footprint_bytes,
 )
 from inference_engine.session.coordinator import AppendTokensCoordinator
 from inference_engine.session.generator import GenerationCoordinator
@@ -361,19 +363,43 @@ async def _serve(args: argparse.Namespace) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
-    _LOG.info(
-        "loading verifier backend=%s id=%s sink=%d window=%d",
-        args.backend, args.verifier_id, args.sink, args.window,
-    )
-    verifier = _build_verifier(
-        backend=args.backend, verifier_id=args.verifier_id,
-        sink=args.sink, window=args.window,
-        drafter_id=args.drafter_id, f_theta_dir=args.f_theta_dir,
-        s5_exact_full_attn=not args.no_s5_exact_full_attn,
-        device=args.device,
-    )
-
-    num_layers, num_kv_heads, head_dim = _resolve_kv_dims(verifier)
+    worker_client = None
+    if args.decode_worker:
+        if args.backend != "mlx":
+            raise SystemExit("--decode-worker requires --backend mlx")
+        from inference_engine.backends.mlx.decode_worker import (
+            DecodeWorkerClient,
+            DecodeWorkerConfig,
+        )
+        _LOG.info(
+            "starting isolated MLX decode worker id=%s sink=%d window=%d",
+            args.verifier_id, args.sink, args.window,
+        )
+        worker_client = DecodeWorkerClient(DecodeWorkerConfig(
+            model_id=args.verifier_id,
+            sink_size=args.sink,
+            window_size=args.window,
+            request_timeout_s=args.decode_worker_timeout_s,
+            startup_timeout_s=args.decode_worker_startup_timeout_s,
+            socket_path=args.decode_worker_socket,
+        ))
+        # This object is a transport/process owner, not a model.  The router
+        # process has not imported the MLX verifier module or loaded weights.
+        verifier = worker_client
+        num_layers, num_kv_heads, head_dim = worker_client.dimensions
+    else:
+        _LOG.info(
+            "loading verifier backend=%s id=%s sink=%d window=%d",
+            args.backend, args.verifier_id, args.sink, args.window,
+        )
+        verifier = _build_verifier(
+            backend=args.backend, verifier_id=args.verifier_id,
+            sink=args.sink, window=args.window,
+            drafter_id=args.drafter_id, f_theta_dir=args.f_theta_dir,
+            s5_exact_full_attn=not args.no_s5_exact_full_attn,
+            device=args.device,
+        )
+        num_layers, num_kv_heads, head_dim = _resolve_kv_dims(verifier)
     _LOG.info(
         "verifier dims: layers=%d kv_heads=%d head_dim=%d capacity=%d",
         num_layers, num_kv_heads, head_dim, args.sink + args.window,
@@ -478,7 +504,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # gets its own verifier adapter (isolated KV) sharing the model weights via
     # the adapter's spawn(); the registry doubles as cache_inspector + resolver.
     session_registry = None
-    if args.multi_tenant:
+    if args.multi_tenant and worker_client is None:
         if not hasattr(verifier, "spawn"):
             raise SystemExit(
                 f"--multi-tenant requires a verifier that supports per-session "
@@ -498,6 +524,8 @@ async def _serve(args: argparse.Namespace) -> int:
     def on_session_removed(session_id: str, reason: str) -> None:
         if session_registry is not None:
             session_registry.remove(session_id)
+        if worker_client is not None:
+            worker_client.close_session(session_id)
         if governor_holder:
             governor_holder[0].on_session_removed(session_id, reason)
         _LOG.info("session removed id=%s reason=%s", session_id, reason)
@@ -516,9 +544,25 @@ async def _serve(args: argparse.Namespace) -> int:
         warning_bytes=int(args.memory_warning_gb * (1 << 30)),
         drain_bytes=int(args.memory_drain_gb * (1 << 30)),
         unhealthy_bytes=int(args.memory_unhealthy_gb * (1 << 30)),
+        memory_provider=(
+            worker_client.memory_bytes if worker_client is not None else None
+        ) or mlx_memory_bytes,
+        footprint_provider=(
+            (
+                lambda: (
+                    process_footprint_bytes()
+                    + process_footprint_bytes(worker_client.pid)
+                )
+            )
+            if worker_client is not None else process_footprint_bytes
+        ),
     )
     governor_holder.append(governor)
-    resolver = session_registry.get if session_registry is not None else None
+    resolver = (
+        worker_client.get
+        if worker_client is not None
+        else (session_registry.get if session_registry is not None else None)
+    )
     cache_fill_capture = None
     if args.cache_fill_capture_size:
         from inference_engine.distributed.cache_fill import CacheFillCapture
@@ -734,6 +778,8 @@ async def _serve(args: argparse.Namespace) -> int:
     if prefill_hook is not None:
         prefill_hook.close()
     await server.stop(grace=args.shutdown_grace_s)
+    if worker_client is not None:
+        worker_client.close()
     _LOG.info("kakeya gRPC RuntimeService stopped cleanly")
     return 0
 
@@ -774,6 +820,20 @@ def main() -> int:
                          "gets its own isolated KV cache (sharing model "
                          "weights). Requires backend=restored (spawn()). "
                          "Without it, v0.3 single-tenant (one shared cache).")
+    ap.add_argument(
+        "--decode-worker",
+        action="store_true",
+        help="Run MLX model/KV in an isolated local UDS worker process.",
+    )
+    ap.add_argument(
+        "--decode-worker-socket",
+        default="",
+        help="UDS path for --decode-worker; defaults to a private temp path.",
+    )
+    ap.add_argument("--decode-worker-timeout-s", type=float, default=120.0)
+    ap.add_argument(
+        "--decode-worker-startup-timeout-s", type=float, default=180.0,
+    )
     ap.add_argument("--shutdown-grace-s", type=float, default=5.0,
                     help="Seconds to give in-flight RPCs to finish on "
                          "SIGTERM/SIGINT before hard-aborting.")

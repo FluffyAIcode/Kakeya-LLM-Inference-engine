@@ -42,3 +42,38 @@ marker.
 notification deadline. It cancels the stream and raises
 `InterTokenTimeoutError`; it does not attempt process recovery. Hard recovery
 remains the external watchdog's responsibility.
+
+## Isolated MLX decode worker
+
+Enable the opt-in process boundary by adding these flags to the Primary
+runtime command:
+
+```bash
+--backend mlx \
+--decode-worker \
+--decode-worker-timeout-s 120 \
+--decode-worker-startup-timeout-s 180
+```
+
+The router then loads no MLX model. A private mode-0600 UDS child owns the
+model and per-session K/V. Keep `--decode-worker-socket` unset for an
+automatically unique temporary path; set it only when launchd supervision or
+socket diagnostics require a stable path.
+
+Migration procedure:
+
+1. deploy with the flag absent and confirm the existing in-process smoke;
+2. enable `--decode-worker` on one Primary and verify `/healthz`, append,
+   streaming generation, cancellation, and one injected child kill;
+3. confirm the child PID changes, the current turn resumes from the imported
+   allens snapshot plus acknowledged proof checkpoint, and the router RSS does
+   not contain a second model;
+4. retain flag removal as rollback until the Mac parity, 100-session,
+   fault-injection, latency, and four-hour acceptance suite has passed.
+
+Worker mode can import allens portable snapshots but deliberately does not
+export a K/V snapshot per token. Locally computed prefill boundaries therefore
+are not republished through the router in this release. A cancellation kills
+the in-flight child forward; the affected session is still closed by the gRPC
+cancellation contract, while other retained session checkpoints are restored
+lazily if later used.

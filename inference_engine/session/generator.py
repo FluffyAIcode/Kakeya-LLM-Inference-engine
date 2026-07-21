@@ -276,26 +276,34 @@ class GenerationCoordinator:
             # all-accepted append. Other verifiers retain the original
             # Torch/full-block path. In particular, speculative callers
             # still use forward_block directly and receive full [L,V].
-            greedy_argmax = getattr(verifier, "greedy_next_token_id", None)
-            if greedy_argmax is not None:
-                next_token = int(greedy_argmax())
+            generate_step = getattr(verifier, "generate_step", None)
+            if generate_step is not None:
+                # Decode-worker mode keeps argmax + commit atomic inside the
+                # child.  If the transport dies before replying, the router
+                # restores the last acknowledged checkpoint and retries this
+                # step without duplicating a token.
+                next_token = int(generate_step(cancel_event=cancel_event))
             else:
-                next_token = int(
-                    torch.argmax(verifier.next_token_logits).item()
-                )
+                greedy_argmax = getattr(verifier, "greedy_next_token_id", None)
+                if greedy_argmax is not None:
+                    next_token = int(greedy_argmax())
+                else:
+                    next_token = int(
+                        torch.argmax(verifier.next_token_logits).item()
+                    )
 
-            append_accepted = getattr(
-                verifier, "append_accepted_tokens", None,
-            )
-            if append_accepted is not None:
-                append_accepted([next_token])
-            else:
-                # Forward + commit (forwarded == accepted for
-                # prompt-mode appends; same contract used by
-                # AppendTokens, just one token at a time).
-                block_logits = verifier.forward_block([next_token])
-                verifier.commit_or_truncate(forwarded=1, accepted=1)
-                verifier.next_token_logits = block_logits[-1].clone()
+                append_accepted = getattr(
+                    verifier, "append_accepted_tokens", None,
+                )
+                if append_accepted is not None:
+                    append_accepted([next_token])
+                else:
+                    # Forward + commit (forwarded == accepted for
+                    # prompt-mode appends; same contract used by
+                    # AppendTokens, just one token at a time).
+                    block_logits = verifier.forward_block([next_token])
+                    verifier.commit_or_truncate(forwarded=1, accepted=1)
+                    verifier.next_token_logits = block_logits[-1].clone()
 
             # Mirror state from verifier onto session BEFORE the
             # store's INV-1 check runs (it compares

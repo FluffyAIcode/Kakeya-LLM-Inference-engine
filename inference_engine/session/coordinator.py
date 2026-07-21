@@ -223,7 +223,10 @@ class AppendTokensCoordinator:
             if self._prefill_cache is not None:
                 self._prefill_cache.prepare(verifier, token_list)
             else:
-                verifier.prefill(token_list)
+                if getattr(verifier, "is_decode_worker_proxy", False):
+                    verifier.prefill(token_list, cancel_event=cancel_event)
+                else:
+                    verifier.prefill(token_list)
         else:
             append_accepted = getattr(
                 verifier, "append_accepted_tokens", None,
@@ -232,7 +235,10 @@ class AppendTokensCoordinator:
                 # MLX primary append needs only the final logits row;
                 # speculative verification continues to call
                 # forward_block and keeps full [L,V] semantics.
-                append_accepted(token_list)
+                if getattr(verifier, "is_decode_worker_proxy", False):
+                    append_accepted(token_list, cancel_event=cancel_event)
+                else:
+                    append_accepted(token_list)
             else:
                 block_logits = verifier.forward_block(token_list)
                 verifier.commit_or_truncate(

@@ -68,6 +68,23 @@ def test_default_config_loads(mlx_verifier_session: MLXSinkWindowVerifier) -> No
     assert v.stats.weight_bytes > 0
 
 
+def test_spawn_shares_model_but_owns_independent_session_kv(
+    mlx_verifier_session: MLXSinkWindowVerifier,
+) -> None:
+    """Worker session adapters must not load or duplicate model weights."""
+    template = mlx_verifier_session
+    first = template.spawn()
+    second = template.spawn()
+
+    assert first.model is template.model
+    assert second.model is template.model
+    first.prefill([1, 2, 3])
+    second.prefill([7, 8])
+    assert first.cache is not second.cache
+    assert first.cached_token_sequence == [1, 2, 3]
+    assert second.cached_token_sequence == [7, 8]
+
+
 @pytest.mark.parametrize(
     "sink,window,err",
     [
