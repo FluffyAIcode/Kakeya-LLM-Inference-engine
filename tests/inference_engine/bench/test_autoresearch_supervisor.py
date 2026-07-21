@@ -1,6 +1,7 @@
 from autoresearch.prefill.supervisor import (
     append_result,
     best_kept,
+    build_host_candidate,
     build_strategy_research_state,
     check_runtime_health,
     parse_research_verdict,
@@ -9,6 +10,7 @@ from autoresearch.prefill.supervisor import (
     render_candidate,
     should_keep,
     StrategyPrefillHeartbeat,
+    strategy_trigger_reason,
     _extract_json,
     _pending_leaf_ids,
     validate_candidate,
@@ -225,9 +227,18 @@ def test_keep_requires_novel_mathematical_advancement():
     assert should_keep({
         "accepted": True,
         "research_outcome": "DECOMPOSED",
+        "created_obligation_ids": ["RH-C1-child"],
         "hypothesis_novel": True,
         "proof_obligations_unresolved": 5,
         "metric_cold_critic_prefill_s": 900,
+    }, baseline)
+    assert not should_keep({
+        "accepted": True,
+        "research_outcome": "DECOMPOSED",
+        "created_obligation_ids": [],
+        "hypothesis_novel": True,
+        "proof_obligations_unresolved": 5,
+        "metric_cold_critic_prefill_s": 1,
     }, baseline)
     assert not should_keep({
         "accepted": True,
@@ -280,6 +291,70 @@ def test_pending_leaf_ids_excludes_unresolved_parents():
         {"obligation_id": "RH-C2", "status": "UNRESOLVED", "parent_id": ""},
     ]}
     assert _pending_leaf_ids(ledger) == ["RH-C1-child", "RH-C2"]
+
+
+def test_host_candidate_targets_deepest_current_branch_leaf():
+    current = {**_candidate(), "target_obligation_id": "RH-C2"}
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C1",
+            "statement": "Unrelated leaf.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "RH-C2",
+            "statement": "Root convergence claim.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "RH-C2-child",
+            "statement": "Construct a compact convergence counterexample.",
+            "status": "UNRESOLVED",
+            "parent_id": "RH-C2",
+            "last_evidence": "The previous approximation failed at a pole.",
+        },
+    ]}
+    candidate = build_host_candidate(current, ledger)
+    assert candidate["target_obligation_id"] == "RH-C2-child"
+    assert candidate["hypothesis"] == (
+        "Construct a compact convergence counterexample."
+    )
+    assert "do not rename" in candidate["generator_directive"]
+    assert candidate["prefill_compute_chunk_tokens"] == 256
+
+
+def test_strategy_is_triggered_only_by_events(tmp_path):
+    progress = {
+        "kept": "True",
+        "research_outcome": "DECOMPOSED",
+        "created_obligation_ids": '["child"]',
+    }
+    inconclusive = {
+        "kept": "False",
+        "research_outcome": "INCONCLUSIVE",
+        "created_obligation_ids": "[]",
+    }
+    assert strategy_trigger_reason(
+        [progress, inconclusive, inconclusive],
+        stagnation_rounds=3,
+    ) == ""
+    assert strategy_trigger_reason(
+        [progress, inconclusive, inconclusive, inconclusive],
+        stagnation_rounds=3,
+    ) == "stagnation-3"
+    assert strategy_trigger_reason(
+        [{"kept": "True", "research_outcome": "FALSIFIED"}],
+        stagnation_rounds=3,
+    ) == "branch-falsified"
+    trigger = tmp_path / "request_strategy"
+    trigger.write_text("replan")
+    assert strategy_trigger_reason(
+        [],
+        stagnation_rounds=3,
+        trigger_file=trigger,
+    ) == "manual-trigger-file"
 
 
 def test_strategy_state_keeps_complete_active_ancestry_only():
@@ -461,11 +536,12 @@ def test_supervisor_preserves_runtime_and_cache_across_iterations():
         / "supervisor.py"
     ).read_text()
     body = source[source.index("def run_iteration"):source.index("def main")]
-    assert body.index("check_runtime_health(") < (
-        body.index("proposed = propose_candidate")
+    assert body.index("check_runtime_health(") < body.index(
+        "strategy_trigger_reason(",
     )
     assert "phase=runtime-health-check" in body
-    assert "phase=strategy-proposal real-gemma" in body
+    assert "phase=deterministic-candidate" in body
+    assert "mode=gemma trigger=" in body
     assert "if not gan_completed:" in body
     assert "phase=completed-run-preserved" in body
     assert "deploy_candidate" not in source

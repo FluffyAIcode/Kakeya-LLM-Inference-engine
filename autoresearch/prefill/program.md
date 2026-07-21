@@ -32,7 +32,7 @@ Use a lexicographic objective:
 ## Experiment loop
 
 1. Read `candidate.py` and `results.tsv`.
-2. State one concrete mathematical hypothesis for one unresolved leaf.
+2. Let the host deterministically select the deepest unresolved leaf.
 3. Modify only `candidate.py`.
 4. Verify Primary and allens health without restarting either service.
 5. Preserve all KV caches across decomposition iterations.
@@ -45,6 +45,10 @@ Use a lexicographic objective:
 
 Every candidate must target exactly one current unresolved leaf obligation and
 contain a falsifiable hypothesis plus distinct Generator and Critic directives.
+Normal iterations use the deterministic host candidate and do not call the
+Strategy model. Invoke Strategy Gemma only after three consecutive
+non-progressing runs, after a falsified branch, or via an explicit CLI/trigger
+file request.
 An unresolved Critic verdict must isolate one strictly smaller missing lemma;
 the host records that lemma as a deduplicated child obligation. Completed GAN
 runs, transcripts, checkpoints, and ledger updates remain durable even when the
@@ -58,7 +62,7 @@ must be deployed outside this supervisor. Cold benchmarks are explicit,
 separate invocations of `scripts/benchmark_prefill_architecture.py`.
 
 Prefill budgets are hard admission limits, never truncation instructions.
-Strategy input must fit 8192 tokens by carrying the complete active leaf
+Strategy input must fit 8448 tokens by carrying the complete active leaf
 ancestry and its exact experiment records. Generator and Critic inputs must fit
 6144 tokens; the Critic always receives the complete current Generator output.
 Repeated Strategy strings are interned once in `text_by_id`; `_ref` fields
@@ -72,6 +76,9 @@ untrusted labels and bind verdicts to the exact current target. Never persist a
 model-invented ID. Reject a proposed child when it duplicates an existing
 statement or lemma name, is highly similar to an ancestor, or is too vague to
 be falsifiable. A rejected cyclic frontier is `INCONCLUSIVE`, not progress.
+
+`DECOMPOSED` is keepable only when the host actually persisted at least one
+new child that passed the ID, novelty, cycle, and falsifiability gates.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical
