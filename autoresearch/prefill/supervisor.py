@@ -922,6 +922,10 @@ def build_host_candidate(current: dict, ledger: dict) -> dict:
 def should_keep(result: dict, baseline: dict | None) -> bool:
     if not result["accepted"]:
         return False
+    if int(result.get("proof_obligations_covered", 0)) != int(
+        result.get("proof_obligations_total", 0),
+    ):
+        return False
     outcome = result.get("research_outcome")
     if outcome not in {"SUPPORTED", "FALSIFIED", "DECOMPOSED"}:
         return False

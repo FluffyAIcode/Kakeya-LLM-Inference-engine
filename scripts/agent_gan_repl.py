@@ -246,6 +246,26 @@ def format_proof_ledger(
     obligations: list[ProofObligation] | None = None,
 ) -> str:
     selected = obligations if obligations is not None else pending_obligations(ledger)
+    ancestry = []
+    if len(selected) == 1:
+        by_id = {
+            item.obligation_id: item
+            for item in ledger.obligations
+        }
+        cursor = selected[0].parent_id
+        visited = set()
+        while cursor and cursor not in visited:
+            visited.add(cursor)
+            ancestor = by_id.get(cursor)
+            if ancestor is None:
+                break
+            ancestry.append(ancestor)
+            cursor = ancestor.parent_id
+        ancestry.reverse()
+    ancestry_text = "\n".join(
+        f"- {item.obligation_id}: {item.statement}"
+        for item in ancestry
+    )
     items = "\n".join(
         f"- {item.obligation_id}"
         f"{f' (parent={item.parent_id})' if item.parent_id else ''}: "
@@ -254,7 +274,9 @@ def format_proof_ledger(
     )
     return (
         f"PROOF OBLIGATION LEDGER id={ledger.ledger_id} "
-        f"version={ledger.version}\n{items}\n"
+        f"version={ledger.version}\n"
+        f"COMPLETE ANCESTOR CHAIN:\n{ancestry_text or '(root target)'}\n"
+        f"CURRENT TARGET:\n{items}\n"
         "Generator requirement: emit `### ISSUE_RESPONSE <ID>` for every "
         "pending ID, with `Correction:`, `Derivation:`, and `Remaining gap:`. "
         "Critic requirement: emit `### ISSUE_VERDICT <ID>` for every pending "
@@ -411,6 +433,144 @@ def _obligation_terms(statement: str) -> set[str]:
     }
 
 
+def _canonical_claim(statement: str) -> str:
+    text = _normalize_obligation_statement(statement)
+    replacements = (
+        (r"\blocal accumulation rate\b|\blocal density\b", "local_density"),
+        (
+            r"\bglobal exponent of convergence\b|\bglobal growth order\b|"
+            r"\bglobal order\b|\bgrowth order\b|\bglobal growth\b",
+            "global_order",
+        ),
+        (
+            r"\blower bound\b|\bimposes a lower bound\b|\bmust satisfy\b|"
+            r"\bforces\b|\bforce\b",
+            "implies_bound",
+        ),
+        (r"\bcritical density\b|\bdensity threshold\b", "density_threshold"),
+        (r"\baccumulation\b|\bclump(?:ing)?\b", "concentration"),
+        (r"\bsingularity\b|\bpole\b", "singularity"),
+        (r"\bsequence of zeros\b|\bzero sequence\b", "zero_sequence"),
+        (r"\bfunction\b|\bfunctional relationship\b", "mapping"),
+        (r"\bequivalence\b|\bsaturation\b|\bgap\b", "relation"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+    # Alpha-normalize mathematical variable names while preserving operators
+    # and semantic nouns. This makes rho/delta/lambda renamings comparable.
+    text = re.sub(
+        r"\b(?:rho|delta|lambda|epsilon|phi|sigma|p|m|s|z|r|n)\d*\b",
+        "var",
+        text,
+    )
+    return " ".join(text.split())
+
+
+def _claim_structure(statement: str) -> tuple[set[str], set[str]]:
+    canonical = _canonical_claim(statement)
+    markers = (
+        " without implies_bound ",
+        " then ",
+        " implies_bound ",
+        " such that ",
+        " implies ",
+    )
+    split_at = -1
+    marker_size = 0
+    for marker in markers:
+        position = canonical.find(marker)
+        if position >= 0 and (split_at < 0 or position < split_at):
+            split_at = position
+            marker_size = len(marker)
+    if split_at < 0:
+        terms = set(canonical.split())
+        return terms, terms
+    premise = set(canonical[:split_at].split())
+    conclusion = set(canonical[split_at + marker_size:].split())
+    return premise, conclusion
+
+
+def _semantic_concepts(statement: str) -> set[str]:
+    text = _canonical_claim(statement)
+    concepts = set()
+    checks = {
+        "density": ("density", "concentration"),
+        "global_order": ("global_order",),
+        "singularity": ("singularity", "residue"),
+        "genus_or_order": ("genus", " order "),
+        "convergence": ("converge", "diverge", "limit"),
+        "zero_sequence": ("zero_sequence", "zeros"),
+        "threshold_or_bound": ("threshold", "bound", "above", "below"),
+        "local_global_relation": ("local", "global"),
+    }
+    padded = f" {text} "
+    for concept, needles in checks.items():
+        if all(needle in padded for needle in needles) if (
+            concept == "local_global_relation"
+        ) else any(needle in padded for needle in needles):
+            concepts.add(concept)
+    return concepts
+
+
+def _semantic_equivalence(left: str, right: str) -> tuple[bool, float]:
+    left_canonical = _canonical_claim(left)
+    right_canonical = _canonical_claim(right)
+    left_terms = set(left_canonical.split())
+    right_terms = set(right_canonical.split())
+    union = left_terms | right_terms
+    jaccard = (
+        len(left_terms & right_terms) / len(union)
+        if union else 1.0
+    )
+    sequence = difflib.SequenceMatcher(
+        None,
+        left_canonical,
+        right_canonical,
+    ).ratio()
+    left_premise, left_conclusion = _claim_structure(left)
+    right_premise, right_conclusion = _claim_structure(right)
+
+    def overlap(first: set[str], second: set[str]) -> float:
+        denominator = max(1, min(len(first), len(second)))
+        return len(first & second) / denominator
+
+    structural = min(
+        overlap(left_premise, right_premise),
+        overlap(left_conclusion, right_conclusion),
+    )
+    left_concepts = _semantic_concepts(left)
+    right_concepts = _semantic_concepts(right)
+    concept_overlap = overlap(left_concepts, right_concepts)
+    score = max(jaccard, sequence, structural, concept_overlap)
+    equivalent = (
+        (jaccard >= 0.52 and structural >= 0.60)
+        or sequence >= 0.68
+        or structural >= 0.78
+        or (
+            min(len(left_concepts), len(right_concepts)) >= 4
+            and concept_overlap >= 0.80
+        )
+    )
+    return equivalent, score
+
+
+def _child_has_structural_delta(parent: str, child: str) -> bool:
+    parent_premise, parent_conclusion = _claim_structure(parent)
+    child_premise, child_conclusion = _claim_structure(child)
+    new_premise = child_premise - parent_premise
+    new_conclusion = child_conclusion - parent_conclusion
+    concrete = {
+        "compact", "counterexample", "exists", "fixed", "forall", "limsup",
+        "neighborhood", "explicit", "boundary", "constant", "inequality",
+        "converges", "diverges", "residue", "genus",
+    }
+    return bool(
+        len(new_premise) >= 3
+        or len(new_conclusion) >= 3
+        or (child_premise | child_conclusion) & concrete
+    )
+
+
 def _frontier_rejection_reason(
     ledger: ProofObligationLedger,
     parent_id: str,
@@ -435,8 +595,27 @@ def _frontier_rejection_reason(
         existing_signature = _lemma_signature(item.statement)
         if signature and signature == existing_signature:
             return f"repeats existing lemma {item.obligation_id}"
+        if item.obligation_id in ancestors:
+            equivalent, score = _semantic_equivalence(
+                item.statement,
+                statement,
+            )
+            if equivalent:
+                return (
+                    f"bidirectionally entails ancestor {item.obligation_id} "
+                    f"after variable normalization (score={score:.2f})"
+                )
     if len(terms) < 6:
         return "frontier is too vague to be a falsifiable smaller obligation"
+    parent = next(
+        item for item in ledger.obligations
+        if item.obligation_id == parent_id
+    )
+    if not _child_has_structural_delta(parent.statement, statement):
+        return (
+            "does not declare a new assumption, narrower domain, or "
+            "falsifiable conclusion"
+        )
     for item in ledger.obligations:
         existing_terms = _obligation_terms(item.statement)
         union = terms | existing_terms
@@ -448,6 +627,51 @@ def _frontier_rejection_reason(
                 f"(similarity={similarity:.2f})"
             )
     return ""
+
+
+def audit_ledger_semantic_duplicates(
+    ledger: ProofObligationLedger,
+) -> list[tuple[str, str, float]]:
+    by_id = {
+        item.obligation_id: item
+        for item in ledger.obligations
+    }
+    rejected: list[tuple[str, str, float]] = []
+    rejected_ids = set()
+    for item in ledger.obligations:
+        if item.status != "UNRESOLVED" or not item.parent_id:
+            continue
+        cursor = item.parent_id
+        visited = set()
+        duplicate_of = ""
+        duplicate_score = 0.0
+        while cursor and cursor not in visited:
+            visited.add(cursor)
+            ancestor = by_id.get(cursor)
+            if ancestor is None:
+                break
+            equivalent, score = _semantic_equivalence(
+                ancestor.statement,
+                item.statement,
+            )
+            if equivalent:
+                duplicate_of = ancestor.obligation_id
+                duplicate_score = score
+                break
+            cursor = ancestor.parent_id
+        if duplicate_of or item.parent_id in rejected_ids:
+            duplicate_of = duplicate_of or item.parent_id
+            item.status = "REJECTED_DUPLICATE"
+            item.last_evidence = (
+                f"Semantic duplicate/cyclic descendant of {duplicate_of}."
+            )
+            rejected_ids.add(item.obligation_id)
+            rejected.append(
+                (item.obligation_id, duplicate_of, duplicate_score),
+            )
+    if rejected:
+        ledger.version += 1
+    return rejected
 
 
 def create_child_obligations(
@@ -1244,6 +1468,19 @@ def main() -> int:
                 if critic_issue_batch is not None else ""
             )
             proof_ledger = load_proof_ledger(proof_ledger_path)
+            semantic_rejections = (
+                audit_ledger_semantic_duplicates(proof_ledger)
+                if proof_ledger is not None else []
+            )
+            if proof_ledger is not None and semantic_rejections:
+                save_proof_ledger(proof_ledger_path, proof_ledger)
+                for obligation_id, ancestor_id, score in semantic_rejections:
+                    print(
+                        "[proof-obligation-retro-rejected] "
+                        f"id={obligation_id} duplicate_of={ancestor_id} "
+                        f"score={score:.2f}",
+                        flush=True,
+                    )
             turn_obligations = pending_obligations(proof_ledger)
             if research_candidate is not None and turn_obligations:
                 target_id = str(research_candidate.TARGET_OBLIGATION_ID)
@@ -1504,16 +1741,22 @@ def main() -> int:
                         },
                         id_repairs,
                     )
-                    created_obligations = create_child_obligations(
-                        proof_ledger,
-                        critic_text,
-                        run_id,
-                        {
-                            item.obligation_id
-                            for item in turn_obligations
-                        },
-                        rejected_frontiers,
-                    )
+                    if missing_issues:
+                        rejected_frontiers.append(
+                            "Generator coverage incomplete; child creation "
+                            f"forbidden for {','.join(sorted(missing_issues))}",
+                        )
+                    else:
+                        created_obligations = create_child_obligations(
+                            proof_ledger,
+                            critic_text,
+                            run_id,
+                            {
+                                item.obligation_id
+                                for item in turn_obligations
+                            },
+                            rejected_frontiers,
+                        )
                     for model_id, target_id in id_repairs:
                         print(
                             "[critic-id-repaired] "
