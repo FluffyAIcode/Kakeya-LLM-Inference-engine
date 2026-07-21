@@ -106,6 +106,13 @@ def _select_repair_target(current: dict, ledger: dict) -> str:
         str(item.get("obligation_id", "")): str(item.get("parent_id", ""))
         for item in ledger.get("obligations", [])
     }
+    cursor = parents.get(current_target, "")
+    visited = set()
+    while cursor and cursor not in visited:
+        if cursor in leaves:
+            return cursor
+        visited.add(cursor)
+        cursor = parents.get(cursor, "")
 
     def distance_from_current(obligation_id: str) -> int:
         distance = 0
@@ -982,6 +989,12 @@ def append_result(path: Path, row: dict) -> None:
 
 
 def run_iteration(args, iteration: int) -> dict:
+    from scripts.agent_gan_repl import (
+        audit_ledger_semantic_duplicates,
+        load_proof_ledger,
+        save_proof_ledger,
+    )
+
     root = Path(__file__).resolve().parents[2]
     ar = Path(__file__).resolve().parent
     candidate_path = ar / "candidate.py"
@@ -997,6 +1010,20 @@ def run_iteration(args, iteration: int) -> dict:
     current = _candidate_snapshot(current_module)
     previous_candidate = candidate_path.read_bytes()
     previous_state = _backup(state_path)
+    ledger_object = load_proof_ledger(ledger_path)
+    semantic_rejections = (
+        audit_ledger_semantic_duplicates(ledger_object)
+        if ledger_object is not None else []
+    )
+    if ledger_object is not None and semantic_rejections:
+        save_proof_ledger(ledger_path, ledger_object)
+        for obligation_id, ancestor_id, score in semantic_rejections:
+            print(
+                "[autoresearch] phase=semantic-retro-reject "
+                f"id={obligation_id} duplicate_of={ancestor_id} "
+                f"score={score:.2f}",
+                flush=True,
+            )
     previous_ledger = _backup(ledger_path)
 
     proposed = current
