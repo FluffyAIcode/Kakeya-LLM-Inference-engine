@@ -22,9 +22,11 @@ the integration suite.
 from __future__ import annotations
 
 import pytest
+import threading
 
 from inference_engine.session import (
     GenerationCoordinator,
+    SessionGenerationBusyError,
     SessionNotFoundError,
     SessionStore,
 )
@@ -163,3 +165,33 @@ class TestConstructorAcceptsReferences:
         # Check internals — neither object was poked.
         assert coord._store is sentinel_store
         assert coord._verifier is sentinel_verifier
+
+
+def test_generate_honors_pre_set_cancellation_at_token_boundary():
+    store, sess = _store_and_session_with_history()
+    cancelled = threading.Event()
+    cancelled.set()
+    events = list(GenerationCoordinator(store, verifier=None).generate(
+        sess.session_id,
+        max_tokens=1,
+        cancel_event=cancelled,
+    ))
+    assert len(events) == 1
+    assert events[0].stop_reason == "cancelled"
+
+
+def test_generate_rejects_concurrent_stream_for_same_session():
+    store, sess = _store_and_session_with_history()
+    cancelled = threading.Event()
+    cancelled.set()
+    coordinator = GenerationCoordinator(store, verifier=None)
+    first = coordinator.generate(
+        sess.session_id, max_tokens=1, cancel_event=cancelled,
+    )
+    assert next(first).stop_reason == "cancelled"
+    second = coordinator.generate(
+        sess.session_id, max_tokens=1, cancel_event=cancelled,
+    )
+    with pytest.raises(SessionGenerationBusyError):
+        next(second)
+    first.close()

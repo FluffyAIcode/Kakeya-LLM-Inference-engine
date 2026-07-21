@@ -30,6 +30,7 @@ serializer is another. The SDK takes no position.
 
 from kakeya.client import DEFAULT_ADDRESS, Client
 from kakeya.errors import (
+    InterTokenTimeoutError,
     InvalidArgumentError,
     InvariantViolationError,
     KakeyaError,
@@ -45,6 +46,7 @@ __all__ = [
     "Client",
     "DEFAULT_ADDRESS",
     "InvalidArgumentError",
+    "InterTokenTimeoutError",
     "InvariantViolationError",
     "KakeyaError",
     "ResourceExhaustedError",

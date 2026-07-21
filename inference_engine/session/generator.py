@@ -46,6 +46,7 @@ Anomaly invariants:
 from __future__ import annotations
 
 import time
+import threading
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Union
 
@@ -107,6 +108,10 @@ class DoneEvent:
 GenerateEvent = Union[TokenEvent, HistoryTruncatedEvent, DoneEvent]
 
 
+class SessionGenerationBusyError(RuntimeError):
+    """Raised when a second Generate starts for the same session."""
+
+
 class GenerationCoordinator:
     """Greedy session-aware token generation against a verifier."""
 
@@ -116,12 +121,16 @@ class GenerationCoordinator:
         verifier: VerifierProtocol,
         resolver=None,
         on_tokens: Optional[Callable[[int], None]] = None,
+        liveness=None,
     ) -> None:
         self._store = store
         self._verifier = verifier
         # PR-A3c: optional per-session verifier resolver (multi-tenant).
         self._resolver = resolver
         self._on_tokens = on_tokens
+        self._liveness = liveness
+        self._guard_lock = threading.Lock()
+        self._active_sessions: set[str] = set()
 
     def _verifier_for(self, session_id: str) -> "VerifierProtocol":
         return self._resolver(session_id) if self._resolver else self._verifier
@@ -135,6 +144,49 @@ class GenerationCoordinator:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Iterator[GenerateEvent]:
+        """Return a cancellation-aware stream guarded per session."""
+        stream = self._generate_events(
+            session_id,
+            max_tokens=max_tokens,
+            seed=seed,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            cancel_event=cancel_event,
+        )
+
+        def guarded() -> Iterator[GenerateEvent]:
+            acquired = False
+            try:
+                with self._guard_lock:
+                    if session_id in self._active_sessions:
+                        raise SessionGenerationBusyError(
+                            f"Generate already active for session {session_id!r}"
+                        )
+                    self._active_sessions.add(session_id)
+                    acquired = True
+                yield from stream
+            finally:
+                if acquired:
+                    with self._guard_lock:
+                        self._active_sessions.discard(session_id)
+                if self._liveness is not None:
+                    self._liveness.update("idle")
+
+        return guarded()
+
+    def _generate_events(
+        self,
+        session_id: str,
+        *,
+        max_tokens: int,
+        seed: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Iterator[GenerateEvent]:
         """Yield a stream of GenerateEvents for ``session_id``.
 
@@ -208,8 +260,18 @@ class GenerationCoordinator:
         # Generate has no separate prefill phase in PR-B3; report 0.
         prefill_seconds = 0.0
         generated_count = 0
+        if self._liveness is not None:
+            self._liveness.update("decode", session_id, generated_count)
 
         for _step in range(max_tokens):
+            if cancel_event is not None and cancel_event.is_set():
+                yield DoneEvent(
+                    stop_reason=STOP_REASON_CANCELLED,
+                    generated_token_count=generated_count,
+                    prefill_seconds=prefill_seconds,
+                    total_seconds=time.perf_counter() - t0,
+                )
+                return
             # Greedy: argmax of the verifier's last next_token_logits.
             next_token = int(
                 torch.argmax(verifier.next_token_logits).item()
@@ -234,6 +296,8 @@ class GenerationCoordinator:
                 session_id, verifier.next_global_position,
             )
             generated_count += 1
+            if self._liveness is not None:
+                self._liveness.update("decode", session_id, generated_count)
 
             yield TokenEvent(token_id=next_token)
 

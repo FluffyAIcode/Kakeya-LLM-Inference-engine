@@ -17,6 +17,8 @@ Coverage target: 100% on ``inference_engine/server/grpc_app.py``.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import AsyncIterator
 
 import grpc
@@ -195,18 +197,16 @@ async def test_close_session_double_close_returns_not_found(grpc_pair):
     assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
 
 
-async def test_close_session_invokes_on_session_close_hook():
-    """PR-A3c: CloseSession fires the optional ``on_session_close`` hook with the
-    session id, so a per-session verifier registry can free that session's KV.
-
-    Built with its own server (the shared ``grpc_pair`` fixture wires no hook) to
-    exercise the ``self._on_session_close is not None`` branch in CloseSession.
-    """
-    store = SessionStore(capacity=4)
-    seen: list[str] = []
+async def test_close_session_invokes_unified_store_removal_hook():
+    """CloseSession reaches the same hook used by eviction and failures."""
+    seen: list[tuple[str, str]] = []
+    store = SessionStore(
+        capacity=4,
+        on_session_removed=lambda *args: seen.append(args),
+    )
     server = grpc.aio.server()
     runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(store, on_session_close=seen.append), server,
+        RuntimeServiceServicer(store), server,
     )
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
@@ -217,7 +217,7 @@ async def test_close_session_invokes_on_session_close_hook():
         await stub.CloseSession(
             runtime_pb2.CloseSessionRequest(session_id=create_resp.session_id),
         )
-        assert seen == [create_resp.session_id]
+        assert seen == [(create_resp.session_id, "explicit_close")]
     finally:
         await channel.close()
         await server.stop(grace=0.1)
@@ -606,7 +606,7 @@ async def test_generate_session_not_found_mid_stream_returns_not_found():
         await server.stop(grace=0.1)
 
 
-async def test_generate_cancellation_emits_cancelled_done():
+async def test_generate_cancellation_removes_session():
     """Direct-invocation test: drive the Servicer's Generate with
     a fake gRPC context that flips ``cancelled()`` to True after
     the first event. The servicer must yield a CANCELLED done
@@ -656,12 +656,59 @@ async def test_generate_cancellation_emits_cancelled_done():
     events = []
     async for resp in servicer.Generate(request, ctx):
         events.append(resp)
-    assert len(events) == 2
+    assert len(events) == 1
     assert events[0].WhichOneof("payload") == "token_id"
-    assert events[1].WhichOneof("payload") == "done"
-    assert events[1].done.stop_reason == \
-        runtime_pb2.GenerateDone.STOP_REASON_CANCELLED
-    assert events[1].done.generated_token_count == 1
+    from inference_engine.session import SessionNotFoundError
+    with pytest.raises(SessionNotFoundError):
+        store.get_session(sess.session_id)
+
+
+async def test_wire_cancellation_releases_blocked_generate_session():
+    """A disconnect removes session state while model thread is still blocked."""
+    from inference_engine.session import GenerationCoordinator
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingGeneration(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kwargs):
+            del session_id, max_tokens, kwargs
+            started.set()
+            release.wait(timeout=2)
+            if False:
+                yield
+
+    store = SessionStore(capacity=1)
+    coordinator = BlockingGeneration(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, generation_coordinator=coordinator),
+        server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        session = store.create_session()
+        call = stub.Generate(runtime_pb2.GenerateRequest(
+            session_id=session.session_id,
+            max_tokens=1,
+        ))
+        read_task = asyncio.create_task(call.read())
+        assert await asyncio.to_thread(started.wait, 1)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await read_task
+        for _ in range(50):
+            if store.active_count == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert store.active_count == 0
+    finally:
+        release.set()
+        await channel.close()
+        await server.stop(grace=0.1)
 
 
 async def test_append_tokens_session_not_found_returns_not_found():
@@ -731,6 +778,47 @@ async def test_append_tokens_success_returns_response():
     finally:
         await channel.close()
         await server.stop(grace=0.1)
+
+
+async def test_append_tokens_worker_does_not_block_event_loop():
+    from inference_engine.session import AppendTokensCoordinator
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingCoordinator(AppendTokensCoordinator):
+        def append_tokens(self, session_id, token_ids):
+            del session_id, token_ids
+            started.set()
+            release.wait(timeout=2)
+            return 1
+
+    store = SessionStore(capacity=2)
+    servicer = RuntimeServiceServicer(
+        store,
+        append_coordinator=BlockingCoordinator(store, verifier=None),
+    )
+
+    class Context:
+        def cancelled(self):
+            return False
+
+        async def abort(self, code, detail):
+            raise AssertionError((code, detail))
+
+    session = store.create_session()
+    append_task = asyncio.create_task(servicer.AppendTokens(
+        runtime_pb2.AppendTokensRequest(session_id=session.session_id, token_ids=[1]),
+        Context(),
+    ))
+    await asyncio.to_thread(started.wait, 1)
+    created = await asyncio.wait_for(
+        servicer.CreateSession(runtime_pb2.CreateSessionRequest(), Context()),
+        timeout=0.2,
+    )
+    assert created.session_id
+    release.set()
+    await append_task
 
 
 async def test_generate_yields_history_truncated_then_done():

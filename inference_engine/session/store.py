@@ -32,21 +32,19 @@ Contracts enforced here (per ADR 0008 §2.2 / §2.6 / §2.8):
   surface for TTL-based eviction; PR-A3 will call it from a
   background task at the configured interval.
 
-This module is intentionally **not thread-safe**. The gRPC server
-(PR-B1) runs all RPCs on a single asyncio event loop, serializing
-access at that layer; multi-worker support is v0.4 scope (ADR 0008
-§4.5). Direct concurrent access from threads is undefined behavior
-and is documented as such here so reviewers can flag any future
-caller that violates the contract.
+Store-owned mutations are protected by a re-entrant lock. Blocking
+model work runs in worker threads so cancellation can be handled by
+the asyncio server; verifier mutation remains coordinator-owned.
 """
 
 from __future__ import annotations
 
 import time
+import threading
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 from inference_engine.memory.pool import SlabPool
 from inference_engine.memory.slab import KVSlab
@@ -213,9 +211,9 @@ class SessionStore:
     to admit the new one. :meth:`evict_idle` provides the TTL-based
     eviction surface that PR-A3 will drive from a background task.
 
-    The store is **not thread-safe** (see module docstring). All
-    callers in v0.3 enter via the gRPC asyncio event loop, which
-    serializes access.
+    Store-owned state is thread-safe. Returned ``Session`` objects
+    remain coordinator-owned and application code must not mutate
+    them concurrently.
     """
 
     def __init__(
@@ -224,6 +222,7 @@ class SessionStore:
         capacity: int,
         cache_inspector: Optional[CacheInspector] = None,
         slab_pool: Optional[SlabPool] = None,
+        on_session_removed: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         if capacity < 1:
             raise ValueError(
@@ -232,7 +231,9 @@ class SessionStore:
         self._capacity = capacity
         self._cache_inspector = cache_inspector
         self._slab_pool = slab_pool
+        self._on_session_removed = on_session_removed
         self._sessions: dict[str, Session] = {}
+        self._lock = threading.RLock()
 
     @property
     def slab_pool(self) -> Optional[SlabPool]:
@@ -253,7 +254,8 @@ class SessionStore:
 
     @property
     def active_count(self) -> int:
-        return len(self._sessions)
+        with self._lock:
+            return len(self._sessions)
 
     @property
     def total_kv_live_bytes(self) -> int:
@@ -263,7 +265,8 @@ class SessionStore:
         return the real aggregate, which is the §2.9
         ``session_kv_live_bytes`` Prometheus-gauge value.
         """
-        return sum(s.kv_live_bytes() for s in self._sessions.values())
+        with self._lock:
+            return sum(s.kv_live_bytes() for s in self._sessions.values())
 
     def create_session(
         self,
@@ -285,17 +288,18 @@ class SessionStore:
         *before* this acquire, so a single-pool / single-capacity
         configuration cannot deadlock on slab availability.
         """
-        if self.active_count >= self._capacity:
-            self._evict_one_lru()
-        session = Session(
-            session_id=self._issue_id(),
-            eos_token_ids=tuple(eos_token_ids),
-            client_label=client_label,
-        )
-        if self._slab_pool is not None:
-            session.slab = self._slab_pool.acquire()
-        self._sessions[session.session_id] = session
-        return session
+        with self._lock:
+            if self.active_count >= self._capacity:
+                self._evict_one_lru()
+            session = Session(
+                session_id=self._issue_id(),
+                eos_token_ids=tuple(eos_token_ids),
+                client_label=client_label,
+            )
+            if self._slab_pool is not None:
+                session.slab = self._slab_pool.acquire()
+            self._sessions[session.session_id] = session
+            return session
 
     def get_session(self, session_id: str) -> Session:
         """Return the live session for ``session_id``.
@@ -304,10 +308,11 @@ class SessionStore:
         currently in the store (closed, evicted, never existed —
         callers cannot distinguish, by design).
         """
-        try:
-            return self._sessions[session_id]
-        except KeyError as exc:
-            raise SessionNotFoundError(session_id) from exc
+        with self._lock:
+            try:
+                return self._sessions[session_id]
+            except KeyError as exc:
+                raise SessionNotFoundError(session_id) from exc
 
     def append_tokens(
         self, session_id: str, token_ids: Iterable[int],
@@ -327,17 +332,18 @@ class SessionStore:
         post-mutation, which is the contract — INV-1 is "after every
         cache mutation"); the session is no longer usable.
         """
-        session = self.get_session(session_id)
-        token_list = list(token_ids)
-        for tid in token_list:
-            if not isinstance(tid, int) or isinstance(tid, bool) or tid < 0:
-                raise ValueError(
-                    f"token_id must be a non-negative int, got {tid!r}"
-                )
-        session.history_token_ids.extend(token_list)
-        session.last_active_at = time.monotonic()
-        self._assert_inv1(session)
-        return session.history_length
+        with self._lock:
+            session = self.get_session(session_id)
+            token_list = list(token_ids)
+            for tid in token_list:
+                if not isinstance(tid, int) or isinstance(tid, bool) or tid < 0:
+                    raise ValueError(
+                        f"token_id must be a non-negative int, got {tid!r}"
+                    )
+            session.history_token_ids.extend(token_list)
+            session.last_active_at = time.monotonic()
+            self._assert_inv1(session)
+            return session.history_length
 
     def close_session(self, session_id: str) -> int:
         """Close a session and return its final ``history_length``.
@@ -352,11 +358,25 @@ class SessionStore:
         so a follow-up ``create_session`` is guaranteed to have at
         least one free slab.
         """
-        session = self.get_session(session_id)
-        final_length = session.history_length
-        self._release_slab_if_held(session)
-        del self._sessions[session_id]
-        return final_length
+        with self._lock:
+            session = self.get_session(session_id)
+            final_length = session.history_length
+            self._remove_session(session, reason="explicit_close")
+            return final_length
+
+    def remove_session_if_present(self, session_id: str, *, reason: str) -> bool:
+        """Remove a session when present without hiding double-close errors.
+
+        Cancellation paths use this idempotent helper because a client
+        disconnect can race an explicit CloseSession. Normal callers should
+        continue to use :meth:`close_session`.
+        """
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return False
+            self._remove_session(session, reason=reason)
+            return True
 
     def record_position_advance(
         self, session_id: str, new_position: int,
@@ -373,22 +393,22 @@ class SessionStore:
         Called by the verifier after every prefill / generation
         step (PR-A3b wiring); PR-A2 tests exercise it directly.
         """
-        session = self.get_session(session_id)
-        if new_position < session.next_global_position:
-            session.inv2_violations += 1
-            self._release_slab_if_held(session)
-            del self._sessions[session_id]
-            raise InvariantViolation(
-                kind="2",
-                session_id=session_id,
-                detail=(
-                    f"position must be non-decreasing; "
-                    f"current={session.next_global_position}, "
-                    f"requested={new_position}"
-                ),
-            )
-        session.next_global_position = new_position
-        session.last_active_at = time.monotonic()
+        with self._lock:
+            session = self.get_session(session_id)
+            if new_position < session.next_global_position:
+                session.inv2_violations += 1
+                self._remove_session(session, reason="inv2_failure")
+                raise InvariantViolation(
+                    kind="2",
+                    session_id=session_id,
+                    detail=(
+                        f"position must be non-decreasing; "
+                        f"current={session.next_global_position}, "
+                        f"requested={new_position}"
+                    ),
+                )
+            session.next_global_position = new_position
+            session.last_active_at = time.monotonic()
 
     def evict_idle(
         self,
@@ -409,16 +429,16 @@ class SessionStore:
         without monkey-patching ``time.monotonic``. Production
         callers omit it to use the current monotonic clock.
         """
-        clock = now if now is not None else time.monotonic()
-        evicted: list[Session] = []
-        for sid in list(self._sessions.keys()):
-            session = self._sessions[sid]
-            idle = clock - session.last_active_at
-            if idle >= ttl_seconds:
-                self._release_slab_if_held(session)
-                del self._sessions[sid]
-                evicted.append(session)
-        return evicted
+        with self._lock:
+            clock = now if now is not None else time.monotonic()
+            evicted: list[Session] = []
+            for sid in list(self._sessions.keys()):
+                session = self._sessions[sid]
+                idle = clock - session.last_active_at
+                if idle >= ttl_seconds:
+                    self._remove_session(session, reason="ttl_eviction")
+                    evicted.append(session)
+            return evicted
 
     def _assert_inv1(self, session: Session) -> None:
         """Enforce INV-1 for ``session``.
@@ -437,8 +457,7 @@ class SessionStore:
         cached_len = len(session.cached_token_sequence)
         if actual_k_seq_len != cached_len:
             session.inv1_violations += 1
-            self._release_slab_if_held(session)
-            del self._sessions[session.session_id]
+            self._remove_session(session, reason="inv1_failure")
             raise InvariantViolation(
                 kind="1",
                 session_id=session.session_id,
@@ -467,6 +486,13 @@ class SessionStore:
         session.slab = None
         self._slab_pool.release(slab)
 
+    def _remove_session(self, session: Session, *, reason: str) -> None:
+        """Release all store-owned state and notify the cleanup owner once."""
+        self._release_slab_if_held(session)
+        self._sessions.pop(session.session_id, None)
+        if self._on_session_removed is not None:
+            self._on_session_removed(session.session_id, reason)
+
     def _evict_one_lru(self) -> Session:
         """Evict the least-recently-active session.
 
@@ -480,8 +506,8 @@ class SessionStore:
             self._sessions.items(),
             key=lambda kv: kv[1].last_active_at,
         )
-        self._release_slab_if_held(evicted)
-        del self._sessions[evicted_id]
+        del evicted_id
+        self._remove_session(evicted, reason="lru_eviction")
         return evicted
 
     @staticmethod

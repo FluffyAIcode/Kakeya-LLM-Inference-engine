@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import threading
 import logging
 import signal
 import sys
+from pathlib import Path
 from typing import Tuple
 
 import torch
@@ -48,6 +50,11 @@ from inference_engine.server.grpc_app import (
     DEFAULT_BIND_ADDRESS,
     GrpcServerConfig,
     create_grpc_server,
+)
+from inference_engine.server.runtime_health import (
+    DecodeLiveness,
+    PrimaryMemoryGovernor,
+    create_runtime_health_app,
 )
 from inference_engine.session.coordinator import AppendTokensCoordinator
 from inference_engine.session.generator import GenerationCoordinator
@@ -470,8 +477,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # PR-A3c: per-session binding for true multi-tenant serving. Each session
     # gets its own verifier adapter (isolated KV) sharing the model weights via
     # the adapter's spawn(); the registry doubles as cache_inspector + resolver.
-    registry = None
-    on_session_close = None
+    session_registry = None
     if args.multi_tenant:
         if not hasattr(verifier, "spawn"):
             raise SystemExit(
@@ -480,16 +486,39 @@ async def _serve(args: argparse.Namespace) -> int:
         from inference_engine.session.verifier_registry import (
             PerSessionVerifierRegistry,
         )
-        registry = PerSessionVerifierRegistry(factory=verifier.spawn)
-        on_session_close = registry.remove
+        session_registry = PerSessionVerifierRegistry(factory=verifier.spawn)
         _LOG.info("multi-tenant per-session binding ENABLED (PR-A3c)")
+
+    liveness = DecodeLiveness(
+        args.decode_liveness_file,
+        unhealthy_path=args.runtime_unhealthy_file,
+    )
+    governor_holder = []
+
+    def on_session_removed(session_id: str, reason: str) -> None:
+        if session_registry is not None:
+            session_registry.remove(session_id)
+        if governor_holder:
+            governor_holder[0].on_session_removed(session_id, reason)
+        _LOG.info("session removed id=%s reason=%s", session_id, reason)
 
     store = SessionStore(
         capacity=args.capacity,
-        cache_inspector=registry if registry is not None else verifier,
+        cache_inspector=(
+            session_registry if session_registry is not None else verifier
+        ),
         slab_pool=pool,
+        on_session_removed=on_session_removed,
     )
-    resolver = registry.get if registry is not None else None
+    governor = PrimaryMemoryGovernor(
+        store,
+        verifier,
+        warning_bytes=int(args.memory_warning_gb * (1 << 30)),
+        drain_bytes=int(args.memory_drain_gb * (1 << 30)),
+        unhealthy_bytes=int(args.memory_unhealthy_gb * (1 << 30)),
+    )
+    governor_holder.append(governor)
+    resolver = session_registry.get if session_registry is not None else None
     cache_fill_capture = None
     if args.cache_fill_capture_size:
         from inference_engine.distributed.cache_fill import CacheFillCapture
@@ -514,12 +543,14 @@ async def _serve(args: argparse.Namespace) -> int:
             )
             if cache_fill_capture is not None else None
         ),
+        liveness=liveness,
     )
     gen_coord = GenerationCoordinator(
         store,
         verifier,
         resolver=resolver,
         on_tokens=_build_token_telemetry_callback(args),
+        liveness=liveness,
     )
 
     # Multi-host capability plane (ADR 0009): only constructed when
@@ -554,7 +585,8 @@ async def _serve(args: argparse.Namespace) -> int:
         append_coordinator=append_coord,
         generation_coordinator=gen_coord,
         config=config,
-        on_session_close=on_session_close,
+        memory_governor=governor,
+        liveness=liveness,
         capability_registry=registry,
         proposers=proposers,
         prefill_cache_store=prefill_store,
@@ -607,6 +639,47 @@ async def _serve(args: argparse.Namespace) -> int:
             args.network_http_port,
         )
 
+    health_server = None
+    health_thread = None
+    if args.runtime_health_port:
+        import uvicorn
+        health_server = uvicorn.Server(uvicorn.Config(
+            create_runtime_health_app(liveness, governor),
+            host=args.runtime_health_host,
+            port=args.runtime_health_port,
+            log_level=args.log_level.lower(),
+        ))
+        health_thread = threading.Thread(
+            target=health_server.run,
+            name="kakeya-runtime-health",
+            daemon=True,
+        )
+        health_thread.start()
+        _LOG.info(
+            "runtime health listening on http://%s:%d",
+            args.runtime_health_host,
+            args.runtime_health_port,
+        )
+
+    async def monitor_memory() -> None:
+        last_level = ""
+        unhealthy_path = Path(args.runtime_unhealthy_file).expanduser()
+        while True:
+            snapshot = await asyncio.to_thread(governor.sample)
+            if snapshot.level != last_level:
+                _LOG.warning("Primary memory level changed: %s", snapshot)
+                last_level = snapshot.level
+            if snapshot.level == "unhealthy":
+                unhealthy_path.parent.mkdir(parents=True, exist_ok=True)
+                unhealthy_path.write_text(json.dumps({
+                    "reason": "memory",
+                    "process_footprint_bytes": snapshot.process_footprint_bytes,
+                    "updated_at_unix": snapshot.updated_at_unix,
+                }))
+            await asyncio.sleep(args.memory_poll_s)
+
+    memory_task = asyncio.create_task(monitor_memory())
+
     exchange_task = None
     if registry is not None and args.peer:
         exchange_task = asyncio.create_task(
@@ -639,6 +712,11 @@ async def _serve(args: argparse.Namespace) -> int:
             pass
 
     await stop_event.wait()
+    memory_task.cancel()
+    try:
+        await memory_task
+    except asyncio.CancelledError:
+        pass
     if exchange_task is not None:
         exchange_task.cancel()
         try:
@@ -647,8 +725,12 @@ async def _serve(args: argparse.Namespace) -> int:
             pass
     if http_server is not None:
         http_server.should_exit = True
+    if health_server is not None:
+        health_server.should_exit = True
     if http_thread is not None:
         await asyncio.to_thread(http_thread.join, args.shutdown_grace_s)
+    if health_thread is not None:
+        await asyncio.to_thread(health_thread.join, args.shutdown_grace_s)
     if prefill_hook is not None:
         prefill_hook.close()
     await server.stop(grace=args.shutdown_grace_s)
@@ -695,6 +777,17 @@ def main() -> int:
     ap.add_argument("--shutdown-grace-s", type=float, default=5.0,
                     help="Seconds to give in-flight RPCs to finish on "
                          "SIGTERM/SIGINT before hard-aborting.")
+    ap.add_argument("--decode-liveness-file",
+                    default="~/.kakeya/primary-decode-liveness.json")
+    ap.add_argument("--runtime-unhealthy-file",
+                    default="~/.kakeya/primary-runtime-unhealthy.json")
+    ap.add_argument("--runtime-health-host", default="127.0.0.1")
+    ap.add_argument("--runtime-health-port", type=int, default=8091,
+                    help="Read-only liveness/memory HTTP port; 0 disables.")
+    ap.add_argument("--memory-warning-gb", type=float, default=18.0)
+    ap.add_argument("--memory-drain-gb", type=float, default=20.0)
+    ap.add_argument("--memory-unhealthy-gb", type=float, default=21.5)
+    ap.add_argument("--memory-poll-s", type=float, default=5.0)
     ap.add_argument("--log-level", default="INFO",
                     choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     # --- Multi-host capability plane (ADR 0009, v0.5-M1) -------------

@@ -48,6 +48,7 @@ Anomaly invariants:
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Iterable, List, Protocol
 
 import torch
@@ -107,6 +108,10 @@ class PrefillCacheHookProtocol(Protocol):
         ...  # pragma: no cover
 
 
+class OperationCancelledError(RuntimeError):
+    """Raised when a blocking coordinator observes client cancellation."""
+
+
 def _sync_slab_bytes(session: Session, verifier: "VerifierProtocol") -> None:
     """Mirror the verifier's current KV byte count onto the session's
     slab placeholder (PR-E1c).
@@ -146,6 +151,7 @@ class AppendTokensCoordinator:
         resolver=None,
         prefill_cache: PrefillCacheHookProtocol | None = None,
         on_first_append: Callable[[Session, list[int]], None] | None = None,
+        liveness=None,
     ) -> None:
         self._store = store
         self._verifier = verifier
@@ -155,6 +161,7 @@ class AppendTokensCoordinator:
         self._resolver = resolver
         self._prefill_cache = prefill_cache
         self._on_first_append = on_first_append
+        self._liveness = liveness
 
     def _verifier_for(self, session_id: str) -> "VerifierProtocol":
         return self._resolver(session_id) if self._resolver else self._verifier
@@ -163,6 +170,7 @@ class AppendTokensCoordinator:
         self,
         session_id: str,
         token_ids: Iterable[int],
+        cancel_event: threading.Event | None = None,
     ) -> int:
         """Run the §2.3 byte-exact prefill-incremental for ``session_id``.
 
@@ -181,6 +189,9 @@ class AppendTokensCoordinator:
             now-orphaned cache state and the caller must reset it
             before re-using the verifier instance.
         """
+        if cancel_event is not None and cancel_event.is_set():
+            raise OperationCancelledError("AppendTokens cancelled")
+
         # Lookup early to surface NOT_FOUND before we touch the verifier.
         session = self._store.get_session(session_id)
         verifier = self._verifier_for(session_id)
@@ -204,6 +215,10 @@ class AppendTokensCoordinator:
         #   - next_global_position = sum of all tokens ever appended
         #   - next_token_logits predicts position == next_global_position
         first_append = session.next_global_position == 0
+        if self._liveness is not None:
+            self._liveness.update(
+                "prefill" if first_append else "decode", session_id, 0,
+            )
         if first_append:
             if self._prefill_cache is not None:
                 self._prefill_cache.prepare(verifier, token_list)
@@ -216,6 +231,9 @@ class AppendTokensCoordinator:
                 accepted=len(token_list),
             )
             verifier.next_token_logits = block_logits[-1].clone()
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise OperationCancelledError("AppendTokens cancelled")
 
         # Mirror the verifier's post-trim cached_token_sequence onto the
         # session BEFORE the store's INV-1 assertion runs (it compares

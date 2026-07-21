@@ -287,6 +287,18 @@ class TestCloseSession:
         with pytest.raises(SessionNotFoundError):
             store.close_session(sess.session_id)
 
+    def test_remove_if_present_is_idempotent_for_cancellation(self):
+        seen = []
+        store = SessionStore(capacity=1, on_session_removed=lambda *args: seen.append(args))
+        sess = store.create_session()
+        assert store.remove_session_if_present(
+            sess.session_id, reason="client_cancelled",
+        )
+        assert not store.remove_session_if_present(
+            sess.session_id, reason="client_cancelled",
+        )
+        assert seen == [(sess.session_id, "client_cancelled")]
+
 
 # ---------------------------------------------------------------------------
 # LRU eviction at capacity
@@ -323,6 +335,13 @@ class TestLruEviction:
             store.get_session(b.session_id)
         assert store.get_session(c.session_id) is c
         assert store.get_session(d.session_id) is d
+
+    def test_reports_lru_reason_to_unified_removal_hook(self):
+        seen = []
+        store = SessionStore(capacity=1, on_session_removed=lambda *args: seen.append(args))
+        old = store.create_session()
+        store.create_session()
+        assert seen == [(old.session_id, "lru_eviction")]
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +391,13 @@ class TestEvictIdle:
         sess.last_active_at = 1000.0
         evicted = store.evict_idle(ttl_seconds=5.0, now=1005.0)
         assert evicted == [sess]
+
+    def test_reports_ttl_reason_to_unified_removal_hook(self):
+        seen = []
+        store = SessionStore(capacity=1, on_session_removed=lambda *args: seen.append(args))
+        sess = store.create_session()
+        store.evict_idle(ttl_seconds=0, now=sess.last_active_at)
+        assert seen == [(sess.session_id, "ttl_eviction")]
 
 
 # ---------------------------------------------------------------------------
