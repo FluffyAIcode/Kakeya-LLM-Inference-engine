@@ -64,7 +64,11 @@ def _infer(
     get_stats,
     on_token=None,
     max_response_tokens=None,
+    semantic_progress=None,
+    max_semantic_stall_chunks: int = 3,
 ):
+    if max_semantic_stall_chunks <= 0:
+        raise ValueError("max_semantic_stall_chunks must be > 0")
     before = get_stats()
     started = time.perf_counter()
     with client.create_session(eos_token_ids=eos_ids, client_label="agent-gan") as s:
@@ -79,6 +83,7 @@ def _infer(
             else int(max_response_tokens) or None
         )
         stop_reason = "unknown"
+        stalled_chunks = 0
         while response_limit is None or len(generated) < response_limit:
             before_count = len(generated)
             chunk = (
@@ -92,12 +97,21 @@ def _infer(
                     on_token(generated)
                 if first_at is None:
                     first_at = time.perf_counter()
+            new_tokens = generated[before_count:]
+            if semantic_progress is not None and new_tokens:
+                if semantic_progress(new_tokens):
+                    stalled_chunks = 0
+                else:
+                    stalled_chunks += 1
             stop_reason = {
                 1: "max_tokens",
                 2: "eos",
                 3: "cancelled",
                 4: "truncated",
             }.get(s.last_stop_reason, "unknown")
+            if stalled_chunks >= max_semantic_stall_chunks:
+                stop_reason = "semantic_stall"
+                break
             if stop_reason != "max_tokens":
                 break
             if len(generated) == before_count:

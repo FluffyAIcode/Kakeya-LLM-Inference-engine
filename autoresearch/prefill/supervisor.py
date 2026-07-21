@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from autoresearch.prefill.prepare import _load_candidate, evaluate
+from autoresearch.prefill.lean_gate import warm_lean_environment
 
 
 REQUIRED_CANDIDATE_FIELDS = (
@@ -1315,6 +1316,18 @@ def main() -> int:
         raise SystemExit("strategy-max-prefill-tokens must be > 0")
     if args.strategy_stagnation_rounds <= 0:
         raise SystemExit("strategy-stagnation-rounds must be > 0")
+    lean_warmup = warm_lean_environment(
+        Path(__file__).resolve().parents[2],
+    )
+    print(
+        "[autoresearch] phase=lean-warmup "
+        f"status={lean_warmup.status} "
+        f"elapsed_s={lean_warmup.elapsed_s:.2f} "
+        f"error={lean_warmup.error or '(none)'}",
+        flush=True,
+    )
+    if not lean_warmup.ok:
+        raise SystemExit(lean_warmup.error)
     for iteration in range(args.iterations):
         row = run_iteration(args, iteration)
         print(json.dumps(row, indent=2, sort_keys=True))
