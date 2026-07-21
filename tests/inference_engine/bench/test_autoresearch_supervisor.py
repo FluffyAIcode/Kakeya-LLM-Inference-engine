@@ -10,6 +10,7 @@ from autoresearch.prefill.supervisor import (
     render_candidate,
     should_keep,
     StrategyPrefillHeartbeat,
+    StrategyPrefillBudgetExceeded,
     strategy_trigger_reason,
     _extract_json,
     _pending_leaf_ids,
@@ -397,6 +398,13 @@ def test_strategy_is_triggered_only_by_events(tmp_path):
     ) == "manual-trigger-file"
 
 
+def test_strategy_budget_error_preserves_exact_admission_counts():
+    error = StrategyPrefillBudgetExceeded(11935, 8448)
+    assert error.token_count == 11935
+    assert error.max_tokens == 8448
+    assert "without truncation: 11935 > 8448" in str(error)
+
+
 def test_strategy_state_keeps_complete_active_ancestry_only():
     ledger = {"obligations": [
         {
@@ -585,6 +593,8 @@ def test_supervisor_preserves_runtime_and_cache_across_iterations():
     assert "phase=runtime-health-check" in body
     assert "phase=deterministic-candidate" in body
     assert "mode=gemma trigger=" in body
+    assert "except StrategyPrefillBudgetExceeded" in body
+    assert "phase=strategy-deferred-budget" in body
     assert "if not gan_completed:" in body
     assert "phase=completed-run-preserved" in body
     assert "deploy_candidate" not in source

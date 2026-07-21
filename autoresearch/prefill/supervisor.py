@@ -32,6 +32,16 @@ REQUIRED_CANDIDATE_FIELDS = (
 )
 
 
+class StrategyPrefillBudgetExceeded(ValueError):
+    def __init__(self, token_count: int, max_tokens: int) -> None:
+        self.token_count = int(token_count)
+        self.max_tokens = int(max_tokens)
+        super().__init__(
+            "Strategy Prefill token budget exceeded without truncation: "
+            f"{self.token_count} > {self.max_tokens}",
+        )
+
+
 def _json_request(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=10) as response:
         return json.load(response)
@@ -659,9 +669,9 @@ def propose_candidate(
         enable_thinking=False,
     )
     if len(ids) > max_prefill_tokens:
-        raise ValueError(
-            "Strategy Prefill token budget exceeded without truncation: "
-            f"{len(ids)} > {max_prefill_tokens}",
+        raise StrategyPrefillBudgetExceeded(
+            len(ids),
+            max_prefill_tokens,
         )
     generated: list[int] = []
     print(
@@ -1072,25 +1082,36 @@ def run_iteration(args, iteration: int) -> dict:
                 f"mode=gemma trigger={trigger_reason}",
                 flush=True,
             )
-            proposed = propose_candidate(
-                address=args.address,
-                tokenizer_id=args.tokenizer_id,
-                program=program,
-                current=current,
-                results_text=(
-                    results_path.read_text() if results_path.exists() else ""
-                ),
-                ledger=ledger_data,
-                max_prefill_tokens=args.strategy_max_prefill_tokens,
-            )
-            if proposed["target_obligation_id"] not in _pending_leaf_ids(
-                ledger_data,
-            ):
-                raise ValueError(
-                    "strategy agent targeted a non-leaf proof obligation",
+            try:
+                proposed = propose_candidate(
+                    address=args.address,
+                    tokenizer_id=args.tokenizer_id,
+                    program=program,
+                    current=current,
+                    results_text=(
+                        results_path.read_text()
+                        if results_path.exists() else ""
+                    ),
+                    ledger=ledger_data,
+                    max_prefill_tokens=args.strategy_max_prefill_tokens,
                 )
-            if trigger_reason == "manual-trigger-file":
-                trigger_file.unlink(missing_ok=True)
+                if proposed["target_obligation_id"] not in _pending_leaf_ids(
+                    ledger_data,
+                ):
+                    raise ValueError(
+                        "strategy agent targeted a non-leaf proof obligation",
+                    )
+                if trigger_reason == "manual-trigger-file":
+                    trigger_file.unlink(missing_ok=True)
+            except StrategyPrefillBudgetExceeded as exc:
+                strategy_mode = "host_strategy_deferred"
+                proposed = build_host_candidate(current, ledger_data)
+                print(
+                    "[autoresearch] phase=strategy-deferred-budget "
+                    f"tokens={exc.token_count} max={exc.max_tokens} "
+                    f"fallback=deterministic-host",
+                    flush=True,
+                )
         else:
             strategy_mode = "host"
             proposed = build_host_candidate(current, ledger_data)

@@ -49,6 +49,10 @@ Normal iterations use the deterministic host candidate and do not call the
 Strategy model. Invoke Strategy Gemma only after three consecutive
 non-progressing runs, after a falsified branch, or via an explicit CLI/trigger
 file request.
+If an optional Strategy replan exceeds its lossless Prefill budget, defer the
+replan and continue immediately with the deterministic host candidate. Never
+truncate the Strategy prompt and never stop the GAN proof loop for this
+control-plane admission failure.
 An unresolved Critic verdict must isolate one strictly smaller missing lemma;
 the host records that lemma as a deduplicated child obligation. Completed GAN
 runs, transcripts, checkpoints, and ledger updates remain durable even when the
