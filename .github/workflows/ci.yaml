@@ -43,6 +43,18 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      - name: Install pinned Lean toolchain
+        run: |
+          curl -sSf https://elan.lean-lang.org/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Restore mathlib cache and build Lean gate
+        run: |
+          lake update
+          lake exe cache get
+          lake build
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:

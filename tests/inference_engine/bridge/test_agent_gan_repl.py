@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 
+from autoresearch.prefill.lean_gate import LeanSignatureResult
 from scripts.agent_gan_repl import (
     PrefillHeartbeat,
     CriticIssueBatch,
@@ -46,6 +47,14 @@ from scripts.agent_gan_repl import (
 class Tokenizer:
     def decode(self, token_ids, **_kwargs):
         return "".join(chr(96 + token) for token in token_ids)
+
+
+def _valid_lean_signature(suffix=""):
+    return LeanSignatureResult(
+        f"theorem frontier{suffix} (p : Prop) : p := by sorry",
+        f"lean-signature-hash{suffix}",
+        True,
+    )
 
 
 def test_timestamped_tee_preserves_terminal_and_flushes_log(tmp_path):
@@ -522,15 +531,21 @@ def test_missing_lemma_creates_deduplicated_child_and_selects_leaf():
         critic,
         "br_first",
         {"RH-C2"},
+        None,
+        {"RH-C2": _valid_lean_signature()},
     )
     assert len(created) == 1
     assert created[0].parent_id == "RH-C2"
+    assert created[0].formal_status == "FORMALIZED"
+    assert created[0].lean_signature_hash == "lean-signature-hash"
     assert pending_obligations(ledger) == created
     assert create_child_obligations(
         ledger,
         critic,
         "br_repeat",
         {"RH-C2"},
+        None,
+        {"RH-C2": _valid_lean_signature()},
     ) == []
 
 
@@ -582,12 +597,20 @@ def test_critic_leaf_table_creates_all_target_children_only():
         critic,
         "br_table",
         {"RH-C2"},
+        None,
     )
     created = create_child_obligations(
         ledger,
         critic,
         "br_table",
         {"RH-C2"},
+        None,
+        {
+            "RH-C2": [
+                _valid_lean_signature("1"),
+                _valid_lean_signature("2"),
+            ],
+        },
     )
     assert applied == {"RH-C2": "UNRESOLVED"}
     assert len(created) == 2

@@ -30,6 +30,11 @@ from scripts.benchmark_prefill_architecture import (
     _json_request,
 )
 from inference_engine.bench.prefill_fleet_report import summarize_stages
+from autoresearch.prefill.lean_gate import (
+    LeanSignatureResult,
+    extract_lean_signature_blocks,
+    validate_lean_signature,
+)
 
 
 class TimestampedTee:
@@ -171,6 +176,10 @@ class ProofObligation:
     parent_id: str = ""
     last_run_id: str = ""
     last_evidence: str = ""
+    formal_status: str = "UNFORMALIZED"
+    lean_signature: str = ""
+    lean_signature_hash: str = ""
+    formalization_error: str = ""
 
 
 @dataclass
@@ -281,7 +290,11 @@ def format_proof_ledger(
         "pending ID, with `Correction:`, `Derivation:`, and `Remaining gap:`. "
         "Critic requirement: emit `### ISSUE_VERDICT <ID>` for every pending "
         "ID, with `Status: PROVED|DISPROVED|UNRESOLVED`, `Evidence:`, and "
-        "`Missing lemma:`."
+        "`Missing lemma:`. For every UNRESOLVED verdict, immediately emit "
+        "`### LEAN_SIGNATURE <ID>` followed by one fenced `lean` block. The "
+        "block must contain exactly one theorem with explicit typed variables, "
+        "hypotheses, and conclusion, ending in `:= by sorry`. Do not emit "
+        "imports, axioms, commands, macros, or executable code."
     )
 
 
@@ -680,8 +693,16 @@ def create_child_obligations(
     run_id: str,
     parent_ids: set[str],
     rejections: list[str] | None = None,
+    lean_signatures: dict[
+        str,
+        LeanSignatureResult | list[LeanSignatureResult],
+    ] | None = None,
 ) -> list[ProofObligation]:
     created: list[ProofObligation] = []
+    available_signatures = {
+        key: list(value) if isinstance(value, list) else [value]
+        for key, value in (lean_signatures or {}).items()
+    }
 
     def add_child(parent_id: str, statement: str, evidence: str) -> None:
         statement = statement.strip().strip("`")
@@ -697,6 +718,30 @@ def create_child_obligations(
             if rejections is not None:
                 rejections.append(f"{statement} :: {rejection}")
             return
+        lean_results = available_signatures.get(parent_id, [])
+        lean_result = lean_results.pop(0) if lean_results else None
+        if lean_result is None:
+            if rejections is not None:
+                rejections.append(
+                    f"{statement} :: missing Lean theorem signature",
+                )
+            return
+        if not lean_result.ok:
+            if rejections is not None:
+                rejections.append(
+                    f"{statement} :: {lean_result.error}",
+                )
+            return
+        if any(
+            item.lean_signature_hash
+            and item.lean_signature_hash == lean_result.signature_hash
+            for item in ledger.obligations
+        ):
+            if rejections is not None:
+                rejections.append(
+                    f"{statement} :: Lean signature duplicates an ancestor",
+                )
+            return
         suffix = hashlib.sha256(
             f"{parent_id}:{normalized}".encode(),
         ).hexdigest()[:10]
@@ -706,6 +751,9 @@ def create_child_obligations(
             parent_id=parent_id,
             last_run_id=run_id,
             last_evidence=evidence,
+            formal_status="FORMALIZED",
+            lean_signature=lean_result.source,
+            lean_signature_hash=lean_result.signature_hash,
         )
         ledger.obligations.append(child)
         created.append(child)
@@ -1731,6 +1779,42 @@ def main() -> int:
                 id_repairs = []
                 rejected_frontiers = []
                 if proof_ledger is not None and turn_obligations:
+                    target_ids = {
+                        item.obligation_id
+                        for item in turn_obligations
+                    }
+                    lean_signatures = {}
+                    for model_id, lean_source in extract_lean_signature_blocks(
+                        critic_text,
+                    ):
+                        lean_target = (
+                            _resolve_model_obligation_id(
+                                model_id,
+                                target_ids,
+                            )
+                            if model_id else (
+                                next(iter(target_ids))
+                                if len(target_ids) == 1 else ""
+                            )
+                        )
+                        if not lean_target:
+                            continue
+                        lean_result = validate_lean_signature(
+                            lean_source,
+                            project_root=Path(__file__).resolve().parents[1],
+                        )
+                        lean_signatures.setdefault(
+                            lean_target,
+                            [],
+                        ).append(lean_result)
+                        print(
+                            "[lean-signature-gate] "
+                            f"target={lean_target} "
+                            f"status={'FORMALIZED' if lean_result.ok else 'REJECTED'} "
+                            f"hash={lean_result.signature_hash or '(none)'} "
+                            f"error={lean_result.error or '(none)'}",
+                            flush=True,
+                        )
                     applied_verdicts = apply_critic_verdicts(
                         proof_ledger,
                         critic_text,
@@ -1756,6 +1840,7 @@ def main() -> int:
                                 for item in turn_obligations
                             },
                             rejected_frontiers,
+                            lean_signatures,
                         )
                     for model_id, target_id in id_repairs:
                         print(
