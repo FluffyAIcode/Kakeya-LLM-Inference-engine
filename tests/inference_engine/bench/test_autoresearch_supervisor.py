@@ -327,6 +327,40 @@ def test_strategy_state_keeps_complete_active_ancestry_only():
     assert "unrelated result" not in serialized
 
 
+def test_strategy_state_deduplicates_text_losslessly():
+    shared = "Complete exact evidence that must appear once without truncation."
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C2",
+            "statement": "Root statement.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+            "last_evidence": shared,
+        },
+    ]}
+    results = (
+        "candidate_id\ttarget_obligation_id\tresearch_outcome\t"
+        "research_evidence\tnew_frontier\tkept\terror\t"
+        "hypothesis_sha256\n"
+        f"c2\tRH-C2\tINCONCLUSIVE\t{shared}\tRoot statement."
+        "\tFalse\t\th2\n"
+    )
+    state = build_strategy_research_state(
+        current={**_candidate(), "target_obligation_id": "RH-C2"},
+        ledger=ledger,
+        results_text=results,
+    )
+    serialized = str(state)
+    assert serialized.count(shared) == 1
+    assert serialized.count("Root statement.") == 1
+    evidence_ref = state["target_ancestry"][0]["last_evidence_ref"]
+    result_ref = state["relevant_experiments"][0][
+        "research_evidence_ref"
+    ]
+    assert evidence_ref == result_ref
+    assert state["text_by_id"][evidence_ref] == shared
+
+
 def test_results_are_append_only_and_best_is_selected(tmp_path):
     path = tmp_path / "results.tsv"
     common = {

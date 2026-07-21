@@ -61,6 +61,8 @@ Prefill budgets are hard admission limits, never truncation instructions.
 Strategy input must fit 8192 tokens by carrying the complete active leaf
 ancestry and its exact experiment records. Generator and Critic inputs must fit
 6144 tokens; the Critic always receives the complete current Generator output.
+Repeated Strategy strings are interned once in `text_by_id`; `_ref` fields
+losslessly reference that exact text.
 If any complete semantic unit exceeds its budget, reject it before remote
 Prefill and preserve the checkpoint. Never slice, sample, summarize, or drop
 the tail of an over-budget input.
