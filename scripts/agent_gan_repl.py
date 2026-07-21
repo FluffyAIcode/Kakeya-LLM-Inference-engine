@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import difflib
 import hashlib
 import json
 import os
@@ -282,11 +283,33 @@ def generator_issue_coverage(
     return covered, required - covered
 
 
+def _resolve_model_obligation_id(
+    model_id: str,
+    allowed_ids: set[str],
+) -> str:
+    if model_id in allowed_ids:
+        return model_id
+    if len(allowed_ids) != 1:
+        return ""
+    target_id = next(iter(allowed_ids))
+    common_prefix = os.path.commonprefix((model_id, target_id))
+    prefix_ratio = len(common_prefix) / max(1, len(target_id))
+    similarity = difflib.SequenceMatcher(
+        None,
+        model_id,
+        target_id,
+    ).ratio()
+    if prefix_ratio >= 0.65 or similarity >= 0.75:
+        return target_id
+    return ""
+
+
 def apply_critic_verdicts(
     ledger: ProofObligationLedger,
     critic_text: str,
     run_id: str,
     obligation_ids: set[str] | None = None,
+    id_repairs: list[tuple[str, str]] | None = None,
 ) -> dict[str, str]:
     pending_ids = (
         obligation_ids
@@ -297,9 +320,15 @@ def apply_critic_verdicts(
     )
     verdicts: dict[str, tuple[str, str]] = {}
     for match in _ISSUE_VERDICT.finditer(critic_text):
-        obligation_id = match.group(1)
-        if obligation_id not in pending_ids:
+        model_id = match.group(1)
+        obligation_id = _resolve_model_obligation_id(
+            model_id,
+            pending_ids,
+        )
+        if not obligation_id:
             continue
+        if model_id != obligation_id and id_repairs is not None:
+            id_repairs.append((model_id, obligation_id))
         body = match.group("body")
         status_match = re.search(
             r"^\*{0,2}Status:\*{0,2}\s*"
@@ -352,31 +381,97 @@ def _normalize_obligation_statement(statement: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", statement.lower()))
 
 
+def _lemma_signature(statement: str) -> str:
+    matches = re.findall(
+        r"[\"“]([^\"”]{3,120}?lemma)[\"”]",
+        statement,
+        re.IGNORECASE,
+    )
+    if not matches:
+        matches = re.findall(
+            r"\b([A-Za-z][A-Za-z -]{2,100}\s+Lemma)\b",
+            statement,
+        )
+    return (
+        _normalize_obligation_statement(matches[0])
+        if matches else ""
+    )
+
+
+def _obligation_terms(statement: str) -> set[str]:
+    ignored = {
+        "a", "an", "and", "as", "be", "for", "if", "in", "is", "of",
+        "on", "or", "that", "the", "then", "there", "to", "where", "with",
+        "lemma", "proof", "formal", "given",
+    }
+    return {
+        term
+        for term in _normalize_obligation_statement(statement).split()
+        if term not in ignored
+    }
+
+
+def _frontier_rejection_reason(
+    ledger: ProofObligationLedger,
+    parent_id: str,
+    statement: str,
+) -> str:
+    normalized = _normalize_obligation_statement(statement)
+    terms = _obligation_terms(statement)
+    signature = _lemma_signature(statement)
+    parent_by_id = {
+        item.obligation_id: item.parent_id
+        for item in ledger.obligations
+    }
+    ancestors = set()
+    cursor = parent_id
+    while cursor and cursor not in ancestors:
+        ancestors.add(cursor)
+        cursor = parent_by_id.get(cursor, "")
+    for item in ledger.obligations:
+        existing_normalized = _normalize_obligation_statement(item.statement)
+        if normalized == existing_normalized:
+            return f"duplicates existing obligation {item.obligation_id}"
+        existing_signature = _lemma_signature(item.statement)
+        if signature and signature == existing_signature:
+            return f"repeats existing lemma {item.obligation_id}"
+    if len(terms) < 6:
+        return "frontier is too vague to be a falsifiable smaller obligation"
+    for item in ledger.obligations:
+        existing_terms = _obligation_terms(item.statement)
+        union = terms | existing_terms
+        similarity = len(terms & existing_terms) / len(union) if union else 0.0
+        threshold = 0.70 if item.obligation_id in ancestors else 0.85
+        if similarity >= threshold:
+            return (
+                f"semantically cycles to {item.obligation_id} "
+                f"(similarity={similarity:.2f})"
+            )
+    return ""
+
+
 def create_child_obligations(
     ledger: ProofObligationLedger,
     critic_text: str,
     run_id: str,
     parent_ids: set[str],
+    rejections: list[str] | None = None,
 ) -> list[ProofObligation]:
-    existing = {
-        (item.parent_id, _normalize_obligation_statement(item.statement))
-        for item in ledger.obligations
-    }
     created: list[ProofObligation] = []
 
     def add_child(parent_id: str, statement: str, evidence: str) -> None:
         statement = statement.strip().strip("`")
         normalized = _normalize_obligation_statement(statement)
-        parent = next(
-            item for item in ledger.obligations
-            if item.obligation_id == parent_id
+        if not normalized or normalized in {"none", "no missing lemma"}:
+            return
+        rejection = _frontier_rejection_reason(
+            ledger,
+            parent_id,
+            statement,
         )
-        if (
-            not normalized
-            or normalized in {"none", "no missing lemma"}
-            or normalized == _normalize_obligation_statement(parent.statement)
-            or (parent_id, normalized) in existing
-        ):
+        if rejection:
+            if rejections is not None:
+                rejections.append(f"{statement} :: {rejection}")
             return
         suffix = hashlib.sha256(
             f"{parent_id}:{normalized}".encode(),
@@ -389,12 +484,14 @@ def create_child_obligations(
             last_evidence=evidence,
         )
         ledger.obligations.append(child)
-        existing.add((parent_id, normalized))
         created.append(child)
 
     for match in _ISSUE_VERDICT.finditer(critic_text):
-        parent_id = match.group(1)
-        if parent_id not in parent_ids:
+        parent_id = _resolve_model_obligation_id(
+            match.group(1),
+            parent_ids,
+        )
+        if not parent_id:
             continue
         body = match.group("body")
         status_match = re.search(
@@ -457,6 +554,7 @@ def build_autoresearch_verdict(
     ledger: ProofObligationLedger,
     applied_verdicts: dict[str, str],
     created: list[ProofObligation],
+    rejected_frontiers: list[str] | None = None,
 ) -> dict:
     target_id = str(candidate.TARGET_OBLIGATION_ID)
     target = next(
@@ -493,8 +591,11 @@ def build_autoresearch_verdict(
     else:
         outcome = "INCONCLUSIVE"
         evidence = (
-            target.last_evidence if target is not None else
-            "The Critic supplied no structurally valid target verdict."
+            f"Rejected cyclic or invalid frontier: {rejected_frontiers[0]}"
+            if rejected_frontiers else (
+                target.last_evidence if target is not None else
+                "The Critic supplied no structurally valid target verdict."
+            )
         )
         frontier = (
             target.statement if target is not None else
@@ -1390,6 +1491,8 @@ def main() -> int:
                 )
                 applied_verdicts = {}
                 created_obligations = []
+                id_repairs = []
+                rejected_frontiers = []
                 if proof_ledger is not None and turn_obligations:
                     applied_verdicts = apply_critic_verdicts(
                         proof_ledger,
@@ -1399,6 +1502,7 @@ def main() -> int:
                             item.obligation_id
                             for item in turn_obligations
                         },
+                        id_repairs,
                     )
                     created_obligations = create_child_obligations(
                         proof_ledger,
@@ -1408,7 +1512,19 @@ def main() -> int:
                             item.obligation_id
                             for item in turn_obligations
                         },
+                        rejected_frontiers,
                     )
+                    for model_id, target_id in id_repairs:
+                        print(
+                            "[critic-id-repaired] "
+                            f"model_id={model_id} target_id={target_id}",
+                            flush=True,
+                        )
+                    for rejection in rejected_frontiers:
+                        print(
+                            f"[proof-obligation-rejected] {rejection}",
+                            flush=True,
+                        )
                     for obligation_id, status in applied_verdicts.items():
                         print(
                             f"[critic-verdict] id={obligation_id} "
@@ -1432,6 +1548,7 @@ def main() -> int:
                                     proof_ledger,
                                     applied_verdicts,
                                     created_obligations,
+                                    rejected_frontiers,
                                 ),
                                 ensure_ascii=False,
                                 sort_keys=True,

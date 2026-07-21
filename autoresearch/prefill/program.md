@@ -65,6 +65,12 @@ If any complete semantic unit exceeds its budget, reject it before remote
 Prefill and preserve the checkpoint. Never slice, sample, summarize, or drop
 the tail of an over-budget input.
 
+Obligation IDs are host-owned. Treat IDs emitted by Generator/Critic as
+untrusted labels and bind verdicts to the exact current target. Never persist a
+model-invented ID. Reject a proposed child when it duplicates an existing
+statement or lemma name, is highly similar to an ancestor, or is too vague to
+be falsifiable. A rejected cyclic frontier is `INCONCLUSIVE`, not progress.
+
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical
 decomposition progress, while preserving the complete semantic contract.

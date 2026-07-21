@@ -598,6 +598,74 @@ def test_critic_leaf_table_creates_all_target_children_only():
     ]
 
 
+def test_corrupted_critic_id_binds_to_single_host_target():
+    target = (
+        "RH-C2-0ef53a217d-25557e489d-4f025934ee-3110912e68-"
+        "763645cd6b-40ef83e052-b80cd1343b"
+    )
+    corrupted = (
+        "RH-C2-0ef53a217d-25557e489d-4f025934ee-3110912e68-"
+        "763645cd6b-40ef83e052-b80cd13rum-40ef83e052-b80cd1343b"
+    )
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[ProofObligation(target, "Sectorial compatibility.")],
+    )
+    repairs = []
+    verdicts = apply_critic_verdicts(
+        ledger,
+        f"""
+### ISSUE_VERDICT {corrupted}
+**Status:** UNRESOLVED
+**Evidence:** The local density inference is not justified by the global growth class.
+**Missing lemma:** Prove a quantitative sectorial density bound from the indicator function.
+""",
+        "br_corrupt",
+        {target},
+        repairs,
+    )
+    assert verdicts == {target: "UNRESOLVED"}
+    assert repairs == [(corrupted, target)]
+    assert "local density inference" in ledger.obligations[0].last_evidence
+
+
+def test_cycle_and_invented_ids_cannot_create_children():
+    root = ProofObligation(
+        "RH-C2-root",
+        'The "Angular-Growth Decoupling Lemma": prove angular separation.',
+    )
+    target = ProofObligation(
+        "RH-C2-root-child",
+        'The "Sectorial Compatibility Lemma": prove a sectorial bound.',
+        parent_id=root.obligation_id,
+    )
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[root, target],
+    )
+    critic = f"""
+### ISSUE_VERDICT {target.obligation_id}
+**Status:** UNRESOLVED
+**Evidence:** The proposed local density lower bound remains unsupported.
+**Missing lemma:** The "Angular-Growth Decoupling Lemma": prove angular separation.
+
+### Leaf Obligation Ledger
+| ID | Status | Evidence | Missing Lemma |
+| RH-Cty-0-alpha | UNRESOLVED | invented | Prove an invented temporary lemma. |
+"""
+    rejections = []
+    created = create_child_obligations(
+        ledger,
+        critic,
+        "br_cycle",
+        {target.obligation_id},
+        rejections,
+    )
+    assert created == []
+    assert len(ledger.obligations) == 2
+    assert any("existing obligation" in item for item in rejections)
+
+
 def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):
     path = tmp_path / "agent.log"
     path.write_text(
