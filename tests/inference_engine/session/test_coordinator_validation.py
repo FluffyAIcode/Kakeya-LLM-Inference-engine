@@ -116,6 +116,42 @@ def test_first_append_callback_receives_session_and_tokens_once():
     assert observed == [("live", [1, 2])]
 
 
+def test_incremental_append_prefers_last_logits_only_fast_path():
+    class Verifier:
+        cached_token_sequence = []
+        next_global_position = 0
+        next_token_logits = None
+        fast_path_calls = []
+
+        def prefill(self, tokens):
+            self.cached_token_sequence = list(tokens)
+            self.next_global_position = len(tokens)
+
+        def append_accepted_tokens(self, tokens):
+            self.fast_path_calls.append(list(tokens))
+            self.cached_token_sequence.extend(tokens)
+            self.next_global_position += len(tokens)
+
+        def forward_block(self, _tokens):
+            raise AssertionError("full-block path should not run")
+
+        def k_seq_length(self, _session):
+            return len(self.cached_token_sequence)
+
+        def kv_live_bytes(self, _session):
+            return 0
+
+    verifier = Verifier()
+    store = SessionStore(capacity=1, cache_inspector=verifier)
+    session = store.create_session()
+    coord = AppendTokensCoordinator(store, verifier)
+    coord.append_tokens(session.session_id, [1, 2])
+    coord.append_tokens(session.session_id, [3, 4])
+
+    assert verifier.fast_path_calls == [[3, 4]]
+    assert session.history_token_ids == [1, 2, 3, 4]
+
+
 # Note: tests for the ``_sync_slab_bytes`` helper (PR-E1c addition)
 # live in PR-E1c's own commit. PR-N1 is branched off main; once
 # PR-E1c merges, a follow-up will add the helper's None-branch test

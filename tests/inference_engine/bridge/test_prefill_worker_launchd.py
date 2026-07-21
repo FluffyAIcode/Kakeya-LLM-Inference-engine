@@ -6,6 +6,7 @@ INSTALLER = ROOT / "deploy" / "install_prefill_worker_launchd.sh"
 HEAD_PLIST = ROOT / "deploy" / "launchd" / "ai.kakeya.grpc-runtime-prefill.plist"
 PEER_PLIST = ROOT / "deploy" / "launchd" / "ai.kakeya.prefill-network-peer.plist"
 WORKER_PLIST = ROOT / "deploy" / "launchd" / "ai.kakeya.prefill-worker-peer.plist"
+WATCHDOG_INSTALLER = ROOT / "deploy" / "install_decode_watchdog_launchd.sh"
 
 
 def test_worker_installer_emits_full_cache_compatibility_contract():
@@ -92,3 +93,12 @@ def test_worker_injects_explicit_retained_token_cap():
         ROOT / "scripts" / "start_prefill_worker_node.py"
     ).read_text()
     assert "max_retained_tokens=args.sink + args.window" in source
+
+
+def test_decode_watchdog_launchagent_is_external_and_restarts_primary():
+    source = WATCHDOG_INSTALLER.read_text()
+    assert "scripts/decode_watchdog.py" in source
+    assert "<key>StartInterval</key>" in source
+    assert 'STALL_SECONDS="${KAKEYA_DECODE_STALL_SECONDS:-120}"' in source
+    assert "<string>--runtime-label</string>" in source
+    assert 'launchctl kickstart -k "$DOMAIN/$WATCHDOG_LABEL"' in source

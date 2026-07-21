@@ -44,6 +44,7 @@ uvicorn>=0.32,<1.0
 pydantic>=2.7,<3.0
 httpx>=0.27,<1.0
 prometheus-client>=0.20,<1.0
+psutil>=5.9,<8.0
 
 # gRPC runtime (PR-B1 of ADR 0008 Phase B; the runtime/SDK protocol).
 # grpcio-tools is needed only at build time (regenerating stubs from

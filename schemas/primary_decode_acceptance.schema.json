@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kakeya.dev/schemas/primary-decode-acceptance-v1.json",
+  "title": "Primary Decode Mac Acceptance Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "kind",
+    "status",
+    "started_at",
+    "finished_at",
+    "duration_s",
+    "config",
+    "environment",
+    "git",
+    "gates"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://kakeya.dev/schemas/primary-decode-acceptance-v1.json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "primary_decode_mac_acceptance"
+    },
+    "status": {
+      "enum": ["passed", "failed", "incomplete"]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_s": {
+      "type": "number",
+      "minimum": 0
+    },
+    "config": {
+      "type": "object"
+    },
+    "environment": {
+      "type": "object"
+    },
+    "git": {
+      "type": "object"
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "p50_decode_latency_s",
+        "p95_decode_latency_s",
+        "sample_count"
+      ],
+      "properties": {
+        "p50_decode_latency_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95_decode_latency_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gate"
+      }
+    }
+  },
+  "$defs": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate",
+        "status",
+        "summary",
+        "metrics",
+        "thresholds",
+        "evidence"
+      ],
+      "properties": {
+        "gate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": ["passed", "failed", "error", "skipped"]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "metrics": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

@@ -28,6 +28,10 @@ from inference_engine.backends.mlx.verifier import (
     _model_weight_bytes,
     _map_torch_dtype_to_mx,
 )
+from inference_engine.backends.mlx.prefill_snapshot import (
+    export_mlx_prefill_snapshot,
+)
+from inference_engine.distributed.capability import CacheCompatibility
 
 
 @pytest.fixture(scope="session")
@@ -62,6 +66,23 @@ def test_default_config_loads(mlx_verifier_session: MLXSinkWindowVerifier) -> No
     assert v.cache_logical_size == 0
     assert v.next_global_position == 0
     assert v.stats.weight_bytes > 0
+
+
+def test_spawn_shares_model_but_owns_independent_session_kv(
+    mlx_verifier_session: MLXSinkWindowVerifier,
+) -> None:
+    """Worker session adapters must not load or duplicate model weights."""
+    template = mlx_verifier_session
+    first = template.spawn()
+    second = template.spawn()
+
+    assert first.model is template.model
+    assert second.model is template.model
+    first.prefill([1, 2, 3])
+    second.prefill([7, 8])
+    assert first.cache is not second.cache
+    assert first.cached_token_sequence == [1, 2, 3]
+    assert second.cached_token_sequence == [7, 8]
 
 
 @pytest.mark.parametrize(
@@ -214,6 +235,122 @@ def test_append_token_advances_state() -> None:
     assert v.next_global_position == pre_pos + 1
     assert logits is v.next_token_logits
     assert logits.ndim == 1
+
+
+def test_on_device_argmax_exactly_matches_legacy_torch_argmax(
+    mlx_verifier_session: MLXSinkWindowVerifier,
+) -> None:
+    """The scalar-only MLX reduction must select the exact same token."""
+    v = mlx_verifier_session
+    v.prefill([1, 2, 3, 4])
+    on_device = v.greedy_next_token_id()
+    legacy = int(torch.argmax(v.next_token_logits).item())
+    assert on_device == legacy
+
+
+def test_last_logits_path_has_exact_logits_and_kv_parity(
+    mlx_verifier_session: MLXSinkWindowVerifier,
+) -> None:
+    """Optimized all-accepted append is bit-exact to full-block commit."""
+    v = mlx_verifier_session
+    prompt = [1, 2, 3, 4]
+    block = [5, 6, 7]
+
+    v.prefill(prompt)
+    v.append_accepted_tokens(block)
+    optimized_logits = v.next_token_logits.clone()
+    optimized_kv = [
+        (layer.keys, layer.values, layer.offset) for layer in v.cache
+    ]
+    mx.eval(*[
+        tensor
+        for keys, values, _offset in optimized_kv
+        for tensor in (keys, values)
+    ])
+    optimized_tokens = list(v.cached_token_sequence)
+    optimized_position = v.next_global_position
+    compatibility = CacheCompatibility(model_id="step4-parity")
+    optimized_snapshot = export_mlx_prefill_snapshot(
+        v.cache,
+        token_count=optimized_position,
+        cached_token_ids=optimized_tokens,
+        compatibility=compatibility,
+    )
+
+    v.prefill(prompt)
+    full_logits = v.forward_block(block)
+    v.commit_or_truncate(forwarded=len(block), accepted=len(block))
+    full_snapshot = export_mlx_prefill_snapshot(
+        v.cache,
+        token_count=v.next_global_position,
+        cached_token_ids=v.cached_token_sequence,
+        compatibility=compatibility,
+    )
+
+    assert torch.equal(optimized_logits, full_logits[-1])
+    assert optimized_snapshot == full_snapshot
+    assert optimized_tokens == v.cached_token_sequence
+    assert optimized_position == v.next_global_position
+    for (expected_k, expected_v, expected_offset), layer in zip(
+        optimized_kv, v.cache,
+    ):
+        assert expected_offset == layer.offset
+        assert bool(mx.array_equal(expected_k, layer.keys).item())
+        assert bool(mx.array_equal(expected_v, layer.values).item())
+
+
+def test_greedy_path_avoids_vocab_bridge_and_full_block_keeps_it(
+    mlx_verifier_session: MLXSinkWindowVerifier,
+    monkeypatch,
+) -> None:
+    """Focused sync regression: greedy crosses zero vocabulary rows."""
+    import inference_engine.backends.mlx.verifier as verifier_module
+
+    bridged_shapes = []
+    real_bridge = verifier_module.mx_to_torch
+
+    def recording_bridge(arr):
+        bridged_shapes.append(tuple(arr.shape))
+        return real_bridge(arr)
+
+    monkeypatch.setattr(verifier_module, "mx_to_torch", recording_bridge)
+    v = mlx_verifier_session
+    v.prefill([1, 2, 3, 4])
+    assert v._next_token_logits_torch is None
+    token = v.greedy_next_token_id()
+    v.append_accepted_tokens([token])
+    assert bridged_shapes == []
+
+    # Speculative semantics are deliberately unchanged: full [L,V]
+    # crosses the compatibility boundary once.
+    block_logits = v.forward_block([5, 6])
+    assert bridged_shapes == [tuple(block_logits.shape)]
+    assert block_logits.ndim == 2 and block_logits.shape[0] == 2
+
+
+def test_last_logits_memory_accounting_scales_as_one_vocab_row(
+    mlx_verifier_session: MLXSinkWindowVerifier,
+) -> None:
+    """Peak output accounting distinguishes [V] from full [L,V]."""
+    v = mlx_verifier_session
+    v.stats.peak_activation_bytes = 0
+    v.prefill([1, 2, 3, 4])
+    row_bytes = v.stats.peak_activation_bytes
+    expected_row_bytes = (
+        int(v._next_token_logits_mx.size)
+        * int(v._next_token_logits_mx.dtype.size)
+    )
+    assert row_bytes == expected_row_bytes
+
+    v.append_accepted_tokens([5, 6, 7])
+    assert v.stats.peak_activation_bytes == row_bytes
+
+    v.stats.peak_activation_bytes = 0
+    full_logits = v.forward_block([8, 9, 10])
+    assert v.stats.peak_activation_bytes == (
+        int(full_logits.numel()) * int(full_logits.element_size())
+    )
+    assert v.stats.peak_activation_bytes == 3 * row_bytes
 
 
 # ---------------------------------------------------------------------------

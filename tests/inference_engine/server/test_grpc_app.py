@@ -17,6 +17,8 @@ Coverage target: 100% on ``inference_engine/server/grpc_app.py``.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import AsyncIterator
 
 import grpc
@@ -29,6 +31,7 @@ from inference_engine.server.grpc_app import (
     DEFAULT_BIND_ADDRESS,
     GrpcServerConfig,
     RuntimeServiceServicer,
+    _ThreadedEventStream,
     create_grpc_server,
 )
 from inference_engine.server.proto_gen.kakeya.v1 import (
@@ -195,18 +198,16 @@ async def test_close_session_double_close_returns_not_found(grpc_pair):
     assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
 
 
-async def test_close_session_invokes_on_session_close_hook():
-    """PR-A3c: CloseSession fires the optional ``on_session_close`` hook with the
-    session id, so a per-session verifier registry can free that session's KV.
-
-    Built with its own server (the shared ``grpc_pair`` fixture wires no hook) to
-    exercise the ``self._on_session_close is not None`` branch in CloseSession.
-    """
-    store = SessionStore(capacity=4)
-    seen: list[str] = []
+async def test_close_session_invokes_unified_store_removal_hook():
+    """CloseSession reaches the same hook used by eviction and failures."""
+    seen: list[tuple[str, str]] = []
+    store = SessionStore(
+        capacity=4,
+        on_session_removed=lambda *args: seen.append(args),
+    )
     server = grpc.aio.server()
     runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
-        RuntimeServiceServicer(store, on_session_close=seen.append), server,
+        RuntimeServiceServicer(store), server,
     )
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
@@ -217,7 +218,7 @@ async def test_close_session_invokes_on_session_close_hook():
         await stub.CloseSession(
             runtime_pb2.CloseSessionRequest(session_id=create_resp.session_id),
         )
-        assert seen == [create_resp.session_id]
+        assert seen == [(create_resp.session_id, "explicit_close")]
     finally:
         await channel.close()
         await server.stop(grace=0.1)
@@ -606,7 +607,7 @@ async def test_generate_session_not_found_mid_stream_returns_not_found():
         await server.stop(grace=0.1)
 
 
-async def test_generate_cancellation_emits_cancelled_done():
+async def test_generate_cancellation_removes_session():
     """Direct-invocation test: drive the Servicer's Generate with
     a fake gRPC context that flips ``cancelled()`` to True after
     the first event. The servicer must yield a CANCELLED done
@@ -656,12 +657,103 @@ async def test_generate_cancellation_emits_cancelled_done():
     events = []
     async for resp in servicer.Generate(request, ctx):
         events.append(resp)
-    assert len(events) == 2
+    assert len(events) == 1
     assert events[0].WhichOneof("payload") == "token_id"
-    assert events[1].WhichOneof("payload") == "done"
-    assert events[1].done.stop_reason == \
-        runtime_pb2.GenerateDone.STOP_REASON_CANCELLED
-    assert events[1].done.generated_token_count == 1
+    from inference_engine.session import SessionNotFoundError
+    with pytest.raises(SessionNotFoundError):
+        store.get_session(sess.session_id)
+
+
+async def test_generate_cancellation_after_done_preserves_session():
+    from inference_engine.session import (
+        DoneEvent,
+        GenerationCoordinator,
+        STOP_REASON_MAX_TOKENS,
+    )
+
+    class CompletedGeneration(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kwargs):
+            del session_id, max_tokens, kwargs
+            yield DoneEvent(
+                stop_reason=STOP_REASON_MAX_TOKENS,
+                generated_token_count=0,
+                prefill_seconds=0.0,
+                total_seconds=0.0,
+            )
+
+    class Context:
+        def cancelled(self):
+            return False
+
+        async def abort(self, code, details):
+            raise AssertionError((code, details))
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(
+        store,
+        generation_coordinator=CompletedGeneration(store, verifier=None),
+    )
+    stream = servicer.Generate(
+        runtime_pb2.GenerateRequest(
+            session_id=session.session_id,
+            max_tokens=1,
+        ),
+        Context(),
+    )
+    response = await anext(stream)
+    assert response.WhichOneof("payload") == "done"
+    with pytest.raises(asyncio.CancelledError):
+        await stream.athrow(asyncio.CancelledError())
+    assert store.get_session(session.session_id) is session
+
+
+async def test_wire_cancellation_releases_blocked_generate_session():
+    """A disconnect removes session state while model thread is still blocked."""
+    from inference_engine.session import GenerationCoordinator
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingGeneration(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kwargs):
+            del session_id, max_tokens, kwargs
+            started.set()
+            release.wait(timeout=2)
+            if False:
+                yield
+
+    store = SessionStore(capacity=1)
+    coordinator = BlockingGeneration(store, verifier=None)
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeServiceServicer_to_server(
+        RuntimeServiceServicer(store, generation_coordinator=coordinator),
+        server,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeServiceStub(channel)
+    try:
+        session = store.create_session()
+        call = stub.Generate(runtime_pb2.GenerateRequest(
+            session_id=session.session_id,
+            max_tokens=1,
+        ))
+        read_task = asyncio.create_task(call.read())
+        assert await asyncio.to_thread(started.wait, 1)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await read_task
+        for _ in range(50):
+            if store.active_count == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert store.active_count == 0
+    finally:
+        release.set()
+        await channel.close()
+        await server.stop(grace=0.1)
 
 
 async def test_append_tokens_session_not_found_returns_not_found():
@@ -733,6 +825,47 @@ async def test_append_tokens_success_returns_response():
         await server.stop(grace=0.1)
 
 
+async def test_append_tokens_worker_does_not_block_event_loop():
+    from inference_engine.session import AppendTokensCoordinator
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingCoordinator(AppendTokensCoordinator):
+        def append_tokens(self, session_id, token_ids):
+            del session_id, token_ids
+            started.set()
+            release.wait(timeout=2)
+            return 1
+
+    store = SessionStore(capacity=2)
+    servicer = RuntimeServiceServicer(
+        store,
+        append_coordinator=BlockingCoordinator(store, verifier=None),
+    )
+
+    class Context:
+        def cancelled(self):
+            return False
+
+        async def abort(self, code, detail):
+            raise AssertionError((code, detail))
+
+    session = store.create_session()
+    append_task = asyncio.create_task(servicer.AppendTokens(
+        runtime_pb2.AppendTokensRequest(session_id=session.session_id, token_ids=[1]),
+        Context(),
+    ))
+    await asyncio.to_thread(started.wait, 1)
+    created = await asyncio.wait_for(
+        servicer.CreateSession(runtime_pb2.CreateSessionRequest(), Context()),
+        timeout=0.2,
+    )
+    assert created.session_id
+    release.set()
+    await append_task
+
+
 async def test_generate_yields_history_truncated_then_done():
     """Generator override yields HistoryTruncatedEvent + DoneEvent →
     truncated frame + done frame on the wire. Covers the
@@ -793,6 +926,252 @@ async def test_generate_yields_history_truncated_then_done():
     finally:
         await channel.close()
         await server.stop(grace=0.1)
+
+
+async def test_threaded_event_stream_stops_putting_after_cancel():
+    cancel_event = threading.Event()
+    stream = _ThreadedEventStream((), cancel_event)
+    stream._queue.put(("occupied", None))
+    cancel_event.set()
+    stream._put(("ignored", None))
+    assert stream._queue.get_nowait() == ("occupied", None)
+    assert stream._queue.empty()
+
+
+async def test_threaded_event_stream_breaks_after_cancelled_event():
+    cancel_event = threading.Event()
+
+    class CancelOnFirst:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            cancel_event.set()
+            return "first"
+
+    stream = _ThreadedEventStream(CancelOnFirst(), cancel_event)
+    stream._run()
+    assert stream._queue.get_nowait() == ("first", None)
+
+
+class _DirectAbort(Exception):
+    pass
+
+
+class _DirectContext:
+    def __init__(self):
+        self.code = None
+        self.detail = ""
+        self.callback = None
+
+    async def abort(self, code, detail):
+        self.code = code
+        self.detail = detail
+        raise _DirectAbort
+
+    def cancelled(self):
+        return False
+
+    def add_done_callback(self, callback):
+        self.callback = callback
+
+
+async def test_watch_context_removes_cancelled_session():
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(store)
+    context = _DirectContext()
+    cancel_event = threading.Event()
+    servicer._watch_context(context, cancel_event, session.session_id)
+    assert context.callback is not None
+    context.callback(type("Done", (), {"cancelled": lambda self: True})())
+    assert cancel_event.is_set()
+    assert store.active_count == 0
+
+
+async def test_watch_context_preserves_logically_completed_session():
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(store)
+    context = _DirectContext()
+    cancel_event = threading.Event()
+    completed_event = threading.Event()
+    servicer._watch_context(
+        context,
+        cancel_event,
+        session.session_id,
+        completed_event,
+    )
+    completed_event.set()
+    assert context.callback is not None
+    context.callback(type("Done", (), {"cancelled": lambda self: True})())
+    assert not cancel_event.is_set()
+    assert store.active_count == 1
+
+
+async def test_create_session_rejects_memory_drain():
+    store = SessionStore(capacity=1)
+    governor = type("Governor", (), {"draining": True})()
+    servicer = RuntimeServiceServicer(store, memory_governor=governor)
+    context = _DirectContext()
+    with pytest.raises(_DirectAbort):
+        await servicer.CreateSession(runtime_pb2.CreateSessionRequest(), context)
+    assert context.code == grpc.StatusCode.RESOURCE_EXHAUSTED
+    assert store.active_count == 0
+
+
+async def test_append_rejects_concurrent_operation():
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    coordinator = type(
+        "Coordinator",
+        (),
+        {"append_tokens": lambda self, session_id, token_ids: 0},
+    )()
+    servicer = RuntimeServiceServicer(store, append_coordinator=coordinator)
+    assert servicer._acquire_operation(session.session_id)
+    context = _DirectContext()
+    with pytest.raises(_DirectAbort):
+        await servicer.AppendTokens(
+            runtime_pb2.AppendTokensRequest(
+                session_id=session.session_id,
+                token_ids=[1],
+            ),
+            context,
+        )
+    assert context.code == grpc.StatusCode.ABORTED
+    servicer._release_operation(session.session_id)
+
+
+async def test_append_passes_cancel_event_and_resets_liveness():
+    observed = {}
+
+    class Coordinator:
+        def append_tokens(self, session_id, token_ids, cancel_event):
+            observed["session_id"] = session_id
+            observed["tokens"] = token_ids
+            observed["cancel_event"] = cancel_event
+            return len(token_ids)
+
+    class Liveness:
+        def update(self, phase):
+            observed["phase"] = phase
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(
+        store,
+        append_coordinator=Coordinator(),
+        liveness=Liveness(),
+    )
+    response = await servicer.AppendTokens(
+        runtime_pb2.AppendTokensRequest(
+            session_id=session.session_id,
+            token_ids=[4, 5],
+        ),
+        _DirectContext(),
+    )
+    assert response.history_length == 2
+    assert observed["session_id"] == session.session_id
+    assert observed["tokens"] == [4, 5]
+    assert isinstance(observed["cancel_event"], threading.Event)
+    assert observed["phase"] == "idle"
+
+
+async def test_append_asyncio_cancellation_removes_session():
+    class Coordinator:
+        def append_tokens(self, session_id, token_ids):
+            raise asyncio.CancelledError
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(store, append_coordinator=Coordinator())
+    with pytest.raises(asyncio.CancelledError):
+        await servicer.AppendTokens(
+            runtime_pb2.AppendTokensRequest(
+                session_id=session.session_id,
+                token_ids=[1],
+            ),
+            _DirectContext(),
+        )
+    assert store.active_count == 0
+
+
+async def test_append_worker_cancellation_maps_cancelled():
+    from inference_engine.session import OperationCancelledError
+
+    class Coordinator:
+        def append_tokens(self, session_id, token_ids):
+            raise OperationCancelledError("worker cancelled")
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(store, append_coordinator=Coordinator())
+    context = _DirectContext()
+    with pytest.raises(_DirectAbort):
+        await servicer.AppendTokens(
+            runtime_pb2.AppendTokensRequest(
+                session_id=session.session_id,
+                token_ids=[1],
+            ),
+            context,
+        )
+    assert context.code == grpc.StatusCode.CANCELLED
+    assert store.active_count == 0
+
+
+async def test_generate_rejects_concurrent_operation():
+    class Coordinator:
+        def generate(self, session_id, **kwargs):
+            return iter(())
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(
+        store,
+        generation_coordinator=Coordinator(),
+    )
+    assert servicer._acquire_operation(session.session_id)
+    context = _DirectContext()
+    with pytest.raises(_DirectAbort):
+        async for _ in servicer.Generate(
+            runtime_pb2.GenerateRequest(
+                session_id=session.session_id,
+                max_tokens=1,
+            ),
+            context,
+        ):
+            pass
+    assert context.code == grpc.StatusCode.ABORTED
+    servicer._release_operation(session.session_id)
+
+
+async def test_generate_busy_error_maps_aborted():
+    from inference_engine.session import SessionGenerationBusyError
+
+    class Coordinator:
+        def generate(self, session_id, **kwargs):
+            if False:
+                yield
+            raise SessionGenerationBusyError(session_id)
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(
+        store,
+        generation_coordinator=Coordinator(),
+    )
+    context = _DirectContext()
+    with pytest.raises(_DirectAbort):
+        async for _ in servicer.Generate(
+            runtime_pb2.GenerateRequest(
+                session_id=session.session_id,
+                max_tokens=1,
+            ),
+            context,
+        ):
+            pass
+    assert context.code == grpc.StatusCode.ABORTED
 
 
 async def test_factory_wires_prefill_cache_service():

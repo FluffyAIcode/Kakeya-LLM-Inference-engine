@@ -18,6 +18,7 @@ no gRPC binding. Subsequent PRs add:
 
 from inference_engine.session.coordinator import (
     AppendTokensCoordinator,
+    OperationCancelledError,
     VerifierProtocol,
 )
 from inference_engine.session.generator import (
@@ -25,6 +26,7 @@ from inference_engine.session.generator import (
     GenerateEvent,
     GenerationCoordinator,
     HistoryTruncatedEvent,
+    SessionGenerationBusyError,
     STOP_REASON_CANCELLED,
     STOP_REASON_EOS,
     STOP_REASON_MAX_TOKENS,
@@ -48,11 +50,13 @@ __all__ = [
     "GenerationCoordinator",
     "HistoryTruncatedEvent",
     "InvariantViolation",
+    "OperationCancelledError",
     "STOP_REASON_CANCELLED",
     "STOP_REASON_EOS",
     "STOP_REASON_MAX_TOKENS",
     "STOP_REASON_TRUNCATED",
     "Session",
+    "SessionGenerationBusyError",
     "SessionNotFoundError",
     "SessionStore",
     "SessionStoreError",

@@ -18,6 +18,8 @@ longer knows the id.
 
 from __future__ import annotations
 
+import queue
+import threading
 from typing import Iterable, Iterator, Optional, TYPE_CHECKING
 
 import grpc
@@ -27,6 +29,7 @@ from inference_engine.server.proto_gen.kakeya.v1 import (
     runtime_pb2_grpc,
 )
 from kakeya.errors import (
+    InterTokenTimeoutError,
     SessionClosedError,
     _wrap_grpc_error,
 )
@@ -165,6 +168,7 @@ class Session:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
+        inter_token_timeout_s: Optional[float] = None,
     ) -> Iterator[int]:
         """Stream generated token ids.
 
@@ -178,8 +182,15 @@ class Session:
         than the greedy no-op default raises
         :class:`~kakeya.errors.InvalidArgumentError` from the
         runtime (per ADR 0008 §2.10 "no graceful degradation").
+
+        ``inter_token_timeout_s`` is a client-side failure notification.
+        On expiry the SDK cancels the stream and raises
+        :class:`InterTokenTimeoutError`; the external runtime watchdog owns
+        hard recovery.
         """
         self._check_open()
+        if inter_token_timeout_s is not None and inter_token_timeout_s <= 0:
+            raise ValueError("inter_token_timeout_s must be > 0")
         # Reset metadata from any prior call before this one starts.
         self._last_stop_reason = None
         self._last_generated_token_count = 0
@@ -200,8 +211,44 @@ class Session:
         if top_k is not None:
             request.top_k = top_k
 
+        call = self._stub.Generate(request)
+
+        def responses():
+            if inter_token_timeout_s is None:
+                yield from call
+                return
+            items: queue.Queue = queue.Queue(maxsize=1)
+
+            def consume() -> None:
+                try:
+                    for item in call:
+                        items.put((item, None))
+                    items.put((None, StopIteration()))
+                except BaseException as exc:
+                    items.put((None, exc))
+
+            threading.Thread(
+                target=consume,
+                name="kakeya-sdk-generate",
+                daemon=True,
+            ).start()
+            while True:
+                try:
+                    response, error = items.get(timeout=inter_token_timeout_s)
+                except queue.Empty as exc:
+                    call.cancel()
+                    raise InterTokenTimeoutError(
+                        f"no Generate frame received for "
+                        f"{inter_token_timeout_s:.3f}s"
+                    ) from exc
+                if isinstance(error, StopIteration):
+                    return
+                if error is not None:
+                    raise error
+                yield response
+
         try:
-            for response in self._stub.Generate(request):
+            for response in responses():
                 payload = response.WhichOneof("payload")
                 if payload == "token_id":
                     yield response.token_id
@@ -224,6 +271,9 @@ class Session:
                     return
         except grpc.RpcError as exc:
             raise _wrap_grpc_error(exc) from exc
+        finally:
+            if inter_token_timeout_s is not None:
+                call.cancel()
 
     def info(self) -> SessionInfo:
         """Return a snapshot of the session's server-side state.

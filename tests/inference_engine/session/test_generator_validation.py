@@ -22,9 +22,11 @@ the integration suite.
 from __future__ import annotations
 
 import pytest
+import threading
 
 from inference_engine.session import (
     GenerationCoordinator,
+    SessionGenerationBusyError,
     SessionNotFoundError,
     SessionStore,
 )
@@ -163,3 +165,79 @@ class TestConstructorAcceptsReferences:
         # Check internals — neither object was poked.
         assert coord._store is sentinel_store
         assert coord._verifier is sentinel_verifier
+
+
+def test_generate_honors_pre_set_cancellation_at_token_boundary():
+    store, sess = _store_and_session_with_history()
+    cancelled = threading.Event()
+    cancelled.set()
+    events = list(GenerationCoordinator(store, verifier=None).generate(
+        sess.session_id,
+        max_tokens=1,
+        cancel_event=cancelled,
+    ))
+    assert len(events) == 1
+    assert events[0].stop_reason == "cancelled"
+
+
+def test_generate_rejects_concurrent_stream_for_same_session():
+    store, sess = _store_and_session_with_history()
+    cancelled = threading.Event()
+    cancelled.set()
+    coordinator = GenerationCoordinator(store, verifier=None)
+    first = coordinator.generate(
+        sess.session_id, max_tokens=1, cancel_event=cancelled,
+    )
+    assert coordinator.active_count == 0
+    assert next(first).stop_reason == "cancelled"
+    assert coordinator.active_count == 1
+    second = coordinator.generate(
+        sess.session_id, max_tokens=1, cancel_event=cancelled,
+    )
+    with pytest.raises(SessionGenerationBusyError):
+        next(second)
+    first.close()
+    assert coordinator.active_count == 0
+
+
+def test_generate_prefers_on_device_argmax_and_last_logits_fast_path():
+    class Verifier:
+        cached_token_sequence = [10]
+        next_global_position = 1
+        next_token_logits = None
+        argmax_calls = 0
+        append_calls = []
+
+        def greedy_next_token_id(self):
+            self.argmax_calls += 1
+            return 11
+
+        def append_accepted_tokens(self, tokens):
+            self.append_calls.append(list(tokens))
+            self.cached_token_sequence.extend(tokens)
+            self.next_global_position += len(tokens)
+
+        def forward_block(self, _tokens):
+            raise AssertionError("full-block path should not run")
+
+        def k_seq_length(self, _session):
+            return len(self.cached_token_sequence)
+
+        def kv_live_bytes(self, _session):
+            return 0
+
+    verifier = Verifier()
+    store = SessionStore(capacity=1, cache_inspector=verifier)
+    session = store.create_session()
+    session.cached_token_sequence = [10]
+    store.append_tokens(session.session_id, [10])
+    store.record_position_advance(session.session_id, 1)
+
+    events = list(GenerationCoordinator(store, verifier).generate(
+        session.session_id,
+        max_tokens=1,
+    ))
+
+    assert verifier.argmax_calls == 1
+    assert verifier.append_calls == [[11]]
+    assert events[0].token_id == 11

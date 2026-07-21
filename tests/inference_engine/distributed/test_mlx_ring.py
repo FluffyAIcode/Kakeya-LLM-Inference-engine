@@ -37,6 +37,25 @@ def test_probe_never_raises_and_is_structured():
         assert env.world_size == 0
 
 
+def test_probe_reports_import_failure_on_every_platform(monkeypatch):
+    def fail_import(_name):
+        raise ImportError("synthetic missing mlx")
+
+    monkeypatch.setattr(
+        "inference_engine.distributed.mlx_ring.importlib.import_module",
+        fail_import,
+    )
+    env = probe_ring_environment()
+    assert not env.is_available
+    assert env.backend == ""
+    assert env.rank == 0
+    assert env.world_size == 0
+    assert env.failure_reason == (
+        "mlx.core.distributed import failed: "
+        "ImportError: synthetic missing mlx"
+    )
+
+
 @pytest.mark.skipif(
     platform.machine() == "arm64",
     reason="Linux-gate branch: asserts the mlx-absent probe result",

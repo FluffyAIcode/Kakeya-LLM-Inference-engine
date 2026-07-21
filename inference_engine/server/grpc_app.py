@@ -29,7 +29,11 @@ change here.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
+import queue
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -49,7 +53,9 @@ from inference_engine.session import (
     GenerationCoordinator,
     HistoryTruncatedEvent,
     InvariantViolation,
+    OperationCancelledError,
     SessionNotFoundError,
+    SessionGenerationBusyError,
     SessionStore,
     STOP_REASON_CANCELLED,
     STOP_REASON_EOS,
@@ -74,6 +80,59 @@ _STOP_REASON_TO_PROTO = {
 }
 
 _logger = logging.getLogger(__name__)
+_STREAM_END = object()
+
+
+class _ThreadedEventStream:
+    """Drain a synchronous model iterator without blocking asyncio."""
+
+    def __init__(self, stream, cancel_event: threading.Event) -> None:
+        self._stream = stream
+        self._cancel_event = cancel_event
+        self._queue: queue.Queue = queue.Queue(maxsize=1)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="kakeya-generate",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def _put(self, value) -> None:
+        while True:
+            try:
+                self._queue.put(value, timeout=0.1)
+                return
+            except queue.Full:
+                if self._cancel_event.is_set():
+                    return
+
+    def _run(self) -> None:
+        try:
+            for event in self._stream:
+                self._put((event, None))
+                if self._cancel_event.is_set():
+                    break
+        except BaseException as exc:
+            self._put((None, exc))
+        finally:
+            self._put((_STREAM_END, None))
+
+    async def next(self):
+        return await asyncio.to_thread(self._queue.get)
+
+
+def _accepts_cancel_event(method) -> bool:
+    parameters = inspect.signature(method).parameters.values()
+    return any(
+        parameter.name == "cancel_event"
+        or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 DEFAULT_BIND_ADDRESS = "127.0.0.1:50051"
 """Default bind address for the gRPC server.
@@ -140,7 +199,8 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         *,
         append_coordinator: Optional[AppendTokensCoordinator] = None,
         generation_coordinator: Optional[GenerationCoordinator] = None,
-        on_session_close=None,
+        memory_governor=None,
+        liveness=None,
     ) -> None:
         """Construct a Servicer.
 
@@ -159,9 +219,41 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         self._store = session_store
         self._append = append_coordinator
         self._generate = generation_coordinator
-        # PR-A3c: optional ``session_id -> None`` hook invoked on CloseSession
-        # so a per-session verifier registry can free that session's KV.
-        self._on_session_close = on_session_close
+        self._memory_governor = memory_governor
+        self._liveness = liveness
+        self._operation_lock = threading.Lock()
+        self._active_operations: set[str] = set()
+
+    def _acquire_operation(self, session_id: str) -> bool:
+        with self._operation_lock:
+            if session_id in self._active_operations:
+                return False
+            self._active_operations.add(session_id)
+            return True
+
+    def _release_operation(self, session_id: str) -> None:
+        with self._operation_lock:
+            self._active_operations.discard(session_id)
+
+    def _watch_context(
+        self,
+        context,
+        cancel_event: threading.Event,
+        session_id: str,
+        completed_event: threading.Event | None = None,
+    ) -> None:
+        callback = getattr(context, "add_done_callback", None)
+        if callback is not None:
+            def done(done_context) -> None:
+                logically_completed = (
+                    completed_event is not None and completed_event.is_set()
+                )
+                if done_context.cancelled() and not logically_completed:
+                    cancel_event.set()
+                    self._store.remove_session_if_present(
+                        session_id, reason="client_cancelled",
+                    )
+            callback(done)
 
     async def CreateSession(  # noqa: N802 — gRPC-generated method casing
         self,
@@ -173,6 +265,11 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         ADR 0008 §2.2 contract item 1: clients have no input on the
         ``session_id`` value; this RPC is the only producer.
         """
+        if self._memory_governor is not None and self._memory_governor.draining:
+            await context.abort(
+                grpc.StatusCode.RESOURCE_EXHAUSTED,
+                "Primary runtime is draining due to unified-memory pressure",
+            )
         try:
             session = self._store.create_session(
                 eos_token_ids=list(request.eos_token_ids),
@@ -206,11 +303,36 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
                 "AppendTokens not configured on this Servicer "
                 "(coordinator not provided)",
             )
-        try:
-            new_history_length = self._append.append_tokens(
-                session_id=request.session_id,
-                token_ids=list(request.token_ids),
+        if not self._acquire_operation(request.session_id):
+            await context.abort(
+                grpc.StatusCode.ABORTED,
+                f"session {request.session_id!r} already has an active operation",
             )
+        cancel_event = threading.Event()
+        completed_event = threading.Event()
+        self._watch_context(
+            context,
+            cancel_event,
+            request.session_id,
+            completed_event,
+        )
+        try:
+            kwargs = {
+                "session_id": request.session_id,
+                "token_ids": list(request.token_ids),
+            }
+            if _accepts_cancel_event(self._append.append_tokens):
+                kwargs["cancel_event"] = cancel_event
+            new_history_length = await asyncio.to_thread(
+                self._append.append_tokens, **kwargs,
+            )
+            completed_event.set()
+        except asyncio.CancelledError:
+            cancel_event.set()
+            self._store.remove_session_if_present(
+                request.session_id, reason="client_cancelled",
+            )
+            raise
         except SessionNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
         except RemotePrefillRequiredError as exc:
@@ -219,6 +341,15 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         except InvariantViolation as exc:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+        except OperationCancelledError:
+            self._store.remove_session_if_present(
+                request.session_id, reason="client_cancelled",
+            )
+            await context.abort(grpc.StatusCode.CANCELLED, "AppendTokens cancelled")
+        finally:
+            self._release_operation(request.session_id)
+            if self._liveness is not None:
+                self._liveness.update("idle")
         return runtime_pb2.AppendTokensResponse(
             history_length=new_history_length,
         )
@@ -264,35 +395,47 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         top_p = request.top_p if request.HasField("top_p") else None
         top_k = request.top_k if request.HasField("top_k") else None
 
-        # GenerationCoordinator.generate is a generator function; the
-        # call itself returns a generator object without executing
-        # any of the body, so no exception is raised here. All typed
-        # errors (SessionNotFoundError, ValueError, InvariantViolation)
-        # propagate from the inner `for event in event_stream:` loop
-        # below and are caught there.
-        event_stream = self._generate.generate(
-            session_id=request.session_id,
-            max_tokens=request.max_tokens,
-            seed=seed,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
+        if not self._acquire_operation(request.session_id):
+            await context.abort(
+                grpc.StatusCode.ABORTED,
+                f"session {request.session_id!r} already has an active operation",
+            )
+        cancel_event = threading.Event()
+        completed_event = threading.Event()
+        self._watch_context(
+            context,
+            cancel_event,
+            request.session_id,
+            completed_event,
         )
+        kwargs = {
+            "session_id": request.session_id,
+            "max_tokens": request.max_tokens,
+            "seed": seed,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+        }
+        if _accepts_cancel_event(self._generate.generate):
+            kwargs["cancel_event"] = cancel_event
+        event_stream = self._generate.generate(**kwargs)
+        threaded_stream = _ThreadedEventStream(event_stream, cancel_event)
+        threaded_stream.start()
 
         token_count_so_far = 0
 
         try:
-            for event in event_stream:
+            while True:
+                event, error = await threaded_stream.next()
+                if error is not None:
+                    raise error
+                if event is _STREAM_END:
+                    completed_event.set()
+                    break
                 if context.cancelled():
-                    yield runtime_pb2.GenerateResponse(
-                        done=runtime_pb2.GenerateDone(
-                            stop_reason=_STOP_REASON_TO_PROTO[
-                                STOP_REASON_CANCELLED
-                            ],
-                            generated_token_count=token_count_so_far,
-                            prefill_duration_seconds=0.0,
-                            total_duration_seconds=0.0,
-                        ),
+                    threaded_stream.cancel()
+                    self._store.remove_session_if_present(
+                        request.session_id, reason="client_cancelled",
                     )
                     return
 
@@ -311,6 +454,7 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
                     # DoneEvent — the only remaining event type per
                     # the GenerateEvent union.
                     assert isinstance(event, DoneEvent)
+                    completed_event.set()
                     yield runtime_pb2.GenerateResponse(
                         done=runtime_pb2.GenerateDone(
                             stop_reason=_STOP_REASON_TO_PROTO[
@@ -327,6 +471,18 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         except InvariantViolation as exc:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+        except SessionGenerationBusyError as exc:
+            await context.abort(grpc.StatusCode.ABORTED, str(exc))
+        except asyncio.CancelledError:
+            threaded_stream.cancel()
+            if not completed_event.is_set():
+                self._store.remove_session_if_present(
+                    request.session_id, reason="client_cancelled",
+                )
+            raise
+        finally:
+            threaded_stream.cancel()
+            self._release_operation(request.session_id)
 
     async def CloseSession(  # noqa: N802
         self,
@@ -343,8 +499,6 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             final_length = self._store.close_session(request.session_id)
         except SessionNotFoundError as exc:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
-        if self._on_session_close is not None:
-            self._on_session_close(request.session_id)
         return runtime_pb2.CloseSessionResponse(
             final_history_length=final_length,
         )
@@ -381,7 +535,8 @@ def create_grpc_server(
     append_coordinator: Optional[AppendTokensCoordinator] = None,
     generation_coordinator: Optional[GenerationCoordinator] = None,
     config: Optional[GrpcServerConfig] = None,
-    on_session_close=None,
+    memory_governor=None,
+    liveness=None,
     capability_registry: Optional[object] = None,
     proposers: Optional[object] = None,
     default_proposer_model_id: str = "",
@@ -432,7 +587,8 @@ def create_grpc_server(
             session_store,
             append_coordinator=append_coordinator,
             generation_coordinator=generation_coordinator,
-            on_session_close=on_session_close,
+            memory_governor=memory_governor,
+            liveness=liveness,
         ),
         server,
     )

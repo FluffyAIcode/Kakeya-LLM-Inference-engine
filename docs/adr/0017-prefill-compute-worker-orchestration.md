@@ -31,6 +31,42 @@ Kakeya adopts three explicit fleet roles:
    user decode.
 3. **PREFILL_CACHE:** loads no model; spends RAM on immutable snapshots only.
 
+### Local decode process boundary
+
+Primary decode may run behind the feature flag `--decode-worker`. In this
+profile the gRPC/router process does not construct an MLX verifier and does not
+load model weights. It starts one child process over a mode-0600 Unix-domain
+socket; that child owns the single loaded model and all session K/V adapters.
+The transport is protocol-v1 length-prefixed JSON plus an optional opaque
+binary payload. It never uses pickle and is not exposed on TCP.
+
+The local protocol has six operations:
+
+- `Init(session_id, token_ids?)` creates/replaces isolated session K/V;
+- `ImportSnapshot(session_id, compatibility, payload)` imports the existing
+  allens portable snapshot format after exact compatibility validation;
+- `Append(session_id, token_ids)` commits an all-accepted block;
+- `GenerateStep(session_id)` atomically selects and commits one greedy token;
+- `Close(session_id)` releases that session's K/V; and
+- `Health()` returns protocol, process, model geometry, session and MLX-memory
+  state.
+
+The router serializes requests because the MVP MLX execution stream is shared.
+No per-token K/V snapshot crosses IPC. The router retains a proof checkpoint:
+the last imported immutable allens snapshot plus only tokens acknowledged
+after that boundary (or full acknowledged history when no snapshot exists).
+An IPC EOF, child exit, or operation timeout hard-kills the child, starts a new
+one, restores that checkpoint, and retries the unacknowledged current
+operation once. Because checkpoint state advances only after a correlated
+response and `GenerateStep` is atomic in the child, an ambiguous crash cannot
+duplicate a committed token. Client cancellation hard-kills an in-flight
+worker forward; the next request follows the same restore path.
+
+This process boundary is initially opt-in. The in-process MLX path remains the
+rollback path until the Mac acceptance gates pass. It is not a remote decode
+service and does not change the rule that no fleet RPC occurs in the token
+loop.
+
 ### Request flow
 
 For a cold append, the primary:
@@ -118,6 +154,10 @@ Blocking tests cover:
 - real MLX local-prefill vs remote-prefill-import continuation logits and
   argmax equivalence;
 - zero prefill/cache RPCs during `Generate`.
+- protocol correlation/version/size validation for local decode IPC;
+- in-process vs worker greedy-token parity;
+- cancellation hard-kill and child crash/timeout recovery from both
+  full-history and allens-snapshot-plus-proof checkpoints.
 
 ## Consequences
 
@@ -136,6 +176,10 @@ Costs:
   primary;
 - snapshots still duplicate bounded state at checkpoint boundaries;
 - MLX worker execution is serialized per loaded verifier in the MVP.
+- worker-mode locally computed prefill checkpoints are not republished by the
+  router, because export is deliberately absent from the token-loop protocol;
+  allens-produced snapshots remain importable and are the preferred durable
+  recovery boundary.
 
 ## Legacy paths
 

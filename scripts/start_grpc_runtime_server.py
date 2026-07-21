@@ -34,10 +34,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import threading
 import logging
+import os
 import signal
 import sys
+from pathlib import Path
 from typing import Tuple
 
 import torch
@@ -48,6 +51,13 @@ from inference_engine.server.grpc_app import (
     DEFAULT_BIND_ADDRESS,
     GrpcServerConfig,
     create_grpc_server,
+)
+from inference_engine.server.runtime_health import (
+    DecodeLiveness,
+    PrimaryMemoryGovernor,
+    create_runtime_health_app,
+    mlx_memory_bytes,
+    process_footprint_bytes,
 )
 from inference_engine.session.coordinator import AppendTokensCoordinator
 from inference_engine.session.generator import GenerationCoordinator
@@ -354,19 +364,43 @@ async def _serve(args: argparse.Namespace) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
-    _LOG.info(
-        "loading verifier backend=%s id=%s sink=%d window=%d",
-        args.backend, args.verifier_id, args.sink, args.window,
-    )
-    verifier = _build_verifier(
-        backend=args.backend, verifier_id=args.verifier_id,
-        sink=args.sink, window=args.window,
-        drafter_id=args.drafter_id, f_theta_dir=args.f_theta_dir,
-        s5_exact_full_attn=not args.no_s5_exact_full_attn,
-        device=args.device,
-    )
-
-    num_layers, num_kv_heads, head_dim = _resolve_kv_dims(verifier)
+    worker_client = None
+    if args.decode_worker:
+        if args.backend != "mlx":
+            raise SystemExit("--decode-worker requires --backend mlx")
+        from inference_engine.backends.mlx.decode_worker import (
+            DecodeWorkerClient,
+            DecodeWorkerConfig,
+        )
+        _LOG.info(
+            "starting isolated MLX decode worker id=%s sink=%d window=%d",
+            args.verifier_id, args.sink, args.window,
+        )
+        worker_client = DecodeWorkerClient(DecodeWorkerConfig(
+            model_id=args.verifier_id,
+            sink_size=args.sink,
+            window_size=args.window,
+            request_timeout_s=args.decode_worker_timeout_s,
+            startup_timeout_s=args.decode_worker_startup_timeout_s,
+            socket_path=args.decode_worker_socket,
+        ))
+        # This object is a transport/process owner, not a model.  The router
+        # process has not imported the MLX verifier module or loaded weights.
+        verifier = worker_client
+        num_layers, num_kv_heads, head_dim = worker_client.dimensions
+    else:
+        _LOG.info(
+            "loading verifier backend=%s id=%s sink=%d window=%d",
+            args.backend, args.verifier_id, args.sink, args.window,
+        )
+        verifier = _build_verifier(
+            backend=args.backend, verifier_id=args.verifier_id,
+            sink=args.sink, window=args.window,
+            drafter_id=args.drafter_id, f_theta_dir=args.f_theta_dir,
+            s5_exact_full_attn=not args.no_s5_exact_full_attn,
+            device=args.device,
+        )
+        num_layers, num_kv_heads, head_dim = _resolve_kv_dims(verifier)
     _LOG.info(
         "verifier dims: layers=%d kv_heads=%d head_dim=%d capacity=%d",
         num_layers, num_kv_heads, head_dim, args.sink + args.window,
@@ -470,9 +504,8 @@ async def _serve(args: argparse.Namespace) -> int:
     # PR-A3c: per-session binding for true multi-tenant serving. Each session
     # gets its own verifier adapter (isolated KV) sharing the model weights via
     # the adapter's spawn(); the registry doubles as cache_inspector + resolver.
-    registry = None
-    on_session_close = None
-    if args.multi_tenant:
+    session_registry = None
+    if args.multi_tenant and worker_client is None:
         if not hasattr(verifier, "spawn"):
             raise SystemExit(
                 f"--multi-tenant requires a verifier that supports per-session "
@@ -480,16 +513,57 @@ async def _serve(args: argparse.Namespace) -> int:
         from inference_engine.session.verifier_registry import (
             PerSessionVerifierRegistry,
         )
-        registry = PerSessionVerifierRegistry(factory=verifier.spawn)
-        on_session_close = registry.remove
+        session_registry = PerSessionVerifierRegistry(factory=verifier.spawn)
         _LOG.info("multi-tenant per-session binding ENABLED (PR-A3c)")
+
+    liveness = DecodeLiveness(
+        args.decode_liveness_file,
+        unhealthy_path=args.runtime_unhealthy_file,
+    )
+    governor_holder = []
+
+    def on_session_removed(session_id: str, reason: str) -> None:
+        if session_registry is not None:
+            session_registry.remove(session_id)
+        if worker_client is not None:
+            worker_client.close_session(session_id)
+        if governor_holder:
+            governor_holder[0].on_session_removed(session_id, reason)
+        _LOG.info("session removed id=%s reason=%s", session_id, reason)
 
     store = SessionStore(
         capacity=args.capacity,
-        cache_inspector=registry if registry is not None else verifier,
+        cache_inspector=(
+            session_registry if session_registry is not None else verifier
+        ),
         slab_pool=pool,
+        on_session_removed=on_session_removed,
     )
-    resolver = registry.get if registry is not None else None
+    governor = PrimaryMemoryGovernor(
+        store,
+        verifier,
+        warning_bytes=int(args.memory_warning_gb * (1 << 30)),
+        drain_bytes=int(args.memory_drain_gb * (1 << 30)),
+        unhealthy_bytes=int(args.memory_unhealthy_gb * (1 << 30)),
+        memory_provider=(
+            worker_client.memory_bytes if worker_client is not None else None
+        ) or mlx_memory_bytes,
+        footprint_provider=(
+            (
+                lambda: (
+                    process_footprint_bytes()
+                    + process_footprint_bytes(worker_client.pid)
+                )
+            )
+            if worker_client is not None else process_footprint_bytes
+        ),
+    )
+    governor_holder.append(governor)
+    resolver = (
+        worker_client.get
+        if worker_client is not None
+        else (session_registry.get if session_registry is not None else None)
+    )
     cache_fill_capture = None
     if args.cache_fill_capture_size:
         from inference_engine.distributed.cache_fill import CacheFillCapture
@@ -514,13 +588,45 @@ async def _serve(args: argparse.Namespace) -> int:
             )
             if cache_fill_capture is not None else None
         ),
+        liveness=liveness,
     )
     gen_coord = GenerationCoordinator(
         store,
         verifier,
         resolver=resolver,
         on_tokens=_build_token_telemetry_callback(args),
+        liveness=liveness,
     )
+    acceptance_server = None
+    if args.decode_worker_acceptance_socket:
+        if worker_client is None:
+            raise SystemExit(
+                "--decode-worker-acceptance-socket requires --decode-worker"
+            )
+        from inference_engine.backends.mlx.decode_worker_acceptance import (
+            DecodeWorkerAcceptanceServer,
+        )
+
+        acceptance_server = DecodeWorkerAcceptanceServer(
+            socket_path=args.decode_worker_acceptance_socket,
+            worker=worker_client,
+            runtime_pid=os.getpid(),
+            active_sessions=lambda: store.active_count,
+            active_generations=lambda: gen_coord.active_count,
+            process_footprint=lambda: (
+                process_footprint_bytes()
+                + (
+                    process_footprint_bytes(worker_client.pid)
+                    if worker_client.pid is not None
+                    else 0
+                )
+            ),
+        )
+        acceptance_server.start()
+        _LOG.warning(
+            "local decode acceptance control enabled at %s",
+            acceptance_server.socket_path,
+        )
 
     # Multi-host capability plane (ADR 0009): only constructed when
     # the operator opts in via --enable-capability-exchange (implied
@@ -554,7 +660,8 @@ async def _serve(args: argparse.Namespace) -> int:
         append_coordinator=append_coord,
         generation_coordinator=gen_coord,
         config=config,
-        on_session_close=on_session_close,
+        memory_governor=governor,
+        liveness=liveness,
         capability_registry=registry,
         proposers=proposers,
         prefill_cache_store=prefill_store,
@@ -607,6 +714,47 @@ async def _serve(args: argparse.Namespace) -> int:
             args.network_http_port,
         )
 
+    health_server = None
+    health_thread = None
+    if args.runtime_health_port:
+        import uvicorn
+        health_server = uvicorn.Server(uvicorn.Config(
+            create_runtime_health_app(liveness, governor),
+            host=args.runtime_health_host,
+            port=args.runtime_health_port,
+            log_level=args.log_level.lower(),
+        ))
+        health_thread = threading.Thread(
+            target=health_server.run,
+            name="kakeya-runtime-health",
+            daemon=True,
+        )
+        health_thread.start()
+        _LOG.info(
+            "runtime health listening on http://%s:%d",
+            args.runtime_health_host,
+            args.runtime_health_port,
+        )
+
+    async def monitor_memory() -> None:
+        last_level = ""
+        unhealthy_path = Path(args.runtime_unhealthy_file).expanduser()
+        while True:
+            snapshot = await asyncio.to_thread(governor.sample)
+            if snapshot.level != last_level:
+                _LOG.warning("Primary memory level changed: %s", snapshot)
+                last_level = snapshot.level
+            if snapshot.level == "unhealthy":
+                unhealthy_path.parent.mkdir(parents=True, exist_ok=True)
+                unhealthy_path.write_text(json.dumps({
+                    "reason": "memory",
+                    "process_footprint_bytes": snapshot.process_footprint_bytes,
+                    "updated_at_unix": snapshot.updated_at_unix,
+                }))
+            await asyncio.sleep(args.memory_poll_s)
+
+    memory_task = asyncio.create_task(monitor_memory())
+
     exchange_task = None
     if registry is not None and args.peer:
         exchange_task = asyncio.create_task(
@@ -639,6 +787,11 @@ async def _serve(args: argparse.Namespace) -> int:
             pass
 
     await stop_event.wait()
+    memory_task.cancel()
+    try:
+        await memory_task
+    except asyncio.CancelledError:
+        pass
     if exchange_task is not None:
         exchange_task.cancel()
         try:
@@ -647,11 +800,19 @@ async def _serve(args: argparse.Namespace) -> int:
             pass
     if http_server is not None:
         http_server.should_exit = True
+    if health_server is not None:
+        health_server.should_exit = True
     if http_thread is not None:
         await asyncio.to_thread(http_thread.join, args.shutdown_grace_s)
+    if health_thread is not None:
+        await asyncio.to_thread(health_thread.join, args.shutdown_grace_s)
     if prefill_hook is not None:
         prefill_hook.close()
     await server.stop(grace=args.shutdown_grace_s)
+    if acceptance_server is not None:
+        acceptance_server.close()
+    if worker_client is not None:
+        worker_client.close()
     _LOG.info("kakeya gRPC RuntimeService stopped cleanly")
     return 0
 
@@ -692,9 +853,42 @@ def main() -> int:
                          "gets its own isolated KV cache (sharing model "
                          "weights). Requires backend=restored (spawn()). "
                          "Without it, v0.3 single-tenant (one shared cache).")
+    ap.add_argument(
+        "--decode-worker",
+        action="store_true",
+        help="Run MLX model/KV in an isolated local UDS worker process.",
+    )
+    ap.add_argument(
+        "--decode-worker-socket",
+        default="",
+        help="UDS path for --decode-worker; defaults to a private temp path.",
+    )
+    ap.add_argument("--decode-worker-timeout-s", type=float, default=120.0)
+    ap.add_argument(
+        "--decode-worker-startup-timeout-s", type=float, default=180.0,
+    )
+    ap.add_argument(
+        "--decode-worker-acceptance-socket",
+        default="",
+        help=(
+            "Enable mode-0600 local acceptance controls on this UDS. "
+            "Never expose this test-only interface on a network listener."
+        ),
+    )
     ap.add_argument("--shutdown-grace-s", type=float, default=5.0,
                     help="Seconds to give in-flight RPCs to finish on "
                          "SIGTERM/SIGINT before hard-aborting.")
+    ap.add_argument("--decode-liveness-file",
+                    default="~/.kakeya/primary-decode-liveness.json")
+    ap.add_argument("--runtime-unhealthy-file",
+                    default="~/.kakeya/primary-runtime-unhealthy.json")
+    ap.add_argument("--runtime-health-host", default="127.0.0.1")
+    ap.add_argument("--runtime-health-port", type=int, default=8091,
+                    help="Read-only liveness/memory HTTP port; 0 disables.")
+    ap.add_argument("--memory-warning-gb", type=float, default=18.0)
+    ap.add_argument("--memory-drain-gb", type=float, default=20.0)
+    ap.add_argument("--memory-unhealthy-gb", type=float, default=21.5)
+    ap.add_argument("--memory-poll-s", type=float, default=5.0)
     ap.add_argument("--log-level", default="INFO",
                     choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     # --- Multi-host capability plane (ADR 0009, v0.5-M1) -------------

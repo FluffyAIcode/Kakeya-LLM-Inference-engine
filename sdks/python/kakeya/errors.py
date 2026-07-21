@@ -101,6 +101,10 @@ class RpcCancelledError(KakeyaError):
     """
 
 
+class InterTokenTimeoutError(KakeyaError):
+    """Client-side notification that no stream frame arrived in time."""
+
+
 class SessionClosedError(KakeyaError):
     """Raised by the SDK itself — never crosses the wire — when a
     method is called on a :class:`~kakeya.session.Session` whose

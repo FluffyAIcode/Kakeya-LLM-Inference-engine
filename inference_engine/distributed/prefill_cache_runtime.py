@@ -238,22 +238,36 @@ class DistributedPrefillCacheHook:
                 payload,
                 max_uncompressed_bytes=self.max_import_bytes,
             )
-            verifier.reset()
-            imported = import_mlx_prefill_snapshot(
-                raw,
-                verifier.cache,
-                compatibility=self.compatibility,
-            )
+            import_remote = getattr(verifier, "import_snapshot", None)
+            if import_remote is not None:
+                state = import_remote(raw, self.compatibility)
+                imported_token_count = int(state["next_global_position"])
+                imported_cached_ids = tuple(state["cached_token_ids"])
+                imported_block_hash = bytes.fromhex(
+                    state.get("block_hash", hit.block_hash.hex()),
+                )
+                imported_has_logits = True
+            else:
+                verifier.reset()
+                imported = import_mlx_prefill_snapshot(
+                    raw,
+                    verifier.cache,
+                    compatibility=self.compatibility,
+                )
+                imported_token_count = imported.token_count
+                imported_cached_ids = imported.cached_token_ids
+                imported_block_hash = imported.block_hash
+                imported_has_logits = imported.next_token_logits is not None
             if (
-                not (0 < imported.token_count <= len(tokens))
-                or imported.token_count != hit.hit_tokens
+                not (0 < imported_token_count <= len(tokens))
+                or imported_token_count != hit.hit_tokens
             ):
                 raise ValueError("prefill snapshot token_count is invalid")
-            if hit.block_hash and imported.block_hash != hit.block_hash:
+            if hit.block_hash and imported_block_hash != hit.block_hash:
                 raise ValueError("prefill snapshot block hash mismatch")
-            if imported.next_token_logits is None:
+            if not imported_has_logits:
                 raise ValueError("prefill snapshot is missing continuation logits")
-            reused = min(imported.token_count, len(tokens))
+            reused = min(imported_token_count, len(tokens))
             expected_prefix = tokens[:reused]
             sink_window = getattr(verifier, "_sink_window_slice", None)
             expected_cached = (
@@ -261,11 +275,11 @@ class DistributedPrefillCacheHook:
                 if callable(sink_window)
                 else expected_prefix
             )
-            if list(imported.cached_token_ids) != expected_cached:
+            if list(imported_cached_ids) != expected_cached:
                 raise ValueError("prefill snapshot cached token sequence mismatch")
-            verifier.cached_token_sequence = list(imported.cached_token_ids)
+            verifier.cached_token_sequence = list(imported_cached_ids)
             verifier.next_global_position = reused
-            if imported.next_token_logits is not None:
+            if import_remote is None and imported.next_token_logits is not None:
                 verifier.next_token_logits = imported.next_token_logits
             self.stats.tokens_reused += reused
             if self._on_reuse is not None:
@@ -428,21 +442,27 @@ class DistributedPrefillCacheHook:
             first_end = min(size, len(tokens))
             verifier.prefill(tokens[:first_end])
             self.stats.tokens_computed += first_end
-            self._publish_boundary(verifier, tokens, hashes, 0, first_end)
+            if not getattr(verifier, "is_decode_worker_proxy", False):
+                self._publish_boundary(verifier, tokens, hashes, 0, first_end)
             reused = first_end
         cursor = reused
         while cursor < len(tokens):
             block_index = cursor // size
             end = min((block_index + 1) * size, len(tokens))
             block_tokens = tokens[cursor:end]
-            logits = verifier.forward_block(block_tokens)
-            verifier.commit_or_truncate(
-                forwarded=len(block_tokens),
-                accepted=len(block_tokens),
-            )
-            verifier.next_token_logits = logits[-1].clone()
+            append_accepted = getattr(verifier, "append_accepted_tokens", None)
+            if append_accepted is not None:
+                append_accepted(block_tokens)
+            else:
+                logits = verifier.forward_block(block_tokens)
+                verifier.commit_or_truncate(
+                    forwarded=len(block_tokens),
+                    accepted=len(block_tokens),
+                )
+                verifier.next_token_logits = logits[-1].clone()
             self.stats.tokens_computed += len(block_tokens)
-            self._publish_boundary(verifier, tokens, hashes, block_index, end)
+            if not getattr(verifier, "is_decode_worker_proxy", False):
+                self._publish_boundary(verifier, tokens, hashes, block_index, end)
             cursor = end
 
     def _publish_boundary(

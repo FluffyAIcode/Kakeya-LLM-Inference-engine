@@ -13,11 +13,11 @@ is used. Internals:
     See `cache.py`'s module docstring for why direct mutation of
     ``mlx_lm.models.cache.KVCache`` was the source of the MLX-1b
     divergence-after-trim bug.
-  * Returned logits are converted from ``mx.array`` to
-    ``torch.Tensor`` at the API boundary so the speculative loop's
-    ``torch.argmax`` / ``.item()`` work unchanged. The conversion is
-    small-tensor (next-token slice or block-of-L slice), single-digit
-    ms.
+  * Greedy decode keeps the last logits row on-device and reduces it
+    with ``mx.argmax``.  The legacy ``next_token_logits`` property
+    materializes that row as Torch only when a caller explicitly asks
+    for it.  Speculative ``forward_block`` retains its full ``[L,V]``
+    Torch result and semantics unchanged.
 
 The module imports ``mlx.core`` and ``mlx_lm`` at top level. Non-Apple-
 Silicon hosts cannot load this file — that is the intended behavior.
@@ -90,7 +90,12 @@ class MLXSinkWindowVerifier:
         # the global position; redundant but mirrors the PyTorch class).
         self.cache_logical_size: int = 0
         self.next_global_position: int = 0
-        self.next_token_logits: Optional[torch.Tensor] = None
+        # Last-position logits stay on MLX for the primary greedy path.
+        # The Torch value is a lazy compatibility cache for callers
+        # (notably speculative decoding) that still consume full logits.
+        self._next_token_logits_mx: Optional["mx.array"] = None
+        self._next_token_id_mx: Optional["mx.array"] = None
+        self._next_token_logits_torch: Optional[torch.Tensor] = None
         # Parallel record of the token id at every K/V cache slot, in
         # the same physical order as ``self.cache[*].keys``. See the CPU
         # verifier for the full motivation; in short, this is required
@@ -143,7 +148,59 @@ class MLXSinkWindowVerifier:
                 for num_kv_heads, head_dim, _layer_type in geometry
             )
 
+    def spawn(self) -> "MLXSinkWindowVerifier":
+        """Create an empty session verifier sharing this instance's model.
+
+        Decode-worker mode owns one loaded model and one lightweight verifier
+        adapter per session.  Constructing through ``__init__`` would call
+        ``mlx_lm.load`` for every session, so copy only immutable model
+        metadata and initialize independent KV/logit state here.
+        """
+        child = object.__new__(type(self))
+        child.config = self.config
+        child.model = self.model
+        child.tokenizer = self.tokenizer
+        child._mx_dtype = self._mx_dtype
+        child.cache = None
+        child.cache_logical_size = 0
+        child.next_global_position = 0
+        child._next_token_logits_mx = None
+        child._next_token_id_mx = None
+        child._next_token_logits_torch = None
+        child.cached_token_sequence = []
+        child.quantization = self.quantization
+        child.stats = VerifierStats(
+            weight_bytes=self.quantization.total_weight_bytes,
+        )
+        child._bytes_per_kv_token = self._bytes_per_kv_token
+        return child
+
     # ---------------------------- public API ---------------------------- #
+
+    @property
+    def next_token_logits(self) -> Optional[torch.Tensor]:
+        """Return last-position logits as Torch, materializing lazily.
+
+        Primary greedy decode uses :meth:`greedy_next_token_id` and
+        therefore never crosses the full vocabulary row to Torch.
+        """
+        if (
+            self._next_token_logits_torch is None
+            and self._next_token_logits_mx is not None
+        ):
+            self._next_token_logits_torch = mx_to_torch(
+                self._next_token_logits_mx
+            )
+        return self._next_token_logits_torch
+
+    @next_token_logits.setter
+    def next_token_logits(self, value: Optional[torch.Tensor]) -> None:
+        # An external Torch assignment (the legacy speculative path)
+        # becomes authoritative; retaining an older MLX row would make
+        # a later greedy argmax stale.
+        self._next_token_logits_torch = value
+        self._next_token_logits_mx = None
+        self._next_token_id_mx = None
 
     def reset(self) -> None:
         self.cache = make_sink_window_cache(
@@ -153,7 +210,9 @@ class MLXSinkWindowVerifier:
         )
         self.cache_logical_size = 0
         self.next_global_position = 0
-        self.next_token_logits = None
+        self._next_token_logits_mx = None
+        self._next_token_id_mx = None
+        self._next_token_logits_torch = None
         self.cached_token_sequence = []
         self._assert_cache_invariant_1()
 
@@ -164,15 +223,17 @@ class MLXSinkWindowVerifier:
         L = len(prompt_ids)
         arr = mx.array([prompt_ids], dtype=mx.int32)
         logits_mx = self.model(arr, cache=self.cache)
-        mx.eval(logits_mx)
         if logits_mx.ndim != 3 or int(logits_mx.shape[0]) != 1:  # pragma: no cover - mlx_lm contract
             raise RuntimeError(
                 f"prefill: model returned logits of shape {tuple(logits_mx.shape)} "
                 "(expected [1, T, V])"
             )
 
-        self._record_peak_activation(logits_mx)
-        self.next_token_logits = mx_to_torch(logits_mx[0, -1])
+        # Slice before evaluation. MLX can then materialize just [V],
+        # rather than retaining the prompt-sized [1,T,V] output.
+        last_logits_mx = logits_mx[0, -1]
+        self._record_peak_activation(last_logits_mx)
+        self._set_next_token_logits_mx(last_logits_mx)
         self.next_global_position = L
         self.cache_logical_size = self._cache_buffer_size()
         # Compute the post-trim parallel token sequence directly. The
@@ -218,6 +279,57 @@ class MLXSinkWindowVerifier:
         self._assert_cache_invariant_1()
         return block_logits
 
+    def greedy_next_token_id(self) -> int:
+        """Return the greedy token using an on-device MLX reduction.
+
+        Only the scalar result crosses the synchronization boundary.
+        A Torch-only row supplied by the legacy speculative path still
+        works, but primary prefill/append paths always retain an MLX row.
+        """
+        if self._next_token_id_mx is not None:
+            return int(self._next_token_id_mx.item())
+        if self._next_token_logits_torch is not None:
+            return int(torch.argmax(self._next_token_logits_torch).item())
+        raise RuntimeError("Verifier has no next-token logits.")
+
+    def append_accepted_tokens(self, tokens: List[int]) -> None:
+        """Forward and commit an all-accepted non-speculative block.
+
+        This is the last-logits-only path for primary AppendTokens and
+        single-token greedy decode. It intentionally does not replace
+        :meth:`forward_block`, whose full ``[L,V]`` result and
+        commit/truncate contract remain the speculative API.
+        """
+        if self.cache is None:
+            raise RuntimeError("Verifier not prefilled.")
+        if not tokens:
+            raise ValueError("tokens must be non-empty")
+
+        L = len(tokens)
+        arr = mx.array([tokens], dtype=mx.int32)
+        logits_mx = self.model(arr, cache=self.cache)
+        if (
+            logits_mx.ndim != 3
+            or int(logits_mx.shape[0]) != 1
+            or int(logits_mx.shape[1]) != L
+        ):
+            raise RuntimeError(  # pragma: no cover - mlx_lm contract
+                f"append_accepted_tokens: expected logits [1,{L},V], got "
+                f"{tuple(logits_mx.shape)}"
+            )
+
+        last_logits_mx = logits_mx[0, -1]
+        self._record_peak_activation(last_logits_mx)
+        self.cache_logical_size = self._cache_buffer_size()
+        extended = self.cached_token_sequence + list(tokens)
+        self.cached_token_sequence = self._sink_window_slice(extended)
+        self.next_global_position += L
+        self._set_next_token_logits_mx(last_logits_mx)
+        self._record_peak_kv()
+        self.stats.forward_calls += 1
+        self.stats.tokens_consumed += L
+        self._assert_cache_invariant_1()
+
     def commit_or_truncate(self, forwarded: int, accepted: int) -> None:
         if accepted < 0 or accepted > forwarded:
             raise ValueError("accepted must satisfy 0 <= accepted <= forwarded")
@@ -240,10 +352,10 @@ class MLXSinkWindowVerifier:
         self._assert_cache_invariant_1()
 
     def append_token(self, token_id: int) -> torch.Tensor:
-        logits = self.forward_block([token_id])
-        self.commit_or_truncate(forwarded=1, accepted=1)
-        self.next_token_logits = logits[-1].clone()
-        return self.next_token_logits
+        self.append_accepted_tokens([token_id])
+        logits = self.next_token_logits
+        assert logits is not None
+        return logits
 
     # ---------------- CacheInspector protocol (ADR 0008 PR-A3b) ---------------- #
     # Mirrors the CPU verifier's CacheInspector implementation. The session
@@ -274,6 +386,16 @@ class MLXSinkWindowVerifier:
         return self._cache_buffer_size() * self._bytes_per_kv_token
 
     # --------------------------- internals --------------------------- #
+
+    def _set_next_token_logits_mx(self, logits_mx: "mx.array") -> None:
+        """Install logits plus its fused on-device greedy reduction."""
+        token_mx = mx.argmax(logits_mx)
+        # Evaluate the row and dependent scalar together. This avoids a
+        # second graph launch/synchronization at the next token boundary.
+        mx.eval(logits_mx, token_mx)
+        self._next_token_logits_mx = logits_mx
+        self._next_token_id_mx = token_mx
+        self._next_token_logits_torch = None
 
     def _cache_buffer_size(self) -> int:
         """Return the actual seq dim of the cache buffer (post-trim)."""
