@@ -569,11 +569,20 @@ class StrategyPrefillHeartbeat:
             ).get("prefill", {})
         except Exception:
             return
-        total = self._delta(current, "remote_job_tokens_total")
-        computed = self._delta(current, "remote_job_tokens_computed")
+        new_remote_jobs = self._delta(current, "remote_jobs")
+        if new_remote_jobs:
+            # These two fields are gauges for the current job, not cumulative
+            # counters. Subtracting the previous same-length job makes a retry
+            # look permanently stuck at 0/0.
+            total = int(current.get("remote_job_tokens_total", 0))
+            computed = int(current.get("remote_job_tokens_computed", 0))
+        else:
+            total = 0
+            computed = 0
         state = (
             computed,
             total,
+            new_remote_jobs,
             self._delta(current, "remote_hits"),
             self._delta(current, "tokens_reused"),
         )
@@ -583,7 +592,7 @@ class StrategyPrefillHeartbeat:
         percent = min(100.0, 100.0 * computed / total)
         print(
             f"[autoresearch] Strategy Prefill: {computed}/{total} tokens "
-            f"({percent:.1f}%) · remote_hits={state[2]} reused={state[3]}",
+            f"({percent:.1f}%) · remote_hits={state[3]} reused={state[4]}",
             flush=True,
         )
 
