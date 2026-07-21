@@ -259,4 +259,3 @@ def test_acceptance_snapshot_hang_and_kv_restore_interfaces(tmp_path):
         assert parity["restore_source"] == "allens_kv+proof_checkpoint"
     finally:
         client.close()
-

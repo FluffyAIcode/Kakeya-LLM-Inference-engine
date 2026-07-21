@@ -938,4 +938,3 @@ class DecodeWorkerSession:
 
     def kv_live_bytes(self, _session: Any) -> int:
         return self._kv_live_bytes
-
