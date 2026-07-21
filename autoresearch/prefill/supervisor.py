@@ -424,6 +424,21 @@ def build_strategy_research_state(
     ledger: dict,
     results_text: str,
 ) -> dict:
+    text_by_id: dict[str, str] = {}
+    id_by_text: dict[str, str] = {}
+
+    def intern(value) -> str:
+        text = str(value or "")
+        if not text:
+            return ""
+        existing = id_by_text.get(text)
+        if existing is not None:
+            return existing
+        text_id = f"t{len(text_by_id) + 1}"
+        id_by_text[text] = text_id
+        text_by_id[text_id] = text
+        return text_id
+
     target_id = _select_repair_target(current, ledger)
     obligations = {
         str(item.get("obligation_id", "")): item
@@ -437,11 +452,11 @@ def build_strategy_research_state(
         item = obligations[cursor]
         ancestry.append({
             "obligation_id": cursor,
-            "statement": item.get("statement", ""),
+            "statement_ref": intern(item.get("statement", "")),
             "status": item.get("status", ""),
             "parent_id": item.get("parent_id", ""),
             "last_run_id": item.get("last_run_id", ""),
-            "last_evidence": item.get("last_evidence", ""),
+            "last_evidence_ref": intern(item.get("last_evidence", "")),
         })
         cursor = str(item.get("parent_id", ""))
     ancestry.reverse()
@@ -464,12 +479,14 @@ def build_strategy_research_state(
                 ),
                 "hypothesis_sha256": row.get("hypothesis_sha256", ""),
                 "research_outcome": row.get("research_outcome", ""),
-                "research_evidence": row.get("research_evidence", ""),
-                "new_frontier": row.get("new_frontier", ""),
+                "research_evidence_ref": intern(
+                    row.get("research_evidence", ""),
+                ),
+                "new_frontier_ref": intern(row.get("new_frontier", "")),
                 "kept": row.get("kept", ""),
                 "error": row.get("error", ""),
             })
-    return {
+    state = {
         "target_leaf_id": target_id,
         "target_ancestry": ancestry,
         "relevant_experiments": relevant_results,
@@ -479,12 +496,14 @@ def build_strategy_research_state(
                 "target_obligation_id",
                 "",
             ),
-            "hypothesis": current.get("hypothesis", ""),
+            "hypothesis_ref": intern(current.get("hypothesis", "")),
             "prefill_compute_chunk_tokens": current.get(
                 "prefill_compute_chunk_tokens",
             ),
         },
     }
+    state["text_by_id"] = text_by_id
+    return state
 
 
 def build_strategy_prompt(
@@ -511,7 +530,9 @@ def build_strategy_prompt(
         "It must either construct a concrete object or attempt a concrete "
         "counterexample for the target leaf. target_obligation_id must equal "
         "TARGET_LEAF_ID. Every statement and evidence item below is complete; "
-        "do not infer omitted text from unrelated branches."
+        "do not infer omitted text from unrelated branches. Fields ending in "
+        "_ref resolve through text_by_id; this is lossless deduplication, not "
+        "summary or truncation."
         f"\n\nPROGRAM:\n{program}"
         "\n\nRESEARCH_STATE:\n"
         f"{json.dumps(research_state, ensure_ascii=False)}"
