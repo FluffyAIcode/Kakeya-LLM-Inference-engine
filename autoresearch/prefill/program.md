@@ -79,6 +79,12 @@ be falsifiable. A rejected cyclic frontier is `INCONCLUSIVE`, not progress.
 
 `DECOMPOSED` is keepable only when the host actually persisted at least one
 new child that passed the ID, novelty, cycle, and falsifiability gates.
+Generator coverage must be complete. Before persistence, alpha-normalize
+mathematical variables, extract premise/conclusion structure, compare the child
+against every ancestor in both entailment directions, and require an explicit
+new assumption, narrower domain, or falsifiable conclusion. Existing semantic
+duplicates and all descendants beneath them are retained for audit but marked
+`REJECTED_DUPLICATE`; they are not pending leaves and do not reset stagnation.
 
 Do not optimize output wording, scores, prizes, or other proof-irrelevant
 content. Prefill performance is a tertiary objective after mathematical

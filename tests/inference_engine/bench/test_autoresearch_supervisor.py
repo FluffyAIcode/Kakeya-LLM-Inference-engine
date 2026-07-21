@@ -242,6 +242,16 @@ def test_keep_requires_novel_mathematical_advancement():
     }, baseline)
     assert not should_keep({
         "accepted": True,
+        "research_outcome": "SUPPORTED",
+        "created_obligation_ids": [],
+        "hypothesis_novel": True,
+        "proof_obligations_total": 1,
+        "proof_obligations_covered": 0,
+        "proof_obligations_unresolved": 4,
+        "metric_cold_critic_prefill_s": 1,
+    }, baseline)
+    assert not should_keep({
+        "accepted": True,
         "research_outcome": "INCONCLUSIVE",
         "hypothesis_novel": True,
         "proof_obligations_unresolved": 5,

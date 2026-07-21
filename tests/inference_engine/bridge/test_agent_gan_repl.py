@@ -25,6 +25,7 @@ from scripts.agent_gan_repl import (
     is_runtime_artifact_prompt,
     consume_critic_issue_batch,
     apply_critic_verdicts,
+    audit_ledger_semantic_duplicates,
     build_autoresearch_verdict,
     create_child_obligations,
     format_critic_issue_injection,
@@ -664,6 +665,45 @@ def test_cycle_and_invented_ids_cannot_create_children():
     assert created == []
     assert len(ledger.obligations) == 2
     assert any("existing obligation" in item for item in rejections)
+
+
+def test_variable_renamed_parent_child_is_retroactively_rejected():
+    parent = ProofObligation(
+        "RH-C2-gap",
+        (
+            "Prove that for a fixed genus p there exists a critical density "
+            "rho_c such that a zero sequence with density rho > rho_c cannot "
+            "converge to a local pole of order m without forcing the global "
+            "growth order above p."
+        ),
+    )
+    child = ProofObligation(
+        "RH-C2-equivalence",
+        (
+            "Establish the relationship between local accumulation rate delta "
+            "at s0 and the global exponent of convergence lambda: if local "
+            "density constructs a singularity of order m, global growth must "
+            "satisfy lambda >= function(rho,m)."
+        ),
+        parent_id=parent.obligation_id,
+    )
+    grandchild = ProofObligation(
+        "RH-C2-saturation",
+        (
+            "Show local density delta imposes a lower bound on global order "
+            "rho through a density-order saturation mapping."
+        ),
+        parent_id=child.obligation_id,
+    )
+    ledger = ProofObligationLedger(
+        ledger_id="rh-ledger",
+        obligations=[parent, child, grandchild],
+    )
+    rejected = audit_ledger_semantic_duplicates(ledger)
+    assert rejected[0][0:2] == (child.obligation_id, parent.obligation_id)
+    assert child.status == "REJECTED_DUPLICATE"
+    assert grandchild.status == "REJECTED_DUPLICATE"
+    assert pending_obligations(ledger) == [parent]
 
 
 def test_recover_complete_checkpoint_from_timestamped_log(tmp_path):
