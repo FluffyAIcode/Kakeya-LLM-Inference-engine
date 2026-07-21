@@ -367,6 +367,9 @@ def parse_research_verdict(output: str, candidate_id: str) -> dict:
             "outcome": fields["outcome"],
             "evidence": fields["evidence"],
             "new_frontier": fields["new_frontier"],
+            "created_obligation_ids": list(
+                fields.get("created_obligation_ids", []),
+            ),
         }
     matches = list(re.finditer(
         r"^(?:critic>\s*)?### AUTORESEARCH_VERDICT\s*$"
@@ -397,6 +400,7 @@ def parse_research_verdict(output: str, candidate_id: str) -> dict:
         "outcome": fields["Outcome"],
         "evidence": fields["Evidence"],
         "new_frontier": fields["New frontier"],
+        "created_obligation_ids": [],
     }
 
 
@@ -626,7 +630,7 @@ def propose_candidate(
     current: dict,
     results_text: str,
     ledger: dict,
-    max_prefill_tokens: int = 8192,
+    max_prefill_tokens: int = 8448,
 ) -> dict:
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -826,14 +830,102 @@ def best_kept(results: list[dict]) -> dict | None:
     )
 
 
+def _created_ids(row: dict) -> list[str]:
+    raw = row.get("created_obligation_ids", "")
+    if isinstance(raw, list):
+        return [str(item) for item in raw if item]
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [str(item) for item in value if item] if isinstance(value, list) else []
+
+
+def _row_made_progress(row: dict) -> bool:
+    if row.get("kept") not in {True, "True"}:
+        return False
+    outcome = row.get("research_outcome")
+    if outcome in {"SUPPORTED", "FALSIFIED"}:
+        return True
+    if outcome == "DECOMPOSED":
+        # Legacy rows predate created_obligation_ids but were already admitted
+        # by the host's child-creation gate.
+        return bool(_created_ids(row)) or not row.get(
+            "created_obligation_ids",
+        )
+    return False
+
+
+def strategy_trigger_reason(
+    results: list[dict],
+    *,
+    stagnation_rounds: int,
+    force: bool = False,
+    trigger_file: Path | None = None,
+) -> str:
+    if force:
+        return "manual-cli"
+    if trigger_file is not None and trigger_file.exists():
+        return "manual-trigger-file"
+    if results and results[-1].get("research_outcome") == "FALSIFIED":
+        return "branch-falsified"
+    stagnant = 0
+    for row in reversed(results):
+        if _row_made_progress(row):
+            break
+        stagnant += 1
+    if stagnant >= stagnation_rounds:
+        return f"stagnation-{stagnant}"
+    return ""
+
+
+def build_host_candidate(current: dict, ledger: dict) -> dict:
+    target_id = _select_repair_target(current, ledger)
+    target = next(
+        item
+        for item in ledger.get("obligations", [])
+        if item.get("obligation_id") == target_id
+    )
+    statement = str(target.get("statement", "")).strip()
+    evidence = str(target.get("last_evidence", "")).strip()
+    digest = hashlib.sha256(target_id.encode()).hexdigest()[:12]
+    candidate = {
+        "candidate_id": f"host-leaf-{digest}",
+        "target_obligation_id": target_id,
+        "hypothesis": statement,
+        "generator_directive": (
+            f"Resolve or falsify the exact target leaf {target_id}: "
+            f"{statement} Previous Critic evidence: {evidence or '(none)'}. "
+            "Provide an explicit derivation or counterexample; do not rename "
+            "the same gap as a new lemma."
+        ),
+        "critic_directive": (
+            f"Adversarially test target leaf {target_id}. Reject unsupported "
+            "existence claims and semantic restatements. Mark PROVED or "
+            "DISPROVED only with explicit evidence; otherwise identify one "
+            "strictly smaller, falsifiable missing obligation."
+        ),
+        "prefill_compute_chunk_tokens": int(
+            current["prefill_compute_chunk_tokens"],
+        ),
+        "snapshot_mode": "final_only",
+        "max_segment_seconds": 300.0,
+        "require_full_context": True,
+        "allow_fallback": False,
+    }
+    validate_candidate(candidate)
+    return candidate
+
+
 def should_keep(result: dict, baseline: dict | None) -> bool:
     if not result["accepted"]:
         return False
-    if result.get("research_outcome") not in {
-        "SUPPORTED", "FALSIFIED", "DECOMPOSED",
-    }:
+    outcome = result.get("research_outcome")
+    if outcome not in {"SUPPORTED", "FALSIFIED", "DECOMPOSED"}:
         return False
-    if not result.get("hypothesis_novel", False):
+    if outcome == "DECOMPOSED" and not result.get("created_obligation_ids"):
         return False
     if baseline is None:
         return True
@@ -850,7 +942,8 @@ RESULT_FIELDS = (
     "proof_obligations_unresolved", "compute_chunk_tokens",
     "candidate_sha256", "report_path",
     "hypothesis_sha256", "research_outcome", "research_evidence",
-    "new_frontier", "transcript_path", "error",
+    "new_frontier", "created_obligation_ids", "strategy_mode",
+    "transcript_path", "error",
 )
 
 
@@ -910,6 +1003,7 @@ def run_iteration(args, iteration: int) -> dict:
     transcript_path = reports_dir / "not-started.log"
     hypothesis_sha256 = ""
     candidate_sha256 = hashlib.sha256(previous_candidate).hexdigest()
+    strategy_mode = "baseline"
     try:
         print(
             f"[autoresearch] iteration={iteration} "
@@ -926,17 +1020,26 @@ def run_iteration(args, iteration: int) -> dict:
             f"kv_hit_rate={health.get('kv_hit_rate', 0):.1%}",
             flush=True,
         )
+        ledger_data = json.loads(ledger_path.read_text())
+        trigger_file = Path(args.strategy_trigger_file).expanduser()
+        trigger_reason = strategy_trigger_reason(
+            results,
+            stagnation_rounds=args.strategy_stagnation_rounds,
+            force=args.force_strategy and iteration == 0,
+            trigger_file=trigger_file,
+        )
         if baseline is None and iteration == 0:
             print(
                 "[autoresearch] phase=baseline using current candidate",
                 flush=True,
             )
-        else:
+        elif trigger_reason:
+            strategy_mode = "gemma"
             print(
-                "[autoresearch] phase=strategy-proposal real-gemma",
+                "[autoresearch] phase=strategy-proposal "
+                f"mode=gemma trigger={trigger_reason}",
                 flush=True,
             )
-            ledger_data = json.loads(ledger_path.read_text())
             proposed = propose_candidate(
                 address=args.address,
                 tokenizer_id=args.tokenizer_id,
@@ -954,13 +1057,24 @@ def run_iteration(args, iteration: int) -> dict:
                 raise ValueError(
                     "strategy agent targeted a non-leaf proof obligation",
                 )
-            candidate_path.write_text(render_candidate(proposed))
+            if trigger_reason == "manual-trigger-file":
+                trigger_file.unlink(missing_ok=True)
+        else:
+            strategy_mode = "host"
+            proposed = build_host_candidate(current, ledger_data)
             print(
-                f"[autoresearch] phase=candidate-written "
-                f"candidate={proposed['candidate_id']} "
+                "[autoresearch] phase=deterministic-candidate "
                 f"target={proposed['target_obligation_id']}",
                 flush=True,
             )
+        candidate_path.write_text(render_candidate(proposed))
+        print(
+            f"[autoresearch] phase=candidate-written "
+            f"candidate={proposed['candidate_id']} "
+            f"target={proposed['target_obligation_id']} "
+            f"mode={strategy_mode}",
+            flush=True,
+        )
         validate_candidate(proposed)
         hypothesis_sha256 = hashlib.sha256(
             proposed["hypothesis"].strip().lower().encode(),
@@ -970,7 +1084,8 @@ def run_iteration(args, iteration: int) -> dict:
             for row in results
             if row.get("hypothesis_sha256")
         }
-        if hypothesis_sha256 in seen_hypotheses:
+        hypothesis_novel = hypothesis_sha256 not in seen_hypotheses
+        if strategy_mode == "gemma" and not hypothesis_novel:
             raise ValueError("strategy agent repeated a previous hypothesis")
         candidate_sha256 = hashlib.sha256(
             candidate_path.read_bytes(),
@@ -1011,8 +1126,9 @@ def run_iteration(args, iteration: int) -> dict:
             "research_outcome": verdict["outcome"],
             "research_evidence": verdict["evidence"],
             "new_frontier": verdict["new_frontier"],
+            "created_obligation_ids": verdict["created_obligation_ids"],
             "transcript_path": str(transcript_path),
-            "hypothesis_novel": True,
+            "hypothesis_novel": hypothesis_novel,
         })
         keep = should_keep(result, baseline)
         print(
@@ -1050,6 +1166,10 @@ def run_iteration(args, iteration: int) -> dict:
             "research_outcome": verdict["outcome"],
             "research_evidence": verdict["evidence"],
             "new_frontier": verdict["new_frontier"],
+            "created_obligation_ids": json.dumps(
+                verdict["created_obligation_ids"],
+            ),
+            "strategy_mode": strategy_mode,
             "transcript_path": str(transcript_path),
         }
         append_result(results_path, row)
@@ -1094,6 +1214,7 @@ def run_iteration(args, iteration: int) -> dict:
             "report_path": str(report_path),
             "hypothesis_sha256": hypothesis_sha256,
             "research_outcome": "EVALUATION_FAILED",
+            "strategy_mode": strategy_mode,
             "transcript_path": str(transcript_path),
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -1117,7 +1238,20 @@ def main() -> int:
     parser.add_argument(
         "--strategy-max-prefill-tokens",
         type=int,
-        default=8192,
+        default=8448,
+    )
+    parser.add_argument(
+        "--strategy-stagnation-rounds",
+        type=int,
+        default=3,
+    )
+    parser.add_argument("--force-strategy", action="store_true")
+    parser.add_argument(
+        "--strategy-trigger-file",
+        default=str(
+            Path.home()
+            / ".kakeya/autoresearch/request_strategy"
+        ),
     )
     parser.add_argument(
         "--tokenizer-id",
@@ -1148,6 +1282,8 @@ def main() -> int:
         raise SystemExit("iterations must be > 0")
     if args.strategy_max_prefill_tokens <= 0:
         raise SystemExit("strategy-max-prefill-tokens must be > 0")
+    if args.strategy_stagnation_rounds <= 0:
+        raise SystemExit("strategy-stagnation-rounds must be > 0")
     for iteration in range(args.iterations):
         row = run_iteration(args, iteration)
         print(json.dumps(row, indent=2, sort_keys=True))
