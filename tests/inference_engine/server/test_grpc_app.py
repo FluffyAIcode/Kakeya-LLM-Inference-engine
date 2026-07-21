@@ -664,6 +664,50 @@ async def test_generate_cancellation_removes_session():
         store.get_session(sess.session_id)
 
 
+async def test_generate_cancellation_after_done_preserves_session():
+    from inference_engine.session import (
+        DoneEvent,
+        GenerationCoordinator,
+        STOP_REASON_MAX_TOKENS,
+    )
+
+    class CompletedGeneration(GenerationCoordinator):
+        def generate(self, session_id, *, max_tokens, **kwargs):
+            del session_id, max_tokens, kwargs
+            yield DoneEvent(
+                stop_reason=STOP_REASON_MAX_TOKENS,
+                generated_token_count=0,
+                prefill_seconds=0.0,
+                total_seconds=0.0,
+            )
+
+    class Context:
+        def cancelled(self):
+            return False
+
+        async def abort(self, code, details):
+            raise AssertionError((code, details))
+
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(
+        store,
+        generation_coordinator=CompletedGeneration(store, verifier=None),
+    )
+    stream = servicer.Generate(
+        runtime_pb2.GenerateRequest(
+            session_id=session.session_id,
+            max_tokens=1,
+        ),
+        Context(),
+    )
+    response = await anext(stream)
+    assert response.WhichOneof("payload") == "done"
+    with pytest.raises(asyncio.CancelledError):
+        await stream.athrow(asyncio.CancelledError())
+    assert store.get_session(session.session_id) is session
+
+
 async def test_wire_cancellation_releases_blocked_generate_session():
     """A disconnect removes session state while model thread is still blocked."""
     from inference_engine.session import GenerationCoordinator
@@ -943,6 +987,26 @@ async def test_watch_context_removes_cancelled_session():
     context.callback(type("Done", (), {"cancelled": lambda self: True})())
     assert cancel_event.is_set()
     assert store.active_count == 0
+
+
+async def test_watch_context_preserves_logically_completed_session():
+    store = SessionStore(capacity=1)
+    session = store.create_session()
+    servicer = RuntimeServiceServicer(store)
+    context = _DirectContext()
+    cancel_event = threading.Event()
+    completed_event = threading.Event()
+    servicer._watch_context(
+        context,
+        cancel_event,
+        session.session_id,
+        completed_event,
+    )
+    completed_event.set()
+    assert context.callback is not None
+    context.callback(type("Done", (), {"cancelled": lambda self: True})())
+    assert not cancel_event.is_set()
+    assert store.active_count == 1
 
 
 async def test_create_session_rejects_memory_drain():

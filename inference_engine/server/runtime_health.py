@@ -5,13 +5,13 @@ from __future__ import annotations
 import gc
 import json
 import os
-import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+import psutil
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -95,15 +95,10 @@ class MemorySnapshot:
 
 
 def process_footprint_bytes(pid: Optional[int] = None) -> int:
-    """Return resident process bytes using the macOS/Linux ``ps`` contract."""
+    """Return resident process bytes without forking the threaded runtime."""
     try:
-        output = subprocess.check_output(
-            ["ps", "-o", "rss=", "-p", str(pid or os.getpid())],
-            text=True,
-            timeout=1,
-        )
-        return int(output.strip()) * 1024
-    except (OSError, ValueError, subprocess.SubprocessError):
+        return int(psutil.Process(pid or os.getpid()).memory_info().rss)
+    except (OSError, ValueError, psutil.Error):
         return 0
 
 

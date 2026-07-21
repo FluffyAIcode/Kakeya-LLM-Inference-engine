@@ -240,11 +240,15 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
         context,
         cancel_event: threading.Event,
         session_id: str,
+        completed_event: threading.Event | None = None,
     ) -> None:
         callback = getattr(context, "add_done_callback", None)
         if callback is not None:
             def done(done_context) -> None:
-                if done_context.cancelled():
+                logically_completed = (
+                    completed_event is not None and completed_event.is_set()
+                )
+                if done_context.cancelled() and not logically_completed:
                     cancel_event.set()
                     self._store.remove_session_if_present(
                         session_id, reason="client_cancelled",
@@ -305,7 +309,13 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
                 f"session {request.session_id!r} already has an active operation",
             )
         cancel_event = threading.Event()
-        self._watch_context(context, cancel_event, request.session_id)
+        completed_event = threading.Event()
+        self._watch_context(
+            context,
+            cancel_event,
+            request.session_id,
+            completed_event,
+        )
         try:
             kwargs = {
                 "session_id": request.session_id,
@@ -316,6 +326,7 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             new_history_length = await asyncio.to_thread(
                 self._append.append_tokens, **kwargs,
             )
+            completed_event.set()
         except asyncio.CancelledError:
             cancel_event.set()
             self._store.remove_session_if_present(
@@ -390,7 +401,13 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
                 f"session {request.session_id!r} already has an active operation",
             )
         cancel_event = threading.Event()
-        self._watch_context(context, cancel_event, request.session_id)
+        completed_event = threading.Event()
+        self._watch_context(
+            context,
+            cancel_event,
+            request.session_id,
+            completed_event,
+        )
         kwargs = {
             "session_id": request.session_id,
             "max_tokens": request.max_tokens,
@@ -413,6 +430,7 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
                 if error is not None:
                     raise error
                 if event is _STREAM_END:
+                    completed_event.set()
                     break
                 if context.cancelled():
                     threaded_stream.cancel()
@@ -436,6 +454,7 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
                     # DoneEvent — the only remaining event type per
                     # the GenerateEvent union.
                     assert isinstance(event, DoneEvent)
+                    completed_event.set()
                     yield runtime_pb2.GenerateResponse(
                         done=runtime_pb2.GenerateDone(
                             stop_reason=_STOP_REASON_TO_PROTO[
@@ -456,9 +475,10 @@ class RuntimeServiceServicer(runtime_pb2_grpc.RuntimeServiceServicer):
             await context.abort(grpc.StatusCode.ABORTED, str(exc))
         except asyncio.CancelledError:
             threaded_stream.cancel()
-            self._store.remove_session_if_present(
-                request.session_id, reason="client_cancelled",
-            )
+            if not completed_event.is_set():
+                self._store.remove_session_if_present(
+                    request.session_id, reason="client_cancelled",
+                )
             raise
         finally:
             threaded_stream.cancel()

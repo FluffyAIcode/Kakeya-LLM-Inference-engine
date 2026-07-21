@@ -1,7 +1,9 @@
 import json
 
+import psutil
 from fastapi.testclient import TestClient
 
+from inference_engine.server import runtime_health
 from inference_engine.server.runtime_health import (
     DecodeLiveness,
     PrimaryMemoryGovernor,
@@ -16,6 +18,29 @@ class Verifier:
 
     def reset(self):
         self.resets += 1
+
+
+def test_process_footprint_uses_fork_free_psutil(monkeypatch):
+    seen = []
+
+    class Process:
+        def __init__(self, pid):
+            seen.append(pid)
+
+        def memory_info(self):
+            return type("MemoryInfo", (), {"rss": 12345})()
+
+    monkeypatch.setattr(runtime_health.psutil, "Process", Process)
+    assert runtime_health.process_footprint_bytes(42) == 12345
+    assert seen == [42]
+
+
+def test_process_footprint_returns_zero_when_process_disappears(monkeypatch):
+    def missing(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(runtime_health.psutil, "Process", missing)
+    assert runtime_health.process_footprint_bytes(42) == 0
 
 
 def test_liveness_is_atomically_published(tmp_path):
