@@ -58,7 +58,7 @@ must be deployed outside this supervisor. Cold benchmarks are explicit,
 separate invocations of `scripts/benchmark_prefill_architecture.py`.
 
 Prefill budgets are hard admission limits, never truncation instructions.
-Strategy input must fit 4096 tokens by carrying the complete active leaf
+Strategy input must fit 8192 tokens by carrying the complete active leaf
 ancestry and its exact experiment records. Generator and Critic inputs must fit
 6144 tokens; the Critic always receives the complete current Generator output.
 If any complete semantic unit exceeds its budget, reject it before remote
