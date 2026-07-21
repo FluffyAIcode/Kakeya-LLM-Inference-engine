@@ -225,12 +225,21 @@ class AppendTokensCoordinator:
             else:
                 verifier.prefill(token_list)
         else:
-            block_logits = verifier.forward_block(token_list)
-            verifier.commit_or_truncate(
-                forwarded=len(token_list),
-                accepted=len(token_list),
+            append_accepted = getattr(
+                verifier, "append_accepted_tokens", None,
             )
-            verifier.next_token_logits = block_logits[-1].clone()
+            if append_accepted is not None:
+                # MLX primary append needs only the final logits row;
+                # speculative verification continues to call
+                # forward_block and keeps full [L,V] semantics.
+                append_accepted(token_list)
+            else:
+                block_logits = verifier.forward_block(token_list)
+                verifier.commit_or_truncate(
+                    forwarded=len(token_list),
+                    accepted=len(token_list),
+                )
+                verifier.next_token_logits = block_logits[-1].clone()
 
         if cancel_event is not None and cancel_event.is_set():
             raise OperationCancelledError("AppendTokens cancelled")
