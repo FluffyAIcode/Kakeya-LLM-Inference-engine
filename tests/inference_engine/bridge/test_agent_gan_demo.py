@@ -3,7 +3,13 @@ from scripts.agent_gan_inference_demo import (
     _infer,
     _output_metadata,
     build_critic_context,
+    decode_complete_response,
 )
+from autoresearch.prefill.semantic_decompose import (
+    SemanticResponseIncomplete,
+    SemanticUnitTooLarge,
+)
+import pytest
 
 
 def test_agent_gate_accepts_remote_compute_or_exact_remote_cache_hit():
@@ -68,8 +74,10 @@ class Session:
 class Client:
     def __init__(self, session):
         self.session = session
+        self.session_kwargs = []
 
-    def create_session(self, **_kwargs):
+    def create_session(self, **kwargs):
+        self.session_kwargs.append(kwargs)
         return self.session
 
 
@@ -91,6 +99,71 @@ def test_infer_continues_chunks_until_eos():
     assert metrics["complete"] is True
 
 
+def test_infer_uses_explicit_isolated_role_session_label():
+    client = Client(Session([([1], 2)]))
+    _infer(
+        client,
+        [2],
+        [9],
+        1,
+        lambda: {},
+        client_label="agent-gan-premise-auditor",
+    )
+    assert client.session_kwargs == [{
+        "eos_token_ids": [2],
+        "client_label": "agent-gan-premise-auditor",
+    }]
+
+
+def test_infer_rejects_oversized_unit_before_session_append():
+    client = Client(Session([([1], 2)]))
+    with pytest.raises(SemanticUnitTooLarge):
+        _infer(
+            client,
+            [],
+            list(range(2053)),
+            1,
+            lambda: {},
+            max_retained_tokens=2052,
+        )
+    assert client.session_kwargs == []
+
+
+def test_seven_decomposition_roles_each_get_fresh_session():
+    class FreshClient:
+        def __init__(self):
+            self.sessions = []
+
+        def create_session(self, **kwargs):
+            session = Session([([1], 2)])
+            self.sessions.append((kwargs, session))
+            return session
+
+    roles = [
+        "definition_auditor",
+        "counterexample_worker",
+        "decomposer",
+        "formalizer",
+        "prover",
+        "adversarial_proponent",
+        "judge",
+    ]
+    client = FreshClient()
+    for role in roles:
+        _infer(
+            client,
+            [],
+            [9],
+            1,
+            lambda: {},
+            client_label=f"agent-gan-{role}",
+        )
+    assert [item[0]["client_label"] for item in client.sessions] == [
+        f"agent-gan-{role}" for role in roles
+    ]
+    assert len({id(item[1]) for item in client.sessions}) == 7
+
+
 def test_infer_reports_explicit_client_safety_limit():
     tokens, metrics = _infer(
         Client(Session([([1, 2], 1)])),
@@ -103,6 +176,79 @@ def test_infer_reports_explicit_client_safety_limit():
     assert tokens == [1, 2]
     assert metrics["stop_reason"] == "client_safety_limit"
     assert metrics["complete"] is False
+    assert metrics["eos_reached"] is False
+    assert metrics["response_cap_exhausted"] is True
+
+
+def test_infer_accepts_exact_eos_at_response_cap_without_slicing():
+    tokens, metrics = _infer(
+        Client(Session([([1, 2], 2)])),
+        [],
+        [9],
+        2,
+        lambda: {},
+        max_response_tokens=2,
+    )
+    assert tokens == [1, 2]
+    assert metrics["stop_reason"] == "eos"
+    assert metrics["complete"] is True
+    assert metrics["eos_reached"] is True
+    assert metrics["response_cap_exhausted"] is False
+
+
+def test_capped_generator_is_rejected_before_decode_or_critic_construction():
+    class CountingTokenizer(CharTokenizer):
+        def __init__(self):
+            self.decode_calls = 0
+
+        def decode(self, token_ids, **kwargs):
+            self.decode_calls += 1
+            return super().decode(token_ids, **kwargs)
+
+    tokenizer = CountingTokenizer()
+    critic_constructed = False
+    tokens, metrics = _infer(
+        Client(Session([([ord("I"), ord("f"), ord(" ")], 1)])),
+        [],
+        [9],
+        3,
+        lambda: {},
+        max_response_tokens=3,
+    )
+    # Deliberately failing KV metrics prove semantic classification wins.
+    metrics["delta"] = {"local_hits": 0, "fallbacks": 9}
+    with pytest.raises(
+        SemanticResponseIncomplete,
+        match="SEMANTIC_RESPONSE_INCOMPLETE.*response_cap_exhausted=True",
+    ) as exc:
+        generator_text = decode_complete_response(
+            tokenizer,
+            "Generator",
+            tokens,
+            metrics,
+        )
+        critic_constructed = True
+        build_critic_context(tokenizer, generator_text)
+
+    assert exc.value.response_cap_exhausted is True
+    assert exc.value.stop_reason == "client_safety_limit"
+    assert tokenizer.decode_calls == 0
+    assert critic_constructed is False
+
+
+def test_complete_response_decodes_exact_tokens():
+    tokenizer = CharTokenizer()
+    text = decode_complete_response(
+        tokenizer,
+        "Generator",
+        [97, 98, 99],
+        {
+            "stop_reason": "eos",
+            "complete": True,
+            "response_cap_exhausted": False,
+        },
+    )
+    assert text == "abc"
 
 
 def test_infer_stops_repeated_nonsemantic_chunks():
