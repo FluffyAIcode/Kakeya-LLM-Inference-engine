@@ -44,6 +44,7 @@ WORKDIR /app
 # pins all the runtime packages we ship.
 COPY requirements.txt ./
 RUN pip install --upgrade pip \
+    && pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3.0" \
     && pip install -r requirements.txt
 
 # Application source. `.dockerignore` prunes tests/, results/, .git/,

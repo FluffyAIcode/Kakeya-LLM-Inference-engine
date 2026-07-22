@@ -17,6 +17,7 @@ from inference_engine.backends.mlx.decode_worker import (
     PROTOCOL_VERSION,
     DecodeWorkerClient,
     DecodeWorkerConfig,
+    DecodeWorkerSessionClosed,
     _recv_frame,
     _send_frame,
 )
@@ -73,11 +74,18 @@ def build_fake_verifier(config):
     return FakeDecodeVerifier(str(config["model_id"]))
 
 
-def _client(tmp_path, *, model_id="fake", timeout=2.0):
+def _client(
+    tmp_path,
+    *,
+    model_id="fake",
+    timeout=2.0,
+    sink_size=2,
+    window_size=6,
+):
     return DecodeWorkerClient(DecodeWorkerConfig(
         model_id=model_id,
-        sink_size=2,
-        window_size=6,
+        sink_size=sink_size,
+        window_size=window_size,
         request_timeout_s=timeout,
         startup_timeout_s=10.0,
         socket_path=str(tmp_path / "decode.sock"),
@@ -130,6 +138,31 @@ def test_protocol_health_and_all_operations(tmp_path):
         assert session.generate_step() == 21
         client.close_session("s1")
         assert client.health()["session_count"] == 0
+    finally:
+        client.close()
+
+
+def test_worker_proxy_sink_window_slice_matches_child_layout(tmp_path):
+    client = _client(tmp_path)
+    try:
+        session = client.get("slice")
+        short = [1, 2, 3]
+        assert session._sink_window_slice(short) == short
+        assert session._sink_window_slice(short) is not short
+
+        sequence = list(range(20))
+        assert session._sink_window_slice(sequence) == (
+            sequence[:2] + sequence[-6:]
+        )
+    finally:
+        client.close()
+
+
+def test_worker_proxy_sink_window_slice_supports_zero_window(tmp_path):
+    client = _client(tmp_path, window_size=0)
+    try:
+        session = client.get("sink-only")
+        assert session._sink_window_slice(list(range(10))) == [0, 1]
     finally:
         client.close()
 
@@ -203,6 +236,81 @@ def test_snapshot_plus_post_checkpoint_replay_survives_hard_kill(tmp_path):
         assert session.generate_step() == 15
         assert client.pid != old_pid
         assert session.cached_token_sequence == [10, 11, 12, 13, 14, 15]
+    finally:
+        client.close()
+
+
+def test_close_during_snapshot_import_waits_for_checkpoint_publication(tmp_path):
+    client = _client(tmp_path)
+    imported = threading.Event()
+    release_import = threading.Event()
+    close_done = threading.Event()
+    failures = []
+    try:
+        session = client.get("import-close-race")
+        original_request = client._session_request
+
+        def paused_request(session_id, operation, arguments, payload=b"", **kwargs):
+            state = original_request(
+                session_id, operation, arguments, payload, **kwargs,
+            )
+            if operation == "ImportSnapshot":
+                imported.set()
+                assert release_import.wait(timeout=2.0)
+            return state
+
+        client._session_request = paused_request
+
+        def run_import():
+            try:
+                session.import_snapshot(
+                    json.dumps({"tokens": [10, 11, 12]}).encode(),
+                    CacheCompatibility(model_id="fake"),
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        def run_close():
+            try:
+                client.close_session(session.session_id)
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                close_done.set()
+
+        import_thread = threading.Thread(target=run_import)
+        close_thread = threading.Thread(target=run_close)
+        import_thread.start()
+        assert imported.wait(timeout=2.0)
+        close_thread.start()
+
+        # The child has acknowledged ImportSnapshot, but router checkpoint
+        # publication is deliberately paused. Cleanup must remain blocked.
+        assert not close_done.wait(timeout=0.1)
+        assert session.session_id in client._checkpoints
+
+        release_import.set()
+        import_thread.join(timeout=2.0)
+        close_thread.join(timeout=2.0)
+        assert not import_thread.is_alive()
+        assert not close_thread.is_alive()
+        assert failures == []
+        assert session.session_id not in client._checkpoints
+        assert session.session_id not in client._proxies
+        assert client.health()["session_count"] == 0
+    finally:
+        release_import.set()
+        client.close()
+
+
+def test_closed_proxy_fails_with_explicit_session_error(tmp_path):
+    client = _client(tmp_path)
+    try:
+        session = client.get("closed")
+        session.prefill([1, 2])
+        client.close_session(session.session_id)
+        with pytest.raises(DecodeWorkerSessionClosed, match="is closed"):
+            session.reset()
     finally:
         client.close()
 

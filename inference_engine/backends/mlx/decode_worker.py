@@ -56,6 +56,10 @@ class DecodeWorkerRemoteError(DecodeWorkerError):
         self.message = message
 
 
+class DecodeWorkerSessionClosed(DecodeWorkerError):
+    """A verifier proxy was used after its router session was closed."""
+
+
 @dataclass(frozen=True)
 class DecodeWorkerConfig:
     model_id: str
@@ -824,6 +828,15 @@ class DecodeWorkerClient:
         with self._lock:
             self._restored_generation[session_id] = self._generation
 
+    def _checkpoint_locked(self, session_id: str) -> ProofCheckpoint:
+        """Return a live checkpoint while the caller holds ``_lock``."""
+        try:
+            return self._checkpoints[session_id]
+        except KeyError as exc:
+            raise DecodeWorkerSessionClosed(
+                f"decode session {session_id!r} is closed"
+            ) from exc
+
 
 class DecodeWorkerSession:
     """Verifier-shaped proxy used by existing append/generate coordinators."""
@@ -836,6 +849,16 @@ class DecodeWorkerSession:
         self.cached_token_sequence: list[int] = []
         self.next_global_position = 0
         self._kv_live_bytes = 0
+
+    def _sink_window_slice(self, sequence: list[int]) -> list[int]:
+        """Mirror the child verifier's bounded token-id cache layout."""
+        sink_size = int(self.client.config.sink_size)
+        window_size = int(self.client.config.window_size)
+        budget = sink_size + window_size
+        if len(sequence) <= budget:
+            return list(sequence)
+        tail = list(sequence[-window_size:]) if window_size else []
+        return list(sequence[:sink_size]) + tail
 
     def _apply(self, state: dict[str, Any]) -> dict[str, Any]:
         self.cached_token_sequence = [
@@ -853,19 +876,20 @@ class DecodeWorkerSession:
         cancel_event: threading.Event | None = None,
     ) -> None:
         tokens = [int(token) for token in prompt_ids]
-        state = self.client._session_request(
-            self.session_id,
-            "Init",
-            {"token_ids": tokens},
-            cancel_event=cancel_event,
-        )
-        checkpoint = self.client._checkpoints[self.session_id]
-        checkpoint.snapshot = None
-        checkpoint.compatibility = None
-        checkpoint.replay_token_ids = list(tokens)
-        checkpoint.initialized = True
-        self.client._mark_current(self.session_id)
-        self._apply(state)
+        with self.client._lock:
+            checkpoint = self.client._checkpoint_locked(self.session_id)
+            state = self.client._session_request(
+                self.session_id,
+                "Init",
+                {"token_ids": tokens},
+                cancel_event=cancel_event,
+            )
+            checkpoint.snapshot = None
+            checkpoint.compatibility = None
+            checkpoint.replay_token_ids = list(tokens)
+            checkpoint.initialized = True
+            self.client._mark_current(self.session_id)
+            self._apply(state)
 
     def append_accepted_tokens(
         self,
@@ -873,29 +897,33 @@ class DecodeWorkerSession:
         cancel_event: threading.Event | None = None,
     ) -> None:
         committed = [int(token) for token in tokens]
-        state = self.client._session_request(
-            self.session_id,
-            "Append",
-            {"token_ids": committed},
-            cancel_event=cancel_event,
-        )
-        self.client._checkpoints[self.session_id].replay_token_ids.extend(committed)
-        self._apply(state)
+        with self.client._lock:
+            checkpoint = self.client._checkpoint_locked(self.session_id)
+            state = self.client._session_request(
+                self.session_id,
+                "Append",
+                {"token_ids": committed},
+                cancel_event=cancel_event,
+            )
+            checkpoint.replay_token_ids.extend(committed)
+            self._apply(state)
 
     def generate_step(
         self,
         cancel_event: threading.Event | None = None,
     ) -> int:
-        state = self.client._session_request(
-            self.session_id,
-            "GenerateStep",
-            {},
-            cancel_event=cancel_event,
-        )
-        token_id = int(state["token_id"])
-        self.client._checkpoints[self.session_id].replay_token_ids.append(token_id)
-        self._apply(state)
-        return token_id
+        with self.client._lock:
+            checkpoint = self.client._checkpoint_locked(self.session_id)
+            state = self.client._session_request(
+                self.session_id,
+                "GenerateStep",
+                {},
+                cancel_event=cancel_event,
+            )
+            token_id = int(state["token_id"])
+            checkpoint.replay_token_ids.append(token_id)
+            self._apply(state)
+            return token_id
 
     def import_snapshot(
         self,
@@ -903,35 +931,42 @@ class DecodeWorkerSession:
         compatibility: Any,
     ) -> dict[str, Any]:
         compat = asdict(compatibility)
-        # Ensure a worker-side session exists before importing its cache.
-        self.client._session_request(
-            self.session_id, "Init", {"token_ids": []}
-        )
-        state = self.client._session_request(
-            self.session_id,
-            "ImportSnapshot",
-            {"compatibility": compat},
-            bytes(payload),
-        )
-        checkpoint = self.client._checkpoints[self.session_id]
-        checkpoint.snapshot = bytes(payload)
-        checkpoint.compatibility = compat
-        checkpoint.replay_token_ids = []
-        checkpoint.initialized = True
-        self.client._mark_current(self.session_id)
-        return self._apply(state)
+        snapshot = bytes(payload)
+        # Pin the router checkpoint and proxy lifecycle across the full
+        # Init -> ImportSnapshot -> checkpoint-publication transaction.
+        # Close/cancel cleanup uses the same RLock and therefore cannot remove
+        # restart state after the child accepted the import but before it is
+        # made durable on the router.
+        with self.client._lock:
+            checkpoint = self.client._checkpoint_locked(self.session_id)
+            self.client._session_request(
+                self.session_id, "Init", {"token_ids": []}
+            )
+            state = self.client._session_request(
+                self.session_id,
+                "ImportSnapshot",
+                {"compatibility": compat},
+                snapshot,
+            )
+            checkpoint.snapshot = snapshot
+            checkpoint.compatibility = compat
+            checkpoint.replay_token_ids = []
+            checkpoint.initialized = True
+            self.client._mark_current(self.session_id)
+            return self._apply(state)
 
     def reset(self) -> None:
-        state = self.client._session_request(
-            self.session_id, "Init", {"token_ids": []}
-        )
-        checkpoint = self.client._checkpoints[self.session_id]
-        checkpoint.snapshot = None
-        checkpoint.compatibility = None
-        checkpoint.replay_token_ids = []
-        checkpoint.initialized = True
-        self.client._mark_current(self.session_id)
-        self._apply(state)
+        with self.client._lock:
+            checkpoint = self.client._checkpoint_locked(self.session_id)
+            state = self.client._session_request(
+                self.session_id, "Init", {"token_ids": []}
+            )
+            checkpoint.snapshot = None
+            checkpoint.compatibility = None
+            checkpoint.replay_token_ids = []
+            checkpoint.initialized = True
+            self.client._mark_current(self.session_id)
+            self._apply(state)
 
     def k_seq_length(self, _session: Any) -> int:
         return len(self.cached_token_sequence)

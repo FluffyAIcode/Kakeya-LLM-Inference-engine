@@ -10,6 +10,14 @@ PHASES = (
     "allens_cold_restore",
     "agent_generator",
     "agent_critic",
+    "agent_premise_auditor",
+    "agent_definition_auditor",
+    "agent_counterexample_worker",
+    "agent_decomposer",
+    "agent_formalizer",
+    "agent_prover",
+    "agent_adversarial_proponent",
+    "agent_judge",
 )
 HIT_SOURCES = ("remote_worker", "primary_hot", "allens_offload", "unknown")
 _PRIVATE_KEYS = {

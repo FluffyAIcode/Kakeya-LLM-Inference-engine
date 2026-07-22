@@ -171,6 +171,9 @@ async def serve(args) -> None:
     def card() -> NodeCapability:
         active_model_bytes, _ = refresh_cache_budget()
         inflight, queued, load, queued_tokens = jobs.stats()
+        measured_prefill_tps = jobs.measured_tokens_per_second(
+            args.prefill_tps,
+        )
         worker = PrefillWorkerCapability(
             compatibility=compatibility,
             worker_address=args.advertise,
@@ -178,7 +181,7 @@ async def serve(args) -> None:
             inflight_jobs=inflight,
             queued_jobs=queued,
             load=load,
-            tokens_per_second_prefill=args.prefill_tps,
+            tokens_per_second_prefill=measured_prefill_tps,
             ram_bytes_free=max(
                 0,
                 physical_memory_bytes()
@@ -197,7 +200,7 @@ async def serve(args) -> None:
                     args.cache_model_id or args.model_id,
                     CapabilityRole.PREFILL_COMPUTE,
                     args.quantization,
-                    args.prefill_tps,
+                    measured_prefill_tps,
                 ),
             ),
             announced_at_unix=time.time(),

@@ -147,6 +147,7 @@ class PrefillJobStore:
         self._requests: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
         self._thread_local = threading.local()
+        self._measured_tokens_per_second = 0.0
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_concurrent_jobs,
             thread_name_prefix="kakeya-prefill-worker",
@@ -275,6 +276,11 @@ class PrefillJobStore:
             load = min(1.0, (running + queued) / self.max_concurrent_jobs)
             return running, queued, load, queued_tokens
 
+    def measured_tokens_per_second(self, fallback: float = 0.0) -> float:
+        with self._lock:
+            measured = self._measured_tokens_per_second
+        return measured if measured > 0 else max(0.0, float(fallback))
+
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
@@ -364,8 +370,22 @@ class PrefillJobStore:
             if timer is not None:
                 timer.cancel()
             with self._lock:
-                job.compute_ms = (time.perf_counter() - started) * 1000.0
+                elapsed_s = time.perf_counter() - started
+                job.compute_ms = elapsed_s * 1000.0
                 job.finished_at = time.time()
+                if (
+                    job.state == PrefillJobState.COMPLETED
+                    and elapsed_s > 0
+                    and job.token_ids
+                ):
+                    sample = len(job.token_ids) / elapsed_s
+                    if self._measured_tokens_per_second <= 0:
+                        self._measured_tokens_per_second = sample
+                    else:
+                        self._measured_tokens_per_second = (
+                            0.25 * sample
+                            + 0.75 * self._measured_tokens_per_second
+                        )
 
     def _update_job_progress(self, job_id: str, token_count: int) -> None:
         with self._lock:
@@ -460,8 +480,14 @@ class PrefillWorkerServiceServicer(
             status=int(job.state),
             worker_node_id=self.node_id,
             queue_eta_ms=(
-                self.jobs.stats()[3] / self.tokens_per_second_prefill * 1000.0
-                if self.tokens_per_second_prefill > 0 else 0.0
+                self.jobs.stats()[3]
+                / self.jobs.measured_tokens_per_second(
+                    self.tokens_per_second_prefill,
+                )
+                * 1000.0
+                if self.jobs.measured_tokens_per_second(
+                    self.tokens_per_second_prefill,
+                ) > 0 else 0.0
             ),
         )
 

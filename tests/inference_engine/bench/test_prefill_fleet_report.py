@@ -63,6 +63,19 @@ def test_schema_rejects_unknown_and_private_fields():
     assert normalize_stage(_stage("agent_generator", "primary_hot"))["name"] == (
         "agent_generator"
     )
+    for role in (
+        "premise_auditor",
+        "definition_auditor",
+        "counterexample_worker",
+        "decomposer",
+        "formalizer",
+        "prover",
+        "adversarial_proponent",
+        "judge",
+    ):
+        assert normalize_stage(_stage(f"agent_{role}"))["name"] == (
+            f"agent_{role}"
+        )
     with pytest.raises(ValueError, match="unknown hit_source"):
         normalize_stage(_stage(source="peer:1"))
     with pytest.raises(ValueError, match="non-negative"):
