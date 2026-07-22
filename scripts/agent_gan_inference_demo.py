@@ -14,6 +14,10 @@ from scripts.benchmark_prefill_architecture import (
     _ensure_services,
     _json_request,
 )
+from autoresearch.prefill.semantic_decompose import (
+    SemanticResponseIncomplete,
+    SemanticUnitTooLarge,
+)
 
 
 def _agent_cache_gate(warm_delta: dict, actual_delta: dict) -> bool:
@@ -56,6 +60,26 @@ def build_critic_context(
     }
 
 
+def decode_complete_response(tokenizer, role: str, token_ids, metadata: dict) -> str:
+    """Decode only EOS-terminated structured output.
+
+    A capped/stalled partial response remains available through token-count
+    metadata and streaming logs for audit, but cannot enter another role,
+    parser, or proof ledger.
+    """
+    if not metadata.get("complete", False):
+        raise SemanticResponseIncomplete(
+            role,
+            token_count=len(token_ids),
+            stop_reason=metadata.get("stop_reason", "unknown"),
+            response_cap_exhausted=metadata.get(
+                "response_cap_exhausted",
+                False,
+            ),
+        )
+    return tokenizer.decode(token_ids, skip_special_tokens=True)
+
+
 def _infer(
     client,
     eos_ids,
@@ -66,12 +90,25 @@ def _infer(
     max_response_tokens=None,
     semantic_progress=None,
     max_semantic_stall_chunks: int = 3,
+    client_label: str = "agent-gan",
+    max_retained_tokens: int = 0,
 ):
     if max_semantic_stall_chunks <= 0:
         raise ValueError("max_semantic_stall_chunks must be > 0")
+    if max_retained_tokens < 0:
+        raise ValueError("max_retained_tokens must be >= 0")
+    if max_retained_tokens and len(token_ids) > max_retained_tokens:
+        raise SemanticUnitTooLarge(
+            client_label,
+            len(token_ids),
+            max_retained_tokens,
+        )
     before = get_stats()
     started = time.perf_counter()
-    with client.create_session(eos_token_ids=eos_ids, client_label="agent-gan") as s:
+    with client.create_session(
+        eos_token_ids=eos_ids,
+        client_label=client_label,
+    ) as s:
         append_started = time.perf_counter()
         s.append(token_ids)
         append_done = time.perf_counter()
@@ -123,6 +160,7 @@ def _infer(
             and stop_reason == "max_tokens"
         ):
             stop_reason = "client_safety_limit"
+        response_cap_exhausted = stop_reason == "client_safety_limit"
         done = time.perf_counter()
     after = get_stats()
     first_at = first_at or done
@@ -136,6 +174,8 @@ def _infer(
         "delta": _delta(before, after),
         "stop_reason": stop_reason,
         "complete": stop_reason == "eos",
+        "eos_reached": stop_reason == "eos",
+        "response_cap_exhausted": response_cap_exhausted,
     }
 
 
@@ -154,6 +194,7 @@ def main() -> int:
              "reliably; larger values require more worker memory or timeout.",
     )
     parser.add_argument("--output-tokens", type=int, default=64)
+    parser.add_argument("--max-retained-tokens", type=int, default=2052)
     parser.add_argument(
         "--max-response-tokens",
         type=int,
@@ -165,6 +206,8 @@ def main() -> int:
     args = parser.parse_args()
     if min(args.rounds, args.output_tokens) <= 0:
         raise SystemExit("rounds and output-tokens must be > 0")
+    if args.max_retained_tokens <= 0:
+        raise SystemExit("max-retained-tokens must be > 0")
 
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -247,7 +290,14 @@ def main() -> int:
             return_dict=False,
             enable_thinking=False,
         )
-        warm_tokens, warm = _infer(client, eos_ids, token_ids, 1, get_stats)
+        warm_tokens, warm = _infer(
+            client,
+            eos_ids,
+            token_ids,
+            1,
+            get_stats,
+            max_retained_tokens=args.max_retained_tokens,
+        )
         del warm_tokens
         generated, actual = _infer(
             client,
@@ -256,8 +306,14 @@ def main() -> int:
             args.output_tokens,
             get_stats,
             max_response_tokens=args.max_response_tokens,
+            max_retained_tokens=args.max_retained_tokens,
         )
-        text = tokenizer.decode(generated, skip_special_tokens=True)
+        text = decode_complete_response(
+            tokenizer,
+            name,
+            generated,
+            actual,
+        )
         delta = actual["delta"]
         ok = _agent_cache_gate(warm["delta"], delta)
         stage = {

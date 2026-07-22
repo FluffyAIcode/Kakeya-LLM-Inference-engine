@@ -58,6 +58,11 @@ def _signature_only(source: str) -> str:
     return source[:match.start()].strip() if match else source.strip()
 
 
+def lean_theorem_signature_hash(source: str) -> str:
+    signature = " ".join(_signature_only(source).split())
+    return hashlib.sha256(signature.encode()).hexdigest() if signature else ""
+
+
 def _run_lean(
     content: str,
     *,
@@ -212,8 +217,7 @@ def validate_lean_signature(
             status="TYPECHECK_FAILED",
             error="theorem signature must end with `:= by` proof scaffold",
         )
-    signature = " ".join(_signature_only(source).split())
-    signature_hash = hashlib.sha256(signature.encode()).hexdigest()
+    signature_hash = lean_theorem_signature_hash(source)
     content = (
         "import KakeyaLeanGate\n\n"
         "set_option autoImplicit false\n\n"
@@ -288,4 +292,76 @@ def validate_lean_signature(
         attempts=attempts,
         elapsed_s=total_elapsed,
         output=output,
+    )
+
+
+def validate_lean_proof(
+    source: str,
+    *,
+    project_root: Path,
+    timeout_s: float = 45.0,
+) -> LeanSignatureResult:
+    """Compile one complete theorem without sorry/admit or added axioms."""
+    source = source.strip()
+    if (
+        not source
+        or len(source) > 12_000
+        or _FORBIDDEN.search(source)
+        or re.search(r"\b(?:sorry|admit)\b", source)
+    ):
+        return LeanSignatureResult(
+            source,
+            "",
+            False,
+            status="UNSAFE_REJECTED",
+            error="Lean proof is empty, unsafe, oversized, or incomplete",
+        )
+    declarations = re.findall(
+        r"^\s*theorem\s+([A-Za-z_][\w']*)",
+        source,
+        re.MULTILINE,
+    )
+    if len(declarations) != 1 or not re.search(r"\s*:=\s*by\b", source):
+        return LeanSignatureResult(
+            source,
+            "",
+            False,
+            status="TYPECHECK_FAILED",
+            error="expected exactly one complete theorem declaration",
+        )
+    proof_hash = hashlib.sha256(source.encode()).hexdigest()
+    run = _run_lean(
+        "import KakeyaLeanGate\n\nset_option autoImplicit false\n\n"
+        + source
+        + "\n",
+        project_root=project_root,
+        timeout_s=timeout_s,
+    )
+    if run.timed_out:
+        return LeanSignatureResult(
+            source,
+            proof_hash,
+            False,
+            status="TYPECHECK_TIMEOUT",
+            error=f"Lean proof timed out after {timeout_s:.1f}s",
+            elapsed_s=run.elapsed_s,
+            output=run.output,
+        )
+    if run.returncode != 0:
+        return LeanSignatureResult(
+            source,
+            proof_hash,
+            False,
+            status="TYPECHECK_FAILED",
+            error=f"Lean proof failed: {run.output[-2000:]}",
+            elapsed_s=run.elapsed_s,
+            output=run.output,
+        )
+    return LeanSignatureResult(
+        source,
+        proof_hash,
+        True,
+        status="PROVED",
+        elapsed_s=run.elapsed_s,
+        output=run.output,
     )

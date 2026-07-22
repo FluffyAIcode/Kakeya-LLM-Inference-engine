@@ -16,10 +16,18 @@ import subprocess
 import threading
 import time
 import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 
 from autoresearch.prefill.prepare import _load_candidate, evaluate
 from autoresearch.prefill.lean_gate import warm_lean_environment
+from autoresearch.prefill.semantic_decompose import (
+    SemanticResponseIncomplete,
+    SemanticUnitTooLarge,
+    admit_token_ids,
+    build_proof_step_interface,
+    downstream_output_cap,
+)
 
 
 REQUIRED_CANDIDATE_FIELDS = (
@@ -104,12 +112,41 @@ def validate_candidate(candidate: dict) -> None:
         raise ValueError("candidate must require full context")
     if candidate.get("allow_fallback", False) is not False:
         raise ValueError("candidate must forbid fallback")
+    plan = candidate.get("plan")
+    if isinstance(plan, dict) and len(plan.get("steps", [])) > 1:
+        raise ValueError("Strategy candidate must propose exactly one step")
 
 
 def _select_repair_target(current: dict, ledger: dict) -> str:
     leaves = _pending_leaf_ids(ledger)
     if not leaves:
         raise ValueError("proof ledger has no unresolved leaf")
+    backjump_target = str(ledger.get("backjump_target_id", ""))
+    if backjump_target:
+        if backjump_target in leaves:
+            return backjump_target
+        parents = {
+            str(item.get("obligation_id", "")): str(item.get("parent_id", ""))
+            for item in ledger.get("obligations", [])
+        }
+
+        def descends_from_backjump(obligation_id: str) -> bool:
+            cursor = obligation_id
+            visited = set()
+            while cursor and cursor not in visited:
+                if cursor == backjump_target:
+                    return True
+                visited.add(cursor)
+                cursor = parents.get(cursor, "")
+            return False
+
+        backjump_leaves = [
+            obligation_id
+            for obligation_id in leaves
+            if descends_from_backjump(obligation_id)
+        ]
+        if backjump_leaves:
+            return backjump_leaves[0]
     current_target = str(current.get("target_obligation_id", ""))
     if current_target in leaves:
         return current_target
@@ -310,6 +347,18 @@ def _extract_json(text: str) -> dict:
         stripped,
         re.DOTALL | re.IGNORECASE,
     ):
+        repaired = re.sub(
+            r'\\(?!(?:["\\/]|u[0-9a-fA-F]{4}))',
+            r"\\\\",
+            block.strip(),
+        )
+        try:
+            value = json.loads(repaired)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, dict):
+            value["strategy_parse_mode"] = "json-escape-repaired"
+            return value
         try:
             value = ast.literal_eval(block.strip())
         except (SyntaxError, ValueError):
@@ -388,6 +437,15 @@ def parse_research_verdict(output: str, candidate_id: str) -> dict:
             "created_obligation_ids": list(
                 fields.get("created_obligation_ids", []),
             ),
+            "invalidation_kind": str(
+                fields.get("invalidation_kind", ""),
+            ),
+            "backjump_target_id": str(
+                fields.get("backjump_target_id", ""),
+            ),
+            "no_go_lesson_hashes": list(
+                fields.get("no_go_lesson_hashes", []),
+            ),
         }
     matches = list(re.finditer(
         r"^(?:critic>\s*)?### AUTORESEARCH_VERDICT\s*$"
@@ -419,45 +477,73 @@ def parse_research_verdict(output: str, candidate_id: str) -> dict:
         "evidence": fields["Evidence"],
         "new_frontier": fields["New frontier"],
         "created_obligation_ids": [],
+        "invalidation_kind": "",
+        "backjump_target_id": "",
+        "no_go_lesson_hashes": [],
     }
 
 
 def _pending_leaf_ids(ledger: dict) -> list[str]:
     obligations = ledger.get("obligations", [])
+    by_id = {
+        str(item.get("obligation_id", "")): item
+        for item in obligations
+    }
+
+    def invalidated_by_ancestor(item: dict) -> bool:
+        cursor = str(item.get("parent_id", ""))
+        visited = set()
+        while cursor and cursor not in visited:
+            visited.add(cursor)
+            ancestor = by_id.get(cursor)
+            if ancestor is None:
+                break
+            if (
+                ancestor.get("status") == "QUARANTINED"
+                or (
+                    ancestor.get("status") == "DISPROVED"
+                    and ancestor.get("invalidation_kind") in {
+                        "PREMISE",
+                        "PREMISE_INVALIDATED",
+                    }
+                )
+            ):
+                return True
+            cursor = str(ancestor.get("parent_id", ""))
+        return False
+
     unresolved = {
         str(item.get("obligation_id", ""))
         for item in obligations
-        if item.get("status") == "UNRESOLVED"
+        if (
+            item.get("status") == "UNRESOLVED"
+            and not invalidated_by_ancestor(item)
+        )
     }
     unresolved_parents = {
         str(item.get("parent_id", ""))
         for item in obligations
         if (
-            item.get("status") == "UNRESOLVED"
+            str(item.get("obligation_id", "")) in unresolved
             and item.get("parent_id")
         )
     }
     return sorted(unresolved - unresolved_parents)
 
 
-def build_strategy_research_state(
+def _build_legacy_strategy_research_state(
     *,
     current: dict,
     ledger: dict,
     results_text: str,
 ) -> dict:
     text_by_id: dict[str, str] = {}
-    id_by_text: dict[str, str] = {}
 
     def intern(value) -> str:
         text = str(value or "")
         if not text:
             return ""
-        existing = id_by_text.get(text)
-        if existing is not None:
-            return existing
-        text_id = f"t{len(text_by_id) + 1}"
-        id_by_text[text] = text_id
+        text_id = hashlib.sha256(text.encode()).hexdigest()[:20]
         text_by_id[text_id] = text
         return text_id
 
@@ -472,20 +558,57 @@ def build_strategy_research_state(
     while cursor and cursor not in visited:
         visited.add(cursor)
         item = obligations[cursor]
-        ancestry.append({
+        ancestry_item = {
             "obligation_id": cursor,
             "statement_ref": intern(item.get("statement", "")),
             "status": item.get("status", ""),
             "parent_id": item.get("parent_id", ""),
             "last_run_id": item.get("last_run_id", ""),
-            "last_evidence_ref": intern(item.get("last_evidence", "")),
-        })
+        }
+        if cursor == target_id:
+            ancestry_item["last_evidence_ref"] = intern(
+                item.get("last_evidence", ""),
+            )
+        ancestry.append(ancestry_item)
         cursor = str(item.get("parent_id", ""))
     ancestry.reverse()
     ancestry_ids = {
         item["obligation_id"] for item in ancestry
     }
-    relevant_results = []
+    ancestry_refs = {
+        item["obligation_id"]: f"a{index}"
+        for index, item in enumerate(ancestry)
+    }
+    for item in ancestry:
+        item["obligation_ref"] = ancestry_refs[item["obligation_id"]]
+        parent_id = str(item.pop("parent_id", ""))
+        item["parent_ref"] = ancestry_refs.get(parent_id, "")
+        if item["obligation_id"] != target_id:
+            item.pop("obligation_id", None)
+            item.pop("last_run_id", None)
+
+    def lesson_is_relevant(lesson: dict) -> bool:
+        cursor = str(lesson.get("source_obligation_id", ""))
+        visited = set()
+        while cursor and cursor not in visited:
+            if cursor in ancestry_ids:
+                return True
+            visited.add(cursor)
+            source = obligations.get(cursor)
+            if source is None:
+                break
+            cursor = str(source.get("parent_id", ""))
+        return False
+
+    relevant_lessons = [
+        lesson
+        for lesson in ledger.get("no_go_lessons", [])
+        if (
+            lesson.get("reversible_status", "ACTIVE") == "ACTIVE"
+            and lesson_is_relevant(lesson)
+        )
+    ]
+    relevant_rows = []
     if results_text.strip():
         for row in csv.DictReader(
             io.StringIO(results_text),
@@ -493,25 +616,168 @@ def build_strategy_research_state(
         ):
             if row.get("target_obligation_id") not in ancestry_ids:
                 continue
-            relevant_results.append({
-                "candidate_id": row.get("candidate_id", ""),
-                "target_obligation_id": row.get(
-                    "target_obligation_id",
-                    "",
-                ),
-                "hypothesis_sha256": row.get("hypothesis_sha256", ""),
-                "research_outcome": row.get("research_outcome", ""),
-                "research_evidence_ref": intern(
-                    row.get("research_evidence", ""),
-                ),
-                "new_frontier_ref": intern(row.get("new_frontier", "")),
-                "kept": row.get("kept", ""),
-                "error": row.get("error", ""),
-            })
+            relevant_rows.append(row)
+
+    def exact_record(row: dict) -> dict:
+        return {
+            "timestamp": row.get("timestamp", ""),
+            "experiment_id": row.get("experiment_id", ""),
+            "run_id": row.get("run_id", ""),
+            "candidate_id": row.get("candidate_id", ""),
+            "target_obligation_id": row.get("target_obligation_id", ""),
+            "hypothesis_sha256": row.get("hypothesis_sha256", ""),
+            "research_outcome": row.get("research_outcome", ""),
+            "invalidation_kind": row.get("invalidation_kind", ""),
+            "research_evidence": row.get("research_evidence", ""),
+            "new_frontier": row.get("new_frontier", ""),
+            "kept": row.get("kept", ""),
+            "error": row.get("error", ""),
+        }
+
+    def record_hash(row: dict) -> str:
+        encoded = json.dumps(
+            exact_record(row),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode()).hexdigest()[:20]
+
+    def is_kept(row: dict) -> bool:
+        return row.get("kept") in {True, "True"}
+
+    def is_proof_critical(row: dict) -> bool:
+        return (
+            is_kept(row)
+            and row.get("research_outcome") in {
+                "DECOMPOSED",
+                "SUPPORTED",
+                "FALSIFIED",
+            }
+        ) or row.get("invalidation_kind") == "PREMISE_INVALIDATED"
+
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for row in relevant_rows:
+        key = (
+            str(row.get("target_obligation_id", "")),
+            str(row.get("hypothesis_sha256", "")),
+        )
+        grouped.setdefault(key, []).append(row)
+
+    hypothesis_values = sorted({hypothesis for _, hypothesis in grouped})
+    hypothesis_refs = {}
+    for hypothesis in hypothesis_values:
+        prefix_size = min(20, len(hypothesis))
+        reference = hypothesis[:prefix_size]
+        while (
+            any(
+                other != hypothesis and other.startswith(reference)
+                for other in hypothesis_values
+            )
+            and prefix_size < len(hypothesis)
+        ):
+            prefix_size += 1
+            reference = hypothesis[:prefix_size]
+        hypothesis_refs[hypothesis] = reference
+    experiment_groups = []
+    latest_record_hashes = set()
+    for (group_target, hypothesis_hash), rows in sorted(grouped.items()):
+        latest = rows[-1]
+        outcome_counts: dict[str, int] = {}
+        error_counts: dict[str, int] = {}
+        hashes = [record_hash(row) for row in rows]
+        for row in rows:
+            outcome = str(row.get("research_outcome", "") or "(none)")
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+            error = " ".join(str(row.get("error", "")).split())
+            if error:
+                fingerprint = hashlib.sha256(
+                    error.encode(),
+                ).hexdigest()[:20]
+                error_counts[fingerprint] = error_counts.get(fingerprint, 0) + 1
+        latest_record_hashes.add(hashes[-1])
+        experiment_groups.append([
+            ancestry_refs[group_target],
+            hypothesis_refs[hypothesis_hash],
+            len(rows),
+            dict(sorted(outcome_counts.items())),
+            dict(sorted(error_counts.items())),
+            [
+                rows[0].get("timestamp", ""),
+            ],
+            [
+                latest.get("timestamp", ""),
+            ],
+            hashes[:-1],
+            [
+                hashes[-1],
+                latest.get("research_outcome", ""),
+                latest.get("invalidation_kind", ""),
+                intern(latest.get("research_evidence", "")),
+                intern(latest.get("new_frontier", "")),
+                intern(latest.get("error", "")),
+            ],
+        ])
+
+    critical_events = []
+    for row in relevant_rows:
+        if not is_proof_critical(row):
+            continue
+        item_hash = record_hash(row)
+        event = [
+            item_hash,
+            ancestry_refs[str(row.get("target_obligation_id", ""))],
+            hypothesis_refs[str(row.get("hypothesis_sha256", ""))],
+            row.get("research_outcome", ""),
+            row.get("invalidation_kind", ""),
+        ]
+        if item_hash not in latest_record_hashes:
+            event.extend([
+                intern(row.get("research_evidence", "")),
+                intern(row.get("new_frontier", "")),
+            ])
+        critical_events.append(event)
+
+    archive_outcomes: dict[str, int] = {}
+    archive_errors: dict[str, int] = {}
+    archive_hashes = []
+    for row in relevant_rows:
+        archive_hashes.append(record_hash(row))
+        outcome = str(row.get("research_outcome", "") or "(none)")
+        archive_outcomes[outcome] = archive_outcomes.get(outcome, 0) + 1
+        error = " ".join(str(row.get("error", "")).split())
+        if error:
+            fingerprint = hashlib.sha256(error.encode()).hexdigest()[:20]
+            archive_errors[fingerprint] = archive_errors.get(fingerprint, 0) + 1
     state = {
         "target_leaf_id": target_id,
         "target_ancestry": ancestry,
-        "relevant_experiments": relevant_results,
+        "proof_critical_events": critical_events,
+        "experiment_groups": experiment_groups,
+        "event_view_schema": {
+            "critical_event": (
+                "[hash,target_ref,unique_hypothesis_hash_prefix,outcome,"
+                "invalidation,(evidence_ref,frontier_ref if historical)]"
+            ),
+            "experiment_group": (
+                "[target_ref,hypothesis_hash_prefix,count,outcomes,errors,"
+                "first_ts,last_ts,prior_hashes,"
+                "latest(hash,outcome,invalidation,evidence,frontier,error)]"
+            ),
+        },
+        "archive_manifest": {
+            "source": "append-only results.tsv",
+            "record_count": len(relevant_rows),
+            "group_count": len(experiment_groups),
+            "hypothesis_set_sha256": hashlib.sha256(
+                "".join(hypothesis_values).encode(),
+            ).hexdigest(),
+            "ordered_records_sha256": hashlib.sha256(
+                "".join(archive_hashes).encode(),
+            ).hexdigest(),
+            "outcome_counts": dict(sorted(archive_outcomes.items())),
+            "error_fingerprint_counts": dict(sorted(archive_errors.items())),
+        },
         "current_candidate": {
             "candidate_id": current.get("candidate_id", ""),
             "target_obligation_id": current.get(
@@ -523,9 +789,168 @@ def build_strategy_research_state(
                 "prefill_compute_chunk_tokens",
             ),
         },
+        "premise_recovery": {
+            "backjump_target_id": ledger.get("backjump_target_id", ""),
+            "no_go_lessons": [
+                {
+                    "claim_hash": lesson.get("claim_hash", ""),
+                    "refuted_premise_ref": intern(
+                        lesson.get("refuted_premise", ""),
+                    ),
+                    "evidence_ref": intern(lesson.get("evidence", "")),
+                    "source_obligation_id": lesson.get(
+                        "source_obligation_id",
+                        "",
+                    ),
+                    "run_id": lesson.get("run_id", ""),
+                    "confidence": lesson.get("confidence", 0.0),
+                    "evidence_type": lesson.get("evidence_type", ""),
+                    "evidence_source_ref": intern(
+                        lesson.get("evidence_source", ""),
+                    ),
+                    "auditor_run_id": lesson.get("auditor_run_id", ""),
+                    "proponent_run_id": lesson.get(
+                        "proponent_run_id",
+                        "",
+                    ),
+                    "reversible_status": lesson.get(
+                        "reversible_status",
+                        "ACTIVE",
+                    ),
+                }
+                for lesson in relevant_lessons
+            ],
+        },
     }
     state["text_by_id"] = text_by_id
     return state
+
+
+def build_strategy_research_state(
+    *,
+    current: dict,
+    ledger: dict,
+    results_text: str,
+) -> dict:
+    target_id = _select_repair_target(current, ledger)
+    obligations = {
+        str(item.get("obligation_id", "")): item
+        for item in ledger.get("obligations", [])
+    }
+    target = obligations[target_id]
+    parent = obligations.get(str(target.get("parent_id", "")))
+    ancestry_ids = set()
+    cursor = target_id
+    while cursor and cursor not in ancestry_ids:
+        ancestry_ids.add(cursor)
+        cursor = str(obligations.get(cursor, {}).get("parent_id", ""))
+    lessons = []
+    for lesson in ledger.get("no_go_lessons", []):
+        if lesson.get("reversible_status", "ACTIVE") != "ACTIVE":
+            continue
+        source = str(lesson.get("source_obligation_id", ""))
+        visited = set()
+        relevant = False
+        while source and source not in visited:
+            if source in ancestry_ids:
+                relevant = True
+                break
+            visited.add(source)
+            source = str(obligations.get(source, {}).get("parent_id", ""))
+        if relevant:
+            lessons.append({
+                "claim_hash": lesson.get("claim_hash", ""),
+                "refuted_premise": lesson.get("refuted_premise", ""),
+                "evidence": lesson.get("evidence", ""),
+                "evidence_type": lesson.get("evidence_type", ""),
+                "confidence": lesson.get("confidence", 0.0),
+            })
+    record_hashes = []
+    outcomes: dict[str, int] = {}
+    latest_failure = {}
+    if results_text.strip():
+        for row in csv.DictReader(io.StringIO(results_text), delimiter="\t"):
+            encoded = json.dumps(
+                dict(row),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            record_hashes.append(hashlib.sha256(encoded.encode()).hexdigest())
+            outcome = str(row.get("research_outcome", "") or "(none)")
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            error = str(row.get("error", ""))
+            if "SEMANTIC_RESPONSE_INCOMPLETE" in error:
+                role_match = re.search(
+                    r"SEMANTIC_RESPONSE_INCOMPLETE:\s+(\w+)\s+stopped",
+                    error,
+                )
+                token_match = re.search(r"after\s+(\d+)\s+tokens", error)
+                latest_failure = {
+                    "kind": "SEMANTIC_RESPONSE_INCOMPLETE",
+                    "role": (
+                        role_match.group(1) if role_match else "unknown"
+                    ),
+                    "response_tokens": (
+                        int(token_match.group(1)) if token_match else 0
+                    ),
+                }
+    archive_manifest = {
+        "source": "append-only results.tsv",
+        "record_count": len(record_hashes),
+        "ordered_records_sha256": hashlib.sha256(
+            "".join(record_hashes).encode(),
+        ).hexdigest(),
+        "outcome_counts": dict(sorted(outcomes.items())),
+        "latest_failure": latest_failure,
+        "ledger_version": ledger.get("version", 0),
+        "ledger_sha256": hashlib.sha256(
+            json.dumps(
+                ledger,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode(),
+        ).hexdigest(),
+    }
+    root_goal_hash = str(ledger.get("root_goal_hash", "")) or hashlib.sha256(
+        str(ledger.get("ledger_id", "")).encode(),
+    ).hexdigest()
+    interface = build_proof_step_interface(
+        root_goal_hash=root_goal_hash,
+        target=target,
+        parent=parent,
+        active_no_go_lessons=lessons,
+        archive_manifest=archive_manifest,
+    )
+    return {
+        "proof_step_interface": asdict(interface),
+    }
+
+
+STRATEGY_CONTRACT = """\
+Propose exactly ONE novel falsifiable step for TARGET_LEAF_ID as the required
+JSON fields; never emit a plan. Keep prefill_compute_chunk_tokens unchanged.
+target_obligation_id must equal TARGET_LEAF_ID.
+Respect the exact ProofStepInterface, active no-go premises, quarantine and
+verified backjumps; never repeat a hypothesis or ancestor cycle.
+On SEMANTIC_RESPONSE_INCOMPLETE, choose a strictly smaller question, not shorter
+wording of the same step. Require retained-capacity, final-only snapshots,
+complete Critic review, Primary decode-only, allens prefill-only, <=300s
+segments, and no fallback, sampling, slicing, truncation, restart or cache
+clearing. Archive hashes carry no mathematical meaning."""
+
+
+def build_strategy_contract(program: str) -> str:
+    required_markers = (
+        "## Objective",
+        "## Hard constraints",
+        "Only a host-upgraded invalidation",
+        "The concise stable `STRATEGY_CONTRACT`",
+    )
+    if any(marker not in program for marker in required_markers):
+        raise ValueError("program is missing authoritative Strategy rules")
+    return STRATEGY_CONTRACT
 
 
 def build_strategy_prompt(
@@ -540,24 +965,26 @@ def build_strategy_prompt(
         ledger=ledger,
         results_text=results_text,
     )
+    contract = build_strategy_contract(program)
     return (
-        "You are the AutoResearch strategy agent. Follow the human-owned "
-        "program exactly. Attack TARGET_LEAF_ID and propose "
-        "one falsifiable GAN strategy experiment. Return JSON only with keys: "
+        "You are the AutoResearch strategy agent. Follow the authoritative "
+        "human-owned Strategy contract exactly. Attack TARGET_LEAF_ID and propose "
+        "exactly one falsifiable next proof step. Return JSON only with keys: "
         + ", ".join(REQUIRED_CANDIDATE_FIELDS)
         + ". prefill_compute_chunk_tokens is immutable and must equal "
         f"{current['prefill_compute_chunk_tokens']}. "
-        "Do not weaken full context, final-only snapshots, or no-fallback rules."
-        " The hypothesis must not repeat any hypothesis hash in RESEARCH_STATE. "
+        "Do not weaken retained-capacity, final-only snapshot, or no-fallback "
+        "rules. The hypothesis must encode one step, not a multi-level plan. "
+        "It must not assume, rename, or propose any premise recorded in "
+        "RESEARCH_STATE.proof_step_interface.active_no_go_lessons. "
         "It must either construct a concrete object or attempt a concrete "
         "counterexample for the target leaf. target_obligation_id must equal "
-        "TARGET_LEAF_ID. Every statement and evidence item below is complete; "
-        "do not infer omitted text from unrelated branches. Fields ending in "
-        "_ref resolve through text_by_id; this is lossless deduplication, not "
-        "summary or truncation."
-        f"\n\nPROGRAM:\n{program}"
+        "TARGET_LEAF_ID. The interface is complete for this certified step; "
+        "archived prose is intentionally inactive and represented only by "
+        "content hashes, never by an LLM summary."
+        f"\n\nSTRATEGY_CONTRACT:\n{contract}"
         "\n\nRESEARCH_STATE:\n"
-        f"{json.dumps(research_state, ensure_ascii=False)}"
+        f"{json.dumps(research_state, ensure_ascii=False, separators=(',', ':'))}"
     )
 
 
@@ -649,6 +1076,7 @@ def propose_candidate(
     results_text: str,
     ledger: dict,
     max_prefill_tokens: int = 8448,
+    max_retained_tokens: int = 2052,
 ) -> dict:
     from kakeya import Client
     from transformers import AutoTokenizer
@@ -668,11 +1096,25 @@ def propose_candidate(
         return_dict=False,
         enable_thinking=False,
     )
-    if len(ids) > max_prefill_tokens:
-        raise StrategyPrefillBudgetExceeded(
-            len(ids),
-            max_prefill_tokens,
+    try:
+        admit_token_ids(
+            "Strategy ProofStepInterface",
+            ids,
+            configured_prefill_tokens=max_prefill_tokens,
+            max_retained_tokens=max_retained_tokens,
+            control_reserve_tokens=256,
         )
+    except SemanticUnitTooLarge as exc:
+        raise StrategyPrefillBudgetExceeded(
+            exc.token_count,
+            exc.max_tokens,
+        ) from exc
+    strategy_output_cap = downstream_output_cap(
+        max_retained_tokens=max_retained_tokens,
+        fixed_downstream_tokens=len(ids),
+        configured_output_tokens=512,
+        control_reserve_tokens=32,
+    )
     generated: list[int] = []
     print(
         f"[autoresearch] Strategy Prefill: 0/{len(ids)} tokens (0.0%)",
@@ -689,9 +1131,17 @@ def propose_candidate(
                 f"[autoresearch] Strategy Prefill complete: {len(ids)} tokens",
                 flush=True,
             )
-            while len(generated) < 2048:
+            while len(generated) < strategy_output_cap:
                 before = len(generated)
-                generated.extend(int(token) for token in session.generate(max_tokens=64))
+                generated.extend(
+                    int(token)
+                    for token in session.generate(
+                        max_tokens=min(
+                            64,
+                            strategy_output_cap - len(generated),
+                        ),
+                    )
+                )
                 print(
                     f"[autoresearch] Strategy Decode: {len(generated)} tokens "
                     f"stop_reason={session.last_stop_reason}",
@@ -702,8 +1152,13 @@ def propose_candidate(
                 if len(generated) == before:
                     raise RuntimeError("strategy agent made no progress")
             if session.last_stop_reason != 2:
-                raise RuntimeError(
-                    f"strategy agent did not reach EOS: {session.last_stop_reason}",
+                raise SemanticResponseIncomplete(
+                    "Strategy",
+                    token_count=len(generated),
+                    stop_reason=session.last_stop_reason,
+                    response_cap_exhausted=(
+                        len(generated) >= strategy_output_cap
+                    ),
                 )
     strategy_output = tokenizer.decode(generated, skip_special_tokens=True)
     print(
@@ -774,12 +1229,14 @@ def run_gan_experiment(
     candidate_path: Path,
     state_path: Path,
     timeout_s: float,
+    max_retained_tokens: int,
 ) -> tuple[str, str]:
     command = [
         "bash", str(repo / "scripts/run_agent_gan_repl.sh"),
         "--skip-ensure", "--no-auto-loop",
         "--candidate-file", str(candidate_path),
         "--state-file", str(state_path),
+        "--max-retained-tokens", str(max_retained_tokens),
     ]
     process = subprocess.Popen(
         command,
@@ -828,6 +1285,15 @@ def run_gan_experiment(
     return run_id, output
 
 
+def extract_gan_failure_reason(output: str) -> str:
+    matches = re.findall(
+        r"^\[inference-failed\].*?\berror=(.+)$",
+        output,
+        re.MULTILINE,
+    )
+    return matches[-1].strip() if matches else ""
+
+
 def read_results(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -865,6 +1331,11 @@ def _row_made_progress(row: dict) -> bool:
     if row.get("kept") not in {True, "True"}:
         return False
     outcome = row.get("research_outcome")
+    if row.get("invalidation_kind") in {
+        "PREMISE",
+        "PREMISE_INVALIDATED",
+    }:
+        return False
     if outcome in {"SUPPORTED", "FALSIFIED"}:
         return True
     if outcome == "DECOMPOSED":
@@ -887,6 +1358,16 @@ def strategy_trigger_reason(
         return "manual-cli"
     if trigger_file is not None and trigger_file.exists():
         return "manual-trigger-file"
+    if (
+        results
+        and results[-1].get("invalidation_kind") == "PREMISE_INVALIDATED"
+    ):
+        return "premise-invalidated"
+    if (
+        results
+        and results[-1].get("invalidation_kind") == "APPROACH_FAILED"
+    ):
+        return "branch-falsified"
     if results and results[-1].get("research_outcome") == "FALSIFIED":
         return "branch-falsified"
     stagnant = 0
@@ -899,6 +1380,16 @@ def strategy_trigger_reason(
     return ""
 
 
+def infrastructure_failure_fingerprint(row: dict) -> str:
+    """Return a stable fingerprint for a completed failed infrastructure run."""
+    if row.get("research_outcome") != "EVALUATION_FAILED":
+        return ""
+    error = " ".join(str(row.get("error", "")).lower().split())
+    if not error:
+        return ""
+    return hashlib.sha256(error.encode()).hexdigest()
+
+
 def build_host_candidate(current: dict, ledger: dict) -> dict:
     target_id = _select_repair_target(current, ledger)
     target = next(
@@ -908,6 +1399,41 @@ def build_host_candidate(current: dict, ledger: dict) -> dict:
     )
     statement = str(target.get("statement", "")).strip()
     evidence = str(target.get("last_evidence", "")).strip()
+    obligations = {
+        str(item.get("obligation_id", "")): item
+        for item in ledger.get("obligations", [])
+    }
+    target_ancestry = set()
+    cursor = target_id
+    while cursor and cursor not in target_ancestry:
+        target_ancestry.add(cursor)
+        cursor = str(obligations.get(cursor, {}).get("parent_id", ""))
+
+    def lesson_is_relevant(lesson: dict) -> bool:
+        source_id = str(lesson.get("source_obligation_id", ""))
+        visited = set()
+        while source_id and source_id not in visited:
+            if source_id in target_ancestry:
+                return True
+            visited.add(source_id)
+            source_id = str(
+                obligations.get(source_id, {}).get("parent_id", ""),
+            )
+        return False
+
+    no_go = "; ".join(
+        str(lesson.get("refuted_premise", "")).strip()
+        for lesson in ledger.get("no_go_lessons", [])
+        if (
+            str(lesson.get("refuted_premise", "")).strip()
+            and lesson.get("reversible_status", "ACTIVE") == "ACTIVE"
+            and lesson_is_relevant(lesson)
+        )
+    )
+    no_go_directive = (
+        f" Forbidden refuted premises: {no_go}."
+        if no_go else ""
+    )
     digest = hashlib.sha256(target_id.encode()).hexdigest()[:12]
     candidate = {
         "candidate_id": f"host-leaf-{digest}",
@@ -917,7 +1443,7 @@ def build_host_candidate(current: dict, ledger: dict) -> dict:
             f"Resolve or falsify the exact target leaf {target_id}: "
             f"{statement} Previous Critic evidence: {evidence or '(none)'}. "
             "Provide an explicit derivation or counterexample; do not rename "
-            "the same gap as a new lemma."
+            f"the same gap as a new lemma.{no_go_directive}"
         ),
         "critic_directive": (
             f"Adversarially test target leaf {target_id}. Reject unsupported "
@@ -965,6 +1491,7 @@ RESULT_FIELDS = (
     "candidate_sha256", "report_path",
     "hypothesis_sha256", "research_outcome", "research_evidence",
     "new_frontier", "created_obligation_ids", "strategy_mode",
+    "invalidation_kind", "backjump_target_id", "no_go_lesson_hashes",
     "transcript_path", "error",
 )
 
@@ -1063,6 +1590,13 @@ def run_iteration(args, iteration: int) -> dict:
             flush=True,
         )
         ledger_data = json.loads(ledger_path.read_text())
+        if state_path.exists():
+            checkpoint_data = json.loads(state_path.read_text())
+            research_goal = str(checkpoint_data.get("research_goal", ""))
+            if research_goal:
+                ledger_data["root_goal_hash"] = hashlib.sha256(
+                    research_goal.encode(),
+                ).hexdigest()
         trigger_file = Path(args.strategy_trigger_file).expanduser()
         trigger_reason = strategy_trigger_reason(
             results,
@@ -1070,7 +1604,7 @@ def run_iteration(args, iteration: int) -> dict:
             force=args.force_strategy and iteration == 0,
             trigger_file=trigger_file,
         )
-        if baseline is None and iteration == 0:
+        if baseline is None and iteration == 0 and not trigger_reason:
             print(
                 "[autoresearch] phase=baseline using current candidate",
                 flush=True,
@@ -1094,6 +1628,7 @@ def run_iteration(args, iteration: int) -> dict:
                     ),
                     ledger=ledger_data,
                     max_prefill_tokens=args.strategy_max_prefill_tokens,
+                    max_retained_tokens=args.max_retained_tokens,
                 )
                 if proposed["target_obligation_id"] not in _pending_leaf_ids(
                     ledger_data,
@@ -1110,6 +1645,14 @@ def run_iteration(args, iteration: int) -> dict:
                     "[autoresearch] phase=strategy-deferred-budget "
                     f"tokens={exc.token_count} max={exc.max_tokens} "
                     f"fallback=deterministic-host",
+                    flush=True,
+                )
+            except SemanticResponseIncomplete as exc:
+                strategy_mode = "host_strategy_deferred"
+                proposed = build_host_candidate(current, ledger_data)
+                print(
+                    "[autoresearch] phase=strategy-deferred-semantic "
+                    f"reason={exc} fallback=deterministic-host",
                     flush=True,
                 )
         else:
@@ -1158,6 +1701,7 @@ def run_iteration(args, iteration: int) -> dict:
             candidate_path=candidate_path,
             state_path=state_path,
             timeout_s=args.experiment_timeout_s,
+            max_retained_tokens=args.max_retained_tokens,
         )
         gan_completed = True
         transcript_path.write_text(gan_output)
@@ -1165,8 +1709,13 @@ def run_iteration(args, iteration: int) -> dict:
             f"http://127.0.0.1:8090/v1/network/benchmarks/{run_id}",
         )
         if report.get("status") != "completed":
+            failure_reason = extract_gan_failure_reason(gan_output)
             raise RuntimeError(
-                f"GAN benchmark is not completed: {report.get('status')}",
+                f"GAN benchmark is not completed: {report.get('status')}"
+                + (
+                    f"; {failure_reason}"
+                    if failure_reason else ""
+                ),
             )
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         candidate_module = _load_candidate(candidate_path)
@@ -1182,6 +1731,9 @@ def run_iteration(args, iteration: int) -> dict:
             "created_obligation_ids": verdict["created_obligation_ids"],
             "transcript_path": str(transcript_path),
             "hypothesis_novel": hypothesis_novel,
+            "invalidation_kind": verdict["invalidation_kind"],
+            "backjump_target_id": verdict["backjump_target_id"],
+            "no_go_lesson_hashes": verdict["no_go_lesson_hashes"],
         })
         keep = should_keep(result, baseline)
         print(
@@ -1223,6 +1775,11 @@ def run_iteration(args, iteration: int) -> dict:
                 verdict["created_obligation_ids"],
             ),
             "strategy_mode": strategy_mode,
+            "invalidation_kind": verdict["invalidation_kind"],
+            "backjump_target_id": verdict["backjump_target_id"],
+            "no_go_lesson_hashes": json.dumps(
+                verdict["no_go_lesson_hashes"],
+            ),
             "transcript_path": str(transcript_path),
         }
         append_result(results_path, row)
@@ -1294,6 +1851,11 @@ def main() -> int:
         default=8448,
     )
     parser.add_argument(
+        "--max-retained-tokens",
+        type=int,
+        default=2052,
+    )
+    parser.add_argument(
         "--strategy-stagnation-rounds",
         type=int,
         default=3,
@@ -1330,13 +1892,24 @@ def main() -> int:
         default=str(Path.home() / ".kakeya/agent_gan_proof_ledger.json"),
     )
     parser.add_argument("--experiment-timeout-s", type=float, default=7200)
+    parser.add_argument(
+        "--max-consecutive-infrastructure-failures",
+        type=int,
+        default=2,
+    )
     args = parser.parse_args()
     if args.iterations <= 0:
         raise SystemExit("iterations must be > 0")
     if args.strategy_max_prefill_tokens <= 0:
         raise SystemExit("strategy-max-prefill-tokens must be > 0")
+    if args.max_retained_tokens <= 0:
+        raise SystemExit("max-retained-tokens must be > 0")
     if args.strategy_stagnation_rounds <= 0:
         raise SystemExit("strategy-stagnation-rounds must be > 0")
+    if args.max_consecutive_infrastructure_failures <= 0:
+        raise SystemExit(
+            "max-consecutive-infrastructure-failures must be > 0",
+        )
     lean_warmup = warm_lean_environment(
         Path(__file__).resolve().parents[2],
     )
@@ -1349,9 +1922,33 @@ def main() -> int:
     )
     if not lean_warmup.ok:
         raise SystemExit(lean_warmup.error)
+    last_failure_fingerprint = ""
+    consecutive_infrastructure_failures = 0
     for iteration in range(args.iterations):
         row = run_iteration(args, iteration)
         print(json.dumps(row, indent=2, sort_keys=True))
+        fingerprint = infrastructure_failure_fingerprint(row)
+        if fingerprint:
+            if fingerprint == last_failure_fingerprint:
+                consecutive_infrastructure_failures += 1
+            else:
+                last_failure_fingerprint = fingerprint
+                consecutive_infrastructure_failures = 1
+            if (
+                consecutive_infrastructure_failures
+                >= args.max_consecutive_infrastructure_failures
+            ):
+                print(
+                    "[autoresearch] phase=infrastructure-circuit-open "
+                    f"consecutive={consecutive_infrastructure_failures} "
+                    f"fingerprint={fingerprint[:12]} "
+                    f"error={row.get('error', '')}",
+                    flush=True,
+                )
+                return 2
+        else:
+            last_failure_fingerprint = ""
+            consecutive_infrastructure_failures = 0
     return 0
 
 

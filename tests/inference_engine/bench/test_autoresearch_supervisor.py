@@ -1,9 +1,21 @@
+import json
+import pytest
+
+from autoresearch.prefill.semantic_decompose import (
+    SemanticUnitTooLarge,
+    admit_token_ids,
+    downstream_output_cap,
+)
 from autoresearch.prefill.supervisor import (
     append_result,
     best_kept,
     build_host_candidate,
+    build_strategy_contract,
+    build_strategy_prompt,
     build_strategy_research_state,
     check_runtime_health,
+    extract_gan_failure_reason,
+    infrastructure_failure_fingerprint,
     parse_research_verdict,
     read_results,
     repair_candidate_schema,
@@ -50,6 +62,45 @@ def test_candidate_render_is_executable_and_strict(tmp_path):
         pass
     else:
         raise AssertionError("fallback candidate must be rejected")
+
+
+def test_infrastructure_failure_fingerprint_is_stable_and_specific():
+    failed = {
+        "research_outcome": "EVALUATION_FAILED",
+        "error": "RuntimeError: GAN benchmark is not completed: failed",
+    }
+    assert infrastructure_failure_fingerprint(failed)
+    assert infrastructure_failure_fingerprint(failed) == (
+        infrastructure_failure_fingerprint({
+            **failed,
+            "error": "  RUNTIMEERROR:  GAN benchmark is not completed: failed ",
+        })
+    )
+    assert infrastructure_failure_fingerprint({
+        **failed,
+        "error": "different failure",
+    }) != infrastructure_failure_fingerprint(failed)
+    assert infrastructure_failure_fingerprint({
+        **failed,
+        "research_outcome": "FALSIFIED",
+    }) == ""
+
+
+def test_gan_failure_reason_preserves_semantic_error():
+    output = (
+        "[inference-failed] time=now run=br_1 "
+        "error=SemanticResponseIncomplete: "
+        "SEMANTIC_RESPONSE_INCOMPLETE: Generator stopped before EOS\n"
+    )
+    assert extract_gan_failure_reason(output) == (
+        "SemanticResponseIncomplete: SEMANTIC_RESPONSE_INCOMPLETE: "
+        "Generator stopped before EOS"
+    )
+    assert extract_gan_failure_reason("no structured failure") == ""
+    assert infrastructure_failure_fingerprint({
+        "research_outcome": "EVALUATION_FAILED",
+        "error": "",
+    }) == ""
 
 
 def test_strategy_schema_repair_prefers_current_branch_leaf():
@@ -206,6 +257,16 @@ def test_strategy_parser_accepts_python_literal_candidate():
     assert candidate["strategy_parse_mode"] == "python-literal"
 
 
+def test_strategy_repairs_invalid_json_latex_escapes():
+    candidate = _extract_json(
+        r'''```json
+{"candidate_id":"trial","hypothesis":"sequence \{z_n\} has density \rho"}
+```''',
+    )
+    assert candidate["hypothesis"] == r"sequence \{z_n\} has density \rho"
+    assert candidate["strategy_parse_mode"] == "json-escape-repaired"
+
+
 def test_keep_requires_novel_mathematical_advancement():
     baseline = {
         "proof_obligations_unresolved": "5",
@@ -304,6 +365,28 @@ def test_pending_leaf_ids_excludes_unresolved_parents():
     assert _pending_leaf_ids(ledger) == ["RH-C1-child", "RH-C2"]
 
 
+def test_pending_leaf_ids_excludes_stale_premise_descendants():
+    ledger = {"obligations": [
+        {
+            "obligation_id": "ROOT",
+            "status": "DISPROVED",
+            "invalidation_kind": "PREMISE",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "ROOT-stale",
+            "status": "UNRESOLVED",
+            "parent_id": "ROOT",
+        },
+        {
+            "obligation_id": "SOUND",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        },
+    ]}
+    assert _pending_leaf_ids(ledger) == ["SOUND"]
+
+
 def test_host_candidate_targets_deepest_current_branch_leaf():
     current = {**_candidate(), "target_obligation_id": "RH-C2"}
     ledger = {"obligations": [
@@ -366,6 +449,43 @@ def test_host_candidate_rolls_back_to_nearest_valid_ancestor():
     assert candidate["target_obligation_id"] == "RH-C2-gap"
 
 
+def test_host_candidate_uses_recorded_premise_backjump_target():
+    current = {**_candidate(), "target_obligation_id": "ROOT-bad"}
+    ledger = {
+        "backjump_target_id": "ROOT",
+        "no_go_lessons": [{
+            "refuted_premise": "Every admissible kernel is positive.",
+            "source_obligation_id": "ROOT-bad",
+        }],
+        "obligations": [
+            {
+                "obligation_id": "ROOT",
+                "statement": "Find a sound replacement reduction.",
+                "status": "UNRESOLVED",
+                "parent_id": "",
+            },
+            {
+                "obligation_id": "ROOT-bad",
+                "statement": "Use universal kernel positivity.",
+                "status": "DISPROVED",
+                "invalidation_kind": "PREMISE",
+                "parent_id": "ROOT",
+            },
+            {
+                "obligation_id": "UNRELATED",
+                "statement": "Unrelated unresolved branch.",
+                "status": "UNRESOLVED",
+                "parent_id": "",
+            },
+        ],
+    }
+    candidate = build_host_candidate(current, ledger)
+    assert candidate["target_obligation_id"] == "ROOT"
+    assert "Every admissible kernel is positive" in (
+        candidate["generator_directive"]
+    )
+
+
 def test_strategy_is_triggered_only_by_events(tmp_path):
     progress = {
         "kept": "True",
@@ -389,6 +509,30 @@ def test_strategy_is_triggered_only_by_events(tmp_path):
         [{"kept": "True", "research_outcome": "FALSIFIED"}],
         stagnation_rounds=3,
     ) == "branch-falsified"
+    assert strategy_trigger_reason(
+        [{
+            "kept": "True",
+            "research_outcome": "FALSIFIED",
+            "invalidation_kind": "PREMISE_INVALIDATED",
+        }],
+        stagnation_rounds=3,
+    ) == "premise-invalidated"
+    assert strategy_trigger_reason(
+        [{
+            "kept": "False",
+            "research_outcome": "INCONCLUSIVE",
+            "invalidation_kind": "PREMISE_SUSPECTED",
+        }],
+        stagnation_rounds=3,
+    ) == ""
+    assert strategy_trigger_reason(
+        [{
+            "kept": "True",
+            "research_outcome": "INCONCLUSIVE",
+            "invalidation_kind": "APPROACH_FAILED",
+        }],
+        stagnation_rounds=3,
+    ) == "branch-falsified"
     trigger = tmp_path / "request_strategy"
     trigger.write_text("replan")
     assert strategy_trigger_reason(
@@ -405,7 +549,36 @@ def test_strategy_budget_error_preserves_exact_admission_counts():
     assert "without truncation: 11935 > 8448" in str(error)
 
 
-def test_strategy_state_keeps_complete_active_ancestry_only():
+def test_semantic_admission_and_dynamic_output_reserve_never_slice():
+    token_ids = list(range(2053))
+    with pytest.raises(
+        SemanticUnitTooLarge,
+        match="SEMANTIC_UNIT_TOO_LARGE",
+    ):
+        admit_token_ids(
+            "indivisible target",
+            token_ids,
+            configured_prefill_tokens=6144,
+            max_retained_tokens=2052,
+        )
+    assert token_ids == list(range(2053))
+    assert downstream_output_cap(
+        max_retained_tokens=2052,
+        fixed_downstream_tokens=1700,
+        configured_output_tokens=1000,
+        control_reserve_tokens=32,
+    ) == 320
+
+
+def test_strategy_candidate_rejects_multi_step_plan():
+    with pytest.raises(ValueError, match="exactly one step"):
+        validate_candidate({
+            **_candidate(),
+            "plan": {"steps": ["first", "second"]},
+        })
+
+
+def test_strategy_state_keeps_exact_one_step_interface_only():
     ledger = {"obligations": [
         {
             "obligation_id": "RH-C1",
@@ -441,16 +614,59 @@ def test_strategy_state_keeps_complete_active_ancestry_only():
         ledger=ledger,
         results_text=results,
     )
-    assert state["target_leaf_id"] == "RH-C2-child"
+    interface = state["proof_step_interface"]
+    assert interface["target_obligation_id"] == "RH-C2-child"
+    assert interface["target_statement"] == "exact child statement"
+    assert interface["current_target_evidence"] == "exact child evidence"
+    assert interface["parent_interface"]["statement_hash"]
     serialized = str(state)
-    assert "exact root statement" in serialized
     assert "exact child evidence" in serialized
-    assert "exact result" in serialized
+    assert "exact root statement" not in serialized
+    assert "exact root evidence" not in serialized
+    assert "exact result" not in serialized
     assert "unrelated root" not in serialized
     assert "unrelated result" not in serialized
 
 
-def test_strategy_state_deduplicates_text_losslessly():
+def test_strategy_state_carries_lossless_no_go_lessons():
+    premise = "Every admissible kernel is positive."
+    evidence = (
+        "The explicit admissible polynomial kernel changes sign while "
+        "satisfying every required boundary condition."
+    )
+    ledger = {
+        "backjump_target_id": "ROOT",
+        "no_go_lessons": [{
+            "claim_hash": "abc123",
+            "refuted_premise": premise,
+            "evidence": evidence,
+            "source_obligation_id": "ROOT-bad",
+            "run_id": "br_refute",
+        }],
+        "obligations": [{
+            "obligation_id": "ROOT",
+            "statement": "Find a replacement reduction.",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+        }, {
+            "obligation_id": "ROOT-bad",
+            "statement": premise,
+            "status": "DISPROVED",
+            "invalidation_kind": "PREMISE",
+            "parent_id": "ROOT",
+        }],
+    }
+    state = build_strategy_research_state(
+        current={**_candidate(), "target_obligation_id": "ROOT-bad"},
+        ledger=ledger,
+        results_text="",
+    )
+    lessons = state["proof_step_interface"]["active_no_go_lessons"]
+    assert lessons[0]["refuted_premise"] == premise
+    assert lessons[0]["evidence"] == evidence
+
+
+def test_strategy_state_keeps_target_unit_and_hashes_history():
     shared = "Complete exact evidence that must appear once without truncation."
     ledger = {"obligations": [
         {
@@ -476,12 +692,117 @@ def test_strategy_state_deduplicates_text_losslessly():
     serialized = str(state)
     assert serialized.count(shared) == 1
     assert serialized.count("Root statement.") == 1
-    evidence_ref = state["target_ancestry"][0]["last_evidence_ref"]
-    result_ref = state["relevant_experiments"][0][
-        "research_evidence_ref"
+    interface = state["proof_step_interface"]
+    assert interface["current_target_evidence"] == shared
+    archive = interface["archive_manifest"]
+    assert archive["record_count"] == 1
+    assert len(archive["ordered_records_sha256"]) == 64
+
+
+def test_strategy_state_exposes_latest_semantic_failure_for_smaller_step():
+    ledger = {"obligations": [{
+        "obligation_id": "RH-C2",
+        "statement": "Exact current target.",
+        "status": "UNRESOLVED",
+        "parent_id": "",
+    }]}
+    error = (
+        "SemanticResponseIncomplete: SEMANTIC_RESPONSE_INCOMPLETE: "
+        "Generator stopped before EOS after 320 tokens"
+    )
+    results = (
+        "target_obligation_id\thypothesis_sha256\tresearch_outcome\terror\n"
+        f"RH-C2\thash-1\tEVALUATION_FAILED\t{error}\n"
+    )
+    state = build_strategy_research_state(
+        current={**_candidate(), "target_obligation_id": "RH-C2"},
+        ledger=ledger,
+        results_text=results,
+    )
+    latest = state["proof_step_interface"]["archive_manifest"][
+        "latest_failure"
     ]
-    assert evidence_ref == result_ref
-    assert state["text_by_id"][evidence_ref] == shared
+    assert latest["kind"] == "SEMANTIC_RESPONSE_INCOMPLETE"
+    assert latest["role"] == "Generator"
+    assert latest["response_tokens"] == 320
+    assert "error" not in latest
+
+
+def test_strategy_prompt_bounded_interface_for_11_nodes_and_28_runs():
+    obligations = []
+    for index in range(11):
+        obligations.append({
+            "obligation_id": f"RH-N{index}",
+            "statement": (
+                f"Complete exact ancestry statement {index}: "
+                + "mathematical condition " * 12
+            ),
+            "status": "UNRESOLVED",
+            "parent_id": f"RH-N{index - 1}" if index else "",
+            "last_evidence": (
+                f"ancestry evidence {index} " + "detail " * 80
+            ),
+        })
+    header = (
+        "timestamp\texperiment_id\trun_id\tcandidate_id\t"
+        "target_obligation_id\thypothesis_sha256\tresearch_outcome\t"
+        "invalidation_kind\tresearch_evidence\tnew_frontier\tkept\terror\n"
+    )
+    rows = []
+    for index in range(28):
+        critical = index % 7 == 0
+        rows.append("\t".join((
+            str(index),
+            f"experiment-{index}",
+            f"run-{index}",
+            f"candidate-{index}",
+            "RH-N10",
+            f"hypothesis-{index % 4}",
+            "FALSIFIED" if critical else "INCONCLUSIVE",
+            "",
+            f"evidence-{index}-" + "exact mathematical evidence " * 45,
+            f"frontier-{index}-" + "exact frontier statement " * 30,
+            "True" if critical else "False",
+            "" if index % 5 else "worker timeout fingerprint",
+        )))
+    results = header + "\n".join(rows) + "\n"
+    ledger = {"obligations": obligations}
+    current = {**_candidate(), "target_obligation_id": "RH-N0"}
+    state = build_strategy_research_state(
+        current=current,
+        ledger=ledger,
+        results_text=results,
+    )
+    interface = state["proof_step_interface"]
+    assert interface["target_obligation_id"] == "RH-N10"
+    assert "Complete exact ancestry statement 10" in (
+        interface["target_statement"]
+    )
+    assert "Complete exact ancestry statement 9" not in str(state)
+    archive = interface["archive_manifest"]
+    assert archive["record_count"] == 28
+    assert len(archive["ordered_records_sha256"]) == 64
+    serialized = json.dumps(state, ensure_ascii=False)
+    assert "evidence-27-" not in serialized
+    assert "evidence-1-" not in serialized
+    program = (
+        Path(__file__).resolve().parents[3]
+        / "autoresearch"
+        / "prefill"
+        / "program.md"
+    ).read_text()
+    contract = build_strategy_contract(program)
+    assert "target_obligation_id must equal TARGET_LEAF_ID" in contract
+    assert "no fallback" in contract
+    prompt = build_strategy_prompt(
+        program=program,
+        current=current,
+        results_text=results,
+        ledger=ledger,
+    )
+    assert "\n\nPROGRAM:\n" not in prompt
+    proxy_tokens = (len(prompt.encode("utf-8")) + 3) // 4
+    assert proxy_tokens <= 2052
 
 
 def test_results_are_append_only_and_best_is_selected(tmp_path):
@@ -595,6 +916,8 @@ def test_supervisor_preserves_runtime_and_cache_across_iterations():
     assert "mode=gemma trigger=" in body
     assert "except StrategyPrefillBudgetExceeded" in body
     assert "phase=strategy-deferred-budget" in body
+    assert "except SemanticResponseIncomplete" in body
+    assert "phase=strategy-deferred-semantic" in body
     assert "if not gan_completed:" in body
     assert "phase=completed-run-preserved" in body
     assert "deploy_candidate" not in source
@@ -602,6 +925,18 @@ def test_supervisor_preserves_runtime_and_cache_across_iterations():
     assert "launchctl" not in source
     assert "bootout" not in source
     assert "results_text[-" not in source
+    propose_body = source[
+        source.index("def propose_candidate"):
+        source.index("def check_runtime_health")
+    ]
+    assert propose_body.index("admit_token_ids(") < propose_body.index(
+        "session.append(ids)",
+    )
+    run_body = source[
+        source.index("def run_gan_experiment"):
+        source.index("def read_results")
+    ]
+    assert '"--max-retained-tokens"' in run_body
 
 
 def test_gan_subprocess_output_is_streamed_not_captured():
