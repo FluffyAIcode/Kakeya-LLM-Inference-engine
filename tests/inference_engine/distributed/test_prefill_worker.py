@@ -186,7 +186,8 @@ async def _rpc(address, method, request):
 
 @pytest.mark.asyncio
 async def test_submit_is_idempotent_and_completes(worker):
-    address, engine, cache, _ = worker
+    address, engine, cache, jobs = worker
+    assert jobs.measured_tokens_per_second(100.0) == 100.0
     first = await _rpc(address, "SubmitPrefillJob", _submit())
     second = await _rpc(address, "SubmitPrefillJob", _submit())
     assert first.job_id == second.job_id
@@ -204,6 +205,23 @@ async def test_submit_is_idempotent_and_completes(worker):
     assert status.lease_id and status.cache_address == "cache:1"
     assert engine.calls == 1
     assert len(cache.block_hashes()) == 2
+    assert jobs.measured_tokens_per_second(100.0) > 0
+
+    third = await _rpc(address, "SubmitPrefillJob", _submit("r2"))
+    for _ in range(100):
+        status = await _rpc(
+            address,
+            "GetPrefillJobStatus",
+            distributed_pb2.GetPrefillJobStatusRequest(
+                job_id=third.job_id,
+                tenant_id="tenant",
+            ),
+        )
+        if status.status == int(PrefillJobState.COMPLETED):
+            break
+        await asyncio.sleep(0.01)
+    assert status.status == int(PrefillJobState.COMPLETED)
+    assert engine.calls == 2
 
 
 @pytest.mark.asyncio
