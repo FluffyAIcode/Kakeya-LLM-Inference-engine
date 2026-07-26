@@ -154,8 +154,10 @@ def test_benchmark_lifecycle_persistence_and_retention(tmp_path):
         stages=[stage],
         status="completed",
         finished_at=20,
+        provenance={"source": "unit_test", "candidate_count": 3},
     )
     assert completed["summary"]["decode_tok_s_p50"] == 5
+    assert completed["provenance"]["candidate_count"] == 3
     assert state.live_benchmark() is None
     assert state.list_benchmarks(limit=1)[0]["id"] == run["id"]
     assert state.list_benchmarks(status="completed")[0]["status"] == "completed"

@@ -3,9 +3,10 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
-    "check": "wrangler deploy --dry-run"
+    "check": "node --check src/index.js && node --check src/page.js && node --test test_*.mjs && wrangler deploy --dry-run"
   },
   "devDependencies": {
+    "jsdom": "^29.1.1",
     "wrangler": "^4.0.0"
   }
 }
