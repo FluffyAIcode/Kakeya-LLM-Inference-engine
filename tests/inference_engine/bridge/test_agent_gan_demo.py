@@ -5,6 +5,7 @@ from scripts.agent_gan_inference_demo import (
     build_critic_context,
     decode_complete_response,
 )
+from scripts.agent_gan_repl import _structured_transport_semantically_complete
 from autoresearch.prefill.semantic_decompose import (
     SemanticResponseIncomplete,
     SemanticUnitTooLarge,
@@ -53,12 +54,13 @@ class Session:
         self.chunks = list(chunks)
         self.last_stop_reason = None
         self.calls = 0
+        self.exited = False
 
     def __enter__(self):
         return self
 
     def __exit__(self, *_args):
-        pass
+        self.exited = True
 
     def append(self, token_ids):
         self.appended = list(token_ids)
@@ -282,6 +284,66 @@ class CharTokenizer:
 
     def decode(self, token_ids, **_kwargs):
         return "".join(chr(token) for token in token_ids)
+
+
+@pytest.mark.parametrize("suffix", [
+    "}",
+    "\ntrailing prose",
+    '\nArtifact: {"replacement":true}',
+])
+def test_infer_cuts_structured_stream_before_any_trailing_tokens(suffix):
+    tokenizer = CharTokenizer()
+    accepted = (
+        '### FORMALIZATION_BUNDLE\nArtifact: {"schema_invalid_for_role":true}'
+    )
+    stream = accepted + suffix
+    session = Session([([ord(char) for char in stream], 2)])
+    tokens, metrics = _infer(
+        Client(session),
+        [],
+        [9],
+        len(stream),
+        lambda: {},
+        semantic_complete=lambda generated: (
+            _structured_transport_semantically_complete(
+                tokenizer.decode(generated),
+                "formalizer",
+            )
+        ),
+    )
+    assert tokenizer.decode(tokens) == accepted
+    assert metrics["stop_reason"] == "semantic_complete"
+    assert metrics["complete"] is True
+    assert metrics["output_tokens"] == len(accepted)
+    assert metrics["response_cap_exhausted"] is False
+    assert session.exited is True
+
+
+def test_infer_detects_final_brace_at_next_chunk_boundary_and_cleans_session():
+    tokenizer = CharTokenizer()
+    partial = '### PROOF_ATTEMPT\nArtifact: {"status":"FAILED"'
+    session = Session([
+        ([ord(char) for char in partial], 1),
+        ([ord("}"), ord("x")], 2),
+    ])
+    tokens, metrics = _infer(
+        Client(session),
+        [],
+        [9],
+        len(partial),
+        lambda: {},
+        max_response_tokens=0,
+        semantic_complete=lambda generated: (
+            _structured_transport_semantically_complete(
+                tokenizer.decode(generated),
+                "prover",
+            )
+        ),
+    )
+    assert tokenizer.decode(tokens) == partial + "}"
+    assert metrics["stop_reason"] == "semantic_complete"
+    assert session.calls == 2
+    assert session.exited is True
 
 
 def test_critic_context_preserves_complete_generator_response():

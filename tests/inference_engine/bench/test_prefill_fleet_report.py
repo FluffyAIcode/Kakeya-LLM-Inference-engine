@@ -1,5 +1,6 @@
 import pytest
 
+from autoresearch.prefill.typed_transport import ROLE_TRANSPORT_REGISTRY
 from inference_engine.bench.prefill_fleet_report import (
     assert_public_safe,
     normalize_stage,
@@ -94,3 +95,9 @@ def test_schema_rejects_unknown_and_private_fields():
         "decode_s": 0,
         "e2e_s": 0,
     })["decode_tok_s"] == 0
+
+
+def test_schema_accepts_every_typed_architecture_role_stage():
+    for role in ROLE_TRANSPORT_REGISTRY:
+        stage = normalize_stage(_stage(f"agent_{role}", "primary_hot"))
+        assert stage["name"] == f"agent_{role}"
