@@ -661,9 +661,7 @@ def test_legacy_capability_document_migrates_to_tournament(tmp_path):
     checkpoint = load_checkpoint(path)
     assert checkpoint.adapter_status == ""
     assert checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
-    assert checkpoint.migration_event == (
-        "strategy_tournament_stepwise_generator_v1"
-    )
+    assert checkpoint.migration_event == "cursor_strategy_oprover_advisor_v1"
 
 
 def test_host_dual_injection_preserves_malformed_assumption_bytes_and_hash():

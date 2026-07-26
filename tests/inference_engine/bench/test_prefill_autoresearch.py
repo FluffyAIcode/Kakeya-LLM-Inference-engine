@@ -105,7 +105,7 @@ def _resumed_report(tmp_path, stages):
         "validated_at": 1,
     }
     provenance = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "resumed",
         "resumed_from_state": "DECOMPOSER",
         "resumed_from_role": "decomposer",

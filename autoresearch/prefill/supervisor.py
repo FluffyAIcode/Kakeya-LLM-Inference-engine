@@ -32,8 +32,8 @@ from autoresearch.prefill.atomic_definition import (
     record_semantic_iteration,
     verified_progress_vector,
 )
-from autoresearch.prefill.architecture_v7 import (
-    run_architecture_v7_entry,
+from autoresearch.prefill.architecture_v9 import (
+    run_architecture_v9_entry,
     run_host_definition_gate,
 )
 from autoresearch.prefill.strategy_tournament import StrategyEvent
@@ -44,6 +44,7 @@ from autoresearch.prefill.orchestration_state import (
     append_blocked_event_journal,
     apply_blocked_exit_event,
     load_checkpoint as load_orchestration_checkpoint,
+    reconcile_checkpoint_ledger_version,
     save_checkpoint as save_orchestration_checkpoint,
 )
 from autoresearch.prefill.semantic_decompose import (
@@ -1657,6 +1658,15 @@ def should_resume_downstream(
             checkpoint,
             candidate_sha256=candidate_sha256,
         )
+        and not (
+            checkpoint is not None
+            and checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
+            and checkpoint.premise_outcome_type in {
+                "APPROACH_FAILED",
+                "PREMISE_INVALIDATED",
+                "PARENT_STATEMENT_UNDERSPECIFIED",
+            }
+        )
         and not force_strategy
         and not strategy_trigger_exists
     )
@@ -2017,6 +2027,18 @@ def run_iteration(args, iteration: int) -> dict:
     )
     if (
         orchestration_checkpoint is not None
+        and ledger_object is not None
+        and reconcile_checkpoint_ledger_version(
+            orchestration_checkpoint,
+            ledger_object.version,
+        )
+    ):
+        save_orchestration_checkpoint(
+            orchestration_state_path,
+            orchestration_checkpoint,
+        )
+    if (
+        orchestration_checkpoint is not None
         and (
             orchestration_checkpoint.proof_state == ProofState.BLOCKED
             or orchestration_checkpoint.adapter_status in {
@@ -2208,6 +2230,21 @@ def run_iteration(args, iteration: int) -> dict:
                 trigger_file=trigger_file,
             )
         )
+        if (
+            not resume_downstream
+            and orchestration_checkpoint is not None
+            and orchestration_checkpoint.proof_state
+            == ProofState.STRATEGY_TOURNAMENT
+            and orchestration_checkpoint.premise_outcome_type in {
+                "APPROACH_FAILED",
+                "PREMISE_INVALIDATED",
+                "PARENT_STATEMENT_UNDERSPECIFIED",
+            }
+        ):
+            trigger_reason = (
+                "typed-premise-"
+                + orchestration_checkpoint.premise_outcome_type.lower()
+            )
         if resume_downstream:
             strategy_mode = "resumed"
             proposed = current
@@ -2378,7 +2415,7 @@ def run_iteration(args, iteration: int) -> dict:
                     ).encode(),
                 ).hexdigest()[:20]
             )
-            orchestration_checkpoint = run_architecture_v7_entry(
+            orchestration_checkpoint = run_architecture_v9_entry(
                 orchestration_state_path,
                 orchestration_checkpoint,
                 project_root=root,
@@ -2396,6 +2433,59 @@ def run_iteration(args, iteration: int) -> dict:
                 ),
                 proposition_hash=orchestration_checkpoint.proposition_hash,
             )
+            if orchestration_checkpoint.adapter_status == "INTEGRATION_BLOCKED":
+                live_status.emit(
+                    phase="strategy_configuration_required",
+                    role="cursor_strategy",
+                    state="idle",
+                    active_obligation_id=(
+                        orchestration_checkpoint.target_obligation_id
+                    ),
+                    source="proof_supervisor",
+                    force=True,
+                )
+                return {
+                    "iteration": iteration,
+                    "research_outcome": "BLOCKED",
+                    "orchestration_state": "INTEGRATION_BLOCKED",
+                    "transition_reason": (
+                        orchestration_checkpoint.blocked_reason
+                    ),
+                    "failure_class": "",
+                    "error": "",
+                    "inference_started": False,
+                }
+            # Architecture 9 must never fall through into the legacy
+            # Generator/Critic GAN. Until the production residency process
+            # manager and converted model pass acceptance, stop honestly.
+            orchestration_checkpoint.adapter_blocked(
+                "PROOF_ADVISOR_UNAVAILABLE:"
+                "MODEL_PREPARATION_OR_RESIDENCY_ACCEPTANCE_REQUIRED",
+                status="INTEGRATION_BLOCKED",
+            )
+            save_orchestration_checkpoint(
+                orchestration_state_path,
+                orchestration_checkpoint,
+            )
+            live_status.emit(
+                phase="proof_advisor_unavailable",
+                role="oprover_advisor",
+                state="idle",
+                active_obligation_id=(
+                    orchestration_checkpoint.target_obligation_id
+                ),
+                source="proof_supervisor",
+                force=True,
+            )
+            return {
+                "iteration": iteration,
+                "research_outcome": "BLOCKED",
+                "orchestration_state": "INTEGRATION_BLOCKED",
+                "transition_reason": orchestration_checkpoint.blocked_reason,
+                "failure_class": "",
+                "error": "",
+                "inference_started": False,
+            }
         experiment_id = (
             f"ar_{int(time.time())}_{iteration}_"
             f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"

@@ -195,6 +195,7 @@ def serialize_definition_audit(
         "producer_role": "definition_auditor",
         "producer_run_id": producer_run_id,
         "upstream_artifact_hashes": [],
+        "audit_outcome": outcome,
         "definitions": [resolved(item, missing=False) for item in defined_ids],
         "missing_definitions": [resolved(item, missing=True) for item in missing_ids],
     }

@@ -24,7 +24,7 @@ class ResumeValidationError(ReportValidationError):
         self.route_state = route_state
 
 
-REPORT_PROVENANCE_SCHEMA_VERSION = 1
+REPORT_PROVENANCE_SCHEMA_VERSION = 2
 CRITIC_ARTIFACT_SCHEMA_VERSION = 1
 
 
@@ -169,6 +169,134 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
             "critic_source_run_id": report.get("id", ""),
             "critic_artifact_sha256": "",
         }
+    if provenance.get("mode") == "typed_partial_resume_v2":
+        required = {
+            "schema_version", "mode", "checkpoint_before", "checkpoint_after",
+            "bindings", "source_runs", "reused_artifacts", "reused_stages",
+            "produced_artifacts", "newly_executed_stages",
+        }
+        if (
+            not required.issubset(provenance)
+            or provenance.get("schema_version") != REPORT_PROVENANCE_SCHEMA_VERSION
+        ):
+            raise ResumeValidationError(
+                "typed partial report provenance schema is incomplete",
+                route_state="SYNTHESIS",
+            )
+        actual_stage_names = [str(stage.get("name", "")) for stage in stages]
+        if provenance["newly_executed_stages"] != actual_stage_names:
+            raise ResumeValidationError(
+                "typed partial report executed-stage provenance mismatch",
+                route_state="SYNTHESIS",
+            )
+        bindings = provenance.get("bindings")
+        required_bindings = {
+            "target_obligation_id", "candidate_sha256", "strategy_sha256",
+            "parent_statement_sha256", "parent_signature_sha256",
+            "root_goal_sha256", "ledger_id", "ledger_version",
+            "ledger_sha256", "environment_sha256",
+        }
+        if not isinstance(bindings, dict) or not required_bindings.issubset(bindings):
+            raise ResumeValidationError(
+                "typed partial report bindings are incomplete",
+                route_state="SYNTHESIS",
+            )
+        if bindings["target_obligation_id"] != candidate.TARGET_OBLIGATION_ID:
+            raise ResumeValidationError(
+                "typed partial report target mismatch",
+                route_state="STRATEGY_TOURNAMENT",
+            )
+        candidate_hash = getattr(candidate, "CANDIDATE_SHA256", "")
+        if candidate_hash and bindings["candidate_sha256"] != candidate_hash:
+            raise ResumeValidationError(
+                "typed partial report candidate hash mismatch",
+                route_state="STRATEGY_TOURNAMENT",
+            )
+        for name in (
+            "candidate_sha256", "strategy_sha256", "parent_statement_sha256",
+            "root_goal_sha256", "ledger_sha256", "environment_sha256",
+        ):
+            value = str(bindings.get(name, ""))
+            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+                raise ResumeValidationError(
+                    f"typed partial report {name} is invalid",
+                    route_state="SYNTHESIS",
+                )
+        for checkpoint_name in ("checkpoint_before", "checkpoint_after"):
+            checkpoint_binding = provenance.get(checkpoint_name)
+            if (
+                not isinstance(checkpoint_binding, dict)
+                or not {"state", "role"}.issubset(checkpoint_binding)
+                or checkpoint_binding["role"]
+                != str(checkpoint_binding["state"]).lower()
+            ):
+                raise ResumeValidationError(
+                    f"typed partial report {checkpoint_name} is invalid",
+                    route_state="SYNTHESIS",
+                )
+        reused_artifacts = provenance.get("reused_artifacts")
+        produced_artifacts = provenance.get("produced_artifacts")
+        reused_stages = provenance.get("reused_stages")
+        source_runs = provenance.get("source_runs")
+        if (
+            not isinstance(reused_artifacts, dict)
+            or not isinstance(produced_artifacts, dict)
+            or not isinstance(reused_stages, list)
+            or sorted(reused_stages) != sorted(reused_artifacts)
+            or not isinstance(source_runs, dict)
+        ):
+            raise ResumeValidationError(
+                "typed partial report reused-stage provenance mismatch",
+                route_state="SYNTHESIS",
+            )
+        for role, artifact_ref in {
+            **reused_artifacts,
+            **produced_artifacts,
+        }.items():
+            if (
+                not isinstance(artifact_ref, dict)
+                or not {"sha256", "source_run_id"}.issubset(artifact_ref)
+                or source_runs.get(role) != artifact_ref["source_run_id"]
+                or len(str(artifact_ref["sha256"])) != 64
+            ):
+                raise ResumeValidationError(
+                    f"typed partial report stale artifact provenance: {role}",
+                    route_state="SYNTHESIS",
+                )
+            path = artifact_ref.get("path")
+            if path:
+                artifact_path = Path(str(path)).expanduser()
+                try:
+                    digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    raise ResumeValidationError(
+                        f"typed partial report artifact unavailable: {role}",
+                        route_state="SYNTHESIS",
+                    ) from exc
+                if digest != artifact_ref["sha256"]:
+                    raise ResumeValidationError(
+                        f"typed partial report stale artifact hash: {role}",
+                        route_state="SYNTHESIS",
+                    )
+        if any(
+            f"agent_{role}" in actual_stage_names for role in reused_artifacts
+        ):
+            raise ResumeValidationError(
+                "typed partial report ambiguously reuses and executes a stage",
+                route_state="SYNTHESIS",
+            )
+        return None, {
+            "critic_reused": False,
+            "critic_source_run_id": "",
+            "critic_artifact_sha256": "",
+            "typed_partial": True,
+            "resumed_from_state": provenance["checkpoint_before"]["state"],
+            "resumed_from_role": provenance["checkpoint_before"]["role"],
+            "checkpoint_after_state": provenance["checkpoint_after"]["state"],
+            "checkpoint_after_role": provenance["checkpoint_after"]["role"],
+            "reused_stages": list(reused_stages),
+            "newly_executed_stages": actual_stage_names,
+        }
     required = {
         "schema_version", "mode", "resumed_from_state", "resumed_from_role",
         "strategy_reused", "generator_reused", "critic_reused",
@@ -236,6 +364,33 @@ def _load_candidate(path: Path):
 
 def evaluate(report: dict, candidate) -> dict:
     critic, evaluation_provenance = _critic_for_evaluation(report, candidate)
+    if critic is None:
+        constraints = {
+            "stage_ok": False,
+            "complete": False,
+            "full_context": False,
+            "recursive_protocol": False,
+            "no_fallback": True,
+            "no_job_failure": True,
+            "segment_under_budget": True,
+            "final_only_snapshot": candidate.SNAPSHOT_MODE == "final_only",
+            "candidate_requires_full_context": candidate.REQUIRE_FULL_CONTEXT is True,
+            "candidate_forbids_fallback": candidate.ALLOW_FALLBACK is False,
+        }
+        return {
+            "accepted": False,
+            "metric_cold_critic_prefill_s": 0.0,
+            "measured_prefill_tps": 0.0,
+            "estimated_max_segment_s": 0.0,
+            "compute_chunk_tokens": candidate.PREFILL_COMPUTE_CHUNK_TOKENS,
+            "candidate_id": candidate.CANDIDATE_ID,
+            "target_obligation_id": candidate.TARGET_OBLIGATION_ID,
+            "proof_obligations_total": 0,
+            "proof_obligations_covered": 0,
+            "proof_obligations_unresolved": 0,
+            "constraints": constraints,
+            "evaluation_provenance": evaluation_provenance,
+        }
     prefix_tokens = int(critic.get("prefix_tokens", 0))
     warmup_s = float(critic.get("warmup_wall_s", 0))
     measured_tps = prefix_tokens / warmup_s if warmup_s > 0 else 0.0

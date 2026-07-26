@@ -39,11 +39,30 @@ import threading
 import logging
 import os
 import signal
+import stat
 import sys
 from pathlib import Path
 from typing import Tuple
 
 import torch
+
+
+def _read_secret_file(path_value: str, *, label: str) -> str:
+    """Load a runtime secret without placing it in process arguments."""
+    path = Path(path_value).expanduser()
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        raise SystemExit(f"{label} file is unavailable") from exc
+    if not stat.S_ISREG(mode) or mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise SystemExit(f"{label} file must be a private regular file")
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SystemExit(f"{label} file is unavailable") from exc
+    if not value:
+        raise SystemExit(f"{label} file is empty")
+    return value
 
 from inference_engine.memory.pool import SlabPool
 from inference_engine.memory.slab import SlabConfig
@@ -365,15 +384,16 @@ async def _serve(args: argparse.Namespace) -> int:
             return 2
 
     worker_client = None
-    if args.decode_worker:
-        if args.backend != "mlx":
-            raise SystemExit("--decode-worker requires --backend mlx")
+    use_decode_worker = args.backend == "mlx"
+    if args.decode_worker and not use_decode_worker:
+        raise SystemExit("--decode-worker requires --backend mlx")
+    if use_decode_worker:
         from inference_engine.backends.mlx.decode_worker import (
             DecodeWorkerClient,
             DecodeWorkerConfig,
         )
         _LOG.info(
-            "starting isolated MLX decode worker id=%s sink=%d window=%d",
+            "starting required isolated MLX decode owner id=%s sink=%d window=%d",
             args.verifier_id, args.sink, args.window,
         )
         worker_client = DecodeWorkerClient(DecodeWorkerConfig(
@@ -601,7 +621,7 @@ async def _serve(args: argparse.Namespace) -> int:
     if args.decode_worker_acceptance_socket:
         if worker_client is None:
             raise SystemExit(
-                "--decode-worker-acceptance-socket requires --decode-worker"
+                "--decode-worker-acceptance-socket requires --backend mlx"
             )
         from inference_engine.backends.mlx.decode_worker_acceptance import (
             DecodeWorkerAcceptanceServer,
@@ -856,7 +876,11 @@ def main() -> int:
     ap.add_argument(
         "--decode-worker",
         action="store_true",
-        help="Run MLX model/KV in an isolated local UDS worker process.",
+        help=(
+            "Compatibility flag. MLX always runs model/KV in an isolated "
+            "single-owner process so thread-local streams cannot cross gRPC "
+            "worker threads."
+        ),
     )
     ap.add_argument(
         "--decode-worker-socket",
@@ -985,10 +1009,15 @@ def main() -> int:
     ap.add_argument("--network-state",
                     default="~/.kakeya/inference_network.json")
     ap.add_argument("--network-api-key", default="",
-                    help="X-API-Key required for registration/group/telemetry writes.")
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--network-api-key-file", default="",
+                    help="Private file containing the network API key.")
     ap.add_argument("--network-telemetry-url", default="",
                     help="Optional POST endpoint receiving completed token counters.")
-    ap.add_argument("--network-telemetry-api-key", default="")
+    ap.add_argument("--network-telemetry-api-key", default="",
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--network-telemetry-api-key-file", default="",
+                    help="Private file containing the telemetry API key.")
     ap.add_argument(
         "--cache-fill-capture-size",
         type=int,
@@ -1005,6 +1034,18 @@ def main() -> int:
                          "out-of-band, or when intentionally accepting "
                          "the first-run download.")
     args = ap.parse_args()
+    if args.network_api_key or args.network_telemetry_api_key:
+        raise SystemExit(
+            "API keys in process arguments are forbidden; use the file options"
+        )
+    if args.network_api_key_file:
+        args.network_api_key = _read_secret_file(
+            args.network_api_key_file, label="network API key",
+        )
+    if args.network_telemetry_api_key_file:
+        args.network_telemetry_api_key = _read_secret_file(
+            args.network_telemetry_api_key_file, label="telemetry API key",
+        )
 
     return asyncio.run(_serve(args))
 

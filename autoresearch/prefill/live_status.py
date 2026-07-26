@@ -21,6 +21,10 @@ VALID_STATES = {
     "idle",
 }
 _SAFE_TEXT = re.compile(r"[^A-Za-z0-9_.:@+\- ]")
+_HIGH_ENTROPY_TOKEN = re.compile(
+    r"(?i)(?:\b(?:cursor|sk|key|token)_[A-Za-z0-9_\-]{20,}\b"
+    r"|(?<![A-Fa-f0-9])[A-Fa-f0-9]{40,56}(?![A-Fa-f0-9]))"
+)
 
 
 def _safe_text(value, limit: int = 160) -> str:
@@ -28,7 +32,7 @@ def _safe_text(value, limit: int = 160) -> str:
     if "/" in text or re.search(
         r"(?i)(?:api[_ -]?key|secret|access[_ -]?token|prompt)\s*[:=]",
         text,
-    ):
+    ) or _HIGH_ENTROPY_TOKEN.search(text):
         return "redacted"
     return _SAFE_TEXT.sub("_", text)[:limit]
 
@@ -415,6 +419,45 @@ class AtomicLiveStatus:
                                     ),
                                 ),
                             },
+                            "strategy_provider": {
+                                "provider": _safe_text(orchestration.get(
+                                    "strategy_provider", "cursor-sdk",
+                                )),
+                                "configured": bool(orchestration.get(
+                                    "strategy_provider_configured", False,
+                                )),
+                                "model_id": _safe_text(orchestration.get(
+                                    "strategy_model_id", "",
+                                )),
+                                "run_status": _safe_text(orchestration.get(
+                                    "strategy_run_status",
+                                    "CONFIGURATION_REQUIRED",
+                                )),
+                                "run_id": _safe_text(orchestration.get(
+                                    "strategy_run_id", "",
+                                )),
+                            },
+                            "model_residency": {
+                                "phase": _safe_text(orchestration.get(
+                                    "residency_phase", "GEMMA_SERVING",
+                                )),
+                                "active_model": _safe_text(orchestration.get(
+                                    "active_model", "gemma",
+                                )),
+                            },
+                            "oprover_advisor": {
+                                "candidates": int(orchestration.get(
+                                    "oprover_candidate_count", 0,
+                                )),
+                                "verified": int(orchestration.get(
+                                    "oprover_verified_count", 0,
+                                )),
+                            },
+                            "critic_advisory_state": _safe_text(
+                                orchestration.get(
+                                    "critic_advisory_state", "PENDING",
+                                ),
+                            ),
                             "research_contract": {
                                 "contract_id": _safe_text(orchestration.get(
                                     "research_contract_id", "",

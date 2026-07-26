@@ -8,18 +8,18 @@ import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 
-SCHEMA_VERSION = 10
-ARCHITECTURE_VERSION = 8
+SCHEMA_VERSION = 11
+ARCHITECTURE_VERSION = 9
 TYPED_ARCHITECTURE_MIN_VERSION = 7
 TYPED_IR_MIGRATION_EVENT = "typed_ir_host_constrained_selector_v2"
 CREATIVE_DECOMPOSITION_MIGRATION_EVENT = (
     "creative_decomposition_synthesis_moves_v3"
 )
 STRATEGY_TOURNAMENT_MIGRATION_EVENT = (
-    "strategy_tournament_stepwise_generator_v1"
+    "cursor_strategy_oprover_advisor_v1"
 )
 REQUIRED_TYPED_CAPABILITIES = {
     "typed_role_transport": True,
@@ -36,6 +36,11 @@ REQUIRED_TYPED_CAPABILITIES = {
     "autonomous_definition_resolution": True,
     "legacy_definition_registry_execution": False,
     "generic_definition_reframe_execution": False,
+    "cursor_strategy_adapter_only": True,
+    "oprover_proof_advisor": True,
+    "exclusive_primary_model_residency": True,
+    "gemma_proof_generation": False,
+    "direct_architecture_cutover": True,
 }
 
 
@@ -110,6 +115,8 @@ class ProofState(str, Enum):
     COMMIT = "COMMIT"
     APPROACH_FAILED = "APPROACH_FAILED"
     PREMISE_AUDIT = "PREMISE_AUDIT"
+    PREMISE_INVALIDATED = "PREMISE_INVALIDATED"
+    REPAIRABLE_DEFINITION_GAP = "REPAIRABLE_DEFINITION_GAP"
     DECOMPOSITION_STAGNATED = "DECOMPOSITION_STAGNATED"
     MATHEMATICAL_STAGNATION = "MATHEMATICAL_STAGNATION"
     BLOCKED = "BLOCKED"
@@ -122,6 +129,25 @@ class BlockedEventType(str, Enum):
     TARGET_BRANCH_CHANGE = "TARGET_BRANCH_CHANGE"
     VALIDATED_EVIDENCE_BACKJUMP = "VALIDATED_EVIDENCE_BACKJUMP"
     NEW_STRATEGY_TRIGGER = "NEW_STRATEGY_TRIGGER"
+
+
+class PremiseAuditOutcomeType(str, Enum):
+    """Host-owned semantic outcomes emitted from premise-audit evidence."""
+
+    APPROACH_FAILED = "APPROACH_FAILED"
+    PREMISE_SUSPECTED = "PREMISE_SUSPECTED"
+    PREMISE_INVALIDATED = "PREMISE_INVALIDATED"
+    PARENT_STATEMENT_UNDERSPECIFIED = "PARENT_STATEMENT_UNDERSPECIFIED"
+    REPAIRABLE_DEFINITION_GAP = "REPAIRABLE_DEFINITION_GAP"
+
+
+class DefinitionAuditOutcomeType(str, Enum):
+    """Host-owned semantic outcomes from the Definition Auditor."""
+
+    COMPLETE = "COMPLETE"
+    MISSING_DEFINITION = "MISSING_DEFINITION"
+    REFRAME_REQUIRED = "REFRAME_REQUIRED"
+    PARENT_UNDERSPECIFIED = "PARENT_UNDERSPECIFIED"
 
 
 @dataclass(frozen=True)
@@ -180,6 +206,8 @@ ALLOWED_TRANSITIONS = {
     ProofState.CRITIC: set(),
     ProofState.DEFINITION_AUDITOR: {
         ProofState.DEFINITION_AUDITOR, ProofState.COUNTEREXAMPLE_WORKER,
+        ProofState.DEFINITION_RESOLUTION, ProofState.SYNTHESIS,
+        ProofState.DECOMPOSER,
         ProofState.BLOCKED,
     },
     ProofState.COUNTEREXAMPLE_WORKER: {
@@ -189,7 +217,7 @@ ALLOWED_TRANSITIONS = {
     },
     ProofState.SYNTHESIS: {
         ProofState.SYNTHESIS, ProofState.DEFINITION_RESOLUTION,
-        ProofState.DECOMPOSER,
+        ProofState.DECOMPOSER, ProofState.COUNTEREXAMPLE_WORKER,
         ProofState.BLOCKED,
     },
     ProofState.REFRAME: set(),
@@ -255,7 +283,17 @@ ALLOWED_TRANSITIONS = {
     },
     ProofState.PREMISE_AUDIT: {
         ProofState.PREMISE_AUDIT,
+        ProofState.APPROACH_FAILED,
+        ProofState.PREMISE_INVALIDATED,
+        ProofState.PARENT_STATEMENT_UNDERSPECIFIED,
+        ProofState.REPAIRABLE_DEFINITION_GAP,
+        ProofState.BLOCKED,
+    },
+    ProofState.PREMISE_INVALIDATED: {
         ProofState.STRATEGY_TOURNAMENT, ProofState.BLOCKED,
+    },
+    ProofState.REPAIRABLE_DEFINITION_GAP: {
+        ProofState.DEFINITION_RESOLUTION, ProofState.BLOCKED,
     },
     ProofState.DECOMPOSITION_STAGNATED: {
         ProofState.SYNTHESIS, ProofState.DEFINITION_RESOLUTION,
@@ -529,8 +567,35 @@ class OrchestrationCheckpoint:
     definition_exhaustion_hash: str = ""
     definition_interface_hash: str = ""
     definition_backjump_target: str = ""
+    definition_audit_outcome: str = ""
+    definition_audit_fingerprint: str = ""
+    counterexample_objective: dict[str, Any] = field(default_factory=dict)
+    premise_outcome_type: str = ""
+    premise_outcome_fingerprint: str = ""
+    premise_outcome_owner: str = ""
+    premise_decision: str = ""
+    premise_confidence: float = 0.0
+    premise_evidence: dict[str, Any] = field(default_factory=dict)
+    premise_backjump_target: str = ""
+    premise_invalidated_artifacts: list[str] = field(default_factory=list)
+    consumed_premise_fingerprints: list[str] = field(default_factory=list)
     proof_tokens_consumed: int = 0
     proof_search_state_path: str = ""
+    strategy_provider: str = "cursor-sdk"
+    strategy_provider_configured: bool = False
+    strategy_model_id: str = ""
+    strategy_run_status: str = "CONFIGURATION_REQUIRED"
+    strategy_agent_id: str = ""
+    strategy_run_id: str = ""
+    strategy_prompt_hash: str = ""
+    strategy_evidence_hash: str = ""
+    strategy_memo_hash: str = ""
+    strategy_latency_ms: int = 0
+    residency_phase: str = "GEMMA_SERVING"
+    active_model: str = "gemma"
+    oprover_candidate_count: int = 0
+    oprover_verified_count: int = 0
+    critic_advisory_state: str = "PENDING"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     schema_version: int = SCHEMA_VERSION
@@ -643,7 +708,6 @@ class OrchestrationCheckpoint:
         self.last_failure_fingerprint = ""
         self.identical_failure_count = 0
         self.updated_at = time.time()
-
     def begin_decomposition_iteration(
         self,
         viewpoint: str,
@@ -663,6 +727,110 @@ class OrchestrationCheckpoint:
             resume_origin=ProofState.DECOMPOSER.value,
             strategy_reused=True,
         )
+
+
+def route_definition_audit_outcome(
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    outcome: DefinitionAuditOutcomeType | str,
+    artifact_hash: str,
+    source_run_id: str,
+    missing_definition_ids: Iterable[str] = (),
+    counterexample_objective: Mapping[str, Any] | None = None,
+) -> bool:
+    """Persist one audit outcome and route only through typed legal edges."""
+    typed_outcome = DefinitionAuditOutcomeType(outcome)
+    missing = tuple(sorted({str(item) for item in missing_definition_ids if item}))
+    objective = dict(counterexample_objective or {})
+    if objective and not {
+        "objective_type", "evidence_request",
+    }.issubset(objective):
+        raise ValueError(
+            "counterexample objective requires objective_type and evidence_request",
+        )
+    fingerprint = hashlib.sha256(json.dumps({
+        "outcome": typed_outcome.value,
+        "artifact_hash": str(artifact_hash),
+        "source_run_id": str(source_run_id),
+        "missing_definition_ids": missing,
+        "counterexample_objective": objective,
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "candidate_sha256": checkpoint.candidate_sha256,
+        "ledger_id": checkpoint.ledger_id,
+        "ledger_version": checkpoint.ledger_version,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if checkpoint.definition_audit_fingerprint == fingerprint:
+        return False
+
+    checkpoint.definition_audit_outcome = typed_outcome.value
+    checkpoint.definition_audit_fingerprint = fingerprint
+    checkpoint.counterexample_objective = objective
+    checkpoint.premise_outcome_owner = "definition_auditor"
+    checkpoint.premise_decision = typed_outcome.value
+    checkpoint.premise_confidence = 1.0
+    checkpoint.premise_evidence = {
+        "definition_auditor_artifact_hash": str(artifact_hash),
+        "source_run_id": str(source_run_id),
+        "missing_definition_ids": list(missing),
+    }
+
+    if typed_outcome in {
+        DefinitionAuditOutcomeType.REFRAME_REQUIRED,
+        DefinitionAuditOutcomeType.PARENT_UNDERSPECIFIED,
+    }:
+        checkpoint.premise_outcome_type = (
+            ProofState.PARENT_STATEMENT_UNDERSPECIFIED.value
+            if typed_outcome == DefinitionAuditOutcomeType.PARENT_UNDERSPECIFIED
+            else typed_outcome.value
+        )
+        target = ProofState.SYNTHESIS
+    elif objective:
+        target = ProofState.COUNTEREXAMPLE_WORKER
+    elif missing or typed_outcome == DefinitionAuditOutcomeType.MISSING_DEFINITION:
+        target = ProofState.DEFINITION_RESOLUTION
+    else:
+        target = ProofState.DECOMPOSER
+
+    # Architecture-8 strategy state reaches semantic advisory ownership via
+    # Decomposer; Counterexample is reachable only through Synthesis.
+    if checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT and target in {
+        ProofState.SYNTHESIS, ProofState.COUNTEREXAMPLE_WORKER,
+    }:
+        checkpoint.transition(
+            ProofState.DECOMPOSER,
+            "definition-audit-route:semantic-owner",
+            source_run_id=source_run_id,
+            strategy_reused=True,
+        )
+    if checkpoint.proof_state == ProofState.DECOMPOSER and target == (
+        ProofState.COUNTEREXAMPLE_WORKER
+    ):
+        checkpoint.transition(
+            ProofState.SYNTHESIS,
+            "definition-audit-route:explicit-counterexample-objective",
+            source_run_id=source_run_id,
+            strategy_reused=True,
+        )
+    if checkpoint.proof_state != target:
+        checkpoint.transition(
+            target,
+            f"definition-audit-outcome:{typed_outcome.value}",
+            source_run_id=source_run_id,
+            strategy_reused=True,
+        )
+    checkpoint.recovery_events.append({
+        "event_type": "TYPED_DEFINITION_AUDIT_OUTCOME",
+        "event_id": fingerprint,
+        "outcome": typed_outcome.value,
+        "artifact_hash": str(artifact_hash),
+        "source_run_id": str(source_run_id),
+        "target_state": target.value,
+        "missing_definition_ids": list(missing),
+        "counterexample_objective": objective,
+        "created_at": time.time(),
+    })
+    checkpoint.clear_adapter_blocked("typed-definition-audit-routed")
+    return True
 
 
 def checkpoint_compatibility_errors(
@@ -862,6 +1030,17 @@ def append_checkpoint_change_journal(
         "schema_version": checkpoint.schema_version,
         "typed_transport_version": checkpoint.typed_transport_version,
         "host_compiler_version": checkpoint.host_compiler_version,
+        "premise_outcome_type": checkpoint.premise_outcome_type,
+        "premise_outcome_fingerprint": checkpoint.premise_outcome_fingerprint,
+        "premise_outcome_owner": checkpoint.premise_outcome_owner,
+        "premise_decision": checkpoint.premise_decision,
+        "premise_confidence": checkpoint.premise_confidence,
+        "premise_evidence": dict(checkpoint.premise_evidence),
+        "premise_backjump_target": checkpoint.premise_backjump_target,
+        "premise_invalidated_artifacts": list(
+            checkpoint.premise_invalidated_artifacts
+        ),
+        "ledger_version": checkpoint.ledger_version,
         "updated_at": checkpoint.updated_at,
     }
     encoded = (
@@ -1277,6 +1456,236 @@ def persist_validated_artifact(
     checkpoint.validated_artifacts[role] = ref
     save_checkpoint(checkpoint_path, checkpoint)
     return ref
+
+
+_APPROACH_DEPENDENT_ROLES = frozenset({
+    "strategy",
+    "strategy_tournament",
+    "research_contract",
+    "generator",
+    "critic",
+    "synthesis",
+    "decomposer",
+    "math_ir_translator",
+    "formalizer",
+    "proof_search",
+    "prover",
+    "adversarial_proponent",
+    "judge",
+})
+
+
+def premise_outcome_fingerprint(
+    *,
+    target_obligation_id: str,
+    outcome_type: str,
+    decision: str,
+    evidence: dict[str, Any],
+    query_hash: str = "",
+    environment_hash: str = "",
+) -> str:
+    """Bind one semantic outcome to its target, evidence, and environment."""
+    payload = {
+        "target_obligation_id": str(target_obligation_id),
+        "outcome_type": PremiseAuditOutcomeType(outcome_type).value,
+        "decision": str(decision),
+        "evidence": evidence,
+        "query_hash": str(query_hash),
+        "environment_hash": str(environment_hash),
+    }
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+
+
+def reconcile_checkpoint_ledger_version(
+    checkpoint: OrchestrationCheckpoint,
+    authoritative_ledger_version: int,
+) -> bool:
+    """Repair advisory checkpoint version without inventing ledger commits."""
+    authoritative = int(authoritative_ledger_version)
+    if authoritative < 0:
+        raise ValueError("ledger version cannot be negative")
+    if checkpoint.ledger_version == authoritative:
+        return False
+    previous = checkpoint.ledger_version
+    checkpoint.ledger_version = authoritative
+    checkpoint.recovery_events.append({
+        "event_type": "LEDGER_VERSION_RECONCILED",
+        "event_id": hashlib.sha256(
+            f"{checkpoint.ledger_id}:{previous}:{authoritative}".encode()
+        ).hexdigest(),
+        "checkpoint_version_before": previous,
+        "authoritative_ledger_version": authoritative,
+        "checkpoint_version_after": authoritative,
+        "created_at": time.time(),
+    })
+    checkpoint.last_transition_reason = (
+        f"ledger-authoritative-version-repair:{previous}->{authoritative}"
+    )
+    checkpoint.updated_at = time.time()
+    return True
+
+
+def apply_typed_premise_outcome(
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    outcome_type: PremiseAuditOutcomeType,
+    decision: str,
+    owner: str,
+    confidence: float,
+    evidence: dict[str, Any],
+    source_run_id: str,
+    backjump_target: str = "",
+    query_hash: str = "",
+    environment_hash: str = "",
+) -> bool:
+    """Persist a typed audit decision, then route through semantic states.
+
+    Returns ``False`` for an idempotent replay. A repairable definition gap is
+    admitted only when both query and environment fingerprints are present and
+    the resulting fingerprint has not already been consumed.
+    """
+    if checkpoint.proof_state != ProofState.PREMISE_AUDIT:
+        if (
+            checkpoint.premise_outcome_fingerprint
+            and checkpoint.premise_outcome_fingerprint
+            in checkpoint.consumed_premise_fingerprints
+        ):
+            return False
+        raise ValueError(
+            "typed premise outcome requires an active PREMISE_AUDIT"
+        )
+    outcome = PremiseAuditOutcomeType(outcome_type)
+    if outcome == PremiseAuditOutcomeType.REPAIRABLE_DEFINITION_GAP and (
+        not query_hash or not environment_hash
+    ):
+        raise ValueError(
+            "REPAIRABLE_DEFINITION_GAP requires query and environment hashes"
+        )
+    fingerprint = premise_outcome_fingerprint(
+        target_obligation_id=checkpoint.target_obligation_id,
+        outcome_type=outcome.value,
+        decision=decision,
+        evidence=evidence,
+        query_hash=query_hash,
+        environment_hash=environment_hash,
+    )
+    if fingerprint in checkpoint.consumed_premise_fingerprints:
+        return False
+
+    artifact = {
+        "schema_version": 1,
+        "outcome_type": outcome.value,
+        "decision": str(decision),
+        "owner": str(owner),
+        "confidence": float(confidence),
+        "evidence": evidence,
+        "backjump_target": str(backjump_target),
+        "query_hash": str(query_hash),
+        "environment_hash": str(environment_hash),
+        "fingerprint": fingerprint,
+    }
+    persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="premise_outcome",
+        payload=artifact,
+        dependencies=[
+            ref.sha256 for role, ref in sorted(
+                checkpoint.validated_artifacts.items()
+            ) if role != "premise_outcome"
+        ],
+        source_run_id=source_run_id,
+    )
+    checkpoint.premise_outcome_type = outcome.value
+    checkpoint.premise_outcome_fingerprint = fingerprint
+    checkpoint.premise_outcome_owner = str(owner)
+    checkpoint.premise_decision = str(decision)
+    checkpoint.premise_confidence = float(confidence)
+    checkpoint.premise_evidence = dict(evidence)
+    checkpoint.premise_backjump_target = str(backjump_target)
+
+    invalidated = []
+    if outcome in {
+        PremiseAuditOutcomeType.APPROACH_FAILED,
+        PremiseAuditOutcomeType.PREMISE_INVALIDATED,
+        PremiseAuditOutcomeType.PARENT_STATEMENT_UNDERSPECIFIED,
+    }:
+        for role in sorted(_APPROACH_DEPENDENT_ROLES):
+            ref = checkpoint.validated_artifacts.pop(role, None)
+            if ref is None:
+                continue
+            invalidated.append(ref.sha256)
+            checkpoint.invalidated_artifacts[ref.sha256] = {
+                **asdict(ref),
+                "audit_only": True,
+                "reason_codes": [outcome.value],
+                "premise_outcome_fingerprint": fingerprint,
+            }
+    checkpoint.premise_invalidated_artifacts = invalidated
+    checkpoint.consumed_premise_fingerprints.append(fingerprint)
+    checkpoint.recovery_events.append({
+        "event_type": "TYPED_PREMISE_OUTCOME",
+        "event_id": fingerprint,
+        "outcome_type": outcome.value,
+        "owner": owner,
+        "decision": decision,
+        "confidence": float(confidence),
+        "backjump_target": backjump_target,
+        "invalidated_artifact_hashes": invalidated,
+        "source_run_id": source_run_id,
+        "created_at": time.time(),
+    })
+    # The decision and its evidence must be durable while PREMIS_AUDIT is still
+    # the current state. Only then may the semantic transition be committed.
+    save_checkpoint(checkpoint_path, checkpoint)
+
+    if outcome == PremiseAuditOutcomeType.PREMISE_SUSPECTED:
+        checkpoint.last_transition_reason = (
+            "premise-suspected:await-independent-auditor-and-proponent"
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        return True
+    intermediate = {
+        PremiseAuditOutcomeType.APPROACH_FAILED: ProofState.APPROACH_FAILED,
+        PremiseAuditOutcomeType.PREMISE_INVALIDATED: (
+            ProofState.PREMISE_INVALIDATED
+        ),
+        PremiseAuditOutcomeType.PARENT_STATEMENT_UNDERSPECIFIED: (
+            ProofState.PARENT_STATEMENT_UNDERSPECIFIED
+        ),
+        PremiseAuditOutcomeType.REPAIRABLE_DEFINITION_GAP: (
+            ProofState.REPAIRABLE_DEFINITION_GAP
+        ),
+    }[outcome]
+    checkpoint.transition(
+        intermediate,
+        f"typed-premise-outcome:{outcome.value}",
+        source_run_id=source_run_id,
+        strategy_reused=False,
+    )
+    save_checkpoint(checkpoint_path, checkpoint)
+    destination = (
+        ProofState.DEFINITION_RESOLUTION
+        if outcome == PremiseAuditOutcomeType.REPAIRABLE_DEFINITION_GAP
+        else ProofState.STRATEGY_TOURNAMENT
+    )
+    checkpoint.transition(
+        destination,
+        (
+            "repairable-definition-gap:new-query-environment"
+            if outcome == PremiseAuditOutcomeType.REPAIRABLE_DEFINITION_GAP
+            else f"{outcome.value.lower()}:typed-backjump-new-route"
+        ),
+        source_run_id=source_run_id,
+        strategy_reused=False,
+    )
+    if backjump_target:
+        checkpoint.target_obligation_id = backjump_target
+    save_checkpoint(checkpoint_path, checkpoint)
+    return True
 
 
 def load_validated_artifacts(

@@ -6,6 +6,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Mapping
 
+from autoresearch.prefill.cursor_strategy import (
+    CursorStrategyAdapter,
+    StrategyProviderError,
+    compile_memo_to_plan_id,
+)
 from autoresearch.prefill.definition_resolution import (
     build_definition_query,
     load_resolution_store,
@@ -64,8 +69,6 @@ def run_host_definition_gate(
     """Execute exactly one Autonomous Definition Resolution transaction."""
     if checkpoint.proof_state not in {
         ProofState.DEFINITION_RESOLUTION,
-        ProofState.DECOMPOSER,
-        ProofState.STRATEGY_TOURNAMENT,
         ProofState.MATHEMATICAL_STAGNATION,
     }:
         return checkpoint, ""
@@ -205,37 +208,74 @@ def run_host_definition_gate(
             "definition-resolution-commit:environment-changed",
             strategy_reused=False,
         )
-    elif result.status == "PARENT_STATEMENT_UNDERSPECIFIED":
+    elif result.status in {
+        "PARENT_STATEMENT_UNDERSPECIFIED",
+        "INTERFACE_REQUIRED",
+        "IDENTICAL_QUERY_EXHAUSTED",
+    }:
+        checkpoint.definition_backjump_target = (
+            checkpoint.parent_statement_sha256 or checkpoint.root_goal_sha256
+        )
+        checkpoint.premise_outcome_type = (
+            ProofState.PARENT_STATEMENT_UNDERSPECIFIED.value
+        )
+        checkpoint.premise_outcome_owner = "definition_resolution"
+        checkpoint.premise_decision = result.status
+        checkpoint.premise_confidence = 1.0
+        checkpoint.premise_evidence = {
+            "query_hash": result.query_hash,
+            "exhaustion_hash": result.exhaustion_hash,
+            "interface_hash": result.interface_hash,
+            "reason": result.reason,
+        }
+        checkpoint.premise_backjump_target = (
+            checkpoint.definition_backjump_target
+        )
+        checkpoint.premise_outcome_fingerprint = result.query_hash
+        if result.query_hash not in checkpoint.consumed_premise_fingerprints:
+            checkpoint.consumed_premise_fingerprints.append(result.query_hash)
         checkpoint.transition(
             ProofState.PARENT_STATEMENT_UNDERSPECIFIED,
-            "definition-interpretations-change-parent-truth",
-            strategy_reused=True,
+            "definition-resolution-exhausted:parent-underspecified",
+            strategy_reused=False,
         )
-        checkpoint.definition_backjump_target = (
-            checkpoint.parent_statement_sha256 or checkpoint.root_goal_sha256
-        )
+        save_checkpoint(checkpoint_path, checkpoint)
         checkpoint.transition(
-            ProofState.PREMISE_AUDIT,
-            "parent-statement-underspecified:premise-audit-and-backjump",
-            strategy_reused=True,
-        )
-    elif result.status == "INTERFACE_REQUIRED":
-        checkpoint.definition_backjump_target = (
-            checkpoint.parent_statement_sha256 or checkpoint.root_goal_sha256
-        )
-        checkpoint.transition(
-            ProofState.PREMISE_AUDIT,
-            "definition-exhaustion:conditional-interface-axioms-required",
-            strategy_reused=True,
+            ProofState.STRATEGY_TOURNAMENT,
+            "parent-underspecified:typed-backjump-new-target",
+            strategy_reused=False,
         )
     else:
         checkpoint.definition_backjump_target = (
             checkpoint.parent_statement_sha256 or checkpoint.root_goal_sha256
         )
+        checkpoint.premise_outcome_type = (
+            ProofState.PARENT_STATEMENT_UNDERSPECIFIED.value
+        )
+        checkpoint.premise_outcome_owner = "definition_resolution"
+        checkpoint.premise_decision = result.status
+        checkpoint.premise_confidence = 1.0
+        checkpoint.premise_evidence = {
+            "query_hash": result.query_hash,
+            "exhaustion_hash": result.exhaustion_hash,
+            "reason": result.reason,
+        }
+        checkpoint.premise_backjump_target = (
+            checkpoint.definition_backjump_target
+        )
+        checkpoint.premise_outcome_fingerprint = result.query_hash
+        if result.query_hash not in checkpoint.consumed_premise_fingerprints:
+            checkpoint.consumed_premise_fingerprints.append(result.query_hash)
         checkpoint.transition(
             ProofState.PARENT_STATEMENT_UNDERSPECIFIED,
             "definition-exhaustion:no-viable-interface:typed-backjump",
-            strategy_reused=True,
+            strategy_reused=False,
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        checkpoint.transition(
+            ProofState.STRATEGY_TOURNAMENT,
+            "parent-underspecified:typed-backjump-new-target",
+            strategy_reused=False,
         )
     save_checkpoint(checkpoint_path, checkpoint)
     return checkpoint, result.status
@@ -270,6 +310,7 @@ def run_architecture_v7_entry(
     event_id: str,
     elaborated_theorem_id: str = "",
     proposition_hash: str = "",
+    strategy_adapter: CursorStrategyAdapter | None = None,
 ) -> OrchestrationCheckpoint:
     """Run exactly once per strategy event; never once per outer iteration."""
     if checkpoint.proof_state != ProofState.STRATEGY_TOURNAMENT:
@@ -304,6 +345,50 @@ def run_architecture_v7_entry(
         elaborated_theorem_id=elaborated_theorem_id,
         proposition_hash=proposition_hash,
     )
+    advisory_plan_id = ""
+    if strategy_adapter is not None:
+        checkpoint.strategy_provider = "cursor-sdk"
+        checkpoint.strategy_provider_configured = strategy_adapter.configured()
+        checkpoint.strategy_model_id = strategy_adapter.model_id
+        try:
+            memo, telemetry = strategy_adapter.advise(
+                evidence={
+                    "event_id": event_id,
+                    "event_type": event_type.value,
+                    "target_ref": target_ref,
+                    "parent_obligation_ref": parent_obligation_ref,
+                    "elaborated_theorem_id": elaborated_theorem_id,
+                    "proposition_hash": proposition_hash,
+                    "definition_ids": definitions,
+                    "unresolved_definition_ids": unresolved_definitions,
+                    "theorem_card_ids": card_ids,
+                    "evidence_refs": evidence_refs,
+                },
+                registered_plan_ids=tuple(plan.plan_id for plan in plans),
+            )
+            advisory_plan_id = compile_memo_to_plan_id(
+                memo, tuple(plan.plan_id for plan in plans),
+            )
+            checkpoint.strategy_run_status = telemetry.status
+            checkpoint.strategy_agent_id = telemetry.agent_id
+            checkpoint.strategy_run_id = telemetry.run_id
+            checkpoint.strategy_prompt_hash = telemetry.prompt_hash
+            checkpoint.strategy_evidence_hash = telemetry.evidence_hash
+            checkpoint.strategy_memo_hash = telemetry.memo_hash
+            checkpoint.strategy_latency_ms = telemetry.latency_ms
+            checkpoint.strategy_provider_configured = telemetry.configured
+            if checkpoint.adapter_status:
+                checkpoint.clear_adapter_blocked(
+                    "cursor-strategy-authenticated",
+                )
+        except StrategyProviderError as exc:
+            checkpoint.strategy_run_status = exc.code
+            checkpoint.adapter_blocked(
+                f"{exc.code}:{exc.classification}",
+                status="INTEGRATION_BLOCKED",
+            )
+            save_checkpoint(checkpoint_path, checkpoint)
+            return checkpoint
     decisions = evaluate_feasibility(
         plans,
         registered_definition_ids=definitions,
@@ -312,12 +397,18 @@ def run_architecture_v7_entry(
         allowed_assumption_ids=(),
         no_go_hashes=tuple(checkpoint.invalidated_artifacts),
     )
+    critic_ranked_ids = tuple(plan.plan_id for plan in reversed(plans))
+    if advisory_plan_id:
+        critic_ranked_ids = (
+            advisory_plan_id,
+            *(item for item in critic_ranked_ids if item != advisory_plan_id),
+        )
     tournament = run_tournament(
         event_id=event_id,
         event_type=event_type,
         plans=plans,
         decisions=decisions,
-        critic_ranked_plan_ids=tuple(plan.plan_id for plan in reversed(plans)),
+        critic_ranked_plan_ids=critic_ranked_ids,
         critic_reason_codes=(CriticReason.MAXIMIZES_INFORMATION_GAIN,),
     )
     checkpoint.strategy_event_id = event_id
