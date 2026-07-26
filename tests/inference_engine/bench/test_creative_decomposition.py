@@ -51,6 +51,7 @@ from scripts.migrate_creative_decomposition_v3 import (
     atomic_snapshot,
     migrate_checkpoint,
 )
+from scripts.agent_gan_repl import _typed_package_text
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -245,6 +246,16 @@ def test_synthesis_transport_uses_only_scoped_short_choice_codes():
     assert "candidate_id" not in prompt
     assert "ranked_candidate_id" not in prompt
     assert "selected_candidate_id" not in prompt
+
+    package_text = _typed_package_text({
+        "candidate_choices": ({
+            "choice_code": "A",
+            "summary_id": "strict_reduction",
+            "candidate_hash": "f" * 64,
+        },),
+    }, role="decomposer")
+    assert "A strict_reduction" in package_text
+    assert "choice_id" not in package_text
 
 
 def test_semantic_stagnation_changes_decomposition_without_global_strategy():

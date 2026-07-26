@@ -61,6 +61,40 @@ creates a child directly. Completed GAN runs, transcripts, checkpoints, and
 ledger updates remain durable even when the candidate strategy is reverted or
 fixed evaluation fails.
 
+## Event-driven orchestration and recovery
+
+The persisted proof machine, not the outer loop counter, selects the next
+role. Its states include `NEEDS_STRATEGY`, `GENERATOR`, `CRITIC`,
+`DEFINITION_AUDITOR`, `COUNTEREXAMPLE_WORKER`, `SYNTHESIS`, `REFRAME`,
+`DECOMPOSER`, the typed Math IR/Host/Lean gates, `PROOF_SEARCH`,
+`ADVERSARIAL_REVIEW`, `JUDGE`, `COMMIT`, `APPROACH_FAILED`, `PREMISE_AUDIT`,
+`BLOCKED`, and `IDLE`. Every committed transition records the
+exact target, candidate/strategy hashes, parent statement/signature hashes,
+root-goal hash, ledger identity/version, validated artifact hashes and
+dependencies, retry counters, source run IDs, transition reason, resume
+origin, timestamps, and whether Strategy was reused. The checkpoint and its
+content-addressed artifacts are atomic private files with mode `0600`.
+
+Protocol, schema, JSON, EOS, output-budget, and transient role failures retry
+the same role within a bounded budget. Decomposer contract failures resume
+Decomposer. Lean signature/elaboration failures resume Formalizer; Prover
+proof failures resume Prover unless the typed error invalidates Formalizer.
+Host/Judge rejection returns to the earliest invalid artifact. Premise
+suspicion enters independent `PREMISE_AUDIT`. Only confirmed approach failure,
+audited premise invalidation or failed rescue, target/branch invalidation,
+explicit operator request, or configured mathematical stagnation may enter
+`NEEDS_STRATEGY`. Infrastructure failures retain the separate circuit breaker
+and never count as mathematical stagnation. Exhausted role budgets enter
+`BLOCKED`; they do not silently burn another Strategy call.
+
+Each validated certified-role artifact is reusable only when its schema/hash,
+ordered dependency hashes, target, candidate, parent statement/signature,
+root goal, and ledger identity/version still match. Partial or rejected
+artifacts are audit-only. A restart resumes the first unresolved role and
+reports its exact state; a candidate remains active until an explicit Strategy
+trigger. `COMMIT` is idempotent: the deterministic child ID and certificate
+hash prevent duplicate ledger children after a crash.
+
 ## Certified decomposition
 
 Certified decomposition is the authoritative and only child-persistence path.
@@ -74,12 +108,15 @@ fails open without ledger mutation.
 
 Every role artifact binds the exact target ID, parent statement hash, immutable
 root-goal hash, producer role/run ID, and all upstream artifact hashes.
-Decomposer labels are temporary: only the host assigns persistent IDs after
-the complete certificate passes. The proposed graph must be acyclic, all
-labels must exist, and the one-step certificate must contain exactly one child
-and reduction label. That child—including a definition obligation—must occur
-in the explicit reduction contract. Deeper graphs are discovered recursively
-across later certified iterations.
+Decomposer labels are temporary: only the host assigns a persistent ID after
+the complete certificate passes. The current artifact schema contains exactly
+one `child` object and one complete `reduction_contract` object; it has no
+`children`, dependency-edge, child-label-list, or reduction-label-list fields.
+The contract binds the exact child label, exact parent statement, exact public
+assumptions, and a substantive child-to-parent derivation. If several missing
+definitions are inseparable, Decomposer must preserve all of them inside one
+bundled `DEFINITION` child and bind every source definition label. Deeper
+graphs are discovered recursively across later certified iterations.
 
 Formalizer must preserve an existing parent Lean signature/hash exactly, or
 propose a new parent signature only for an `UNFORMALIZED` parent. Parent and
@@ -105,6 +142,39 @@ benchmark here. Model/tokenizer/quantization/rope/window/cache-format changes
 must be deployed outside this supervisor. Cold benchmarks are explicit,
 separate invocations of `scripts/benchmark_prefill_architecture.py`.
 
+## Creative decomposition v3
+
+Decomposer and Synthesis may first reason in an isolated private scratchpad
+using prose or LaTeX. This consumes research budget but is untrusted,
+audit-only, never parsed, and never enters Math IR, Lean, a gate, or the
+ledger. The Host subsequently generates a finite menu of versioned typed moves
+with scoped operands, preconditions, strict complexity metrics, theorem-card
+support, and content hashes. Model transport contains candidate IDs and typed
+reason codes only.
+
+The registry includes case split, domain restriction, irrelevant-assumption
+removal, holomorphic extension, singularity contradiction, and retained
+definition/local-convergence/growth/bridge moves. Exact or alpha-equivalent
+ancestors, disconnected tasks, unsupported symbols, unverified premises,
+duplicates, and non-simplifying moves are excluded before ranking. Exactly one
+child may continue through the existing Host and Lean gates.
+
+`SYNTHESIS`/`REFRAME` is event-driven after semantic stagnation, repeated no
+move, or sufficiently broad cross-role evidence. Counterexamples remain
+advisory unless independently verified. Reframing may change a case partition
+or viewpoint; only a typed whole-approach failure returns to global Strategy.
+
+The local holomorphicity candidate is explicitly a special-case lemma: poles
+lie outside an open disk, the terms converge locally uniformly there, the sum
+is holomorphic, and agreement with a nonzero simple-pole expression produces
+the proposed contradiction. It never claims to prove the parent; a separate
+parent case-split reduction is mandatory.
+
+Theorem cards are bounded deterministic records from the pinned local Mathlib
+checkout. Each contains an actual declaration name and type, import, source
+and environment hashes, tags, and required hypotheses. CI elaborates all card
+names with `#check` and rejects stale hashes.
+
 Retained KV capacity—not nominal Prefill admission—is the hard model-call
 limit. The deployed default is sink 4 + window 2048 = 2052 tokens. Every
 Strategy, Generator, Critic, premise, and certified-role chat template is
@@ -124,14 +194,39 @@ Strategy proposes exactly one next proof step/question. Generator emits exactly
 one bounded ISSUE_RESPONSE. Before Generator decode, the host reserves enough
 retained capacity for Critic's fixed package plus the complete Generator
 output; Critic receives that output byte-for-byte with the same exact
-ProofStepInterface. Certified Decomposer proposes exactly one child per
-certificate; recursive later iterations perform deeper decomposition.
+ProofStepInterface. Certified Decomposer proposes exactly one structurally
+singular child per certificate; recursive later iterations perform deeper
+decomposition. A complete multi-child response receives one bounded fresh
+protocol-repair call with exact host validation errors and all rejected
+obligations, requiring one bundled child. An output-cap/no-EOS response
+receives one bounded fresh compact retry from the original certified package,
+never a JSON continuation or splice. A second violation fails closed before
+Formalizer, Prover, or Judge.
 
 If an exact statement, structured artifact field, ISSUE block, dependency
 node, or Lean source is indivisible and too large, fail closed with
 `SEMANTIC_UNIT_TOO_LARGE`. Never slice tokens or strings, drop tails, or call a
 model summary lossless. Recursive decomposition preserves exact certified
 interfaces and reduction semantics, not arbitrary prose-history equivalence.
+Structured-role output is budgeted from actual retained availability after the
+tokenized prompt and control reserve. Decomposer must retain at least 512
+output tokens within the 2052-token window; otherwise it fails before decode
+with `STRUCTURED_RESPONSE_BUDGET_TOO_SMALL`. No-EOS and incomplete JSON remain
+audit-only and never enter formal review or persistence.
+
+Structured Artifact closure is a transport contract, not a conversational
+convention. Models commonly append prose, an extra brace, or a second attempted
+Artifact. The former implementation checked role-specific semantic validity
+after tokens had already been generated; a syntactically closed but
+schema-invalid first object therefore failed to stop transport, and divergent
+repair prompts let the same defect recur in later roles. Every structured role
+now uses one registered, string/escape-aware closure scanner. Generation stops
+at the first balanced top-level object after the exact heading/marker with
+`semantic_complete`; normal strict JSON, schema, binding, Lean, and host gates
+then accept or reject that first object. They never scan ahead to a replacement.
+Historical output with an extra brace, prose, Markdown fence, or second object
+remains strictly invalid. The deterministic structured-output contract suite is
+a mandatory local and GitHub CI gate for every registered role.
 
 The concise stable `STRATEGY_CONTRACT` in `supervisor.py` is the authoritative
 deterministic projection of this human-owned program for Strategy inference.

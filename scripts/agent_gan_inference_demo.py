@@ -61,11 +61,11 @@ def build_critic_context(
 
 
 def decode_complete_response(tokenizer, role: str, token_ids, metadata: dict) -> str:
-    """Decode only EOS-terminated structured output.
+    """Decode only EOS- or host-validated structured output.
 
-    A capped/stalled partial response remains available through token-count
-    metadata and streaming logs for audit, but cannot enter another role,
-    parser, or proof ledger.
+    A semantic stop is trusted only when the caller's streaming validator
+    identified one complete artifact. Capped/stalled partial output remains
+    audit-only and cannot enter another role, parser, or proof ledger.
     """
     if not metadata.get("complete", False):
         raise SemanticResponseIncomplete(
@@ -89,6 +89,7 @@ def _infer(
     on_token=None,
     max_response_tokens=None,
     semantic_progress=None,
+    semantic_complete=None,
     max_semantic_stall_chunks: int = 3,
     client_label: str = "agent-gan",
     max_retained_tokens: int = 0,
@@ -121,6 +122,7 @@ def _infer(
         )
         stop_reason = "unknown"
         stalled_chunks = 0
+        semantic_completed = False
         while response_limit is None or len(generated) < response_limit:
             before_count = len(generated)
             chunk = (
@@ -134,6 +136,12 @@ def _infer(
                     on_token(generated)
                 if first_at is None:
                     first_at = time.perf_counter()
+                if semantic_complete is not None and semantic_complete(generated):
+                    semantic_completed = True
+                    stop_reason = "semantic_complete"
+                    break
+            if semantic_completed:
+                break
             new_tokens = generated[before_count:]
             if semantic_progress is not None and new_tokens:
                 if semantic_progress(new_tokens):
@@ -173,8 +181,9 @@ def _infer(
         "e2e_s": done - started,
         "delta": _delta(before, after),
         "stop_reason": stop_reason,
-        "complete": stop_reason == "eos",
+        "complete": stop_reason in {"eos", "semantic_complete"},
         "eos_reached": stop_reason == "eos",
+        "semantic_complete": semantic_completed,
         "response_cap_exhausted": response_cap_exhausted,
     }
 

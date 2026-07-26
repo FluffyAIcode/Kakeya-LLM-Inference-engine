@@ -1,12 +1,35 @@
 import json
+import os
 import pytest
+from types import SimpleNamespace
 
+from autoresearch.prefill.live_status import AtomicLiveStatus
+from autoresearch.prefill.orchestration_state import (
+    ARCHITECTURE_VERSION,
+    BlockedEventType,
+    BlockedExitEvent,
+    OrchestrationCheckpoint,
+    ProofState,
+    apply_blocked_exit_event,
+    archive_decomposition_rejection,
+    classify_host_gate_defects,
+    classify_failure,
+    compact_decomposition_novelty_ledger,
+    earliest_invalid_role,
+    load_checkpoint as load_orchestration_checkpoint,
+    persist_validated_artifact,
+    save_checkpoint as save_orchestration_checkpoint,
+)
 from autoresearch.prefill.semantic_decompose import (
     SemanticUnitTooLarge,
     admit_token_ids,
     downstream_output_cap,
 )
 from autoresearch.prefill.supervisor import (
+    BLOCKED_HEARTBEAT_INTERVAL_S,
+    RESUMABLE_ORCHESTRATION_STATES,
+    BlockedIdleLogger,
+    CandidateNoveltyStagnation,
     append_result,
     best_kept,
     build_host_candidate,
@@ -15,11 +38,18 @@ from autoresearch.prefill.supervisor import (
     build_strategy_research_state,
     check_runtime_health,
     extract_gan_failure_reason,
+    failure_class_for_exception,
     infrastructure_failure_fingerprint,
+    is_resumable_checkpoint,
+    is_nonfatal_semantic_continuation,
+    parse_strategy_candidate_transport,
     parse_research_verdict,
     read_results,
     repair_candidate_schema,
     render_candidate,
+    run_supervisor_iterations,
+    select_novel_candidate,
+    should_resume_downstream,
     should_keep,
     StrategyPrefillHeartbeat,
     StrategyPrefillBudgetExceeded,
@@ -29,6 +59,873 @@ from autoresearch.prefill.supervisor import (
     validate_candidate,
 )
 from pathlib import Path
+
+
+def test_live_status_atomic_transitions_and_permissions(tmp_path):
+    path = tmp_path / "proof_live_status.json"
+    status = AtomicLiveStatus(
+        path,
+        supervisor_pid=os.getpid(),
+        iteration=7,
+        run_id="br_test",
+        min_interval_s=0,
+    )
+    assert status.emit(
+        phase="generator_prefill",
+        role="generator",
+        state="prefill",
+        progress_current=128,
+        progress_total=512,
+        progress_unit="tokens",
+        active_obligation_id="RH-C2-child",
+        worker="allens",
+        source="agent_gan_repl",
+        force=True,
+    )
+    first = json.loads(path.read_text())
+    assert first["sequence"] == 1
+    assert first["state"] == "prefill"
+    assert first["progress"] == {
+        "current": 128,
+        "total": 512,
+        "unit": "tokens",
+    }
+    status.emit(
+        phase="generator_decode",
+        role="generator",
+        state="decode",
+        progress_current=32,
+        progress_total=320,
+        progress_unit="tokens",
+        active_obligation_id="RH-C2-child",
+        worker="primary",
+        source="agent_gan_repl",
+        hit_source="primary_hot",
+        force=True,
+    )
+    second = json.loads(path.read_text())
+    assert second["sequence"] == 2
+    assert second["state"] == "decode"
+    assert second["started_at"] >= first["started_at"]
+    assert path.stat().st_mode & 0o077 == 0
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_live_status_never_serializes_private_values(tmp_path):
+    path = tmp_path / "proof_live_status.json"
+    status = AtomicLiveStatus(
+        path,
+        supervisor_pid=os.getpid(),
+        min_interval_s=0,
+    )
+    status.emit(
+        phase="/Users/private/prompt",
+        role="api_key=secret",
+        state="review",
+        active_obligation_id="ROOT",
+        source="agent_gan_repl",
+        force=True,
+    )
+    serialized = path.read_text()
+    assert "/Users/" not in serialized
+    assert "private/prompt" not in serialized
+    assert "secret" not in serialized
+
+
+def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
+    state_path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        resume_origin="DECOMPOSER",
+        last_transition_reason="decomposer protocol repair failed",
+        strategy_reused=True,
+        retry_counters={"DECOMPOSER": 1},
+        active_gate="HOST_TYPED_IR_GATE",
+        adapter_status="",
+        typed_ir_hash="b" * 64,
+        proposition_hash="c" * 64,
+        elaborated_theorem_id="typed_test",
+        lean_contract_id="lean-signature-test",
+        lean_contract_version=1,
+        lean_symbol_table_id="lean-symbols-test",
+        lean_symbol_table_version=1,
+        formalizer_unit_hashes={"PARENT_SIGNATURE": "a" * 64},
+    )
+    save_orchestration_checkpoint(state_path, checkpoint)
+    monkeypatch.setenv(
+        "KAKEYA_ORCHESTRATION_STATE_PATH",
+        str(state_path),
+    )
+    live_path = tmp_path / "proof_live_status.json"
+    status = AtomicLiveStatus(
+        live_path,
+        supervisor_pid=os.getpid(),
+        min_interval_s=0,
+    )
+    status.emit(
+        phase="decomposer_prefill",
+        role="decomposer",
+        state="prefill",
+        force=True,
+    )
+    live = json.loads(live_path.read_text())
+    assert live["orchestration_state"] == "DECOMPOSER"
+    assert live["active_role"] == "decomposer"
+    assert live["resume_origin"] == "DECOMPOSER"
+    assert live["retry_count"] == 1
+    assert live["strategy_reused"] is True
+    assert live["architecture_version"] == ARCHITECTURE_VERSION
+    assert live["active_gate"] == "HOST_TYPED_IR_GATE"
+    assert live["typed_ir_hash"] == "b" * 64
+    assert live["proposition_hash"] == "c" * 64
+    assert live["elaborated_theorem_id"] == "typed_test"
+    assert live["lean_contract_id"] == "lean-signature-test"
+    assert live["lean_contract_version"] == 1
+    assert live["lean_symbol_table_id"] == "lean-symbols-test"
+    assert live["lean_symbol_table_version"] == 1
+    assert live["validated_formalizer_unit_hashes"] == {
+        "PARENT_SIGNATURE": "a" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ProofState.MATH_IR_TRANSLATION,
+        ProofState.HOST_TYPED_IR_GATE,
+        ProofState.LEAN_ELABORATION_GATE,
+        ProofState.PROOF_SEARCH,
+    ),
+)
+def test_zero_agent_gate_checkpoints_resume_before_strategy_replanning(state):
+    assert state in RESUMABLE_ORCHESTRATION_STATES
+
+
+def test_blocked_status_exposes_resume_role_without_private_state(
+    tmp_path,
+    monkeypatch,
+):
+    state_path = tmp_path / "proof_orchestration.json"
+    save_orchestration_checkpoint(
+        state_path,
+        OrchestrationCheckpoint(
+            state=ProofState.DEFINITION_AUDITOR.value,
+            current_role="definition_auditor",
+            adapter_status="ADAPTER_BLOCKED",
+            blocked_reason="legacy definition transport malformed",
+        ),
+    )
+    monkeypatch.setenv("KAKEYA_ORCHESTRATION_STATE_PATH", str(state_path))
+    live_path = tmp_path / "proof_live_status.json"
+    AtomicLiveStatus(
+        live_path,
+        supervisor_pid=os.getpid(),
+        min_interval_s=0,
+    ).emit(
+        phase="blocked_idle",
+        role="orchestrator",
+        state="idle",
+        force=True,
+    )
+    live = json.loads(live_path.read_text())
+    assert live["execution_state"] == "idle"
+    assert live["execution_phase"] == "blocked_idle"
+    assert live["adapter_status"] == "ADAPTER_BLOCKED"
+    assert live["blocked_category"] == "ADAPTER_BLOCKED"
+    assert live["blocked_reason"] == "legacy definition transport malformed"
+    assert live["resume_role"] == "definition_auditor"
+    assert BLOCKED_HEARTBEAT_INTERVAL_S <= 30
+
+
+def test_live_status_distinguishes_decomposition_search_fields(
+    tmp_path,
+    monkeypatch,
+):
+    state_path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        decomposition_iteration=12,
+        viewpoint="local_global_bridge",
+        semantic_rejection={"proposal_sha256": "a" * 64},
+        novel_proposals=11,
+        strategy_reused=True,
+    )
+    save_orchestration_checkpoint(state_path, checkpoint)
+    monkeypatch.setenv("KAKEYA_ORCHESTRATION_STATE_PATH", str(state_path))
+    live_path = tmp_path / "proof_live_status.json"
+    AtomicLiveStatus(
+        live_path,
+        supervisor_pid=os.getpid(),
+        min_interval_s=0,
+    ).emit(
+        phase="decomposer_decode",
+        role="decomposer",
+        state="decode",
+        force=True,
+    )
+    live = json.loads(live_path.read_text())
+    assert live["decomposition_iteration"] == 12
+    assert ("protocol_" + "attempt") not in live
+    assert live["viewpoint"] == "local_global_bridge"
+    assert live["semantic_rejection"] is True
+    assert live["novel_proposals"] == 11
+
+
+def test_semantic_proposal_archive_does_not_consume_adapter_budget(tmp_path):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        decomposition_iteration=1,
+        viewpoint="definitions",
+        strategy_reused=True,
+    )
+    for index in range(11):
+        archive_decomposition_rejection(
+            path,
+            checkpoint,
+            proposal={"child": {"statement": f"proposal {index}"}},
+            rejection_reasons=["child is not strictly simpler"],
+            semantic_hash=f"{index:064x}",
+            structural_signature=f"{index + 20:064x}",
+            source_run_id=f"run-{index}",
+        )
+        checkpoint.begin_decomposition_iteration(
+            f"viewpoint-{index}",
+            "semantic proposal rejected",
+        )
+        save_orchestration_checkpoint(path, checkpoint)
+    restarted = load_orchestration_checkpoint(path)
+    assert restarted.decomposition_iteration == 12
+    assert restarted.retry_counters == {}
+    assert ("protocol_" + "attempt") not in restarted.__dataclass_fields__
+    assert restarted.novel_proposals == 11
+    assert restarted.strategy_reused is True
+    assert restarted.proof_state == ProofState.DECOMPOSER
+    compact = compact_decomposition_novelty_ledger(restarted)
+    assert compact["count"] == 11
+    assert compact["novel"] == 11
+    assert len(compact["recent"]) == 2
+    assert compact["duplicate_gate"] == (
+        "semantic_hash+structural_signature"
+    )
+    assert compact["viewpoints"]["count"] == 11
+    assert compact == compact_decomposition_novelty_ledger(
+        load_orchestration_checkpoint(path),
+    )
+    manifest_hash = compact["manifest"].removeprefix("sha256:")
+    manifest_path = (
+        path.with_suffix(".semantic-proposals")
+        / "manifests"
+        / f"{manifest_hash}.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    assert len(manifest["records"]) == 11
+    assert manifest["records"][0]["rejection_reasons"] == [
+        "child is not strictly simpler",
+    ]
+    assert manifest["records"][0]["rejection_reason_codes"] == [
+        "NOT_STRICTLY_SIMPLER",
+    ]
+    assert len(json.dumps(compact)) < 2052 * 4
+
+
+@pytest.mark.parametrize("proposal_count", [10, 50, 100])
+def test_decomposition_novelty_context_is_bounded(
+    tmp_path,
+    proposal_count,
+):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+    )
+    for index in range(proposal_count):
+        checkpoint.viewpoint = f"viewpoint-{index}"
+        checkpoint.viewpoints_tried.append(checkpoint.viewpoint)
+        archive_decomposition_rejection(
+            path,
+            checkpoint,
+            proposal={
+                "child": {
+                    "statement": (
+                        f"Whole semantic statement {index}; never truncated."
+                    ),
+                },
+            },
+            rejection_reasons=[
+                "structural-signature-duplicate; no genuine delta",
+            ],
+            semantic_hash=f"{index:064x}",
+            structural_signature=f"{index + 1000:064x}",
+            source_run_id=f"run-{index}",
+        )
+    compact = compact_decomposition_novelty_ledger(checkpoint)
+    assert len(compact["recent"]) == 2
+    assert len(compact["viewpoints"]["base_ids"]) <= 7
+    assert len(compact["viewpoints"]["recent_ids"]) <= 2
+    assert len(json.dumps(compact, sort_keys=True)) < 1600
+    manifest_hash = compact["manifest"].removeprefix("sha256:")
+    manifest_path = (
+        path.with_suffix(".semantic-proposals")
+        / "manifests"
+        / f"{manifest_hash}.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    assert len(manifest["records"]) == proposal_count
+    final_proposal = (
+        path.with_suffix(".semantic-proposals")
+        / f"{proposal_count - 1:064x}.json"
+    )
+    # Artifact filenames are proposal-content hashes, not semantic hashes.
+    archived_path = checkpoint.decomposition_proposals[-1]["path"]
+    archived = json.loads(open(archived_path, encoding="utf-8").read())
+    assert archived["child"]["statement"].endswith("never truncated.")
+    assert not final_proposal.exists()
+
+
+def test_orchestration_transition_table_and_retry_block(tmp_path):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint()
+    checkpoint.transition(
+        ProofState.RESEARCH_CONTRACT_GATE,
+        "tournament-complete",
+    )
+    checkpoint.transition(ProofState.DECOMPOSER, "missing-definitions")
+    assert checkpoint.retry(
+        ProofState.DECOMPOSER,
+        "malformed JSON",
+        1,
+    )
+    assert not checkpoint.retry(
+        ProofState.DECOMPOSER,
+        "missing EOS",
+        1,
+    )
+    assert checkpoint.proof_state == ProofState.BLOCKED
+    assert "retry budget exhausted" in checkpoint.blocked_reason
+    save_orchestration_checkpoint(path, checkpoint)
+    assert load_orchestration_checkpoint(path).proof_state == ProofState.BLOCKED
+    assert path.stat().st_mode & 0o077 == 0
+
+
+def test_blocked_is_quiescent_until_typed_event():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        retry_counters={"DECOMPOSER": 2, "PROVER": 1},
+    )
+    assert not checkpoint.retry(ProofState.DECOMPOSER, "bad artifact", 1)
+    before = dict(checkpoint.retry_counters)
+    assert not checkpoint.retry(ProofState.DECOMPOSER, "bad artifact", 1)
+    assert checkpoint.retry_counters == before
+    with pytest.raises(ValueError, match="explicit typed event"):
+        checkpoint.transition(ProofState.DECOMPOSER, "automatic retry")
+    event = BlockedExitEvent(
+        event_id="evt-1",
+        event_type=BlockedEventType.OPERATOR_UNBLOCK.value,
+        reason="protocol_parser_hardened",
+        target_state=ProofState.DECOMPOSER.value,
+        reset_role=ProofState.DECOMPOSER.value,
+    )
+    apply_blocked_exit_event(checkpoint, event)
+    assert checkpoint.proof_state == ProofState.DECOMPOSER
+    assert checkpoint.retry_counters == {"DECOMPOSER": 0, "PROVER": 1}
+    assert checkpoint.last_blocked_event_id == "evt-1"
+
+
+def test_seven_host_gate_defects_backjump_and_persist_invalidation(tmp_path):
+    errors = [
+        "claimed counterexample has no verified evidence",
+        "reduction theorem conclusion differs from exact parent proposition",
+        "parent signature failed: expected exactly one theorem declaration",
+        "child L1 signature failed: forbidden Lean command in generated signature",
+        "child L1 rejected: bidirectionally entails ancestor ROOT",
+        "reduction theorem signature failed or changed",
+        "complete reduction proof failed or targets another theorem",
+    ]
+    defects = classify_host_gate_defects(errors)
+    assert [item.code for item in defects] == [
+        "UNVERIFIED_COUNTEREXAMPLE",
+        "REDUCTION_CONCLUSION_MISMATCH",
+        "PARENT_SIGNATURE_INVALID",
+        "CHILD_SIGNATURE_INVALID",
+        "CYCLIC_OR_EQUIVALENT_CHILD",
+        "REDUCTION_SIGNATURE_INVALID",
+        "REDUCTION_PROOF_INVALID",
+    ]
+    assert defects[0].hard_invalid is False
+    assert earliest_invalid_role(defects) == ProofState.DECOMPOSER
+
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        current_role="blocked",
+        validated_artifacts={},
+    )
+    path = tmp_path / "orchestration.json"
+    hashes = {}
+    dependencies = {
+        "definition_auditor": [],
+        "counterexample_worker": [],
+        "decomposer": [],
+        "formalizer": [],
+        "prover": [],
+        "adversarial_proponent": [],
+    }
+    for role in dependencies:
+        ref = persist_validated_artifact(
+            path,
+            checkpoint,
+            role=role,
+            payload={"role": role},
+            dependencies=dependencies[role],
+            source_run_id=f"run:{role}",
+        )
+        hashes[role] = ref.sha256
+    invalidated = {
+        role: hashes[role]
+        for role in (
+            "decomposer",
+            "formalizer",
+            "prover",
+            "adversarial_proponent",
+        )
+    }
+    reused = {
+        role: hashes[role]
+        for role in ("definition_auditor", "counterexample_worker")
+    }
+    event = BlockedExitEvent(
+        event_id="host_gate_defects_backjump",
+        event_type=BlockedEventType.HOST_GATE_DEFECTS_BACKJUMP.value,
+        reason="seven exact host defects classified",
+        target_state=ProofState.DECOMPOSER.value,
+        reset_role=ProofState.DECOMPOSER.value,
+        metadata={
+            "defects": [
+                {
+                    "code": item.code,
+                    "source_role": item.source_role,
+                    "message": item.message,
+                }
+                for item in defects
+            ],
+            "invalidated_artifact_hashes": invalidated,
+            "reuse_map": reused,
+        },
+    )
+    apply_blocked_exit_event(checkpoint, event)
+    save_orchestration_checkpoint(path, checkpoint)
+    restarted = load_orchestration_checkpoint(path)
+    assert restarted.proof_state == ProofState.DECOMPOSER
+    assert set(restarted.validated_artifacts) == {
+        "definition_auditor",
+        "counterexample_worker",
+    }
+    assert set(restarted.invalidated_artifacts) == set(invalidated.values())
+    advisory = restarted.advisory_artifacts[
+        hashes["counterexample_worker"]
+    ]
+    assert advisory["verified"] is False
+    assert advisory["premise"] is False
+    assert advisory["public"] is False
+    assert advisory["certificate_gate"] is False
+    assert restarted.retry_counters["DECOMPOSER"] == 0
+
+
+def test_identical_state_artifact_error_cycle_blocks_early():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+    )
+    assert checkpoint.retry(ProofState.DECOMPOSER, "same malformed JSON", 9)
+    assert not checkpoint.retry(
+        ProofState.DECOMPOSER,
+        "same   malformed JSON",
+        9,
+    )
+    assert checkpoint.proof_state == ProofState.BLOCKED
+    assert "identical state/artifact/error cycle" in checkpoint.blocked_reason
+
+
+def test_supervisor_restarts_stay_blocked_without_inference(tmp_path, monkeypatch):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        current_role="blocked",
+        blocked_reason="repair exhausted",
+    )
+    save_orchestration_checkpoint(path, checkpoint)
+    calls = []
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda *_args: calls.append(True),
+    )
+    status = SimpleNamespace(emit=lambda **_kwargs: None)
+    args = SimpleNamespace(
+        iterations=3,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(tmp_path / "no-event.json"),
+        blocked_policy="wait",
+        blocked_poll_interval_s=0,
+        _live_status=status,
+    )
+    assert run_supervisor_iterations(args) == 0
+    assert calls == []
+    assert load_orchestration_checkpoint(path).proof_state == ProofState.BLOCKED
+
+
+def test_many_blocked_ticks_log_once_and_rate_limit_heartbeat(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    path = tmp_path / "proof_orchestration.json"
+    live_path = tmp_path / "proof_live_status.json"
+    save_orchestration_checkpoint(
+        path,
+        OrchestrationCheckpoint(
+            state=ProofState.BLOCKED.value,
+            current_role="blocked",
+            blocked_reason="one long unchanged blocker",
+        ),
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda *_args: pytest.fail("BLOCKED must not start inference"),
+    )
+    status = AtomicLiveStatus(
+        live_path,
+        supervisor_pid=os.getpid(),
+        min_interval_s=0,
+    )
+    args = SimpleNamespace(
+        iterations=20,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(tmp_path / "no-event.json"),
+        blocked_policy="wait",
+        blocked_poll_interval_s=0,
+        _live_status=status,
+    )
+    assert run_supervisor_iterations(args) == 0
+    output = capsys.readouterr().out
+    assert output.count("phase=blocked-idle") == 1
+    assert output.count("reason=one long unchanged blocker") == 1
+    assert "blocked-liveness" not in output
+    assert "suppressed_ticks" not in output
+    assert json.loads(live_path.read_text())["sequence"] == 1
+
+
+@pytest.mark.parametrize(
+    "adapter_status",
+    ("ADAPTER_BLOCKED", "INTEGRATION_BLOCKED"),
+)
+def test_adapter_blockers_sleep_without_inference(
+    tmp_path,
+    monkeypatch,
+    adapter_status,
+):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        adapter_status=adapter_status,
+        blocked_reason="quiet adapter blocker",
+    )
+    save_orchestration_checkpoint(path, checkpoint)
+    calls = []
+    sleeps = []
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda *_args: calls.append(True),
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+    args = SimpleNamespace(
+        iterations=3,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(tmp_path / "no-event.json"),
+        blocked_policy="wait",
+        blocked_poll_interval_s=30,
+        blocked_heartbeat_interval_s=60,
+        _live_status=SimpleNamespace(emit=lambda **_kwargs: None),
+    )
+    assert run_supervisor_iterations(args) == 0
+    assert calls == []
+
+
+def test_legacy_definition_adapter_block_migrates_to_typed_run(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "proof_orchestration.json"
+    save_orchestration_checkpoint(
+        path,
+        OrchestrationCheckpoint(
+            state=ProofState.DEFINITION_AUDITOR.value,
+            current_role="definition_auditor",
+            adapter_status="ADAPTER_BLOCKED",
+            blocked_reason=(
+                "definition_auditor: malformed DEFINITION_AUDIT "
+                "Artifact JSON: transport-incomplete Artifact JSON"
+            ),
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda _args, iteration: calls.append(iteration) or {
+            "research_outcome": "KEPT",
+        },
+    )
+    args = SimpleNamespace(
+        iterations=1,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(tmp_path / "no-event.json"),
+        blocked_policy="wait",
+        blocked_poll_interval_s=0,
+        _live_status=SimpleNamespace(emit=lambda **_kwargs: None),
+    )
+    assert run_supervisor_iterations(args) == 0
+    checkpoint = load_orchestration_checkpoint(path)
+    assert calls == [0]
+    assert checkpoint.adapter_status == ""
+    assert checkpoint.recovery_events[-1]["event_type"] == (
+        "LEGACY_DEFINITION_OUTPUT_AUDIT_ONLY"
+    )
+
+
+def test_quiescent_infrastructure_blocker_retries_inference(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "proof_orchestration.json"
+    save_orchestration_checkpoint(
+        path,
+        OrchestrationCheckpoint(
+            state=ProofState.SYNTHESIS.value,
+            current_role="synthesis",
+            adapter_status="INFRASTRUCTURE_BLOCKED",
+            blocked_reason="transient cache route unavailable",
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda _args, iteration: calls.append(iteration) or {},
+    )
+    args = SimpleNamespace(
+        iterations=1,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(tmp_path / "no-event.json"),
+        _live_status=SimpleNamespace(emit=lambda **_kwargs: None),
+    )
+
+    assert run_supervisor_iterations(args) == 0
+    checkpoint = load_orchestration_checkpoint(path)
+    assert calls == [0]
+    assert checkpoint.adapter_status == ""
+    assert checkpoint.blocked_reason == ""
+    assert checkpoint.recovery_events[-1]["event_type"] == (
+        "QUIESCENT_INFRASTRUCTURE_RETRY"
+    )
+
+
+def test_changed_blocked_reason_emits_one_new_full_log(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        current_role="blocked",
+        blocked_reason="first blocker",
+    )
+    save_orchestration_checkpoint(path, checkpoint)
+    changed = False
+
+    def change_reason(_seconds):
+        nonlocal changed
+        if changed:
+            return
+        changed = True
+        current = load_orchestration_checkpoint(path)
+        current.blocked_reason = "second blocker"
+        save_orchestration_checkpoint(path, current)
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        change_reason,
+    )
+    args = SimpleNamespace(
+        iterations=4,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(tmp_path / "no-event.json"),
+        blocked_policy="wait",
+        blocked_poll_interval_s=0,
+        _live_status=SimpleNamespace(emit=lambda **_kwargs: None),
+    )
+    assert run_supervisor_iterations(args) == 0
+    output = capsys.readouterr().out
+    assert output.count("phase=blocked-idle") == 2
+    assert output.count("reason=first blocker") == 1
+    assert output.count("reason=second blocker") == 1
+    assert "transition=" not in output
+
+
+def test_blocked_logger_has_no_periodic_summary(capsys):
+    logger = BlockedIdleLogger()
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        blocked_reason="do not repeat this detailed failure",
+    )
+    for _ in range(100):
+        logger.observe(checkpoint)
+    output = capsys.readouterr().out
+    assert output.count("phase=blocked-idle") == 1
+    assert "phase=blocked-liveness" not in output
+    assert output.count("reason=do not repeat this detailed failure") == 1
+
+
+def test_supervisor_consumes_operator_unblock_once(tmp_path, monkeypatch):
+    path = tmp_path / "proof_orchestration.json"
+    event_path = tmp_path / "operator_event.json"
+    save_orchestration_checkpoint(
+        path,
+        OrchestrationCheckpoint(
+            state=ProofState.BLOCKED.value,
+            current_role="blocked",
+            blocked_reason="repair exhausted",
+            retry_counters={"DECOMPOSER": 14, "PROVER": 2},
+        ),
+    )
+    event_path.write_text(json.dumps({
+        "event_id": "evt-unblock",
+        "event_type": BlockedEventType.OPERATOR_UNBLOCK.value,
+        "reason": "protocol_parser_hardened",
+        "target_state": ProofState.DECOMPOSER.value,
+        "reset_role": ProofState.DECOMPOSER.value,
+    }))
+    calls = []
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda _args, iteration: calls.append(iteration) or {},
+    )
+    args = SimpleNamespace(
+        iterations=1,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(event_path),
+    )
+    assert run_supervisor_iterations(args) == 0
+    checkpoint = load_orchestration_checkpoint(path)
+    assert calls == [0]
+    assert checkpoint.proof_state == ProofState.DECOMPOSER
+    assert checkpoint.retry_counters == {"DECOMPOSER": 0, "PROVER": 2}
+    assert not event_path.exists()
+    journal = (
+        tmp_path / "proof_orchestration.journal.jsonl"
+    ).read_text()
+    assert journal.count("evt-unblock") == 1
+
+
+def test_operator_unblock_restores_normal_output_without_summary(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    path = tmp_path / "proof_orchestration.json"
+    event_path = tmp_path / "operator_event.json"
+    save_orchestration_checkpoint(
+        path,
+        OrchestrationCheckpoint(
+            state=ProofState.BLOCKED.value,
+            current_role="blocked",
+            blocked_reason="repair exhausted",
+        ),
+    )
+    event_path.write_text(json.dumps({
+        "event_id": "evt-unblock-summary",
+        "event_type": BlockedEventType.OPERATOR_UNBLOCK.value,
+        "reason": "operator repaired parser",
+        "target_state": ProofState.DECOMPOSER.value,
+        "reset_role": ProofState.DECOMPOSER.value,
+    }))
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda _args, _iteration: {},
+    )
+    args = SimpleNamespace(
+        iterations=1,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(path),
+        operator_event_file=str(event_path),
+    )
+    assert run_supervisor_iterations(args) == 0
+    output = capsys.readouterr().out
+    assert output.count("phase=blocked-idle") == 1
+    assert "reason=repair exhausted" in output
+    assert "phase=blocked-transition" not in output
+    assert "suppressed_ticks" not in output
+
+
+def test_orchestration_typed_failure_routes():
+    assert classify_failure(
+        "decomposer",
+        "malformed JSON after output budget",
+    ) == ProofState.DECOMPOSER
+    assert classify_failure(
+        "formalizer",
+        "Lean elaboration failed",
+    ) == ProofState.FORMALIZER
+    assert classify_failure(
+        "prover",
+        "type mismatch in theorem signature",
+    ) == ProofState.FORMALIZER
+    assert classify_failure(
+        "prover",
+        "tactic could not close goal",
+    ) == ProofState.PROVER
+    assert classify_failure(
+        "judge",
+        "formalization changed parent",
+    ) == ProofState.FORMALIZER
+    assert classify_failure(
+        "judge",
+        "confirmed mathematical approach_failed",
+    ) == ProofState.APPROACH_FAILED
+
+
+def test_artifact_hash_or_dependency_mismatch_is_not_reused(tmp_path):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DEFINITION_AUDITOR.value,
+    )
+    ref = persist_validated_artifact(
+        path,
+        checkpoint,
+        role="definition_auditor",
+        payload={"definitions": [{"symbol": "x"}]},
+        dependencies=[],
+        source_run_id="run:definition",
+    )
+    Path(ref.path).write_text('{"tampered":true}')
+    from autoresearch.prefill.orchestration_state import (
+        load_validated_artifacts,
+    )
+    with pytest.raises(ValueError, match="hash mismatch"):
+        load_validated_artifacts(load_orchestration_checkpoint(path))
 
 
 def _candidate():
@@ -68,6 +965,7 @@ def test_infrastructure_failure_fingerprint_is_stable_and_specific():
     failed = {
         "research_outcome": "EVALUATION_FAILED",
         "error": "RuntimeError: GAN benchmark is not completed: failed",
+        "failure_class": "infrastructure",
     }
     assert infrastructure_failure_fingerprint(failed)
     assert infrastructure_failure_fingerprint(failed) == (
@@ -265,6 +1163,40 @@ def test_strategy_repairs_invalid_json_latex_escapes():
     )
     assert candidate["hypothesis"] == r"sequence \{z_n\} has density \rho"
     assert candidate["strategy_parse_mode"] == "json-escape-repaired"
+
+
+def test_strategy_host_adapter_accepts_exact_production_fenced_latex_fixture():
+    output = r'''```json
+{
+  "candidate_id": "RH-C2-0ef53a217d-25557e489d-4f025934ee-3110912e68-763645cd6b-40ef83e052-b80cd1343b-3be9e8e78f-fbee0281ff-e4fff64467",
+  "target_obligation_id": "RH-C2-0ef53a217d-25557e489d-4f025934ee-3110912e68-763645cd6b-40ef83e052-b80cd1343b-3be9e8e78f-fbee0281ff",
+  "hypothesis": "Construct a specific sequence of poles {z_n} with density \rho > \rho_c and genus p such that the partial sums of the Mittag-Leffler expansion fail to approximate the target rational function in the \delta-neighborhood of s_0, thereby establishing a lower bound for \rho_c.",
+  "generator_directive": "Construct a concrete counterexample sequence {z_n} for a fixed genus p and density \rho > \rho_c that violates the convergence to the target rational form within the \delta-neighborhood, or define the functional form of \rho_c in terms of p and \epsilon.",
+  "critic_directive": "Verify if the constructed sequence {z_n} satisfies the density requirement \rho > \rho_c and if the resulting growth order of the function f(s) is strictly greater than p, or if the sum fails to converge to the target form as specified.",
+  "prefill_compute_chunk_tokens": 256
+}
+```'''
+    candidate, mode = parse_strategy_candidate_transport(output)
+    assert candidate["hypothesis"].count(r"\rho") == 3
+    assert candidate["generator_directive"].endswith(r"p and \epsilon.")
+    assert candidate["prefill_compute_chunk_tokens"] == 256
+    assert mode == (
+        "host-unwrapped-json-fence+host-repaired-json-escapes"
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        'prose\n```json\n{"candidate_id":"x"}\n```',
+        '```python\n{"candidate_id":"x"}\n```',
+        '```json\n{"candidate_id":"x"}\n```\ntrailing',
+        '{"candidate_id":"x"} {"candidate_id":"y"}',
+    ],
+)
+def test_strategy_host_adapter_does_not_weaken_single_object_gate(output):
+    with pytest.raises(ValueError):
+        parse_strategy_candidate_transport(output)
 
 
 def test_keep_requires_novel_mathematical_advancement():
@@ -486,6 +1418,411 @@ def test_host_candidate_uses_recorded_premise_backjump_target():
     )
 
 
+def test_repeated_gemma_uses_one_deterministic_host_fallback():
+    current = _candidate()
+    ledger = {"obligations": [{
+        "obligation_id": "RH-C1",
+        "statement": "Prove the compactness estimate for the explicit kernel.",
+        "status": "UNRESOLVED",
+        "parent_id": "",
+    }]}
+    selected, mode, _, _, used_fallback = select_novel_candidate(
+        {**current, "candidate_id": "gemma-repeat"},
+        strategy_mode="gemma",
+        current=current,
+        ledger=ledger,
+        results=[],
+    )
+    assert used_fallback
+    assert mode == "host_strategy_deferred"
+    assert selected["candidate_id"].startswith("host-leaf-")
+    assert selected["hypothesis"] == ledger["obligations"][0]["statement"]
+
+
+def test_duplicate_gemma_and_host_is_nonfatal_and_preserves_candidate(tmp_path):
+    current = _candidate()
+    ledger = {"obligations": [{
+        "obligation_id": "RH-C1",
+        "statement": "Prove the compactness estimate for the explicit kernel.",
+        "status": "UNRESOLVED",
+        "parent_id": "",
+    }]}
+    host = build_host_candidate(current, ledger)
+    _, _, host_hypothesis_sha, host_candidate_sha, _ = select_novel_candidate(
+        host,
+        strategy_mode="host",
+        current=current,
+        ledger=ledger,
+        results=[],
+    )
+    candidate_path = tmp_path / "candidate.py"
+    accepted_bytes = render_candidate(current).encode()
+    candidate_path.write_bytes(accepted_bytes)
+    with pytest.raises(CandidateNoveltyStagnation) as caught:
+        select_novel_candidate(
+            {**current, "candidate_id": "gemma-repeat"},
+            strategy_mode="gemma",
+            current=current,
+            ledger=ledger,
+            results=[{
+                "hypothesis_sha256": host_hypothesis_sha,
+                "candidate_sha256": host_candidate_sha,
+            }],
+        )
+    assert caught.value.strategy_mode == "host_strategy_deferred"
+    assert "duplicate" in str(caught.value)
+    assert candidate_path.read_bytes() == accepted_bytes
+
+
+def test_stagnated_iteration_does_not_exit_long_running_loop(monkeypatch):
+    rows = iter([
+        {
+            "research_outcome": "STAGNATED",
+            "error": "CandidateNoveltyStagnation: duplicate",
+        },
+        {
+            "research_outcome": "SUPPORTED",
+            "kept": True,
+        },
+    ])
+    calls = []
+
+    def fake_iteration(_args, iteration):
+        calls.append(iteration)
+        return next(rows)
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        fake_iteration,
+    )
+    args = SimpleNamespace(
+        iterations=2,
+        max_consecutive_infrastructure_failures=2,
+    )
+    assert run_supervisor_iterations(args) == 0
+    assert calls == [0, 1]
+
+
+def test_host_missing_definition_backjump_continues_and_restarts_idempotently(
+    tmp_path,
+    monkeypatch,
+):
+    state_path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.HOST_TYPED_IR_GATE.value,
+        current_role="host_typed_ir_gate",
+        target_obligation_id="ROOT",
+        candidate_sha256="a" * 64,
+        strategy_reused=True,
+        ledger_version=92,
+    )
+    definition_ref = persist_validated_artifact(
+        state_path,
+        checkpoint,
+        role="definition_auditor",
+        payload={"missing_definitions": ["density"]},
+        dependencies=[],
+        source_run_id="definition-run",
+    )
+    save_orchestration_checkpoint(state_path, checkpoint)
+    calls = []
+    sleeps = []
+    live_phases = []
+
+    def fake_iteration(_args, iteration):
+        current = load_orchestration_checkpoint(state_path)
+        calls.append((iteration, current.state))
+        assert current.validated_artifacts[
+            "definition_auditor"
+        ].sha256 == definition_ref.sha256
+        assert current.strategy_reused is True
+        if current.proof_state == ProofState.HOST_TYPED_IR_GATE:
+            current.transition(
+                ProofState.SYNTHESIS,
+                "typed-evidence-backjump:MISSING_DEFINITION_ENVIRONMENT",
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(state_path, current)
+            return {
+                "research_outcome": "INCONCLUSIVE",
+                "failure_class": "",
+                "supervisor_outcome": "CONTINUE",
+            }
+        assert current.proof_state == ProofState.SYNTHESIS
+        return {
+            "research_outcome": "INCONCLUSIVE",
+            "failure_class": "",
+            "strategy_mode": "resumed",
+            "supervisor_outcome": "CONTINUE",
+        }
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        fake_iteration,
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+    args = SimpleNamespace(
+        iterations=2,
+        max_consecutive_infrastructure_failures=2,
+        orchestration_state_file=str(state_path),
+        stop_file=str(tmp_path / "stop"),
+        continuation_backoff_s=0,
+        _live_status=SimpleNamespace(
+            emit=lambda **kwargs: live_phases.append(kwargs.get("phase")),
+        ),
+    )
+
+    assert run_supervisor_iterations(args) == 0
+    assert calls == [
+        (0, ProofState.HOST_TYPED_IR_GATE.value),
+        (1, ProofState.SYNTHESIS.value),
+    ]
+    persisted = load_orchestration_checkpoint(state_path)
+    assert is_resumable_checkpoint(
+        persisted,
+        candidate_sha256="a" * 64,
+    )
+    assert persisted.proof_state == ProofState.SYNTHESIS
+    assert persisted.last_transition_reason == (
+        "typed-evidence-backjump:MISSING_DEFINITION_ENVIRONMENT"
+    )
+    assert set(persisted.validated_artifacts) == {"definition_auditor"}
+    assert "supervisor_exit" not in live_phases
+    assert sleeps == [0]
+
+    calls.clear()
+    args.iterations = 1
+    assert run_supervisor_iterations(args) == 0
+    assert calls == [(0, ProofState.SYNTHESIS.value)]
+    assert load_orchestration_checkpoint(
+        state_path,
+    ).proof_state == ProofState.SYNTHESIS
+
+
+def test_missing_definition_precontract_route_starts_next_run_without_strategy(
+    tmp_path,
+    monkeypatch,
+):
+    state_path = tmp_path / "proof_orchestration.json"
+    candidate_sha256 = "a" * 64
+    typed_ir_hash = "d" * 64
+    theorem_id = "typed_ea7631dcb3e2b55b"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.HOST_TYPED_IR_GATE.value,
+        current_role="host_typed_ir_gate",
+        target_obligation_id="ROOT",
+        candidate_sha256=candidate_sha256,
+        strategy_sha256=candidate_sha256,
+        strategy_reused=True,
+        typed_ir_hash=typed_ir_hash,
+        elaborated_theorem_id=theorem_id,
+        selected_move_id="REGISTER_DEFINITION_OBLIGATION",
+    )
+    save_orchestration_checkpoint(state_path, checkpoint)
+    calls = []
+    sleeps = []
+
+    def fake_iteration(_args, iteration):
+        current = load_orchestration_checkpoint(state_path)
+        calls.append((iteration, current.state, current.target_obligation_id))
+        if iteration == 0:
+            current.target_obligation_id = "ROOT:typed-reframe:2b65585aa8fa"
+            current.transition(
+                ProofState.DECOMPOSER,
+                "precontract-semantic-routing:MISSING_DEFINITION",
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(state_path, current)
+            return {
+                "research_outcome": "EVALUATION_FAILED",
+                "failure_class": "infrastructure",
+                "error": "RuntimeError: GAN benchmark is not completed: running",
+                "supervisor_outcome": "CONTINUE",
+            }
+        assert should_resume_downstream(
+            current,
+            candidate_sha256=candidate_sha256,
+            force_strategy=False,
+            strategy_trigger_exists=False,
+        )
+        assert current.selected_move_id == "REGISTER_DEFINITION_OBLIGATION"
+        assert current.typed_ir_hash == typed_ir_hash
+        assert current.elaborated_theorem_id == theorem_id
+        return {
+            "research_outcome": "INCONCLUSIVE",
+            "failure_class": "",
+            "supervisor_outcome": "ITERATION_COMPLETE",
+        }
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        fake_iteration,
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+    args = SimpleNamespace(
+        iterations=2,
+        max_consecutive_infrastructure_failures=1,
+        orchestration_state_file=str(state_path),
+        stop_file=str(tmp_path / "stop"),
+        continuation_backoff_s=0.25,
+        continuation_max_backoff_s=1.0,
+    )
+
+    assert run_supervisor_iterations(args) == 0
+    assert calls == [
+        (0, ProofState.HOST_TYPED_IR_GATE.value, "ROOT"),
+        (
+            1,
+            ProofState.DECOMPOSER.value,
+            "ROOT:typed-reframe:2b65585aa8fa",
+        ),
+    ]
+    assert sleeps == [0.25]
+    persisted = load_orchestration_checkpoint(state_path)
+    assert persisted.proof_state == ProofState.DECOMPOSER
+    assert persisted.strategy_reused is True
+    assert persisted.selected_move_id == "REGISTER_DEFINITION_OBLIGATION"
+    assert persisted.typed_ir_hash == typed_ir_hash
+    assert persisted.elaborated_theorem_id == theorem_id
+
+
+def test_repeated_semantic_routes_back_off_without_opening_circuit(
+    tmp_path,
+    monkeypatch,
+):
+    state_path = tmp_path / "proof_orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        candidate_sha256="a" * 64,
+        last_transition_reason=(
+            "precontract-semantic-routing:MISSING_DEFINITION"
+        ),
+        strategy_reused=True,
+    )
+    save_orchestration_checkpoint(state_path, checkpoint)
+    calls = []
+    sleeps = []
+    row = {
+        "research_outcome": "EVALUATION_FAILED",
+        "failure_class": "infrastructure",
+        "error": "RuntimeError: GAN benchmark is not completed: running",
+        "supervisor_outcome": "CONTINUE",
+    }
+
+    def fake_iteration(_args, iteration):
+        calls.append(iteration)
+        return dict(row)
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        fake_iteration,
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+    args = SimpleNamespace(
+        iterations=3,
+        max_consecutive_infrastructure_failures=1,
+        orchestration_state_file=str(state_path),
+        stop_file=str(tmp_path / "stop"),
+        continuation_backoff_s=1.0,
+        continuation_max_backoff_s=8.0,
+    )
+
+    assert is_nonfatal_semantic_continuation(row, checkpoint)
+    assert run_supervisor_iterations(args) == 0
+    assert calls == [0, 1, 2]
+    assert sleeps == [1.0, 2.0]
+
+
+def test_wrapped_resume_validation_failure_is_nonfatal_integration():
+    error = RuntimeError(
+        "GAN benchmark is not completed: failed; "
+        "ResumeValidationError: resumed report has no complete Critic artifact ref"
+    )
+    assert failure_class_for_exception(error) == "integration"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.STRATEGY_TOURNAMENT.value,
+        candidate_sha256="a" * 64,
+    )
+    assert is_resumable_checkpoint(
+        checkpoint,
+        candidate_sha256="a" * 64,
+    )
+    assert not is_resumable_checkpoint(
+        checkpoint,
+        candidate_sha256="b" * 64,
+    )
+
+
+def test_unbounded_supervisor_exits_only_on_explicit_stop_file(
+    tmp_path,
+    monkeypatch,
+):
+    stop_file = tmp_path / "stop"
+    calls = []
+
+    def fake_iteration(_args, iteration):
+        calls.append(iteration)
+        if iteration == 1:
+            stop_file.write_text("operator requested stop")
+        return {"research_outcome": "INCONCLUSIVE", "failure_class": ""}
+
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        fake_iteration,
+    )
+    args = SimpleNamespace(
+        iterations=None,
+        max_consecutive_infrastructure_failures=2,
+        stop_file=str(stop_file),
+    )
+    assert run_supervisor_iterations(args) == 0
+    assert calls == [0, 1]
+
+
+def test_stagnation_does_not_weaken_infrastructure_circuit_breaker(monkeypatch):
+    failed = {
+        "research_outcome": "EVALUATION_FAILED",
+        "error": "RuntimeError: worker unavailable",
+        "failure_class": "infrastructure",
+    }
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda _args, _iteration: failed,
+    )
+    args = SimpleNamespace(
+        iterations=3,
+        max_consecutive_infrastructure_failures=2,
+    )
+    assert run_supervisor_iterations(args) == 2
+
+
+def test_integration_failures_do_not_open_infrastructure_circuit(monkeypatch):
+    failed = {
+        "research_outcome": "EVALUATION_FAILED",
+        "error": "ResumeValidationError: stale Critic artifact",
+        "failure_class": "integration",
+    }
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.run_iteration",
+        lambda _args, _iteration: failed,
+    )
+    args = SimpleNamespace(
+        iterations=2,
+        max_consecutive_infrastructure_failures=2,
+    )
+    assert run_supervisor_iterations(args) == 0
+
+
 def test_strategy_is_triggered_only_by_events(tmp_path):
     progress = {
         "kept": "True",
@@ -505,6 +1842,13 @@ def test_strategy_is_triggered_only_by_events(tmp_path):
         [progress, inconclusive, inconclusive, inconclusive],
         stagnation_rounds=3,
     ) == "stagnation-3"
+    assert strategy_trigger_reason(
+        [progress, inconclusive, inconclusive, {
+            "research_outcome": "STAGNATED",
+            "invalidation_kind": "STRATEGY_STAGNATION",
+        }],
+        stagnation_rounds=3,
+    ) == ""
     assert strategy_trigger_reason(
         [{"kept": "True", "research_outcome": "FALSIFIED"}],
         stagnation_rounds=3,

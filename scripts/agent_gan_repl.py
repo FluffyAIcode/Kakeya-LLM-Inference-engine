@@ -32,18 +32,107 @@ from scripts.benchmark_prefill_architecture import (
     _json_request,
 )
 from inference_engine.bench.prefill_fleet_report import summarize_stages
+from autoresearch.prefill.prepare import (
+    REPORT_PROVENANCE_SCHEMA_VERSION,
+    ResumeValidationError,
+    critic_artifact_payload,
+    load_critic_artifact,
+)
 from autoresearch.prefill.lean_gate import (
     LeanSignatureResult,
+    lean_proof_contract_ref,
+    lean_symbol_semantic_hash,
+    lean_signature_contract_ref,
     lean_theorem_signature_hash,
+    lint_lean_model_prompt,
+    normalize_lean_signature,
+    normalize_registered_latex_identifiers,
+    register_lean_symbol_table,
+    resolve_lean_contract,
+    resolve_lean_symbol_table,
     validate_lean_proof,
     validate_lean_signature,
 )
+from autoresearch.prefill.live_status import AtomicLiveStatus
+from autoresearch.prefill.host_compiler import run_host_gates
+from autoresearch.prefill.architecture_v7 import run_architecture_v7_entry
+from autoresearch.prefill.strategy_tournament import StrategyEvent
+from autoresearch.prefill.stepwise_proof import (
+    ActionSelection,
+    LeanExecutionContext,
+    ProofGoal,
+    attempt_step,
+    enumerate_applicable_actions,
+    lean_step_executor,
+    new_search_state,
+    persist_search_state,
+)
+from autoresearch.prefill.creative_decomposition import (
+    assert_no_scratchpad_content,
+    build_candidate_set,
+    persist_private_scratchpad,
+    rank_candidates,
+    rank_short_choice,
+    synthesis_manifest,
+    synthesis_trigger,
+)
+from autoresearch.prefill.evidence_planner import (
+    build_evidence_gap_graph,
+    first_executable_node,
+    generate_proof_plans,
+    host_evidence_context,
+    validate_proof_plan,
+)
+from autoresearch.prefill.math_ir import (
+    GateStatus,
+)
+from autoresearch.prefill.orchestration_state import (
+    OrchestrationCheckpoint,
+    ProofState,
+    archive_decomposition_rejection,
+    binding_mismatch,
+    classify_failure,
+    compact_decomposition_novelty_ledger,
+    load_checkpoint as load_orchestration_checkpoint,
+    load_validated_artifacts,
+    persist_validated_artifact,
+    require_typed_dispatch,
+    save_checkpoint as save_orchestration_checkpoint,
+    sha256_text,
+    state_for_role,
+)
+from autoresearch.prefill.definition_registry import (
+    build_definition_choice_registry,
+    serialize_definition_audit,
+)
+from autoresearch.prefill.theorem_cards import (
+    build_theorem_card_index,
+    search_theorem_cards,
+)
 from autoresearch.prefill.semantic_decompose import (
+    SemanticResponseIncomplete,
     SemanticUnitTooLarge,
     admit_token_ids,
     build_proof_step_interface,
     downstream_output_cap,
+    json_syntax_diagnostic,
+    lint_structured_prompt,
+    repair_json_backslashes,
+    scan_single_artifact_object,
+    scan_structured_artifact_prefix,
     serialize_proof_step_interface,
+    structured_role_minimum_output_tokens,
+    structured_transport_complete,
+    structured_output_cap,
+)
+from autoresearch.prefill.typed_transport import (
+    AdapterError,
+    DecodedRoleFields,
+    ROLE_TRANSPORT_REGISTRY,
+    decode_role_fields,
+    host_artifact,
+    transport_prompt,
+    typed_transport_complete,
 )
 
 
@@ -316,11 +405,9 @@ class DecompositionProposal:
     producer_run_id: str
     upstream_artifact_hashes: list[str]
     parent_statement: str
-    children: list[dict]
-    dependency_edges: list[list[str]]
+    child: dict
     public_assumptions: list[str]
-    reduction_labels: list[str]
-    reduction_contract: str
+    reduction_contract: dict
 
 
 @dataclass(frozen=True)
@@ -331,11 +418,10 @@ class FormalizationBundle:
     producer_role: str
     producer_run_id: str
     upstream_artifact_hashes: list[str]
-    math_ir: dict
     parent_signature_source: str
     parent_signature_hash: str
     parent_newly_formalized: bool
-    children: list[dict]
+    child: dict
     reduction_theorem_source: str
     reduction_signature_hash: str
 
@@ -390,6 +476,84 @@ class DecompositionCertificateResult:
     certificate_hash: str = ""
 
 
+def build_resumed_report_provenance(
+    checkpoint: OrchestrationCheckpoint,
+    critic_payload: dict,
+    stages: list[dict],
+) -> dict:
+    """Describe a partial run without claiming unexecuted benchmark stages."""
+    critic_ref = checkpoint.validated_artifacts["critic"]
+    bindings = critic_payload["bindings"]
+    return {
+        "schema_version": REPORT_PROVENANCE_SCHEMA_VERSION,
+        "mode": "resumed",
+        "resumed_from_state": checkpoint.state,
+        "resumed_from_role": checkpoint.current_role,
+        "strategy_reused": True,
+        "generator_reused": True,
+        "critic_reused": True,
+        "bindings": {
+            name: bindings[name]
+            for name in (
+                "target_obligation_id",
+                "candidate_sha256",
+                "strategy_sha256",
+                "parent_statement_sha256",
+                "parent_signature_sha256",
+                "root_goal_sha256",
+                "ledger_id",
+                "ledger_version",
+            )
+        },
+        "reused_artifacts": {
+            "strategy": {
+                "sha256": bindings["strategy_sha256"],
+                "source_run_id": critic_payload["source_run_id"],
+            },
+            "generator": {
+                "sha256": bindings["generator_output_sha256"],
+                "source_run_id": critic_payload["source_run_id"],
+            },
+            "critic": asdict(critic_ref),
+        },
+        "newly_executed_stages": [
+            str(stage.get("name", ""))
+            for stage in stages
+        ],
+    }
+
+
+def build_architecture7_report_provenance(
+    checkpoint: OrchestrationCheckpoint,
+    stages: list[dict],
+) -> dict:
+    """Report typed continuation without claiming legacy model stages."""
+    return {
+        "schema_version": REPORT_PROVENANCE_SCHEMA_VERSION,
+        "mode": "strategy_tournament_stepwise_generator_v1",
+        "resumed_from_state": checkpoint.state,
+        "resumed_from_role": checkpoint.current_role,
+        "strategy_reused": False,
+        "generator_reused": False,
+        "critic_reused": False,
+        "bindings": {
+            "target_obligation_id": checkpoint.target_obligation_id,
+            "candidate_sha256": checkpoint.candidate_sha256,
+            "parent_statement_sha256": checkpoint.parent_statement_sha256,
+            "parent_signature_sha256": checkpoint.parent_signature_sha256,
+            "root_goal_sha256": checkpoint.root_goal_sha256,
+            "ledger_id": checkpoint.ledger_id,
+            "ledger_version": checkpoint.ledger_version,
+            "research_contract_id": checkpoint.research_contract_id,
+            "research_contract_hash": checkpoint.research_contract_hash,
+        },
+        "reused_artifacts": {},
+        "newly_executed_stages": [
+            str(stage.get("name", "")) for stage in stages
+        ],
+    }
+
+
 @dataclass
 class ProofObligationLedger:
     ledger_id: str
@@ -425,6 +589,14 @@ def save_decomposition_manifest(path: Path, payload: dict) -> None:
     )
     os.chmod(temporary, 0o600)
     temporary.replace(path)
+
+
+def load_decomposition_manifest(path: Path) -> dict:
+    """Read both archived v1 and current manifests without admitting artifacts."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("decomposition manifest must be a JSON object")
+    return payload
 
 
 def load_proof_ledger(path: Path) -> ProofObligationLedger | None:
@@ -642,7 +814,22 @@ def _structured_field(body: str, name: str) -> str:
         body,
         re.MULTILINE,
     )
-    return match.group(1).strip() if match else ""
+    if match is None:
+        return ""
+    value = match.group(1).strip()
+    if value:
+        return value
+    for line in body[match.end():].splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        if candidate.startswith("### ") or re.match(
+            r"^\*{0,2}[^:]+:\*{0,2}(?:\s|$)",
+            candidate,
+        ):
+            return ""
+        return candidate
+    return ""
 
 
 def _json_artifact(value: str) -> dict:
@@ -651,11 +838,7 @@ def _json_artifact(value: str) -> dict:
     except (TypeError, json.JSONDecodeError):
         if not isinstance(value, str):
             return {}
-        repaired = re.sub(
-            r'\\(?!(?:["\\/]|u[0-9a-fA-F]{4}))',
-            r"\\\\",
-            value,
-        )
+        repaired = repair_json_backslashes(value)
         try:
             artifact = json.loads(repaired)
         except json.JSONDecodeError:
@@ -863,6 +1046,43 @@ def parse_premise_audit(
     obligation_id: str,
     run_id: str = "",
 ) -> PremiseAudit | None:
+    try:
+        scanned = scan_structured_artifact_prefix(text, "PREMISE_AUDIT")
+    except ValueError:
+        scanned = None
+    if scanned is not None and not text[scanned.end:].strip():
+        try:
+            payload = json.loads(scanned.json_text)
+            if set(payload) != {
+                "status",
+                "evidence_type",
+                "evidence_source",
+                "confidence",
+                "artifact",
+                "analysis",
+            }:
+                return None
+            audit = PremiseAudit(
+                obligation_id,
+                str(payload["status"]),
+                str(payload["evidence_type"]).upper(),
+                str(payload["evidence_source"]),
+                float(payload["confidence"]),
+                payload["artifact"],
+                str(payload["analysis"]),
+                run_id,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            audit.status not in {"CONFIRMED", "NOT_CONFIRMED", "INCONCLUSIVE"}
+            or audit.evidence_type not in _VERIFIABLE_EVIDENCE_TYPES
+            or not audit.evidence_source
+            or not 0.0 <= audit.confidence <= 1.0
+            or not audit.analysis
+        ):
+            return None
+        return audit
     for match in _PREMISE_AUDIT.finditer(text):
         if match.group(1) != obligation_id:
             continue
@@ -902,6 +1122,41 @@ def parse_premise_defense(
     obligation_id: str,
     run_id: str = "",
 ) -> PremiseDefense | None:
+    try:
+        scanned = scan_structured_artifact_prefix(text, "PREMISE_DEFENSE")
+    except ValueError:
+        scanned = None
+    if scanned is not None and not text[scanned.end:].strip():
+        try:
+            payload = json.loads(scanned.json_text)
+            if set(payload) != {
+                "status",
+                "correction",
+                "failure_reason",
+                "evidence",
+            }:
+                return None
+            defense = PremiseDefense(
+                obligation_id,
+                str(payload["status"]),
+                str(payload["correction"]),
+                str(payload["failure_reason"]),
+                str(payload["evidence"]),
+                run_id,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            defense.status not in {"RESCUED", "NOT_RESCUED", "INCONCLUSIVE"}
+            or not defense.evidence
+            or (defense.status == "RESCUED" and not defense.correction)
+            or (
+                defense.status == "NOT_RESCUED"
+                and not defense.failure_reason
+            )
+        ):
+            return None
+        return defense
     for match in _PREMISE_DEFENSE.finditer(text):
         if match.group(1) != obligation_id:
             continue
@@ -933,28 +1188,32 @@ def build_premise_auditor_messages(
     suspicion: PremiseSuspicion,
 ) -> list[dict[str, str]]:
     package = json.dumps(asdict(suspicion), ensure_ascii=False, sort_keys=True)
+    system_content = (
+        "You are an isolated Premise Auditor. Independently attack the named "
+        "premise using counterexamples, exact definitions and quantifiers, "
+        "theorem conflicts, and verifiable Lean, finite, or symbolic evidence. "
+        "Do not trust the Critic conclusion. Return exactly "
+        "`### PREMISE_AUDIT`, newline, then `Artifact:` and one "
+        "compact/minified JSON object with exactly status, evidence_type, "
+        "evidence_source, confidence, artifact, and analysis. Status must be "
+        "CONFIRMED, NOT_CONFIRMED, or INCONCLUSIVE. For arithmetic, artifact "
+        "must contain exactly the host claim_hash, unchanged claim, and a "
+        "witness binding every quantified variable. For Lean, preserve exact "
+        "claim/signature hashes and negation contract. Emit no Markdown fence, "
+        "prose, second Artifact, or trailing token. End immediately after the "
+        "matching final }."
+    )
+    lint_structured_prompt(system_content)
     return [{
         "role": "system",
-        "content": (
-            "You are an isolated Premise Auditor. Independently attack the "
-            "named premise using counterexamples, exact definitions and "
-            "quantifiers, theorem conflicts, and verifiable Lean, finite, or "
-            "symbolic evidence. Do not trust the Critic conclusion. Return "
-            "`### PREMISE_AUDIT <ID>` with `Status: "
-            "CONFIRMED|NOT_CONFIRMED|INCONCLUSIVE`, `Evidence type:`, "
-            "`Evidence source:`, `Confidence:` in [0,1], one-line JSON "
-            "`Artifact:`, and one-line `Analysis:`. For arithmetic, Artifact "
-            "must contain exactly the host `claim_hash`, unchanged `claim`, "
-            "and a `witness` binding every quantified variable. The witness "
-            "must make the Critic's claimed relation false. For Lean, preserve "
-            "the exact claim/signature hashes and negation contract."
-        ),
+        "content": system_content,
     }, {
         "role": "user",
         "content": (
             f"IMMUTABLE RESEARCH GOAL:\n{goal}\n\n"
             f"HOST-PACKAGED CRITIC SUSPICION:\n{package}"
         ),
+        "_artifact_contract_role": "premise_auditor",
     }]
 
 
@@ -964,16 +1223,20 @@ def build_premise_proponent_messages(
     auditor_text: str,
 ) -> list[dict[str, str]]:
     package = json.dumps(asdict(suspicion), ensure_ascii=False, sort_keys=True)
+    system_content = (
+        "You are an isolated Adversarial Proponent. Attempt to rescue the "
+        "premise by finding the exact domain, topology, or quantifier "
+        "correction, or by refuting the Auditor artifact. Return exactly "
+        "`### PREMISE_DEFENSE`, newline, then `Artifact:` and one "
+        "compact/minified JSON object with exactly status, correction, "
+        "failure_reason, and evidence. Status must be RESCUED, NOT_RESCUED, "
+        "or INCONCLUSIVE. Emit no Markdown fence, prose, second Artifact, or "
+        "trailing token. End immediately after the matching final }."
+    )
+    lint_structured_prompt(system_content)
     return [{
         "role": "system",
-        "content": (
-            "You are an isolated Adversarial Proponent. Attempt to rescue the "
-            "premise by finding the exact domain, topology, or quantifier "
-            "correction, or by refuting the Auditor artifact. Return `### "
-            "PREMISE_DEFENSE <ID>` with `Status: "
-            "RESCUED|NOT_RESCUED|INCONCLUSIVE`, `Correction:`, `Failure "
-            "reason:`, and one-line `Evidence:`."
-        ),
+        "content": system_content,
     }, {
         "role": "user",
         "content": (
@@ -981,6 +1244,7 @@ def build_premise_proponent_messages(
             f"HOST-PACKAGED CRITIC SUSPICION:\n{package}\n\n"
             f"COMPLETE ISOLATED AUDITOR OUTPUT:\n{auditor_text}"
         ),
+        "_artifact_contract_role": "premise_proponent",
     }]
 
 
@@ -1009,7 +1273,7 @@ def run_isolated_premise_review(
     proponent_run_id = ""
     try:
         proponent_text, proponent_run_id = run_role(
-            "adversarial_proponent",
+            "premise_proponent",
             build_premise_proponent_messages(
                 goal,
                 suspicion,
@@ -1272,6 +1536,23 @@ _CERTIFIED_ARTIFACT_TYPES = {
     "JUDGE_DECISION": (JudgeDecision, "judge"),
 }
 
+def _structured_transport_semantically_complete(text: str, role: str) -> bool:
+    """Use typed field transport for v2 roles; retain legacy read-only closure."""
+    if role in {"decomposer_scratchpad", "synthesis_scratchpad"}:
+        # Private reasoning is never parsed or accepted at an artifact
+        # boundary. It completes only at the inference adapter's EOS.
+        return False
+    if str(text).lstrip().startswith("### "):
+        return structured_transport_complete(text, role)
+    if role in ROLE_TRANSPORT_REGISTRY:
+        return typed_transport_complete(text, role)
+    return structured_transport_complete(text, role)
+
+
+def _validated_structured_prompt(prompt: str) -> str:
+    lint_structured_prompt(prompt)
+    return prompt
+
 
 def _canonical_json_hash(value) -> str:
     encoded = json.dumps(
@@ -1281,6 +1562,140 @@ def _canonical_json_hash(value) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _host_owned_assumption_contract(
+    public_assumptions: list[str],
+    move,
+) -> tuple[list[str], str, dict | None]:
+    """Inject immutable assumptions and classify explicit restriction moves."""
+    canonical = list(public_assumptions)
+    if (
+        any(not isinstance(item, str) for item in canonical)
+        or canonical != public_assumptions
+    ):
+        raise ValueError("public assumptions must be an ordered string list")
+    assumptions_hash = _canonical_json_hash(canonical)
+    restriction_move = None
+    if move.move_id in {"RESTRICT_DOMAIN", "CASE_SPLIT"}:
+        restriction_move = {
+            "move_id": move.move_id,
+            "move_version": move.version,
+            "provenance": "host_move_registry",
+            "provenance_hash": move.content_hash,
+            "antecedent_ids": list(move.precondition_ids),
+            "typing_fact_ids": [],
+            "content_hash": _canonical_json_hash({
+                "move_id": move.move_id,
+                "move_version": move.version,
+                "precondition_ids": move.precondition_ids,
+                "move_hash": move.content_hash,
+            }),
+        }
+    return canonical, assumptions_hash, restriction_move
+
+
+def _scan_decomposer_artifact(text: str):
+    return _scan_certified_artifact(text, "DECOMPOSITION_PROPOSAL")
+
+
+def _scan_certified_artifact(text: str, heading: str):
+    match = re.match(
+        rf"^\s*### {re.escape(heading)}\s*\n(?P<body>.*)\Z",
+        text,
+        re.DOTALL,
+    )
+    if match is None:
+        raise ValueError(f"missing {heading}")
+    body = match.group("body")
+    return scan_single_artifact_object(
+        text if "Artifact:" in body else body,
+        marker="Artifact:" if "Artifact:" in body else None,
+    )
+
+
+def _normalized_signature_field(
+    value: object,
+    *,
+    label_required: bool = False,
+) -> tuple[dict, object]:
+    if not isinstance(value, dict):
+        raise ValueError("signature field must be an object")
+    required = {"kind", "name", "binders", "proposition", "source"}
+    if label_required:
+        required.add("label")
+    if set(value) != required:
+        raise ValueError(
+            "signature object fields must be exactly "
+            + ", ".join(sorted(required)),
+        )
+    expected = {
+        key: str(value[key])
+        for key in ("kind", "name", "binders", "proposition")
+    }
+    normalized = normalize_lean_signature(
+        str(value["source"]),
+        expected=expected,
+    )
+    return value, normalized
+
+
+def _normalize_formalizer_payload(payload: dict) -> dict:
+    """Adapt the structured v3 wire shape to the durable bundle shape."""
+    new_fields = {
+        "parent_signature",
+        "parent_newly_formalized",
+        "child_signature",
+        "reduction_signature",
+    }
+    if not new_fields.intersection(payload):
+        return payload
+    host_fields = {
+        "target_obligation_id",
+        "parent_statement_hash",
+        "root_goal_hash",
+        "producer_role",
+        "producer_run_id",
+        "upstream_artifact_hashes",
+    }
+    emitted_bindings = {
+        key: payload[key]
+        for key in host_fields
+        if key in payload
+    }
+    model_fields = {
+        key: value
+        for key, value in payload.items()
+        if key not in host_fields
+    }
+    if set(model_fields) != new_fields:
+        raise ValueError(
+            "Formalizer must output exactly parent_signature, "
+            "parent_newly_formalized, child_signature, and "
+            "reduction_signature",
+        )
+    _parent_value, parent = _normalized_signature_field(
+        model_fields["parent_signature"],
+    )
+    child_value, child = _normalized_signature_field(
+        model_fields["child_signature"],
+        label_required=True,
+    )
+    _reduction_value, reduction = _normalized_signature_field(
+        model_fields["reduction_signature"],
+    )
+    return {**emitted_bindings,
+        "parent_signature_source": parent.source,
+        "parent_signature_hash": parent.declaration_hash,
+        "parent_newly_formalized": model_fields["parent_newly_formalized"],
+        "child": {
+            "label": child_value["label"],
+            "lean_signature": child.source,
+            "lean_signature_hash": child.declaration_hash,
+        },
+        "reduction_theorem_source": reduction.source,
+        "reduction_signature_hash": reduction.declaration_hash,
+    }
 
 
 def parse_certified_artifact(
@@ -1302,9 +1717,43 @@ def parse_certified_artifact(
     )
     if match is None:
         return None, f"missing {heading}"
-    payload = _json_artifact(_structured_field(match.group("body"), "Artifact"))
-    if not payload:
+    body = match.group("body")
+    try:
+        artifact_text = _scan_certified_artifact(text, heading).json_text
+    except ValueError as exc:
+        return None, f"malformed {heading} Artifact JSON: {exc}"
+    if heading == "DEFINITION_AUDIT":
+        try:
+            payload = json.loads(artifact_text)
+        except json.JSONDecodeError as exc:
+            return None, (
+                f"malformed {heading} Artifact JSON: "
+                f"{json_syntax_diagnostic(artifact_text, exc)}"
+            )
+    else:
+        payload = _json_artifact(artifact_text)
+    if not isinstance(payload, dict) or not payload:
         return None, f"malformed {heading} Artifact JSON"
+    if heading == "FORMALIZATION_BUNDLE":
+        # Read-only compatibility for verbose pre-v2 Formalizer artifacts.
+        payload.pop("math_ir", None)
+        if isinstance(payload.get("child"), dict):
+            payload["child"] = {
+                key: value
+                for key, value in payload["child"].items()
+                if key != "statement"
+            }
+        try:
+            payload = _normalize_formalizer_payload(payload)
+        except AdapterError as exc:
+            checkpoint.adapter_blocked(str(exc), status=exc.status.value)
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False, [str(exc)], artifacts, hashes, transcripts, role_run_ids,
+                {"host_gates_passed": False, "failure_status": exc.status.value},
+            )
+        except ValueError as exc:
+            return None, f"invalid {heading} fields: {exc}"
     host_bindings = {
         "target_obligation_id": target_obligation_id,
         "parent_statement_hash": parent_statement_hash,
@@ -1378,12 +1827,24 @@ def _certified_role_messages(
             "and theorem-conflict cases. Unsupported citations are untrusted."
         ),
         "decomposer": (
-            "Propose labeled child propositions, public assumptions, acyclic "
-            "dependency edges, and an explicit conjunction-to-parent reduction."
+            "Act as a local mathematical strategist for the exact viewpoint and "
+            "decomposition_iteration in the package. Return one child object and "
+            "one complete parent-reduction contract. The child must make a "
+            "genuinely different structural delta and must not repeat any "
+            "semantic or structural signature in decomposition_novelty_ledger. "
+            "Never emit children, child lists, dependency edges, plans, or "
+            "multiple obligations. If several missing definitions are "
+            "inseparable, put every definition into one bundled DEFINITION "
+            "child and list every source definition label. The reduction must "
+            "state how that exact child and the exact public assumptions imply "
+            "the exact parent. The child must have a host-checkable structural "
+            "delta, be strictly simpler and reachable, and never restate the "
+            "parent. The reduction may not assume or prove the parent circularly."
         ),
         "formalizer": (
-            "Emit typed Math IR, exact parent and child Lean signatures, and a "
-            "reduction theorem signature scaffold. Never replace a bound parent."
+            "Emit only exact parent, singular-child, and reduction Lean "
+            "signature objects. The host computes their hashes. Never replace a bound parent or "
+            "restate the natural-language parent/child."
         ),
         "prover": (
             "Produce one complete Lean proof of the exact reduction theorem. "
@@ -1394,69 +1855,308 @@ def _certified_role_messages(
             "and insufficient reduction; repairs are advisory only."
         ),
         "judge": (
-            "Decide ACCEPT|REJECT|INCONCLUSIVE using only the host-verified "
+            "Decide ACCEPT, REJECT, or INCONCLUSIVE using only the host-verified "
             "manifest. You cannot override a failed host gate."
         ),
     }[role]
-    artifact_schema = {
+    field_contract = {
         "definition_auditor": (
-            '{"definitions":[{"symbol":"...","type":"...","scope":"..."}],'
-            '"missing_definitions":[{"obligation_label":"L1","symbol":"...",'
-            '"required_type":"..."}]}'
+            "Use exactly definitions and missing_definitions, both arrays of "
+            "complete objects."
         ),
         "counterexample_worker": (
-            '{"status":"COUNTEREXAMPLE_FOUND|NO_COUNTEREXAMPLE|INCONCLUSIVE",'
-            '"cases":[]}'
+            "Use exactly status and cases. Status must be "
+            "COUNTEREXAMPLE_FOUND, NO_COUNTEREXAMPLE, or INCONCLUSIVE."
         ),
         "decomposer": (
-            '{"parent_statement":"<exact>","children":[{"label":"L1",'
-            '"statement":"...","kind":"DEFINITION|LEMMA"}],'
-            '"dependency_edges":[],"public_assumptions":[],'
-            '"reduction_labels":["L1"],"reduction_contract":"L1 and A imply P"}'
+            "Use exactly parent_statement, child, public_assumptions, and "
+            "reduction_contract, following the host package contract. "
+            f'Required child field: "kind":'
+            f'"{_decomposer_contract(package)["required_child_kind"]}". '
+            'Required child field: "source_definition_labels":'
+            f'{json.dumps(_decomposer_contract(package)["required_source_definition_labels"], separators=(",", ":"))}.'
         ),
         "formalizer": (
-            '{"math_ir":{"parent_signature_hash":"...","parent_proposition_hash":'
-            '"...","child_labels":["L1"],"public_assumptions":[],'
-            '"reduction_labels":["L1"]},"parent_signature_source":"...",'
-            '"parent_signature_hash":"...","parent_newly_formalized":true,'
-            '"children":[{"label":"L1","statement":"...",'
-            '"lean_signature":"...","lean_signature_hash":"..."}],'
-            '"reduction_theorem_source":"...","reduction_signature_hash":"..."}'
+            "Use exactly parent_signature, parent_newly_formalized, "
+            "child_signature, and reduction_signature. Each signature is a "
+            "separate JSON object with exactly kind, name, binders, "
+            "proposition, and source; child_signature additionally has label. "
+            "Copy contract names exactly; source must be one theorem or lemma "
+            "ending at `:= by`, with no proof body."
         ),
         "prover": (
-            '{"status":"PROVED|FAILED|INCONCLUSIVE",'
-            '"reduction_theorem_source":"..."}'
+            "Use exactly status and reduction_theorem_source. Status must be "
+            "PROVED, FAILED, or INCONCLUSIVE."
         ),
         "adversarial_proponent": (
-            '{"status":"DEFENDED|REJECTED|INCONCLUSIVE",'
-            '"issues":[],"repairs":[]}'
+            "Use exactly status, issues, and repairs. Status must be DEFENDED, "
+            "REJECTED, or INCONCLUSIVE."
         ),
         "judge": (
-            '{"decision":"ACCEPT|REJECT|INCONCLUSIVE","reason":"..."}'
+            "Use exactly decision and reason. Decision must be ACCEPT, REJECT, "
+            "or INCONCLUSIVE."
         ),
     }[role]
-    return [{
-        "role": "system",
-        "content": (
-            f"You are the isolated {role}. {behavior} Return exactly `### "
-            f"{heading}` followed by one-line `Artifact:` JSON. Emit only the "
-            f"role fields in this schema: {artifact_schema} Host bindings are "
-            "attached automatically; if emitted, they must match the package."
-        ),
-    }, {
+    if role == "decomposer":
+        model_package = _decomposer_model_package(package)
+    elif role == "formalizer":
+        model_package = _formalizer_model_package(package)
+    elif role == "prover":
+        model_package = _prover_model_package(package)
+    elif role == "adversarial_proponent":
+        model_package = _adversarial_review_model_package(package)
+    elif role == "judge":
+        model_package = _judge_model_package(package)
+    else:
+        model_package = package
+    user_message = {
         "role": "user",
-        "content": json.dumps(package, ensure_ascii=False, sort_keys=True),
-    }]
+        "content": json.dumps(
+            model_package,
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        "_artifact_contract_role": role,
+    }
+    if role in {
+        "decomposer",
+        "formalizer",
+        "prover",
+        "adversarial_proponent",
+        "judge",
+    }:
+        # Host-only metadata is intentionally outside chat content.
+        user_message["_host_package"] = package
+    system_content = (
+        f"You are the isolated {role}. {behavior} Return exactly `### "
+        f"{heading}`, newline, then `Artifact:` and one compact/minified JSON "
+        f"object. {field_contract} Host bindings are attached automatically; "
+        "if emitted, they must match the package. Emit no Markdown fence, "
+        "prose, second Artifact, or trailing token. End immediately after the "
+        "matching final }."
+    )
+    lint_structured_prompt(system_content)
+    messages = [{
+        "role": "system",
+        "content": system_content,
+    }, user_message]
+    if role in {"formalizer", "prover"}:
+        lint_lean_model_prompt(messages)
+    return messages
+
+
+def _formalizer_schema() -> str:
+    return (
+        '{"parent_signature":{"kind":"theorem","name":"...",'
+        '"binders":"...","proposition":"...","source":"..."},'
+        '"parent_newly_formalized":true,'
+        '"child_signature":{"label":"L1","kind":"theorem","name":"...",'
+        '"binders":"...","proposition":"...","source":"..."},'
+        '"reduction_signature":{"kind":"theorem","name":"...",'
+        '"binders":"...","proposition":"...","source":"..."}}'
+    )
+
+
+def _formalizer_signature_contract(package: dict) -> dict:
+    upstream = package["validated_upstream_artifacts"]["decomposer"]
+    parent_name = (
+        f"parent_{package['parent_statement_hash'][:12]}"
+    )
+    if package.get("parent_formal_status") != "UNFORMALIZED":
+        parent_name = normalize_lean_signature(
+            package["parent_lean_signature"],
+        ).name
+    child_label = str(upstream["child"].get("label", "L1"))
+    child_name = f"child_{child_label}_{upstream['child_hash'][:12]}"
+    reduction_name = (
+        f"reduction_{upstream['reduction_contract_hash'][:12]}"
+    )
+    return {
+        **lean_signature_contract_ref(),
+        "names": {
+            "parent_signature": parent_name,
+            "child_signature": child_name,
+            "reduction_signature": reduction_name,
+        },
+    }
+
+
+def _formalizer_model_package(package: dict) -> dict:
+    compact = {
+        "parent_statement_ref": package["parent_statement_hash"],
+        "parent_formal_status": package["parent_formal_status"],
+        "lean_signature_contract": _formalizer_signature_contract(package),
+        "math_ir": {
+            unit: _formalizer_math_ir(unit, package, {})
+            for unit in ("PARENT_SIGNATURE", "CHILD_SIGNATURE")
+        },
+    }
+    if package["parent_formal_status"] != "UNFORMALIZED":
+        compact["parent_lean_signature"] = package["parent_lean_signature"]
+        compact["parent_lean_signature_hash"] = package[
+            "parent_lean_signature_hash"
+        ]
+    return compact
+
+
+def _prover_model_package(package: dict) -> dict:
+    formalization = package["validated_upstream_artifacts"]["formalizer"]
+    return {
+        **lean_proof_contract_ref(),
+        "target_statement_ref": package["parent_statement_hash"],
+        "reduction_signature": {
+            "source": formalization["reduction_theorem_source"],
+            "signature_hash": formalization["reduction_signature_hash"],
+        },
+    }
+
+
+def _adversarial_review_model_package(package: dict) -> dict:
+    """Build one lossless content-addressed proof-review transport view."""
+    upstream = package["validated_upstream_artifacts"]
+    decomposition = upstream["decomposer"]
+    formalization = upstream["formalizer"]
+    proof = upstream["prover"]
+    artifact_hashes = package["validated_artifact_hashes"]
+    host_gates = {
+        "validation": package["host_gate_results"]["validation"],
+        "errors": package["host_gate_results"]["errors"],
+    }
+    semantic_units: list[str] = []
+    semantic_unit_indexes: dict[str, int] = {}
+    hash_table: list[str] = []
+    hash_indexes: dict[str, int] = {}
+
+    def retain(value: str) -> int:
+        text = str(value)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        if digest not in semantic_unit_indexes:
+            semantic_unit_indexes[digest] = len(semantic_units)
+            semantic_units.append(text)
+        return semantic_unit_indexes[digest]
+
+    def href(value: str) -> int:
+        digest = str(value)
+        if digest not in hash_indexes:
+            hash_indexes[digest] = len(hash_table)
+            hash_table.append(digest)
+        return hash_indexes[digest]
+
+    def compact_hashes(value):
+        if isinstance(value, dict):
+            return {
+                key: compact_hashes(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [compact_hashes(item) for item in value]
+        if (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value.lower())
+        ):
+            return {"h": href(value)}
+        return value
+
+    child = decomposition["child"]
+    formal_child = formalization["child"]
+    compact = {
+        "binding": {
+            "target_id": package["target_obligation_id"],
+            "target_h": href(package["target_statement_hash"]),
+            "parent_h": href(package["parent_statement_hash"]),
+            "root_goal_h": href(package["root_goal_hash"]),
+            "formal_status": package["parent_formal_status"],
+            "parent_ref": retain(package["parent_statement"]),
+        },
+        "artifact_h": {
+            role: href(artifact_hashes[role])
+            for role in ("decomposer", "formalizer", "prover")
+        },
+        "parent_signature": {
+            "hash_h": href(formalization["parent_signature_hash"]),
+            "source_ref": retain(formalization["parent_signature_source"]),
+            "newly_formalized": formalization["parent_newly_formalized"],
+        },
+        "child": {
+            "hash_h": href(_canonical_json_hash(child)),
+            "label": child["label"],
+            "kind": child["kind"],
+            "source_definition_labels": child["source_definition_labels"],
+            "statement_ref": retain(child["statement"]),
+            "lean_signature_h": href(formal_child["lean_signature_hash"]),
+            "lean_signature_ref": retain(formal_child["lean_signature"]),
+        },
+        "public_assumptions": {
+            "hash_h": href(_canonical_json_hash(
+                decomposition["public_assumptions"],
+            )),
+            "items": decomposition["public_assumptions"],
+        },
+        "reduction": {
+            "hash_h": href(
+                _canonical_json_hash(decomposition["reduction_contract"]),
+            ),
+            "child_label": decomposition["reduction_contract"]["child_label"],
+            "derivation_ref": retain(
+                decomposition["reduction_contract"]["derivation"],
+            ),
+            "signature_h": href(formalization["reduction_signature_hash"]),
+            "signature_ref": retain(
+                formalization["reduction_theorem_source"],
+            ),
+            "proof_status": proof["status"],
+            "proof_ref": retain(proof["reduction_theorem_source"]),
+        },
+        "host_gates": {
+            **compact_hashes(host_gates),
+        },
+        "semantic_units": semantic_units,
+        "hashes": hash_table,
+    }
+    return compact
+
+
+def _judge_model_package(package: dict) -> dict:
+    """Keep full adjudication evidence without repeated role telemetry."""
+    defense = package["defense_evidence"]
+    compact = {
+        "target": {
+            "obligation_id": package["target_obligation_id"],
+            "statement_hash": package["parent_statement_hash"],
+            "root_goal_hash": package["root_goal_hash"],
+        },
+        "parent_statement": package["parent_statement"],
+        "retained_child_statement": package["retained_child_statement"],
+        "artifact_hashes": package["artifact_hashes"],
+        "host_gates": {
+            "validation": package["validation"],
+            "errors": package["errors"],
+        },
+        "adversarial_review": defense,
+        "judge_manifest_hash": package["upstream_artifact_hashes"][0],
+    }
+    compact["judge_view_hash"] = _canonical_json_hash(compact)
+    return compact
+
+
+def _message_host_package(messages: list[dict]) -> dict:
+    return messages[-1].get(
+        "_host_package",
+        json.loads(messages[-1]["content"]),
+    )
+
+
+def _message_artifact_contract(messages: list[dict], fallback_role: str) -> str:
+    return str(messages[-1].get("_artifact_contract_role", fallback_role))
 
 
 def _required_certified_upstream(role: str) -> set[str]:
     return {
         "definition_auditor": set(),
         "counterexample_worker": {"definition_auditor"},
-        "decomposer": {
-            "definition_auditor",
-            "counterexample_worker",
-        },
+        # Counterexample prose is advisory. It is never a decomposition premise.
+        "decomposer": {"definition_auditor"},
         "formalizer": {"decomposer"},
         "prover": {"formalizer"},
         "adversarial_proponent": {
@@ -1467,57 +2167,1473 @@ def _required_certified_upstream(role: str) -> set[str]:
     }[role]
 
 
-def _validate_dependency_graph(
+def _artifact_dependencies_for_role(role: str, hashes: dict[str, str]) -> list[str]:
+    roles = {
+        "definition_auditor": (),
+        "counterexample_worker": ("definition_auditor",),
+        "decomposer": ("definition_auditor",),
+        "formalizer": ("decomposer",),
+        "prover": ("formalizer",),
+        "adversarial_proponent": ("decomposer", "formalizer", "prover"),
+    }[role]
+    return [hashes[item] for item in roles]
+
+
+def _certified_upstream_view(artifact, *, consumer_role: str = "") -> dict:
+    if isinstance(artifact, DefinitionAudit):
+        if consumer_role == "decomposer":
+            return {
+                "missing_definitions": artifact.missing_definitions,
+            }
+        return {
+            "definitions": artifact.definitions,
+            "missing_definitions": artifact.missing_definitions,
+        }
+    if isinstance(artifact, CounterexampleReport):
+        if consumer_role == "decomposer":
+            compact_cases = []
+            for case in artifact.cases:
+                if not isinstance(case, dict):
+                    continue
+                compact = {
+                    key: case[key]
+                    for key in (
+                        "case_id",
+                        "evidence_type",
+                        "evidence_source",
+                        "claim",
+                        "witness",
+                        "mathematical_contradiction",
+                    )
+                    if key in case
+                }
+                if (
+                    "mathematical_contradiction" not in compact
+                    and "description" in case
+                ):
+                    compact["description"] = case["description"]
+                compact_cases.append(compact)
+            return {
+                "status": artifact.status,
+                "cases": compact_cases,
+            }
+        return {
+            "status": artifact.status,
+            "cases": artifact.cases,
+        }
+    if isinstance(artifact, DecompositionProposal):
+        if consumer_role == "formalizer":
+            return {
+                "child": artifact.child,
+                "public_assumptions": artifact.public_assumptions,
+                "reduction": {
+                    "child_label": artifact.reduction_contract["child_label"],
+                    "derivation": artifact.reduction_contract["derivation"],
+                },
+            }
+        return {
+            "parent_statement": artifact.parent_statement,
+            "child": artifact.child,
+            "public_assumptions": artifact.public_assumptions,
+            "reduction_contract": artifact.reduction_contract,
+        }
+    if isinstance(artifact, FormalizationBundle):
+        return {
+            "parent_signature_source": artifact.parent_signature_source,
+            "parent_signature_hash": artifact.parent_signature_hash,
+            "parent_newly_formalized": artifact.parent_newly_formalized,
+            "child": artifact.child,
+            "reduction_theorem_source": artifact.reduction_theorem_source,
+            "reduction_signature_hash": artifact.reduction_signature_hash,
+        }
+    if isinstance(artifact, ProofAttempt):
+        return {
+            "status": artifact.status,
+            "reduction_theorem_source": artifact.reduction_theorem_source,
+        }
+    return asdict(artifact)
+
+
+def _formalizer_upstream_view(
+    proposal: DecompositionProposal,
+    proposal_hash: str,
+) -> dict:
+    """Losslessly bind the singular decomposition without repeated prose."""
+    child = proposal.child
+    assumptions = proposal.public_assumptions
+    reduction = proposal.reduction_contract
+    return {
+        "artifact_hash": proposal_hash,
+        "parent_statement_hash": proposal.parent_statement_hash,
+        "child_hash": _canonical_json_hash(child),
+        "child": child,
+        "public_assumptions_hash": _canonical_json_hash(assumptions),
+        "public_assumptions": assumptions,
+        "reduction_contract_hash": _canonical_json_hash(reduction),
+        "reduction": {
+            "child_label": reduction["child_label"],
+            "derivation": reduction["derivation"],
+        },
+    }
+
+
+def _validate_decomposition_shape(
     proposal: DecompositionProposal,
 ) -> list[str]:
-    errors = []
-    labels = [
-        str(child.get("label", ""))
-        for child in proposal.children
-        if isinstance(child, dict)
-    ]
-    if (
-        not labels
-        or any(not label for label in labels)
-        or len(set(labels)) != len(labels)
+    errors: list[str] = []
+    child = proposal.child
+    if not isinstance(child, dict) or not str(child.get("label", "")):
+        errors.append("child must be one object with a non-empty label")
+        return errors
+    if not str(child.get("statement", "")).strip():
+        errors.append("child statement must be non-empty")
+    required_child = {
+        "label",
+        "statement",
+        "kind",
+        "source_definition_labels",
+    }
+    allowed_child = required_child | {
+        "move_id",
+        "result_status",
+        "requires_parent_case_split",
+        "proves_parent",
+        "theorem_card_ids",
+        "public_assumptions",
+        "public_assumptions_hash",
+        "restriction_move",
+    }
+    if not required_child.issubset(child) or not set(child).issubset(allowed_child):
+        errors.append(
+            "child must contain the required typed fields and only registered "
+            "Host metadata",
+        )
+    if child.get("kind") not in {"DEFINITION", "LEMMA"}:
+        errors.append("child kind must be DEFINITION or LEMMA")
+    if not isinstance(child.get("source_definition_labels"), list):
+        errors.append("source_definition_labels must be a list")
+    if "proves_parent" in child and child["proves_parent"] is not False:
+        errors.append("case child cannot claim to prove the parent")
+    if "requires_parent_case_split" in child and not isinstance(
+        child["requires_parent_case_split"], bool,
     ):
-        return ["child labels must be non-empty and unique"]
-    if len(labels) != 1:
-        return ["one-step decomposition requires exactly one child"]
-    if set(proposal.reduction_labels) != set(labels):
-        errors.append("every child must be reachable in the reduction contract")
-    graph = {label: set() for label in labels}
-    for edge in proposal.dependency_edges:
+        errors.append("requires_parent_case_split must be boolean")
+    if "theorem_card_ids" in child and not isinstance(
+        child["theorem_card_ids"], list,
+    ):
+        errors.append("theorem_card_ids must be a list")
+    contract = proposal.reduction_contract
+    required = {
+        "child_label",
+        "parent_statement",
+        "public_assumptions",
+        "derivation",
+    }
+    allowed_contract = required | {
+        "public_assumptions_hash",
+        "restriction_move",
+    }
+    if (
+        not isinstance(contract, dict)
+        or not required.issubset(contract)
+        or not set(contract).issubset(allowed_contract)
+    ):
+        errors.append(
+            "reduction_contract must contain Host-owned child, parent, "
+            "public-assumption, derivation, and optional restriction metadata",
+        )
+        return errors
+    if contract["child_label"] != child["label"]:
+        errors.append("reduction contract does not bind the exact child")
+    if contract["parent_statement"] != proposal.parent_statement:
+        errors.append("reduction contract does not bind the exact parent")
+    if contract["public_assumptions"] != proposal.public_assumptions:
+        errors.append("reduction contract changes public assumptions")
+    expected_assumptions_hash = _canonical_json_hash(proposal.public_assumptions)
+    for owner, container in (("child", child), ("reduction", contract)):
         if (
-            not isinstance(edge, list)
-            or len(edge) != 2
-            or edge[0] not in graph
-            or edge[1] not in graph
+            "public_assumptions" in container
+            and container["public_assumptions"] != proposal.public_assumptions
         ):
-            errors.append("dependency edge references an invalid child label")
-            continue
-        if edge[0] == edge[1]:
-            errors.append("child dependency graph must be acyclic")
-            continue
-        graph[edge[0]].add(edge[1])
-    visiting = set()
-    visited = set()
-
-    def visit(label: str) -> bool:
-        if label in visiting:
-            return False
-        if label in visited:
-            return True
-        visiting.add(label)
-        if any(not visit(dependency) for dependency in graph[label]):
-            return False
-        visiting.remove(label)
-        visited.add(label)
-        return True
-
-    if any(not visit(label) for label in labels):
-        errors.append("child dependency graph must be acyclic")
+            errors.append(f"{owner} changes Host-owned public assumptions")
+        if (
+            "public_assumptions_hash" in container
+            and container["public_assumptions_hash"] != expected_assumptions_hash
+        ):
+            errors.append(f"{owner} public assumptions hash mismatch")
+    if len(str(contract["derivation"]).strip()) < 20:
+        errors.append("reduction contract derivation is incomplete")
+    derivation = " ".join(str(contract["derivation"]).lower().split())
+    if any(marker in derivation for marker in (
+        "assume the parent",
+        "assuming the parent",
+        "assume the density-singularity gap lemma",
+        "the parent directly implies itself",
+    )):
+        errors.append("reduction contract circularly assumes the parent")
     return errors
+
+
+def _validate_decomposition_progress(
+    ledger: ProofObligationLedger,
+    parent: ProofObligation,
+    proposal: DecompositionProposal,
+) -> list[str]:
+    """Require a deterministic strict child before it can be persisted."""
+    child_statement = str(proposal.child.get("statement", ""))
+    reason = _frontier_rejection_reason(
+        ledger,
+        parent.obligation_id,
+        child_statement,
+    )
+    errors = [f"child {proposal.child.get('label', '')} rejected: {reason}"] if reason else []
+    if not _child_has_structural_delta(parent.statement, child_statement):
+        errors.append("child lacks a machine-checkable structural delta")
+    if _normalize_obligation_statement(child_statement) == (
+        _normalize_obligation_statement(parent.statement)
+    ):
+        errors.append("child restates the exact parent")
+    return errors
+
+
+def _validate_definition_child_selection(
+    definition_audit: DefinitionAudit,
+    proposal: DecompositionProposal,
+) -> list[str]:
+    required_labels = [
+        str(item.get("obligation_label", ""))
+        for item in definition_audit.missing_definitions
+        if isinstance(item, dict)
+    ]
+    if "" in required_labels:
+        return ["missing definitions must have non-empty obligation labels"]
+    if not required_labels:
+        return []
+    child = proposal.child
+    if not isinstance(child, dict) or child.get("kind") != "DEFINITION":
+        return ["missing definitions require a DEFINITION bundle child"]
+    raw_source_labels = child.get("source_definition_labels")
+    if not isinstance(raw_source_labels, list):
+        return ["source_definition_labels must be a list"]
+    source_labels = [str(label) for label in raw_source_labels]
+    if (
+        any(not label for label in source_labels)
+        or len(source_labels) != len(set(source_labels))
+        or set(source_labels) != set(required_labels)
+    ):
+        return [
+            "definition bundle must reference every missing definition label; "
+            "source_definition_labels must equal exactly "
+            f"{sorted(set(required_labels))}",
+        ]
+    return []
+
+
+def _decomposer_payload_result(text: str) -> tuple[dict, str]:
+    try:
+        scanned = _scan_decomposer_artifact(text)
+    except ValueError as exc:
+        return {}, f"malformed DECOMPOSITION_PROPOSAL Artifact JSON: {exc}"
+    try:
+        payload = json.loads(scanned.json_text)
+    except json.JSONDecodeError:
+        repaired = repair_json_backslashes(scanned.json_text)
+        try:
+            payload = json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            return {}, (
+                "malformed DECOMPOSITION_PROPOSAL Artifact JSON: "
+                f"{exc.msg} at line {exc.lineno} column {exc.colno}"
+            )
+    if not isinstance(payload, dict):
+        return {}, "DECOMPOSITION_PROPOSAL Artifact must be one JSON object"
+    return payload, ""
+
+
+def _decomposer_payload(text: str) -> dict:
+    return _decomposer_payload_result(text)[0]
+
+
+def _decomposer_protocol_errors(text: str) -> list[str]:
+    payload, diagnostic = _decomposer_payload_result(text)
+    if diagnostic:
+        return [diagnostic]
+    errors = []
+    if "children" in payload:
+        children = payload.get("children")
+        count = len(children) if isinstance(children, list) else "non-list"
+        errors.append(
+            f"field 'children' is forbidden (received {count}); emit exactly "
+            "one 'child' object",
+        )
+    if not isinstance(payload.get("child"), dict):
+        errors.append("field 'child' must be exactly one object")
+    if "dependency_edges" in payload:
+        errors.append("field 'dependency_edges' is forbidden for one child")
+    if "reduction_labels" in payload:
+        errors.append("field 'reduction_labels' is forbidden; bind child_label")
+    contract = payload.get("reduction_contract")
+    if not isinstance(contract, dict):
+        errors.append("field 'reduction_contract' must be one complete object")
+    allowed = {
+        "parent_statement",
+        "child",
+        "public_assumptions",
+        "reduction_contract",
+        # Read-only compatibility: older producers emitted host bindings.
+        "target_obligation_id",
+        "parent_statement_hash",
+        "root_goal_hash",
+        "producer_role",
+        "producer_run_id",
+        "upstream_artifact_hashes",
+    }
+    extras = sorted(set(payload) - allowed)
+    if extras:
+        errors.append(f"unexpected decomposer fields: {', '.join(extras)}")
+    return errors
+
+
+def _decomposer_semantically_complete(
+    text: str,
+    package: dict,
+    producer_run_id: str,
+) -> bool:
+    """Accept an early stop only after complete schema and host validation."""
+    try:
+        _scan_decomposer_artifact(text)
+    except ValueError:
+        return False
+    if _decomposer_protocol_errors(text):
+        return False
+    parsed, error = parse_certified_artifact(
+        text,
+        "DECOMPOSITION_PROPOSAL",
+        target_obligation_id=package["target_obligation_id"],
+        parent_statement_hash=package["parent_statement_hash"],
+        root_goal_hash=package["root_goal_hash"],
+        producer_run_id=producer_run_id,
+        upstream_artifact_hashes=package["upstream_artifact_hashes"],
+    )
+    return bool(
+        not error
+        and parsed is not None
+        and parsed.parent_statement == package["parent_statement"]
+        and not _validate_decomposition_shape(parsed)
+        and _decomposer_child_matches_contract(parsed.child, package)
+    )
+
+
+def _validate_formalization_shape(
+    bundle: FormalizationBundle,
+    package: dict,
+) -> list[str]:
+    errors: list[str] = []
+    child = bundle.child
+    expected_child = package["validated_upstream_artifacts"]["decomposer"][
+        "child"
+    ]
+    if not isinstance(child, dict) or set(child) != {
+        "label",
+        "lean_signature",
+        "lean_signature_hash",
+    }:
+        errors.append(
+            "child must contain exactly label, lean_signature, and "
+            "lean_signature_hash",
+        )
+        return errors
+    if child.get("label") != expected_child.get("label"):
+        errors.append("formalized child label differs from exact child")
+    for field_name in (
+        "parent_signature_source",
+        "parent_signature_hash",
+        "reduction_theorem_source",
+        "reduction_signature_hash",
+    ):
+        if not str(getattr(bundle, field_name, "")).strip():
+            errors.append(f"{field_name} must be non-empty")
+    if not str(child.get("lean_signature", "")).strip():
+        errors.append("child lean_signature must be non-empty")
+    if not str(child.get("lean_signature_hash", "")).strip():
+        errors.append("child lean_signature_hash must be non-empty")
+    try:
+        contract = _formalizer_signature_contract(package)
+        actual_names = {
+            "parent_signature": normalize_lean_signature(
+                bundle.parent_signature_source,
+            ).name,
+            "child_signature": normalize_lean_signature(
+                str(child.get("lean_signature", "")),
+            ).name,
+            "reduction_signature": normalize_lean_signature(
+                bundle.reduction_theorem_source,
+            ).name,
+        }
+        for field, required_name in contract["names"].items():
+            if actual_names[field] != required_name:
+                errors.append(
+                    f"{field} name changed: expected immutable "
+                    f"{required_name}, got {actual_names[field]}",
+                )
+    except ValueError as exc:
+        errors.append(f"signature contract failed: {exc}")
+    return errors
+
+
+def _validate_formalization_elaboration(
+    bundle: FormalizationBundle,
+    package: dict,
+    *,
+    project_root: Path,
+    signature_validator,
+) -> list[str]:
+    """Elaborate all signatures before a Prover may see the bundle."""
+    sources = {
+        "parent": bundle.parent_signature_source,
+        "child": str(bundle.child.get("lean_signature", "")),
+        "reduction": bundle.reduction_theorem_source,
+    }
+    for label, source in sources.items():
+        if re.search(r"\.\.\.|:=\s*\.\.\.|<[^>]*hash[^>]*>", source, re.I):
+            return [f"{label} Lean signature contains a placeholder"]
+    results = {
+        label: signature_validator(source, project_root=project_root)
+        for label, source in sources.items()
+    }
+    errors = []
+    for label, result in results.items():
+        if result.ok:
+            continue
+        failure_kind = (
+            "contract/syntax validation failed"
+            if result.status == "CONTRACT_FAILED"
+            else (
+                "Lean typecheck failed"
+                if result.status == "TYPECHECK_FAILED"
+                else f"Lean {result.status.lower()}"
+            )
+        )
+        errors.append(f"{label} {failure_kind}: {result.error}")
+    expected_hashes = {
+        "parent": bundle.parent_signature_hash,
+        "child": str(bundle.child.get("lean_signature_hash", "")),
+        "reduction": bundle.reduction_signature_hash,
+    }
+    for label, result in results.items():
+        if result.ok and result.signature_hash != expected_hashes[label]:
+            errors.append(
+                f"{label} proposition/hash mismatch: normalized declaration "
+                "hash differs from the recorded hash",
+            )
+    if not errors:
+        parent_signature = " ".join(
+            _signature_only_for_comparison(sources["parent"]).split()
+        )
+        reduction_signature = " ".join(
+            _signature_only_for_comparison(sources["reduction"]).split()
+        )
+        parent_conclusion = (
+            parent_signature.rsplit(" : ", 1)[-1]
+            if " : " in parent_signature else ""
+        )
+        reduction_conclusion = (
+            reduction_signature.rsplit(" : ", 1)[-1]
+            if " : " in reduction_signature else ""
+        )
+        if not parent_conclusion or reduction_conclusion != parent_conclusion:
+            errors.append(
+                "reduction theorem conclusion differs from exact parent proposition",
+            )
+    return errors
+
+
+def _signature_only_for_comparison(source: str) -> str:
+    return re.split(r"\s*:=\s*by\b", str(source), maxsplit=1)[0].strip()
+
+
+def _circular_reduction_proof(source: str) -> bool:
+    signature = _signature_only_for_comparison(source)
+    conclusion_match = re.search(r"\)\s*:\s*(.+)$", signature)
+    if conclusion_match is None:
+        return False
+    conclusion = " ".join(conclusion_match.group(1).split())
+    assumptions = re.findall(r"\(\s*\w+\s*:\s*([^()]+)\)", signature)
+    return any(" ".join(item.split()) == conclusion for item in assumptions)
+
+
+def _formalizer_semantically_complete(
+    text: str,
+    package: dict,
+    producer_run_id: str,
+) -> bool:
+    """Stop on one closed, strict, schema-valid Formalizer artifact."""
+    parsed, error = parse_certified_artifact(
+        text,
+        "FORMALIZATION_BUNDLE",
+        target_obligation_id=package["target_obligation_id"],
+        parent_statement_hash=package["parent_statement_hash"],
+        root_goal_hash=package["root_goal_hash"],
+        producer_run_id=producer_run_id,
+        upstream_artifact_hashes=package["upstream_artifact_hashes"],
+    )
+    return bool(
+        not error
+        and parsed is not None
+        and not _validate_formalization_shape(parsed, package)
+    )
+
+
+def _formalizer_repair_messages(
+    package: dict,
+    *,
+    validation_errors: list[str],
+) -> list[dict[str, str]]:
+    compact = _formalizer_model_package(package)
+    compact["validation_errors"] = [
+        re.sub(
+            r"\\([A-Za-z]+|[{}])",
+            lambda match: f"LATEX_COMMAND_{match.group(1)}",
+            str(error),
+        )
+        for error in validation_errors
+    ]
+    user_message = {
+        "role": "user",
+        "content": json.dumps(compact, ensure_ascii=False, sort_keys=True),
+        "_host_package": package,
+    }
+    return [{
+        "role": "system",
+        "content": _validated_structured_prompt((
+            "Fresh Formalizer repair; never splice prior JSON. Return exactly "
+            "`### FORMALIZATION_BUNDLE`, newline, `Artifact:`, and one compact "
+            "JSON object with exactly parent_signature, "
+            "parent_newly_formalized, child_signature, reduction_signature. "
+            "Each signature is a separate object with exactly kind, name, "
+            "binders, proposition, source; child_signature also has label. "
+            "Copy lean_signature_contract ID, version, and names. Source must "
+            "match its fields and end at `:= by` with no body. Examples show "
+            "syntax only; supply complete package mathematics, never "
+            "placeholders. No prose, fences, host bindings, second artifact, or "
+            "trailing token; end at the final }."
+        )),
+    }, user_message]
+
+
+FORMALIZER_UNIT_SPECS = (
+    ("PARENT_SIGNATURE", "formalizer_parent_signature"),
+    ("CHILD_SIGNATURE", "formalizer_child_signature"),
+    ("REDUCTION_SIGNATURE", "formalizer_reduction_signature"),
+)
+FORMALIZER_UNIT_HEADROOM_TOKENS = 128
+
+
+def _formalizer_unit_dependencies(
+    unit: str,
+    package: dict,
+    unit_hashes: dict[str, str],
+) -> list[str]:
+    upstream = package["validated_upstream_artifacts"]["decomposer"]
+    if unit == "PARENT_SIGNATURE":
+        return [
+            upstream["artifact_hash"],
+            package["parent_statement_hash"],
+            package["root_goal_hash"],
+        ]
+    if unit == "CHILD_SIGNATURE":
+        return [upstream["artifact_hash"], upstream["child_hash"]]
+    return [
+        upstream["artifact_hash"],
+        unit_hashes["PARENT_SIGNATURE"],
+        unit_hashes["CHILD_SIGNATURE"],
+        upstream["reduction_contract_hash"],
+        upstream["public_assumptions_hash"],
+    ]
+
+
+def _formalizer_symbol_table(package: dict):
+    audit = package.get("definition_audit", {})
+    table = register_lean_symbol_table(
+        list(audit.get("definitions", [])),
+        missing_definitions=list(audit.get("missing_definitions", [])),
+        parent_statement_hash=package["parent_statement_hash"],
+    )
+    return table
+
+
+def _safe_reduction_description(package: dict, table) -> str:
+    derivation = str(
+        package["validated_upstream_artifacts"]["decomposer"][
+            "reduction"
+        ].get("derivation", ""),
+    )
+    safe = normalize_registered_latex_identifiers(derivation, table)
+    safe = safe.replace("$", "").replace("{", "").replace("}", "")
+    if "\\" in safe:
+        raise ValueError("reduction description retains a backslash")
+    return " ".join(safe.split())
+
+
+def _formalizer_math_ir(
+    unit: str,
+    package: dict,
+    validated_units: dict[str, dict],
+) -> dict:
+    table = _formalizer_symbol_table(package)
+    upstream = package["validated_upstream_artifacts"]["decomposer"]
+    if unit == "PARENT_SIGNATURE":
+        description = (
+            "For fixed epsilon and genus p, there exists a critical density "
+            "rho_c such that any complex sequence z with density rho greater "
+            "than rho_c cannot have its reciprocal series converge locally to "
+            "a pole of integer coefficient m at s0 within radius delta unless "
+            "the analytic function f has growth order greater than p."
+        )
+        source_ref = package["parent_statement_hash"]
+    elif unit == "CHILD_SIGNATURE":
+        missing_by_label = {
+            str(item.get("obligation_label", "")): str(
+                item.get("required_type", ""),
+            )
+            for item in package["definition_audit"].get(
+                "missing_definitions",
+                [],
+            )
+        }
+        labels = upstream["child"].get("source_definition_labels", [])
+        description = (
+            "Bundled definition obligation: "
+            + "; ".join(
+                missing_by_label[str(label)]
+                for label in labels
+                if str(label) in missing_by_label
+            )
+        )
+        source_ref = upstream["child_hash"]
+    else:
+        description = _safe_reduction_description(package, table)
+        source_ref = upstream["reduction_contract_hash"]
+    safe_symbols = [
+        {"name": symbol.name, "type": symbol.lean_type}
+        for symbol in table.symbols
+    ]
+    semantic_payload = {
+        "unit": unit,
+        "description": description,
+        "symbols": safe_symbols,
+        "source_ref": source_ref,
+    }
+    if unit == "REDUCTION_SIGNATURE":
+        semantic_payload["parent_signature"] = {
+            "source": validated_units["PARENT_SIGNATURE"]["source"],
+            "signature_hash": validated_units["PARENT_SIGNATURE"][
+                "signature_hash"
+            ],
+        }
+        semantic_payload["child_signature"] = {
+            "source": validated_units["CHILD_SIGNATURE"]["source"],
+            "signature_hash": validated_units["CHILD_SIGNATURE"][
+                "signature_hash"
+            ],
+        }
+        semantic_payload["public_assumptions"] = upstream["public_assumptions"]
+    encoded = json.dumps(
+        semantic_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if "\\" in encoded:
+        raise ValueError("Lean-safe Math IR contains a raw backslash")
+    return {
+        **semantic_payload,
+        "symbol_table_id": table.symbol_table_id,
+        "symbol_table_version": table.version,
+        "proposition_semantic_hash": hashlib.sha256(encoded.encode()).hexdigest(),
+    }
+
+
+def _formalizer_unit_messages(
+    unit: str,
+    package: dict,
+    validated_units: dict[str, dict],
+    *,
+    validation_errors: list[str] | None = None,
+) -> list[dict[str, str]]:
+    contract = _formalizer_signature_contract(package)
+    name_key = {
+        "PARENT_SIGNATURE": "parent_signature",
+        "CHILD_SIGNATURE": "child_signature",
+        "REDUCTION_SIGNATURE": "reduction_signature",
+    }[unit]
+    math_ir = _formalizer_math_ir(unit, package, validated_units)
+    model_package = {
+        **lean_signature_contract_ref(),
+        "unit": unit,
+        "required_name": contract["names"][name_key],
+        "math_ir": math_ir,
+    }
+    if validation_errors:
+        model_package["validation_errors"] = [
+            re.sub(
+                r"\\([A-Za-z]+|[{}])",
+                lambda match: f"LATEX_COMMAND_{match.group(1)}",
+                str(error),
+            )
+            for error in validation_errors
+        ]
+    system_content = (
+        "Formalize exactly one Lean signature unit. Return exactly "
+        "`### LEAN_SIGNATURE_UNIT`, newline, `Artifact:`, and one compact JSON "
+        "object with exactly contract_id, contract_version, unit, kind, name, "
+        "binders, proposition, source. Copy contract/unit/name; binders and "
+        "proposition are strings; binders is exact parenthesized Lean binder "
+        "text copied verbatim in source; kind is theorem or lemma; source ends "
+        "`:= by`. "
+        "Emit no prose, fence, proof body, second artifact, or trailing token."
+    )
+    lint_structured_prompt(system_content)
+    messages = [{
+        "role": "system",
+        "content": system_content,
+    }, {
+        "role": "user",
+        "content": json.dumps(
+            model_package,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "_artifact_contract_role": {
+            "PARENT_SIGNATURE": "formalizer_parent_signature",
+            "CHILD_SIGNATURE": "formalizer_child_signature",
+            "REDUCTION_SIGNATURE": "formalizer_reduction_signature",
+        }[unit],
+        "_host_package": package,
+    }]
+    lint_lean_model_prompt(messages)
+    return messages
+
+
+def _parse_formalizer_unit(
+    text: str,
+    *,
+    unit: str,
+    package: dict,
+    project_root: Path,
+    signature_validator,
+    dependencies: list[str],
+) -> tuple[dict | None, str]:
+    try:
+        scanned = _scan_certified_artifact(text, "LEAN_SIGNATURE_UNIT")
+        payload = _json_artifact(scanned.json_text)
+    except ValueError as exc:
+        return None, f"malformed LEAN_SIGNATURE_UNIT: {exc}"
+    required = {
+        "contract_id",
+        "contract_version",
+        "unit",
+        "kind",
+        "name",
+        "binders",
+        "proposition",
+        "source",
+    }
+    if set(payload) != required:
+        return None, "Lean signature unit fields are not exact"
+    try:
+        resolve_lean_contract(
+            str(payload["contract_id"]),
+            int(payload["contract_version"]),
+            signature_only=True,
+        )
+        contract = _formalizer_signature_contract(package)
+        name_key = {
+            "PARENT_SIGNATURE": "parent_signature",
+            "CHILD_SIGNATURE": "child_signature",
+            "REDUCTION_SIGNATURE": "reduction_signature",
+        }[unit]
+        if payload["unit"] != unit:
+            raise ValueError("Lean signature unit name mismatch")
+        if payload["name"] != contract["names"][name_key]:
+            raise ValueError("immutable Lean declaration name mismatch")
+        if not isinstance(payload["binders"], str) or not isinstance(
+            payload["proposition"],
+            str,
+        ):
+            raise ValueError("binders and proposition must be strings")
+        table = _formalizer_symbol_table(package)
+        binders_before_hash = lean_symbol_semantic_hash(
+            payload["binders"],
+            table,
+        )
+        proposition_before_hash = lean_symbol_semantic_hash(
+            payload["proposition"],
+            table,
+        )
+        normalized_binders = normalize_registered_latex_identifiers(
+            payload["binders"],
+            table,
+        )
+        normalized_proposition = normalize_registered_latex_identifiers(
+            payload["proposition"],
+            table,
+        )
+        normalized_source_text = normalize_registered_latex_identifiers(
+            str(payload["source"]),
+            table,
+        )
+        if (
+            binders_before_hash
+            != lean_symbol_semantic_hash(normalized_binders, table)
+            or proposition_before_hash
+            != lean_symbol_semantic_hash(normalized_proposition, table)
+        ):
+            raise ValueError("symbol normalization changed binder/proposition hash")
+        normalized = normalize_lean_signature(
+            normalized_source_text,
+            expected={
+                "kind": str(payload["kind"]),
+                "name": str(payload["name"]),
+                "binders": normalized_binders,
+                "proposition": normalized_proposition,
+            },
+        )
+        allowed_binders = {symbol.name for symbol in table.symbols}
+        declared_binders = set(re.findall(
+            r"[\(\{]\s*([A-Za-z_][A-Za-z0-9_']*)\s*:",
+            normalized.binders,
+        ))
+        unregistered = declared_binders - allowed_binders
+        if unregistered:
+            raise ValueError(
+                "unregistered Lean binder identifier(s): "
+                + ", ".join(sorted(unregistered)),
+            )
+    except (TypeError, ValueError) as exc:
+        return None, f"Lean contract validation failed: {exc}"
+    elaborated = signature_validator(
+        normalized.source,
+        project_root=project_root,
+    )
+    if not elaborated.ok:
+        return None, (
+            f"Lean {elaborated.status.lower()} at {unit}: {elaborated.error}"
+        )
+    if elaborated.signature_hash != normalized.declaration_hash:
+        return None, f"proposition/hash mismatch at {unit}"
+    return {
+        "schema_version": 1,
+        "unit": unit,
+        "contract_id": payload["contract_id"],
+        "contract_version": int(payload["contract_version"]),
+        "kind": normalized.kind,
+        "name": normalized.name,
+        "binders": normalized.binders,
+        "proposition": normalized.proposition,
+        "proposition_hash": normalized.proposition_hash,
+        "source": normalized.source,
+        "signature_hash": normalized.declaration_hash,
+        "symbol_table_id": table.symbol_table_id,
+        "symbol_table_version": table.version,
+        "binder_semantic_hash": binders_before_hash,
+        "proposition_semantic_hash": proposition_before_hash,
+        "dependencies": dependencies,
+    }, ""
+
+
+def _load_formalizer_unit(
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    unit: str,
+    dependencies: list[str],
+    symbol_table,
+) -> dict | None:
+    role = f"formalizer_{unit.lower()}"
+    ref = checkpoint.validated_artifacts.get(role)
+    if ref is None:
+        return None
+    if ref.dependencies != dependencies or ref.schema_version != 1:
+        return None
+    encoded = Path(ref.path).read_bytes()
+    if hashlib.sha256(encoded).hexdigest() != ref.sha256:
+        return None
+    payload = json.loads(encoded)
+    if (
+        not isinstance(payload, dict)
+        or payload.get("unit") != unit
+        or payload.get("dependencies") != dependencies
+        or payload.get("symbol_table_id") != symbol_table.symbol_table_id
+        or payload.get("symbol_table_version") != symbol_table.version
+    ):
+        return None
+    resolve_lean_contract(
+        str(payload.get("contract_id", "")),
+        int(payload.get("contract_version", 0)),
+        signature_only=True,
+    )
+    return payload
+
+
+def _assemble_formalizer_units(
+    units: dict[str, dict],
+    *,
+    package: dict,
+    producer_run_id: str,
+) -> FormalizationBundle:
+    parent = units["PARENT_SIGNATURE"]
+    child = units["CHILD_SIGNATURE"]
+    reduction = units["REDUCTION_SIGNATURE"]
+    parent_core = _signature_only_for_comparison(parent["source"])
+    reduction_core = _signature_only_for_comparison(reduction["source"])
+    parent_conclusion = parent_core.rsplit(" : ", 1)[-1]
+    reduction_conclusion = reduction_core.rsplit(" : ", 1)[-1]
+    if not parent_conclusion or reduction_conclusion != parent_conclusion:
+        raise ValueError(
+            "reduction theorem conclusion differs from exact parent proposition",
+        )
+    return FormalizationBundle(
+        target_obligation_id=package["target_obligation_id"],
+        parent_statement_hash=package["parent_statement_hash"],
+        root_goal_hash=package["root_goal_hash"],
+        producer_role="formalizer",
+        producer_run_id=producer_run_id,
+        upstream_artifact_hashes=package["upstream_artifact_hashes"],
+        parent_signature_source=parent["source"],
+        parent_signature_hash=parent["signature_hash"],
+        parent_newly_formalized=(
+            package["parent_formal_status"] == "UNFORMALIZED"
+        ),
+        child={
+            "label": package["validated_upstream_artifacts"]["decomposer"][
+                "child"
+            ]["label"],
+            "lean_signature": child["source"],
+            "lean_signature_hash": child["signature_hash"],
+        },
+        reduction_theorem_source=reduction["source"],
+        reduction_signature_hash=reduction["signature_hash"],
+    )
+
+
+def _run_split_formalizer(
+    run_role,
+    *,
+    package: dict,
+    project_root: Path,
+    signature_validator,
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+    expected_run_id: str,
+) -> tuple[FormalizationBundle | None, dict[str, str], str]:
+    contract_ref = lean_signature_contract_ref()
+    checkpoint.lean_contract_id = str(contract_ref["contract_id"])
+    checkpoint.lean_contract_version = int(contract_ref["version"])
+    symbol_table = _formalizer_symbol_table(package)
+    checkpoint.lean_symbol_table_id = symbol_table.symbol_table_id
+    checkpoint.lean_symbol_table_version = symbol_table.version
+    units: dict[str, dict] = {}
+    unit_hashes = dict(checkpoint.formalizer_unit_hashes)
+    transcripts: dict[str, str] = {}
+    last_run_id = expected_run_id
+    for unit, role_name in FORMALIZER_UNIT_SPECS:
+        dependencies = _formalizer_unit_dependencies(
+            unit,
+            package,
+            unit_hashes,
+        )
+        loaded = _load_formalizer_unit(
+            checkpoint,
+            unit=unit,
+            dependencies=dependencies,
+            symbol_table=symbol_table,
+        )
+        if loaded is not None:
+            units[unit] = loaded
+            unit_hashes[unit] = checkpoint.validated_artifacts[
+                f"formalizer_{unit.lower()}"
+            ].sha256
+            checkpoint.formalizer_unit_hashes = dict(unit_hashes)
+            continue
+        checkpoint.formalizer_substate = unit
+        checkpoint.current_role = "formalizer"
+        checkpoint.resume_origin = unit
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        messages = _formalizer_unit_messages(unit, package, units)
+        unit_error = ""
+        for attempt in range(2):
+            attempt_run_id = (
+                f"{expected_run_id}:{unit.lower()}"
+                + (":repair-1" if attempt else "")
+            )
+            try:
+                text, actual_run_id = run_role(
+                    role_name,
+                    messages,
+                    attempt_run_id,
+                )
+            except Exception as exc:
+                unit_error = f"{type(exc).__name__}: {exc}"
+                text = str(getattr(exc, "partial_text", ""))
+                if text:
+                    transcripts[
+                        f"{unit.lower()}_partial_attempt_{attempt + 1}"
+                    ] = text
+            else:
+                transcripts[
+                    unit.lower() if not attempt
+                    else f"{unit.lower()}_repair_1"
+                ] = text
+                if actual_run_id != attempt_run_id:
+                    unit_error = "Formalizer unit run ID mismatch"
+                else:
+                    parsed, unit_error = _parse_formalizer_unit(
+                        text,
+                        unit=unit,
+                        package=package,
+                        project_root=project_root,
+                        signature_validator=signature_validator,
+                        dependencies=dependencies,
+                    )
+                    if parsed is not None:
+                        ref = persist_validated_artifact(
+                            checkpoint_path,
+                            checkpoint,
+                            role=f"formalizer_{unit.lower()}",
+                            payload=parsed,
+                            dependencies=dependencies,
+                            source_run_id=actual_run_id,
+                        )
+                        units[unit] = parsed
+                        unit_hashes[unit] = ref.sha256
+                        checkpoint.formalizer_unit_hashes = dict(unit_hashes)
+                        save_orchestration_checkpoint(
+                            checkpoint_path,
+                            checkpoint,
+                        )
+                        last_run_id = actual_run_id
+                        break
+            if attempt == 0:
+                messages = _formalizer_unit_messages(
+                    unit,
+                    package,
+                    units,
+                    validation_errors=[unit_error],
+                )
+        if unit not in units:
+            failure = f"{unit}: {unit_error}"
+            checkpoint.adapter_blocked(failure, status="ADAPTER_BLOCKED")
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return None, transcripts, failure
+    checkpoint.formalizer_substate = "ASSEMBLE"
+    checkpoint.formalizer_unit_hashes = dict(unit_hashes)
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    try:
+        bundle = _assemble_formalizer_units(
+            units,
+            package=package,
+            producer_run_id=f"{last_run_id}:assemble",
+        )
+    except ValueError as exc:
+        failure = f"ASSEMBLE: {exc}"
+        checkpoint.blocked_reason = f"INTEGRATION_BLOCKED:{failure}"
+        checkpoint.transition(ProofState.BLOCKED, checkpoint.blocked_reason)
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return None, transcripts, failure
+    return bundle, transcripts, ""
+
+
+def _validate_defense_shape(defense: DefenseReport) -> list[str]:
+    errors = []
+    if defense.status not in {"DEFENDED", "REJECTED", "INCONCLUSIVE"}:
+        errors.append("status must be DEFENDED, REJECTED, or INCONCLUSIVE")
+    for field_name in ("issues", "repairs"):
+        value = getattr(defense, field_name)
+        if (
+            not isinstance(value, list)
+            or any(not isinstance(item, str) or not item.strip() for item in value)
+        ):
+            errors.append(f"{field_name} must be a list of non-empty strings")
+    return errors
+
+
+def _defense_semantically_complete(
+    text: str,
+    package: dict,
+    producer_run_id: str,
+) -> bool:
+    """Stop only on one closed, strict, host-bound defense artifact."""
+    parsed, error = parse_certified_artifact(
+        text,
+        "DEFENSE_REPORT",
+        target_obligation_id=package["target_obligation_id"],
+        parent_statement_hash=package["parent_statement_hash"],
+        root_goal_hash=package["root_goal_hash"],
+        producer_run_id=producer_run_id,
+        upstream_artifact_hashes=package["upstream_artifact_hashes"],
+    )
+    return bool(
+        not error
+        and parsed is not None
+        and not _validate_defense_shape(parsed)
+    )
+
+
+def _defense_repair_messages(
+    package: dict,
+    *,
+    validation_errors: list[str],
+) -> list[dict[str, str]]:
+    compact = _adversarial_review_model_package(package)
+    compact["validation_errors"] = list(validation_errors)
+    return [{
+        "role": "system",
+        "content": _validated_structured_prompt((
+            "Fresh Adversarial Proponent protocol repair; do not continue or "
+            "splice prior JSON. Return exactly `### DEFENSE_REPORT`, then "
+            "one-line `Artifact:` and one compact/minified JSON object with "
+            "exactly status, issues, and repairs. Status must be one of "
+            "DEFENDED, REJECTED, or INCONCLUSIVE; issues and repairs must be "
+            "arrays of complete strings. Emit no prose, second artifact, "
+            "trailing text, host bindings, examples, or placeholders. Do not "
+            "invent or host-fill mathematics. End immediately after the "
+            "matching final }."
+        )),
+    }, {
+        "role": "user",
+        "content": json.dumps(compact, ensure_ascii=False, sort_keys=True),
+        "_host_package": package,
+    }]
+
+
+def _decomposer_contract(package: dict) -> dict:
+    definition_audit = package.get(
+        "validated_upstream_artifacts",
+        {},
+    ).get("definition_auditor", {})
+    missing = definition_audit.get("missing_definitions", [])
+    required_labels = [
+        str(item.get("obligation_label", ""))
+        for item in missing
+        if isinstance(item, dict)
+    ]
+    return {
+        "required_parent_hash": package["parent_statement_hash"],
+        "required_child_kind": (
+            "DEFINITION" if required_labels else "LEMMA"
+        ),
+        "required_source_definition_labels": required_labels,
+    }
+
+
+def _decomposer_model_package(package: dict) -> dict:
+    """Remove hash/prose duplication while preserving semantic search state."""
+    contract = _decomposer_contract(package)
+    novelty = dict(package.get("decomposition_novelty_ledger", {}))
+    tried_viewpoints = list(novelty.pop("viewpoints", []))
+    active_viewpoint = str(
+        novelty.pop("active_viewpoint", package.get("viewpoint", "")),
+    )
+    return {
+        "target_obligation_id": package["target_obligation_id"],
+        "parent_statement": package["parent_statement"],
+        "viewpoint": active_viewpoint,
+        "immutable_bindings": {
+            "parent_sha256": package["parent_statement_hash"],
+            "root_goal_sha256": package["root_goal_hash"],
+            "definition_audit_sha256": package[
+                "upstream_artifact_hashes"
+            ][0],
+            "producer_run_id": package["producer_run_id"],
+            "ancestor_hashes": package.get("ancestor_hashes", []),
+        },
+        "required_definitions": package.get(
+            "validated_upstream_artifacts",
+            {},
+        ).get("definition_auditor", {}).get("missing_definitions", []),
+        "reduction_constraints": {
+            "single_child": True,
+            "strictly_simpler": True,
+            "non_circular_child_to_exact_parent": True,
+            "required_child_kind": contract["required_child_kind"],
+            "required_source_definition_labels": contract[
+                "required_source_definition_labels"
+            ],
+        },
+        "semantic_search": {
+            "iteration": package.get("decomposition_iteration", 1),
+            "tried_viewpoint_ids": tried_viewpoints,
+            "novelty": novelty,
+        },
+    }
+
+
+def _decomposition_ancestor_hashes(
+    ledger: ProofObligationLedger,
+    parent: ProofObligation,
+) -> dict:
+    """Bind the exact ancestor chain without repeating ancestor statements."""
+    by_id = {item.obligation_id: item for item in ledger.obligations}
+    records = []
+    cursor = parent.parent_id
+    seen = set()
+    while cursor and cursor not in seen:
+        seen.add(cursor)
+        ancestor = by_id.get(cursor)
+        if ancestor is None:
+            break
+        records.append({
+            "obligation_id_sha256": hashlib.sha256(
+                ancestor.obligation_id.encode(),
+            ).hexdigest(),
+            "statement_sha256": hashlib.sha256(
+                ancestor.statement.encode(),
+            ).hexdigest(),
+            "alpha_signature_sha256": hashlib.sha256(
+                _canonical_claim(ancestor.statement).encode(),
+            ).hexdigest(),
+        })
+        cursor = ancestor.parent_id
+    manifest = _canonical_json_hash(records)
+    return {
+        "manifest": f"sha256:{manifest}",
+        "count": len(records),
+        "archive": "proof_ledger",
+    }
+
+
+DECOMPOSER_VIEWPOINTS = (
+    "definitions",
+    "domain_topology",
+    "quantifiers",
+    "local_global_bridge",
+    "constructive_witness",
+    "reduction_direction",
+    "boundary_cases",
+)
+
+
+def _decomposition_semantic_hash(proposal: DecompositionProposal) -> str:
+    """Hash mathematical content after deterministic alpha normalization."""
+    child = proposal.child
+    reduction = proposal.reduction_contract
+    return _canonical_json_hash({
+        "child_kind": child.get("kind", ""),
+        "child_statement": _canonical_claim(child.get("statement", "")),
+        "source_definition_labels": sorted(
+            str(item) for item in child.get("source_definition_labels", [])
+        ),
+        "public_assumptions": [
+            _canonical_claim(item) for item in proposal.public_assumptions
+        ],
+        "derivation": _canonical_claim(reduction.get("derivation", "")),
+    })
+
+
+def _decomposition_structural_signature(
+    proposal: DecompositionProposal,
+) -> str:
+    child = proposal.child
+    premise, conclusion = _claim_structure(child.get("statement", ""))
+    return _canonical_json_hash({
+        "kind": child.get("kind", ""),
+        "premise_terms": sorted(premise),
+        "conclusion_terms": sorted(conclusion),
+        "concepts": sorted(_semantic_concepts(child.get("statement", ""))),
+        "definition_labels": sorted(
+            str(item) for item in child.get("source_definition_labels", [])
+        ),
+    })
+
+
+def _is_decomposition_semantic_rejection(errors: list[str]) -> bool:
+    text = " ".join(errors).lower()
+    return any(marker in text for marker in (
+        "child l1 rejected",
+        "strictly simpler",
+        "structural delta",
+        "disconnected child",
+        "reduction theorem conclusion differs",
+        "reduction proof failed",
+        "reduction proof targets another",
+        "reduction contract circular",
+        "adversarial defense found a blocking defect",
+    ))
+
+
+def _select_decomposer_viewpoint(
+    checkpoint: OrchestrationCheckpoint,
+    definition_audit: DefinitionAudit,
+) -> str:
+    """Select the next unresolved mathematical perspective deterministically."""
+    ordered = list(DECOMPOSER_VIEWPOINTS)
+    if not definition_audit.missing_definitions:
+        ordered.remove("definitions")
+        ordered.append("definitions")
+    latest_reasons = " ".join(
+        checkpoint.semantic_rejection.get("rejection_reasons", []),
+    ).lower()
+    priorities = []
+    for markers, viewpoint in (
+        (("topology", "domain", "neighborhood"), "domain_topology"),
+        (("quantifier", "forall", "exists"), "quantifiers"),
+        (("local", "global"), "local_global_bridge"),
+        (("witness", "construct", "explicit"), "constructive_witness"),
+        (("reduction", "circular", "entails"), "reduction_direction"),
+        (("boundary", "counterexample"), "boundary_cases"),
+    ):
+        if any(marker in latest_reasons for marker in markers):
+            priorities.append(viewpoint)
+    ordered = priorities + [item for item in ordered if item not in priorities]
+    for viewpoint in ordered:
+        if viewpoint not in checkpoint.viewpoints_tried:
+            return viewpoint
+    ledger = compact_decomposition_novelty_ledger(checkpoint)
+    digest = _canonical_json_hash({
+        "history": ledger["manifest"],
+        "reasons": ledger["reasons"],
+    })[:12]
+    return f"synthesized_host_failures_{digest}"
+
+
+def _decomposer_schema(package: dict) -> str:
+    contract = _decomposer_contract(package)
+    child_kind = contract["required_child_kind"]
+    statement_description = (
+        "<model-authored bundled definition obligation>"
+        if child_kind == "DEFINITION"
+        else "<model-authored lemma obligation>"
+    )
+    schema = {
+        "parent_statement": "<copy exact host parent_statement>",
+        "child": {
+            "label": "L1",
+            "statement": statement_description,
+            "kind": child_kind,
+            "source_definition_labels": contract[
+                "required_source_definition_labels"
+            ],
+        },
+        "public_assumptions": [],
+        "reduction_contract": {
+            "child_label": "L1",
+            "parent_statement": "<copy exact host parent_statement>",
+            "public_assumptions": [],
+            "derivation": "<complete child-to-parent argument>",
+        },
+    }
+    return json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+
+
+def _decomposer_child_matches_contract(child: dict, package: dict) -> bool:
+    contract = _decomposer_contract(package)
+    labels = child.get("source_definition_labels")
+    return bool(
+        child.get("kind") == contract["required_child_kind"]
+        and isinstance(labels, list)
+        and labels == contract["required_source_definition_labels"]
+    )
+
+
+def _decomposer_repair_messages(
+    package: dict,
+    *,
+    validation_errors: list[str],
+    rejected_artifact: dict | None,
+) -> list[dict[str, str]]:
+    full_contract = _decomposer_contract(package)
+    repair_contract = {
+        "required_child_kind": full_contract["required_child_kind"],
+        "required_source_definition_labels": full_contract[
+            "required_source_definition_labels"
+        ],
+    }
+    repair_package = {
+        "target_obligation_id": package["target_obligation_id"],
+        "parent_statement": package["parent_statement"],
+        "parent_statement_hash": package["parent_statement_hash"],
+        "root_goal_hash": package["root_goal_hash"],
+        "producer_role": "decomposer",
+        "producer_run_id": package["producer_run_id"],
+        "upstream_artifact_hashes": package["upstream_artifact_hashes"],
+        "validated_upstream_artifacts": package[
+            "validated_upstream_artifacts"
+        ],
+        "validation_errors": validation_errors,
+        "repair_contract": repair_contract,
+    }
+    if rejected_artifact:
+        rejected_children = rejected_artifact.get("children")
+        if not isinstance(rejected_children, list):
+            rejected_child = rejected_artifact.get("child")
+            rejected_children = (
+                [rejected_child] if isinstance(rejected_child, dict) else []
+            )
+        repair_package["rejected_obligations"] = [
+            {
+                key: child[key]
+                for key in (
+                    "label",
+                    "statement",
+                    "kind",
+                    "source_definition_labels",
+                )
+                if key in child
+            }
+            for child in rejected_children
+            if isinstance(child, dict)
+        ]
+        repair_package["rejected_public_assumptions"] = rejected_artifact.get(
+            "public_assumptions",
+            [],
+        )
+        rejected_contract = rejected_artifact.get("reduction_contract")
+        if isinstance(rejected_contract, dict):
+            repair_package["rejected_reduction_derivation"] = (
+                rejected_contract.get("derivation", "")
+            )
+    return [{
+        "role": "system",
+        "content": _validated_structured_prompt((
+            "Protocol repair. Return a fresh complete response; never continue "
+            "or splice prior JSON. Output exactly `### DECOMPOSITION_PROPOSAL` "
+            "then one-line `Artifact:` and one compact/minified JSON object. "
+            "Use exactly the fields parent_statement, child, "
+            "public_assumptions, and reduction_contract. Child must contain "
+            "exactly label, statement, kind, and source_definition_labels; "
+            f'its required concrete kind field is "kind":'
+            f'"{full_contract["required_child_kind"]}". '
+            'Its required concrete labels field is '
+            f'"source_definition_labels":'
+            f'{json.dumps(full_contract["required_source_definition_labels"], separators=(",", ":"))}. '
+            "reduction_contract must contain exactly child_label, "
+            "parent_statement, public_assumptions, and derivation. The host "
+            "parent_statement and "
+            "parent_statement_hash in the repair package are immutable; copy "
+            "the exact parent_statement into both parent locations without "
+            "correction or paraphrase. The child statement and derivation are "
+            "model-authored; the host constrains only the audited metadata. "
+            "Produce a strictly simpler, reachable child with a concrete "
+            "structural delta; do not restate the parent. The reduction_contract "
+            "must derive the exact parent from the exact child and public "
+            "assumptions without assuming the parent or using it circularly. "
+            "Preserve every substantive obligation from a rejected complete "
+            "artifact inside the one bundled child; never select or discard one. "
+            "Copy required_child_kind and required_source_definition_labels "
+            "exactly from repair_contract. Emit no examples, placeholders, "
+            "second Artifact, or trailing prose. End immediately after the "
+            "matching final }."
+        )),
+    }, {
+        "role": "user",
+        "content": json.dumps(
+            repair_package,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }]
 
 
 def _validate_counterexample_report(
@@ -1592,23 +3708,25 @@ def _validate_decomposition_certificate(
     proposal: DecompositionProposal,
     formalization: FormalizationBundle,
     proof: ProofAttempt,
-    defense: DefenseReport,
+    defense: DefenseReport | None,
     *,
     project_root: Path,
     signature_validator=validate_lean_signature,
     proof_validator=validate_lean_proof,
 ) -> tuple[dict, list[str]]:
-    errors = _validate_dependency_graph(proposal)
+    errors = _validate_decomposition_shape(proposal)
     validation = {
         "graph_valid": not errors,
         "parent_signature_valid": False,
         "children_valid": False,
         "reduction_signature_valid": False,
         "reduction_proof_valid": False,
-        "defense_nonblocking": defense.status in {
-            "DEFENDED",
-            "INCONCLUSIVE",
-        },
+        "defense_nonblocking": (
+            None if defense is None else defense.status in {
+                "DEFENDED",
+                "INCONCLUSIVE",
+            }
+        ),
     }
     validation["definition_inventory_nonempty"] = bool(
         definition_audit.definitions
@@ -1628,43 +3746,30 @@ def _validate_decomposition_certificate(
         )
     )
     validation["verified_parent_counterexample"] = verified_counterexample
+    validation["counterexample_advisory_only"] = not verified_counterexample
+    validation["counterexample_is_public_premise"] = False
+    validation["counterexample_is_certificate_gate"] = verified_counterexample
     if (
         counterexamples.status == "COUNTEREXAMPLE_FOUND"
         and not verified_counterexample
     ):
-        errors.append("claimed counterexample has no verified evidence")
+        validation["counterexample_advisory_reason"] = (
+            "claimed counterexample has no verified evidence"
+        )
     elif verified_counterexample:
         errors.append(
             "verified counterexample refutes the parent; decomposition is "
             "forbidden and premise review is required",
         )
-    proposal_labels = {
-        str(child.get("label", "")): child
-        for child in proposal.children
-        if isinstance(child, dict)
-    }
-    definition_children = {
-        label
-        for label, child in proposal_labels.items()
-        if child.get("kind") == "DEFINITION"
-    }
-    required_definition_labels = {
-        str(item.get("obligation_label", ""))
-        for item in definition_audit.missing_definitions
-        if isinstance(item, dict)
-    }
-    if (
-        "" in required_definition_labels
-        or not required_definition_labels.issubset(definition_children)
-    ):
-        errors.append(
-            "every missing definition must become a labeled definition child",
-        )
-    formal_children = {
-        str(child.get("label", "")): child
-        for child in formalization.children
-        if isinstance(child, dict)
-    }
+    proposal_label = str(proposal.child.get("label", ""))
+    errors.extend(
+        _validate_definition_child_selection(
+            definition_audit,
+            proposal,
+        ),
+    )
+    errors.extend(_validate_decomposition_progress(ledger, parent, proposal))
+    formal_child = formalization.child
     parent_signature_text = " ".join(
         formalization.parent_signature_source.split(),
     ).split(" := by", 1)[0]
@@ -1679,25 +3784,8 @@ def _validate_decomposition_certificate(
         reduction_signature_text.rsplit(" : ", 1)[-1]
         if " : " in reduction_signature_text else ""
     )
-    parent_proposition_hash = (
-        hashlib.sha256(parent_conclusion.encode()).hexdigest()
-        if parent_conclusion else ""
-    )
-    if set(formal_children) != set(proposal_labels):
-        errors.append("formalized child labels differ from proposal")
-    if (
-        formalization.math_ir.get("parent_signature_hash")
-        != formalization.parent_signature_hash
-        or formalization.math_ir.get("parent_proposition_hash")
-        != parent_proposition_hash
-        or set(formalization.math_ir.get("child_labels", []))
-        != set(proposal_labels)
-        or formalization.math_ir.get("public_assumptions")
-        != proposal.public_assumptions
-        or set(formalization.math_ir.get("reduction_labels", []))
-        != set(proposal.reduction_labels)
-    ):
-        errors.append("typed Math IR does not bind the exact reduction contract")
+    if str(formal_child.get("label", "")) != proposal_label:
+        errors.append("formalized child label differs from proposal")
     if not parent_conclusion or reduction_conclusion != parent_conclusion:
         errors.append(
             "reduction theorem conclusion differs from exact parent proposition",
@@ -1727,40 +3815,15 @@ def _validate_decomposition_certificate(
         errors.append("existing parent signature cannot be replaced")
     else:
         validation["parent_signature_valid"] = True
-    child_results = {}
-    proposed_items = list(proposal_labels.items())
-    for index, (left_label, left_child) in enumerate(proposed_items):
-        for right_label, right_child in proposed_items[index + 1:]:
-            equivalent, _score = _semantic_equivalence(
-                str(left_child.get("statement", "")),
-                str(right_child.get("statement", "")),
-            )
-            if equivalent:
-                errors.append(
-                    f"children {left_label} and {right_label} are redundant",
-                )
-    for label, child in formal_children.items():
-        source = str(child.get("lean_signature", ""))
-        result = signature_validator(source, project_root=project_root)
-        child_results[label] = result
-        if not result.ok:
-            errors.append(f"child {label} signature failed: {result.error}")
-        elif child.get("lean_signature_hash") != result.signature_hash:
-            errors.append(f"child {label} signature hash mismatch")
-        if str(child.get("statement", "")) != str(
-            proposal_labels.get(label, {}).get("statement", ""),
-        ):
-            errors.append(f"child {label} statement changed during formalization")
-        reason = _frontier_rejection_reason(
-            ledger,
-            parent.obligation_id,
-            str(child.get("statement", "")),
+    source = str(formal_child.get("lean_signature", ""))
+    child_result = signature_validator(source, project_root=project_root)
+    if not child_result.ok:
+        errors.append(
+            f"child {proposal_label} signature failed: {child_result.error}",
         )
-        if reason:
-            errors.append(f"child {label} rejected: {reason}")
-    validation["children_valid"] = bool(child_results) and all(
-        result.ok for result in child_results.values()
-    )
+    elif formal_child.get("lean_signature_hash") != child_result.signature_hash:
+        errors.append(f"child {proposal_label} signature hash mismatch")
+    validation["children_valid"] = child_result.ok
     reduction_signature = signature_validator(
         formalization.reduction_theorem_source,
         project_root=project_root,
@@ -1787,18 +3850,1180 @@ def _validate_decomposition_certificate(
         errors.append("complete reduction proof failed or targets another theorem")
     else:
         validation["reduction_proof_valid"] = True
-    if defense.status == "REJECTED":
+    if defense is not None and defense.status == "REJECTED":
         errors.append("adversarial defense found a blocking defect")
     validation["child_signature_hashes"] = {
-        label: result.signature_hash
-        for label, result in child_results.items()
-        if result.ok
+        proposal_label: child_result.signature_hash,
     }
     validation["reduction_proof_hash"] = (
         proof_result.signature_hash if proof_result.ok else ""
     )
     validation["host_gates_passed"] = not errors
     return validation, errors
+
+
+def _typed_package_text(package: dict, *, role: str) -> str:
+    """Render host-owned references and a notation-free semantic hint."""
+    sections = [
+        ("PARENT CLAIM REF", package.get("parent_claim_ref", "")),
+        ("TARGET ID", package.get("target_obligation_id", "")),
+        ("PLAIN SEMANTIC SUMMARY", package.get("plain_semantic_summary", "")),
+        ("VIEWPOINT", package.get("viewpoint", "")),
+    ]
+    if role == "definition_auditor":
+        registry = package["definition_registry"]
+        for heading, key in (
+            ("REGISTERED SYMBOL IDS", "symbols"),
+            ("REGISTERED DOMAIN IDS", "domains"),
+            ("REGISTERED TOPOLOGY IDS", "topologies"),
+            ("REGISTERED DEFINITION IDS", "definitions"),
+        ):
+            sections.append((
+                heading,
+                "\n".join(
+                    f"{item_id} {item['content_ref']} {item['label']}"
+                    if key == "definitions"
+                    else f"{item_id} {content_ref}"
+                    for item_id, item in registry[key].items()
+                    for content_ref in (
+                        (item["content_ref"] if key == "definitions" else item),
+                    )
+                ),
+            ))
+    if role == "decomposer":
+        missing = package.get("validated_upstream_artifacts", {}).get(
+            "definition_auditor", {},
+        ).get("missing_definitions", [])
+        required_kind = "DEFINITION" if missing else "LEMMA"
+        sections.append(("REQUIRED CHILD KIND", required_kind))
+        sections.append((
+            "REGISTERED SOURCE DEFINITION IDS",
+            " ".join(
+                str(item.get("obligation_label", ""))
+                for item in missing if isinstance(item, dict)
+            ) or "none",
+        ))
+        sections.append((
+            "REGISTERED HOST MOVE CHOICES",
+            "\n".join(
+                f"{item['choice_code']} {item['summary_id']} "
+                f"{item['candidate_hash']}"
+                for item in package.get("candidate_choices", ())
+            ) or "none",
+        ))
+    return "\n\n".join(
+        f"{heading}\n{value}" for heading, value in sections if str(value).strip()
+    )
+
+
+def _typed_role_messages(role: str, package: dict) -> list[dict[str, str]]:
+    behavior = {
+        "definition_auditor": (
+            "Select only Host-registered symbol, domain, topology, and definition "
+            "IDs for the exact target reference. Mark unresolved registered "
+            "definitions with missing_definition_id and MISSING_DEFINITION. If "
+            "the registry cannot express the audit, return REFRAME_REQUIRED. "
+            "Never return mathematical notation, free symbol/domain text, JSON, "
+            "source, or explanations. The Host owns labels and artifact fields."
+        ),
+        "decomposer": (
+            "Select exactly one Host-registered move code. The Host owns every "
+            "typed IR operation, operand binding, scope, type, and payload. "
+            "Return the exact parent claim reference and REQUIRED CHILD KIND. "
+            "Never return DSL, expressions, claims, propositions, explanations, "
+            "notation, or source text. This runtime has no decode-time token "
+            "allowlist, so the one-character move code is validated fail-closed."
+        ),
+        "synthesis": (
+            "Select exactly one Host-scoped single-character choice code. The "
+            "Host maps that code to an immutable candidate ID and hash, then "
+            "orders the remaining alternatives deterministically. Return only "
+            "the choice code and one registered reason code. Counterexample "
+            "evidence marked advisory cannot be a premise. Do not return prose, "
+            "mathematics, JSON, Lean, DSL, or candidate IDs."
+        ),
+        "proof_action_selector": (
+            "Select one Host-enumerated action ID for the current elaborated "
+            "goal ID, plus only its registered operand and substitution IDs. "
+            "Never emit Lean, JSON, DSL, prose, or an entire proof."
+        ),
+        "adversarial_proponent": (
+            "Review the host-elaborated proposition and proof evidence."
+        ),
+        "judge": "Decide only from host gate and review evidence.",
+    }[role]
+    user = {
+        "role": "user",
+        "content": _typed_package_text(package, role=role),
+        "_artifact_contract_role": role,
+        "_host_package": package,
+    }
+    registered_choices = package.get("registered_output_choices", {})
+    return [{
+        "role": "system",
+        "content": (
+            f"{behavior}\n\n"
+            f"{transport_prompt(role, registered_choices=registered_choices)}"
+        ),
+    }, user]
+
+
+def _run_typed_definition_auditor(
+    parent: ProofObligation,
+    root_goal: str,
+    run_role,
+    *,
+    orchestration_id: str,
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+) -> tuple[DefinitionAudit | None, str, str, str]:
+    """Run the production Definition Auditor without model-authored JSON."""
+    statement_hash = hashlib.sha256(parent.statement.encode()).hexdigest()
+    goal_hash = hashlib.sha256(root_goal.encode()).hexdigest()
+    target_ref = f"claim:{statement_hash}"
+    registry = build_definition_choice_registry(target_ref)
+    expected_run_id = f"{orchestration_id}:definition_auditor:typed-v1"
+    package = {
+        "target_obligation_id": parent.obligation_id,
+        "parent_statement_hash": statement_hash,
+        "root_goal_hash": goal_hash,
+        "parent_claim_ref": target_ref,
+        "producer_role": "definition_auditor",
+        "producer_run_id": expected_run_id,
+        "upstream_artifact_hashes": [],
+        "registered_output_choices": registry.registered_output_choices,
+        "definition_registry": {
+            "symbols": dict(registry.symbols),
+            "domains": dict(registry.domains),
+            "topologies": dict(registry.topologies),
+            "definitions": {
+                key: {
+                    "content_ref": value.content_ref,
+                    "label": value.label,
+                }
+                for key, value in registry.definitions.items()
+            },
+            "registry_hash": registry.registry_hash,
+        },
+    }
+    text, actual_run_id = run_role(
+        "definition_auditor",
+        _typed_role_messages("definition_auditor", package),
+        expected_run_id,
+    )
+    if actual_run_id != expected_run_id:
+        raise AdapterError(
+            "RUN_ID_MISMATCH",
+            "adapter returned another run ID",
+            role="definition_auditor",
+        )
+    semantic_reframe = False
+    try:
+        decoded = decode_role_fields(
+            text,
+            "definition_auditor",
+            registered_choices=registry.registered_output_choices,
+        )
+    except AdapterError as exc:
+        if exc.code != "INVALID_CHOICE":
+            raise
+        semantic_reframe = True
+        values = {
+            "target_ref": target_ref,
+            "symbol_id": (),
+            "domain_id": (),
+            "topology_id": (),
+            "definition_id": (),
+            "missing_definition_id": (),
+            "audit_outcome": "REFRAME_REQUIRED",
+        }
+        canonical = json.dumps(
+            {
+                "role": "definition_auditor",
+                "values": values,
+                "semantic_route": "unknown_registered_choice",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        decoded = DecodedRoleFields(
+            "definition_auditor",
+            values,
+            hashlib.sha256(canonical).hexdigest(),
+        )
+    payload, envelope = serialize_definition_audit(
+        decoded,
+        registry,
+        target_obligation_id=parent.obligation_id,
+        parent_statement_hash=statement_hash,
+        root_goal_hash=goal_hash,
+        producer_run_id=expected_run_id,
+    )
+    artifact = DefinitionAudit(**payload)
+    ref = persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="definition_auditor",
+        payload=payload,
+        dependencies=[],
+        source_run_id=expected_run_id,
+    )
+    checkpoint.recovery_events.append({
+        "event_type": (
+            "DEFINITION_REGISTRY_REFRAME"
+            if semantic_reframe else "DEFINITION_AUDIT_HOST_SERIALIZED"
+        ),
+        "event_id": envelope["content_hash"],
+        "target_state": ProofState.COUNTEREXAMPLE_WORKER.value,
+        "transport_hash": decoded.transport_hash,
+        "registry_hash": registry.registry_hash,
+        "artifact_hash": ref.sha256,
+        "created_at": time.time(),
+    })
+    checkpoint.transition(
+        ProofState.COUNTEREXAMPLE_WORKER,
+        (
+            "definition-registry-reframe"
+            if semantic_reframe else "typed-definition-audit-host-serialized"
+        ),
+        source_run_id=expected_run_id,
+        strategy_reused=True,
+    )
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    return artifact, ref.sha256, text, expected_run_id
+
+
+def _run_typed_ir_v2(
+    ledger: ProofObligationLedger,
+    parent: ProofObligation,
+    root_goal: str,
+    run_role,
+    *,
+    project_root: Path,
+    orchestration_id: str,
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+    signature_validator,
+    proof_validator,
+    artifacts: dict,
+    hashes: dict,
+    role_run_ids: dict,
+) -> DecompositionCertificateResult:
+    """Execute the v2 path with adapter and deterministic gates off-budget."""
+    statement_hash = hashlib.sha256(parent.statement.encode()).hexdigest()
+    goal_hash = hashlib.sha256(root_goal.encode()).hexdigest()
+    transcripts: dict[str, str] = {}
+    errors: list[str] = []
+    if "definition_auditor" not in artifacts:
+        checkpoint.blocked_reason = "typed IR migration requires definition evidence"
+        checkpoint.transition(ProofState.BLOCKED, checkpoint.blocked_reason)
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, [checkpoint.blocked_reason], artifacts, hashes,
+            transcripts, role_run_ids, {
+                "host_gates_passed": False,
+                "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
+            },
+        )
+    missing = artifacts["definition_auditor"].missing_definitions
+    required_kind = "DEFINITION" if missing else "LEMMA"
+    parent_claim_ref = f"claim:{statement_hash}"
+    dependency_ids = (hashes["definition_auditor"],)
+    theorem_index = build_theorem_card_index(project_root)
+    theorem_cards = search_theorem_cards(
+        theorem_index,
+        (
+            "locally_uniform_limit", "holomorphic_sum",
+            "removable_singularity", "identity_principle",
+        ),
+    )
+    trigger = synthesis_trigger(
+        novel_rejections=checkpoint.semantic_stagnation_count,
+        repeated_no_move=sum(
+            event.get("event_type") == "NO_REGISTERED_DECOMPOSITION_MOVE"
+            for event in checkpoint.recovery_events[-4:]
+        ),
+        evidence_roles=(
+            *artifacts.keys(), "critic", "definition_auditor", "theorem_cards",
+        ),
+    )
+    synthesis_mode = (
+        checkpoint.proof_state in {ProofState.SYNTHESIS, ProofState.REFRAME}
+        or (trigger.invoke and not checkpoint.ranking_hash)
+    )
+    scratch_role = (
+        "synthesis_scratchpad" if synthesis_mode else "decomposer_scratchpad"
+    )
+    scratch_run_id = f"{orchestration_id}:{scratch_role}:v3"
+    scratch_messages = [{
+        "role": "system",
+        "content": (
+            "Reason privately in mathematical prose or LaTeX. This transcript "
+            "is untrusted, audit-only, and is never parsed or used by a gate. "
+            "Compare only the supplied registered gaps, evidence, theorem cards, "
+            "and moves. Do not invent prerequisites or mathematical facts. "
+            "Do not include secrets."
+        ),
+    }, {
+        "role": "user",
+        "content": (
+            f"Target reference: {parent_claim_ref}. Viewpoint: "
+            f"{checkpoint.viewpoint or 'local_holomorphicity'}. Cards: "
+            + ", ".join(card.card_id for card in theorem_cards)
+        ),
+    }]
+    try:
+        scratch_text, scratch_actual_run_id = run_role(
+            scratch_role, scratch_messages, scratch_run_id,
+        )
+        transcripts[scratch_role] = scratch_text
+        if scratch_actual_run_id != scratch_run_id:
+            raise RuntimeError("scratchpad run ID mismatch")
+        scratch_ref = persist_private_scratchpad(
+            checkpoint_path.with_suffix(".scratchpads"),
+            role=scratch_role,
+            transcript=scratch_text,
+            token_count=max(1, len(scratch_text.split())),
+        )
+        checkpoint.scratchpad_refs.append({
+            "role": scratch_ref.role,
+            "sha256": scratch_ref.sha256,
+            "token_count": scratch_ref.token_count,
+            "audit_only": True,
+            "authoritative": False,
+            "public": False,
+        })
+    except Exception as exc:
+        checkpoint.adapter_blocked(
+            f"private-scratchpad-inference:{type(exc).__name__}:{exc}",
+            status="INFRASTRUCTURE_BLOCKED",
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, [checkpoint.blocked_reason], artifacts, hashes,
+            transcripts, role_run_ids, {
+                "host_gates_passed": False,
+                "failure_status": "INFRASTRUCTURE_BLOCKED",
+            },
+        )
+    candidate_registry = build_candidate_set(
+        target_ref=parent_claim_ref,
+        viewpoint=checkpoint.viewpoint or "definitions",
+        dependency_ids=dependency_ids,
+        theorem_cards=theorem_cards,
+        ancestor_hashes=(
+            *_decomposition_ancestor_hashes(ledger, parent),
+            *(
+                str(event["novelty_hash"])
+                for event in checkpoint.recovery_events
+                if (
+                    event.get("event_type")
+                    == "HOST_TYPED_MOVE_SEMANTIC_REJECTION"
+                    and event.get("novelty_hash")
+                )
+            ),
+        ),
+        satisfied_precondition_ids=host_evidence_context(
+            artifacts, artifact_hashes=hashes,
+        ).satisfied_precondition_ids,
+        satisfied_theorem_hypothesis_ids=host_evidence_context(
+            artifacts, artifact_hashes=hashes,
+        ).satisfied_theorem_hypothesis_ids,
+        available_dependency_artifact_ids=hashes.values(),
+        required_dependency_artifact_ids=dependency_ids,
+    )
+    if not candidate_registry.candidates:
+        event = {
+            "event_type": "NO_REGISTERED_DECOMPOSITION_MOVE",
+            "event_id": (
+                "no-registered-decomposition-move-"
+                + candidate_registry.content_hash[:16]
+            ),
+            "target_state": ProofState.DECOMPOSER.value,
+            "viewpoint": checkpoint.viewpoint or "definitions",
+            "candidate_registry_hash": candidate_registry.content_hash,
+            "created_at": time.time(),
+        }
+        checkpoint.recovery_events.append(event)
+        checkpoint.begin_decomposition_iteration(
+            _select_decomposer_viewpoint(
+                checkpoint, artifacts["definition_auditor"],
+            ),
+            "NO_REGISTERED_DECOMPOSITION_MOVE",
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False,
+            ["NO_REGISTERED_DECOMPOSITION_MOVE"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
+                "candidate_registry_hash": candidate_registry.content_hash,
+            },
+        )
+    checkpoint.candidate_set_hash = candidate_registry.content_hash
+    checkpoint.candidate_hashes = [
+        candidate.candidate_hash for candidate in candidate_registry.candidates
+    ]
+    checkpoint.candidate_count = len(candidate_registry.candidates)
+    checkpoint.theorem_card_ids = [
+        card.card_id for card in theorem_cards
+    ]
+    checkpoint.theorem_card_index_hash = _canonical_json_hash(
+        [card.content_hash for card in theorem_index],
+    )
+    evidence_context = host_evidence_context(artifacts, artifact_hashes=hashes)
+    evidence_graph = build_evidence_gap_graph(
+        artifacts=artifacts,
+        artifact_hashes=hashes,
+        advisory_artifacts=checkpoint.advisory_artifacts,
+        theorem_cards=theorem_cards,
+        candidate_set=candidate_registry,
+        failure_reason_codes=tuple(
+            str(code)
+            for item in checkpoint.invalidated_artifacts.values()
+            for code in item.get("reason_codes", ())
+        ),
+    )
+    proof_plans = generate_proof_plans(
+        evidence_graph,
+        unresolved_gap_ids=evidence_context.unresolved_gap_ids,
+    )
+    for proof_plan in proof_plans:
+        validate_proof_plan(evidence_graph, proof_plan)
+    checkpoint.evidence_gap_graph_hash = evidence_graph.content_hash
+    if proof_plans:
+        checkpoint.proof_plan_id = proof_plans[0].plan_id
+        checkpoint.proof_plan_hash = proof_plans[0].content_hash
+        checkpoint.executable_plan_node_id = first_executable_node(
+            proof_plans[0],
+        ).graph_node_id
+        checkpoint.plan_score_explanation = dict(
+            proof_plans[0].score_explanation,
+        )
+    else:
+        checkpoint.proof_plan_id = ""
+        checkpoint.proof_plan_hash = ""
+        checkpoint.executable_plan_node_id = ""
+        checkpoint.plan_score_explanation = {}
+    short_choice_map = candidate_registry.short_choice_map
+    if synthesis_mode:
+        if checkpoint.proof_state != ProofState.SYNTHESIS:
+            checkpoint.transition(
+                ProofState.SYNTHESIS,
+                f"synthesis-trigger:{trigger.reason}",
+                strategy_reused=True,
+            )
+        checkpoint.synthesis_iteration += 1
+        synthesis_package = {
+            "registered_output_choices": {
+                "choice_code": candidate_registry.short_choice_codes,
+                "reason_code": (
+                    "DIRECT_LOCAL_CONTRADICTION",
+                    "SUPPORTED_BY_THEOREM_CARDS",
+                    "STRICTEST_REDUCTION",
+                    "NOVEL_VIEWPOINT",
+                    "LOWEST_COMPLEXITY",
+                    "HIGHEST_GAP_COVERAGE",
+                    "SHALLOWEST_DEPENDENCY_DEPTH",
+                ),
+            },
+            "candidate_choices": tuple({
+                "choice_code": code,
+                "move_id": item.move.move_id,
+                "metric_parent": item.move.metric.parent,
+                "metric_child": item.move.metric.child,
+                "theorem_card_ids": item.theorem_card_ids,
+                "requires_parent_case_split": item.move.requires_parent_case_split,
+            } for code, item in short_choice_map.items()),
+            "short_choice_map_hash": candidate_registry.short_choice_map_hash,
+            "advisory_counterexample": True,
+            "counterexample_may_be_premise": False,
+        }
+        synthesis_run_id = f"{orchestration_id}:synthesis:v3"
+        try:
+            synthesis_text, synthesis_actual_id = run_role(
+                "synthesis",
+                _typed_role_messages("synthesis", synthesis_package),
+                synthesis_run_id,
+            )
+            transcripts["synthesis"] = synthesis_text
+            if synthesis_actual_id != synthesis_run_id:
+                raise AdapterError(
+                    "RUN_ID_MISMATCH", "synthesis returned another run ID",
+                    role="synthesis",
+                )
+            synthesis_fields = decode_role_fields(
+                synthesis_text,
+                "synthesis",
+                registered_choices=synthesis_package[
+                    "registered_output_choices"
+                ],
+            ).values
+            selected_choice_code = str(synthesis_fields["choice_code"])
+            ranking = rank_short_choice(
+                candidate_registry,
+                choice_code=selected_choice_code,
+                reason_code=str(synthesis_fields["reason_code"]),
+                candidate_set_hash=candidate_registry.content_hash,
+                short_choice_map_hash=candidate_registry.short_choice_map_hash,
+            )
+        except ValueError as exc:
+            checkpoint.recovery_events.append({
+                "event_type": "INVALID_SYNTHESIS_RATIONALE",
+                "reason": str(exc),
+                "candidate_set_hash": candidate_registry.content_hash,
+                "short_choice_map_hash": candidate_registry.short_choice_map_hash,
+                "created_at": time.time(),
+            })
+            checkpoint.adapter_blocked(
+                f"invalid Host-checked synthesis rationale: {exc}",
+                status="INTEGRATION_BLOCKED",
+            )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False, [str(exc)], artifacts, hashes, transcripts, role_run_ids,
+                {"host_gates_passed": False, "failure_status": "INTEGRATION_BLOCKED"},
+            )
+    else:
+        prior_choice = next((
+            code for code, candidate in short_choice_map.items()
+            if candidate.move.move_id == checkpoint.selected_move_id
+        ), "")
+        if checkpoint.ranking_hash and prior_choice:
+            selected_choice_code = prior_choice
+            ranking = rank_short_choice(
+                candidate_registry,
+                choice_code=selected_choice_code,
+                reason_code="LOWEST_COMPLEXITY",
+                candidate_set_hash=candidate_registry.content_hash,
+                short_choice_map_hash=candidate_registry.short_choice_map_hash,
+            )
+        else:
+            ranking = rank_candidates(candidate_registry)
+            selected_choice_code = next(
+                code for code, candidate in short_choice_map.items()
+                if candidate.candidate_id == ranking.selected_candidate_id
+            )
+    checkpoint.ranking_hash = ranking.ranking_hash
+    checkpoint.ranked_candidate_ids = list(ranking.ordered_candidate_ids)
+    ranked_selected = candidate_registry.resolve(ranking.selected_candidate_id)
+    checkpoint.selected_move_id = ranked_selected.move.move_id
+    checkpoint.viewpoint = (
+        "local_holomorphicity_special_case"
+        if ranked_selected.move.move_id == "SINGULARITY_CONTRADICTION"
+        else checkpoint.viewpoint
+    )
+    checkpoint.clear_adapter_blocked("candidate-ranking-complete")
+    if checkpoint.proof_state == ProofState.SYNTHESIS:
+        checkpoint.transition(
+            ProofState.DECOMPOSER,
+            "synthesis-ranking-complete",
+            strategy_reused=True,
+        )
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    package = {
+        "target_obligation_id": parent.obligation_id,
+        "parent_claim_ref": parent_claim_ref,
+        "plain_semantic_summary": (
+            "derive a smaller density and local convergence obligation from "
+            "the registered definitions"
+        ),
+        "root_goal_hash": goal_hash,
+        "viewpoint": checkpoint.viewpoint or "definitions",
+        "registered_output_choices": {
+            "parent_claim_ref": (parent_claim_ref,),
+            "child_kind": (required_kind,),
+            "definition_id": tuple(
+                str(item.get("obligation_label", ""))
+                for item in missing if isinstance(item, dict)
+            ),
+            "move_id": (selected_choice_code,),
+            "dependency_id": dependency_ids,
+        },
+        "candidate_choices": tuple({
+            "choice_code": code,
+            "summary_id": item.move.structural_delta,
+            "candidate_hash": item.candidate_hash,
+            "move_id": item.move.move_id,
+            "result_status": item.move.result_status,
+            "requires_parent_case_split": item.move.requires_parent_case_split,
+            "theorem_card_ids": item.theorem_card_ids,
+        } for code, item in short_choice_map.items()),
+        "validated_upstream_artifacts": {
+            "definition_auditor": _certified_upstream_view(
+                artifacts["definition_auditor"], consumer_role="decomposer",
+            ),
+        },
+    }
+    expected_run_id = f"{orchestration_id}:decomposer:v2"
+    try:
+        text, actual_run_id = run_role(
+            "decomposer",
+            _typed_role_messages("decomposer", package),
+            expected_run_id,
+        )
+        transcripts["decomposer"] = text
+        if actual_run_id != expected_run_id:
+            raise AdapterError(
+                "RUN_ID_MISMATCH", "adapter returned another run ID",
+                role="decomposer",
+            )
+        decoded = decode_role_fields(
+            text,
+            "decomposer",
+            registered_choices=package["registered_output_choices"],
+        )
+    except AdapterError as exc:
+        checkpoint.adapter_blocked(str(exc), status=exc.status.value)
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, [str(exc)], artifacts, hashes, transcripts, role_run_ids,
+            {"host_gates_passed": False, "failure_status": exc.status.value},
+        )
+    except Exception as exc:
+        checkpoint.adapter_blocked(
+            f"{type(exc).__name__}: {exc}",
+            status="INFRASTRUCTURE_BLOCKED",
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, [checkpoint.blocked_reason], artifacts, hashes,
+            transcripts, role_run_ids, {
+                "host_gates_passed": False,
+                "failure_status": "INFRASTRUCTURE_BLOCKED",
+            },
+        )
+    fields = decoded.values
+    selected_candidate = candidate_registry.resolve_short_code(
+        str(fields["move_id"]),
+        candidate_set_hash=candidate_registry.content_hash,
+        short_choice_map_hash=candidate_registry.short_choice_map_hash,
+    )
+    source_labels = list(fields["definition_id"])
+    # The host owns enum construction; the model supplies only a field value.
+    child_kind = str(fields["child_kind"]).strip().upper()
+    typed_ir_steps = selected_candidate.typed_payload
+    typed_child_ref = selected_candidate.typed_ir_hash
+    child_statement = (
+        f"Host typed proposition reference {typed_child_ref}; "
+        f"status={selected_candidate.move.result_status}; "
+        "does_not_prove_parent=true; "
+        f"requires_parent_case_split="
+        f"{str(selected_candidate.move.requires_parent_case_split).lower()}"
+    )
+    outline_steps = list(fields["outline_step_id"])
+    # Public assumptions are immutable Host contract bytes.  They never cross
+    # the model transport and are injected into both consumers from one value.
+    (
+        canonical_public_assumptions,
+        assumptions_hash,
+        restriction_move,
+    ) = _host_owned_assumption_contract(
+        parent.public_assumptions,
+        selected_candidate.move,
+    )
+    child_contract = {
+        "label": "L1",
+        "statement": child_statement,
+        "kind": child_kind,
+        "source_definition_labels": source_labels,
+        "move_id": selected_candidate.move.move_id,
+        "result_status": selected_candidate.move.result_status,
+        "requires_parent_case_split": (
+            selected_candidate.move.requires_parent_case_split
+        ),
+        "proves_parent": False,
+        "theorem_card_ids": list(selected_candidate.theorem_card_ids),
+        "public_assumptions": canonical_public_assumptions,
+        "public_assumptions_hash": assumptions_hash,
+    }
+    reduction_contract = {
+        "child_label": "L1",
+        "parent_statement": parent.statement,
+        "public_assumptions": canonical_public_assumptions,
+        "public_assumptions_hash": assumptions_hash,
+        "derivation": (
+            "host typed IR special-case derivation; separate parent "
+            "case-split reduction required"
+            + (": " + " ".join(outline_steps) if outline_steps else "")
+        ),
+    }
+    if restriction_move is not None:
+        child_contract["restriction_move"] = restriction_move
+        reduction_contract["restriction_move"] = restriction_move
+    proposal = DecompositionProposal(
+        parent.obligation_id,
+        statement_hash,
+        goal_hash,
+        "decomposer",
+        actual_run_id,
+        [hashes["definition_auditor"]],
+        parent.statement,
+        child_contract,
+        canonical_public_assumptions,
+        reduction_contract,
+    )
+    checkpoint.public_assumptions_hash = assumptions_hash
+    checkpoint.child_public_assumptions_hash = assumptions_hash
+    checkpoint.reduction_public_assumptions_hash = assumptions_hash
+    semantic_errors = [
+        *_validate_decomposition_shape(proposal),
+        *_validate_definition_child_selection(
+            artifacts["definition_auditor"], proposal,
+        ),
+    ]
+    if semantic_errors:
+        checkpoint.begin_decomposition_iteration(
+            _select_decomposer_viewpoint(
+                checkpoint, artifacts["definition_auditor"],
+            ),
+            "typed-decomposer-semantic-rejection:" + "; ".join(semantic_errors),
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, semantic_errors, artifacts, hashes, transcripts, role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": GateStatus.MATHEMATICAL_REJECTION.value,
+            },
+        )
+    proposal_payload = asdict(proposal)
+    proposal_ref = persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="decomposer",
+        payload=proposal_payload,
+        dependencies=[hashes["definition_auditor"]],
+        source_run_id=actual_run_id,
+        artifact_schema_version=2,
+    )
+    artifacts["decomposer"] = proposal
+    hashes["decomposer"] = proposal_ref.sha256
+    role_run_ids["decomposer"] = actual_run_id
+    envelope = host_artifact(
+        decoded,
+        host_bindings={
+            "target_obligation_id": parent.obligation_id,
+            "parent_statement_hash": statement_hash,
+            "root_goal_hash": goal_hash,
+            "producer_run_id": actual_run_id,
+            "candidate_registry_hash": candidate_registry.content_hash,
+            "selected_candidate_hash": selected_candidate.candidate_hash,
+            "selected_move_id": selected_candidate.move.move_id,
+            "candidate_set_hash": candidate_registry.content_hash,
+            "ranking_hash": ranking.ranking_hash,
+            "short_choice_map_hash": candidate_registry.short_choice_map_hash,
+            "selected_choice_code": selected_choice_code,
+            "theorem_card_ids": list(selected_candidate.theorem_card_ids),
+            "result_status": selected_candidate.move.result_status,
+            "requires_parent_case_split": (
+                selected_candidate.move.requires_parent_case_split
+            ),
+            "proves_parent": False,
+        },
+        dependencies=[proposal_ref.sha256],
+    )
+    assert_no_scratchpad_content(envelope, scratch_ref)
+    synthesis_payload = synthesis_manifest(
+        evidence_hashes={
+            key: value for key, value in hashes.items()
+            if key in {"critic", "definition_auditor", "counterexample_worker"}
+        },
+        rejected_reason_codes=(
+            checkpoint.semantic_rejection.get("rejection_reason_codes", [])
+            if isinstance(checkpoint.semantic_rejection, dict) else ()
+        ),
+        theorem_card_ids=(card.card_id for card in theorem_cards),
+        scratchpad_ref=scratch_ref,
+        ranking=ranking,
+        short_choice_map_hash=candidate_registry.short_choice_map_hash,
+        selected_choice_code=selected_choice_code,
+        counterexample_verified=False,
+    )
+    assert_no_scratchpad_content(synthesis_payload, scratch_ref)
+    persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="synthesis",
+        payload=synthesis_payload,
+        dependencies=list(dependency_ids),
+        source_run_id=(
+            synthesis_run_id if synthesis_mode else "host-deterministic-ranking"
+        ),
+        artifact_schema_version=1,
+    )
+    ir_ref = persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="math_ir_translator",
+        payload=envelope,
+        dependencies=[proposal_ref.sha256],
+        source_run_id=actual_run_id,
+        artifact_schema_version=2,
+    )
+    checkpoint.transition(
+        ProofState.MATH_IR_TRANSLATION,
+        "host-selected-candidate-assembled",
+        source_run_id=actual_run_id,
+        strategy_reused=True,
+    )
+    checkpoint.transition(
+        ProofState.HOST_TYPED_IR_GATE,
+        "typed-math-ir-host-envelope-persisted",
+        source_run_id=actual_run_id,
+        strategy_reused=True,
+    )
+    checkpoint.active_gate = "HOST_TYPED_IR_GATE"
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    gate_result = run_host_gates(
+        typed_ir_steps,
+        project_root=project_root,
+        cache_dir=checkpoint_path.with_suffix(".host-gates"),
+        lean_validator=signature_validator,
+    )
+    gate_payload = {
+        "schema_version": 2,
+        "input_artifact_hash": ir_ref.sha256,
+        "ok": gate_result.ok,
+        "evidence": [asdict(item) for item in gate_result.evidence],
+        "compilation": (
+            asdict(gate_result.compilation) if gate_result.compilation else {}
+        ),
+    }
+    gate_ref = persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="host_typed_ir_gate",
+        payload=gate_payload,
+        dependencies=[ir_ref.sha256],
+        source_run_id="host",
+        artifact_schema_version=2,
+    )
+    if not gate_result.ok:
+        errors = [gate_result.evidence[-1].message]
+        checkpoint.active_gate = gate_result.evidence[-1].stage
+        if gate_result.failure_status == GateStatus.SEMANTIC_BACKJUMP.value:
+            for role in ("decomposer", "math_ir_translator", "host_typed_ir_gate"):
+                stale = checkpoint.validated_artifacts.pop(role, None)
+                if stale:
+                    checkpoint.invalidated_artifacts[stale.sha256] = {
+                        **asdict(stale),
+                        "audit_only": True,
+                        "reason_codes": [gate_result.evidence[-1].code],
+                    }
+            checkpoint.recovery_events.append({
+                "event_type": "HOST_TYPED_MOVE_SEMANTIC_REJECTION",
+                "event_id": (
+                    "host-typed-move-semantic-rejection-"
+                    + selected_candidate.novelty_hash[:16]
+                ),
+                "candidate_hash": selected_candidate.candidate_hash,
+                "novelty_hash": selected_candidate.novelty_hash,
+                "move_id": selected_candidate.move.move_id,
+                "reason_code": gate_result.evidence[-1].code,
+                "created_at": time.time(),
+            })
+            checkpoint.ranking_hash = ""
+            checkpoint.ranked_candidate_ids = []
+            checkpoint.selected_move_id = ""
+            checkpoint.transition(
+                ProofState.SYNTHESIS,
+                f"typed-evidence-backjump:{gate_result.evidence[-1].code}",
+                strategy_reused=True,
+            )
+        else:
+            checkpoint.blocked_reason = errors[0]
+            checkpoint.transition(ProofState.BLOCKED, errors[0])
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, errors, artifacts, hashes, transcripts, role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": gate_result.failure_status,
+                "gate_evidence_hash": gate_ref.sha256,
+            },
+        )
+    compilation = gate_result.compilation
+    assert compilation is not None
+    checkpoint.typed_ir_hash = compilation.math_ir_hash
+    checkpoint.lean_declaration_hash = compilation.declaration_hash
+    checkpoint.proposition_hash = compilation.proposition_hash
+    checkpoint.elaborated_theorem_id = compilation.theorem_id
+    checkpoint.active_gate = "LEAN_ELABORATION_GATE"
+    checkpoint.transition(
+        ProofState.LEAN_ELABORATION_GATE,
+        "host-typed-ir-gate-passed",
+        strategy_reused=True,
+    )
+    quarantined_parent = any(
+        str(review.get("status", "")).upper() == "QUARANTINED"
+        and parent.obligation_id in {
+            str(item)
+            for key in ("plan_ids", "evidence_ids")
+            for item in review.get(key, ())
+        }
+        for review in checkpoint.branch_history.values()
+    )
+    contract_target_ref = parent.obligation_id
+    contract_parent_ref = parent.parent_id or "ROOT"
+    if quarantined_parent:
+        contract_target_ref = (
+            parent.obligation_id
+            + ":typed-reframe:"
+            + compilation.proposition_hash[:20]
+        )
+        contract_parent_ref = parent.obligation_id
+        reframe_event_id = (
+            "typed-reframe-backjump:" + compilation.proposition_hash[:20]
+        )
+        if not any(
+            item.get("event_id") == reframe_event_id
+            for item in checkpoint.recovery_events
+        ):
+            checkpoint.recovery_events.append({
+                "event_type": "TYPED_REFRAME_BACKJUMP",
+                "event_id": reframe_event_id,
+                "quarantined_parent_ref": parent.obligation_id,
+                "replacement_target_ref": contract_target_ref,
+                "proposition_hash": compilation.proposition_hash,
+                "theorem_id": compilation.theorem_id,
+                "created_at": time.time(),
+            })
+        checkpoint.target_obligation_id = contract_target_ref
+    checkpoint.transition(
+        ProofState.STRATEGY_TOURNAMENT,
+        "lean-elaboration-passed:rerun-tournament-with-proposition-hash",
+        strategy_reused=False,
+    )
+    checkpoint = run_architecture_v7_entry(
+        checkpoint_path,
+        checkpoint,
+        project_root=project_root,
+        target_ref=contract_target_ref,
+        parent_obligation_ref=contract_parent_ref,
+        parent_complexity=max(5, len(parent.statement.split())),
+        event_type=StrategyEvent.TARGET_CHANGE,
+        event_id=(
+            "TARGET_CHANGE:"
+            + hashlib.sha256(
+                (
+                    parent.obligation_id + compilation.proposition_hash
+                ).encode(),
+            ).hexdigest()[:20]
+        ),
+        elaborated_theorem_id=compilation.theorem_id,
+        proposition_hash=compilation.proposition_hash,
+    )
+    if not checkpoint.research_contract_id:
+        return DecompositionCertificateResult(
+            False,
+            [
+                "RESEARCH_CONTRACT_REJECTED:"
+                + ",".join(checkpoint.research_contract_rejection_codes)
+            ],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": True,
+                "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
+                "route_state": checkpoint.state,
+            },
+        )
+    checkpoint.active_gate = "PROOF_SEARCH"
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    contract_ref = checkpoint.validated_artifacts.get("research_contract")
+    if contract_ref is None:
+        raise RuntimeError("proof search requires a persisted ResearchContract")
+    contract_payload = json.loads(Path(contract_ref.path).read_text())
+    from autoresearch.prefill.research_contract import ResearchContract
+    contract_payload.pop("schema_version", None)
+    contract = ResearchContract(**contract_payload)
+    proof_state_path = checkpoint_path.with_name("stepwise_proof_state.json")
+    checkpoint.proof_search_state_path = str(proof_state_path)
+    search = new_search_state(contract, [ProofGoal(
+        "G1",
+        compilation.proposition_hash,
+        (),
+        f"proposition:{compilation.proposition_hash}",
+    )], proof_budget=16)
+    executor = lean_step_executor(LeanExecutionContext(
+        project_root,
+        compilation.declaration_source,
+        ("KakeyaLeanGate.Prelude",),
+    ))
+    operand_sources = {
+        f"TC{index}": card.theorem_name
+        for index, card in enumerate(theorem_cards, 1)
+    }
+    theorem_operands = {
+        card.card_id: f"TC{index}"
+        for index, card in enumerate(theorem_cards, 1)
+    }
+    proof_actual_run_id = ""
+    for step_index in range(1, 33):
+        if search.status != "SEARCHING":
+            break
+        actions = enumerate_applicable_actions(
+            search,
+            local_context_ids=(),
+            theorem_card_to_operand_id=theorem_operands,
+        )
+        goal_id = search.open_goals[0].goal_id
+        action_ids = tuple(action.action_id for action in actions)
+        operand_ids = tuple(sorted({
+            operand for action in actions for operand in action.operand_ids
+        }))
+        proof_package = {
+            "target_obligation_id": parent.obligation_id,
+            "parent_claim_ref": f"proposition:{compilation.proposition_hash}",
+            "plain_semantic_summary": "select one registered action",
+            "registered_output_choices": {
+                "goal_id": (goal_id,),
+                "action_id": action_ids,
+                "operand_id": operand_ids,
+                "substitution_id": (),
+            },
+        }
+        proof_run_id = (
+            f"{orchestration_id}:proof_action_selector:{step_index}"
+        )
+        try:
+            proof_text, proof_actual_run_id = run_role(
+                "proof_action_selector",
+                _typed_role_messages(
+                    "proof_action_selector", proof_package,
+                ),
+                proof_run_id,
+            )
+            transcripts[f"proof_action_{step_index}"] = proof_text
+            if proof_actual_run_id != proof_run_id:
+                raise AdapterError(
+                    "RUN_ID_MISMATCH", "adapter returned another run ID",
+                    role="proof_action_selector",
+                )
+            fields = decode_role_fields(
+                proof_text,
+                "proof_action_selector",
+                registered_choices=proof_package[
+                    "registered_output_choices"
+                ],
+            ).values
+            selected_action = next(
+                action for action in actions
+                if action.action_id == fields["action_id"]
+            )
+            selection = ActionSelection(
+                str(fields["goal_id"]),
+                str(fields["action_id"]),
+                tuple(fields.get("operand_id", ())),
+                (),
+                (),
+            )
+            checkpoint.lean_actions_attempted += 1
+            result = attempt_step(
+                search,
+                selection,
+                actions,
+                operand_sources=operand_sources,
+                substitution_sources={},
+                lean_executor=executor,
+            )
+        except AdapterError as exc:
+            checkpoint.adapter_blocked(str(exc), status=exc.status.value)
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False, [str(exc)], artifacts, hashes, transcripts, role_run_ids,
+                {"host_gates_passed": True, "failure_status": exc.status.value},
+            )
+        except Exception as exc:
+            checkpoint.protocol_error_count += 1
+            checkpoint.last_transition_reason = (
+                f"proof-action-host-error:{type(exc).__name__}"
+            )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            continue
+        if result.accepted:
+            checkpoint.lean_actions_accepted += 1
+        checkpoint.subgoals_closed = max(
+            0, checkpoint.lean_actions_accepted - len(search.open_goals),
+        )
+        checkpoint.subgoals_remaining = len(search.open_goals)
+        persist_search_state(proof_state_path, search)
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    if search.status != "PROVED":
+        errors = [
+            f"stepwise proof search stopped with {search.status}; "
+            f"remaining_subgoals={len(search.open_goals)}"
+        ]
+        checkpoint.mathematical_retries += search.semantic_failures
+        checkpoint.last_transition_reason = errors[0]
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False, errors, artifacts, hashes, transcripts, role_run_ids,
+            {
+                "host_gates_passed": True,
+                "failure_status": GateStatus.MATHEMATICAL_REJECTION.value,
+            },
+        )
+    proof_source = "\n".join((
+        compilation.declaration_source,
+        *(f"  {step.rendered_ast}" for step in search.accepted_steps),
+        "",
+    ))
+    proof_result = proof_validator(proof_source, project_root=project_root)
+    if not proof_result.ok:
+        raise RuntimeError(
+            "accepted stepwise proof failed final validation: "
+            + proof_result.error,
+        )
+    formalization = FormalizationBundle(
+        parent.obligation_id, statement_hash, goal_hash, "host_compiler", "host",
+        [proposal_ref.sha256], compilation.declaration_source,
+        compilation.declaration_hash, parent.formal_status == "UNFORMALIZED",
+        {
+            "label": "L1",
+            "lean_signature": compilation.declaration_source,
+            "lean_signature_hash": compilation.declaration_hash,
+        },
+        compilation.declaration_source, compilation.declaration_hash,
+    )
+    proof = ProofAttempt(
+        parent.obligation_id, statement_hash, goal_hash, "proof_search",
+        proof_actual_run_id, [gate_ref.sha256], "PROVED", proof_source,
+    )
+    artifacts["formalizer"] = formalization
+    artifacts["prover"] = proof
+    hashes["formalizer"] = _canonical_json_hash(asdict(formalization))
+    hashes["prover"] = _canonical_json_hash(asdict(proof))
+    role_run_ids["formalizer"] = "host"
+    role_run_ids["prover"] = proof_actual_run_id
+    checkpoint.transition(
+        ProofState.ADVERSARIAL_REVIEW,
+        "typed-proof-plan-host-rendered-and-elaborated",
+        strategy_reused=True,
+    )
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    return DecompositionCertificateResult(
+        False,
+        ["adversarial review pending"],
+        artifacts,
+        hashes,
+        transcripts,
+        role_run_ids,
+        {
+            "host_gates_passed": True,
+            "typed_ir_hash": compilation.math_ir_hash,
+            "proposition_hash": compilation.proposition_hash,
+            "gate_evidence_hash": gate_ref.sha256,
+        },
+    )
 
 
 def run_certified_decomposition(
@@ -1811,6 +5036,9 @@ def run_certified_decomposition(
     orchestration_id: str,
     signature_validator=validate_lean_signature,
     proof_validator=validate_lean_proof,
+    checkpoint_path: Path | None = None,
+    candidate_sha256: str = "",
+    protocol_retry_limit: int = 2,
 ) -> DecompositionCertificateResult:
     parent = next(
         item for item in ledger.obligations
@@ -1831,55 +5059,769 @@ def run_certified_decomposition(
         ("prover", "PROOF_ATTEMPT"),
         ("adversarial_proponent", "DEFENSE_REPORT"),
     ]
+    artifact_types = {
+        "definition_auditor": DefinitionAudit,
+        "counterexample_worker": CounterexampleReport,
+        "decomposer": DecompositionProposal,
+        "formalizer": FormalizationBundle,
+        "prover": ProofAttempt,
+        "adversarial_proponent": DefenseReport,
+        "judge": JudgeDecision,
+    }
+    orchestration_checkpoint = None
+    if checkpoint_path is not None:
+        checkpoint_path = Path(checkpoint_path).expanduser()
+        orchestration_checkpoint = load_orchestration_checkpoint(
+            checkpoint_path,
+        )
+        adapter_binding_matches = bool(
+            orchestration_checkpoint is not None
+            and not binding_mismatch(
+                orchestration_checkpoint,
+                target_obligation_id=target_id,
+                candidate_sha256=candidate_sha256,
+                parent_statement_sha256=statement_hash,
+                parent_signature_sha256=parent.lean_signature_hash,
+                root_goal_sha256=goal_hash,
+                ledger_id=ledger.ledger_id,
+                ledger_version=ledger.version,
+            )
+        )
+        legacy_definition_adapter_block = bool(
+            orchestration_checkpoint is not None
+            and orchestration_checkpoint.proof_state
+            == ProofState.DEFINITION_AUDITOR
+            and orchestration_checkpoint.adapter_status == "ADAPTER_BLOCKED"
+            and "DEFINITION_AUDIT Artifact JSON" in (
+                orchestration_checkpoint.blocked_reason
+            )
+            and adapter_binding_matches
+        )
+        if legacy_definition_adapter_block:
+            orchestration_checkpoint.clear_adapter_blocked(
+                "typed-definition-auditor-migration",
+            )
+            orchestration_checkpoint.recovery_events.append({
+                "event_type": "LEGACY_DEFINITION_OUTPUT_AUDIT_ONLY",
+                "event_id": "definition-auditor-typed-transport-v1",
+                "target_state": ProofState.DEFINITION_AUDITOR.value,
+                "created_at": time.time(),
+            })
+            save_orchestration_checkpoint(
+                checkpoint_path, orchestration_checkpoint,
+            )
+        if (
+            orchestration_checkpoint is not None
+            and (
+                orchestration_checkpoint.proof_state == ProofState.BLOCKED
+                or (
+                    orchestration_checkpoint.adapter_status == "ADAPTER_BLOCKED"
+                    and adapter_binding_matches
+                )
+            )
+        ):
+            return DecompositionCertificateResult(
+                verified=False,
+                errors=[
+                    orchestration_checkpoint.blocked_reason
+                    or "orchestration is BLOCKED",
+                ],
+                artifacts={},
+                artifact_hashes={},
+                transcripts={},
+                role_run_ids={},
+                validation={
+                    "host_gates_passed": False,
+                    "blocked": True,
+                    "failure_status": (
+                        orchestration_checkpoint.adapter_status
+                        or ProofState.BLOCKED.value
+                    ),
+                },
+            )
+        if (
+            orchestration_checkpoint is not None
+            and orchestration_checkpoint.adapter_status
+            == "INFRASTRUCTURE_BLOCKED"
+            and adapter_binding_matches
+        ):
+            orchestration_checkpoint.clear_adapter_blocked(
+                "quiescent-infrastructure-retry",
+            )
+            orchestration_checkpoint.recovery_events.append({
+                "event_type": "QUIESCENT_INFRASTRUCTURE_RETRY",
+                "event_id": (
+                    "quiescent-infrastructure-retry-"
+                    + hashlib.sha256(
+                        orchestration_checkpoint.last_transition_reason.encode(),
+                    ).hexdigest()[:16]
+                ),
+                "target_state": orchestration_checkpoint.state,
+                "created_at": time.time(),
+            })
+            save_orchestration_checkpoint(
+                checkpoint_path, orchestration_checkpoint,
+            )
+        mismatch = ""
+        if orchestration_checkpoint is not None:
+            mismatch = binding_mismatch(
+                orchestration_checkpoint,
+                target_obligation_id=target_id,
+                candidate_sha256=candidate_sha256,
+                parent_statement_sha256=statement_hash,
+                parent_signature_sha256=parent.lean_signature_hash,
+                root_goal_sha256=goal_hash,
+                ledger_id=ledger.ledger_id,
+                ledger_version=ledger.version,
+            )
+        if orchestration_checkpoint is None or mismatch:
+            orchestration_checkpoint = OrchestrationCheckpoint(
+                state=ProofState.DEFINITION_AUDITOR.value,
+                target_obligation_id=target_id,
+                candidate_sha256=candidate_sha256,
+                strategy_sha256=candidate_sha256,
+                parent_statement_sha256=statement_hash,
+                parent_signature_sha256=parent.lean_signature_hash,
+                root_goal_sha256=goal_hash,
+                current_role="definition_auditor",
+                last_transition_reason=(
+                    f"resume-invalidated:{mismatch}" if mismatch
+                    else "certified-decomposition-requested"
+                ),
+                ledger_id=ledger.ledger_id,
+                ledger_version=ledger.version,
+                orchestration_id=orchestration_id,
+            )
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
+        else:
+            if (
+                orchestration_checkpoint.proof_state
+                == ProofState.GENERATOR
+            ):
+                orchestration_checkpoint.transition(
+                    ProofState.CRITIC,
+                    "generator-and-critic-transcripts-bound-by-current-turn",
+                    strategy_reused=True,
+                )
+            if orchestration_checkpoint.proof_state == ProofState.CRITIC:
+                orchestration_checkpoint.transition(
+                    ProofState.DEFINITION_AUDITOR,
+                    "critic-requested-certified-decomposition",
+                    strategy_reused=True,
+                )
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
+            try:
+                persisted = load_validated_artifacts(
+                    orchestration_checkpoint,
+                )
+                for role, payload in persisted.items():
+                    artifact = artifact_types[role](**payload)
+                    artifacts[role] = artifact
+                    hashes[role] = _canonical_json_hash(payload)
+                    role_run_ids[role] = (
+                        orchestration_checkpoint.validated_artifacts[
+                            role
+                        ].source_run_id
+                    )
+                if persisted:
+                    orchestration_checkpoint.strategy_reused = True
+                    orchestration_checkpoint.resume_origin = (
+                        orchestration_checkpoint.state
+                    )
+                    orchestration_checkpoint.last_transition_reason = (
+                        "loaded-validated-upstream-artifacts"
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
+                    print(
+                        "[orchestration-resumed] "
+                        f"state={orchestration_checkpoint.state} "
+                        f"artifacts={','.join(persisted)} "
+                        "strategy_reused=true",
+                        flush=True,
+                    )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                orchestration_checkpoint.validated_artifacts = {}
+                orchestration_checkpoint.state = (
+                    ProofState.DEFINITION_AUDITOR.value
+                )
+                orchestration_checkpoint.current_role = "definition_auditor"
+                orchestration_checkpoint.last_transition_reason = (
+                    f"artifact-resume-invalidated:{type(exc).__name__}"
+                )
+                save_orchestration_checkpoint(
+                    checkpoint_path,
+                    orchestration_checkpoint,
+                )
+                artifacts.clear()
+                hashes.clear()
+                role_run_ids.clear()
+    if (
+        orchestration_checkpoint is not None
+        and checkpoint_path is not None
+        and "definition_auditor" not in artifacts
+    ):
+        try:
+            artifact, digest, transcript, role_run_id = (
+                _run_typed_definition_auditor(
+                    parent,
+                    root_goal,
+                    run_role,
+                    orchestration_id=orchestration_id,
+                    checkpoint_path=checkpoint_path,
+                    checkpoint=orchestration_checkpoint,
+                )
+            )
+        except Exception as exc:
+            partial_text = str(getattr(exc, "partial_text", ""))
+            if partial_text:
+                transcripts["definition_auditor_partial_attempt_1"] = partial_text
+            failure_text = f"definition_auditor typed transport failed: {exc}"
+            orchestration_checkpoint.adapter_blocked(
+                failure_text,
+                status=(
+                    exc.status.value
+                    if isinstance(exc, AdapterError)
+                    else "ADAPTER_BLOCKED"
+                ),
+            )
+            save_orchestration_checkpoint(
+                checkpoint_path, orchestration_checkpoint,
+            )
+            return DecompositionCertificateResult(
+                verified=False,
+                errors=[failure_text],
+                artifacts={},
+                artifact_hashes={},
+                transcripts=transcripts,
+                role_run_ids={},
+                validation={
+                    "host_gates_passed": False,
+                    "blocked": True,
+                    "failure_status": orchestration_checkpoint.adapter_status,
+                },
+            )
+        artifacts["definition_auditor"] = artifact
+        hashes["definition_auditor"] = digest
+        transcripts["definition_auditor"] = transcript
+        role_run_ids["definition_auditor"] = role_run_id
+    if orchestration_checkpoint is not None and checkpoint_path is not None:
+        # migration_event is audit provenance only. Executable dispatch is
+        # authorized exclusively by the complete architecture capability set.
+        require_typed_dispatch(orchestration_checkpoint)
+        save_orchestration_checkpoint(checkpoint_path, orchestration_checkpoint)
+        return _run_typed_ir_v2(
+            ledger,
+            parent,
+            root_goal,
+            run_role,
+            project_root=project_root,
+            orchestration_id=orchestration_id,
+            checkpoint_path=checkpoint_path,
+            checkpoint=orchestration_checkpoint,
+            signature_validator=signature_validator,
+            proof_validator=proof_validator,
+            artifacts=artifacts,
+            hashes=hashes,
+            role_run_ids=role_run_ids,
+        )
     for role, heading in role_specs:
+        if role in artifacts:
+            continue
         expected_run_id = f"{orchestration_id}:{role}"
-        upstream = list(hashes.values())
+        upstream = _artifact_dependencies_for_role(role, hashes)
+        if orchestration_checkpoint is not None:
+            desired_state = state_for_role(role)
+            if orchestration_checkpoint.proof_state != desired_state:
+                orchestration_checkpoint.transition(
+                    desired_state,
+                    f"upstream-valid:{role}",
+                    resume_origin=orchestration_checkpoint.state,
+                    strategy_reused=True,
+                )
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
         package = {
             "target_obligation_id": target_id,
             "parent_statement": parent.statement,
             "parent_statement_hash": statement_hash,
-            "root_goal": root_goal,
+            "target_statement_hash": statement_hash,
             "root_goal_hash": goal_hash,
             "producer_role": role,
             "producer_run_id": expected_run_id,
             "upstream_artifact_hashes": upstream,
             "validated_upstream_artifacts": {
-                name: asdict(value)
+                name: _certified_upstream_view(
+                    value,
+                    consumer_role=role,
+                )
                 for name, value in artifacts.items()
                 if name in _required_certified_upstream(role)
             },
-            "parent_formal_status": parent.formal_status,
-            "parent_lean_signature": parent.lean_signature,
-            "parent_lean_signature_hash": parent.lean_signature_hash,
         }
-        try:
-            text, actual_run_id = run_role(
-                role,
-                _certified_role_messages(role, heading, package),
-                expected_run_id,
+        if role == "formalizer":
+            package["validated_upstream_artifacts"] = {
+                "decomposer": _formalizer_upstream_view(
+                    artifacts["decomposer"],
+                    hashes["decomposer"],
+                ),
+            }
+            package["definition_audit"] = _certified_upstream_view(
+                artifacts["definition_auditor"],
             )
-        except Exception as exc:
-            errors.append(f"{role} failed: {type(exc).__name__}: {exc}")
-            break
-        transcripts[role] = text
-        role_run_ids[role] = actual_run_id
-        if actual_run_id != expected_run_id:
-            errors.append(f"{role} run ID mismatch")
-            break
-        artifact, error = parse_certified_artifact(
-            text,
-            heading,
-            target_obligation_id=target_id,
-            parent_statement_hash=statement_hash,
-            root_goal_hash=goal_hash,
-            producer_run_id=expected_run_id,
-            upstream_artifact_hashes=upstream,
+        if role == "decomposer":
+            if (
+                orchestration_checkpoint is not None
+                and not orchestration_checkpoint.viewpoint
+            ):
+                viewpoint = _select_decomposer_viewpoint(
+                    orchestration_checkpoint,
+                    artifacts["definition_auditor"],
+                )
+                orchestration_checkpoint.begin_decomposition_iteration(
+                    viewpoint,
+                    "decomposer-search-started",
+                )
+                save_orchestration_checkpoint(
+                    checkpoint_path,
+                    orchestration_checkpoint,
+                )
+            package["decomposer_contract"] = _decomposer_contract(package)
+            package["ancestor_hashes"] = _decomposition_ancestor_hashes(
+                ledger,
+                parent,
+            )
+            package["decomposition_iteration"] = (
+                orchestration_checkpoint.decomposition_iteration
+                if orchestration_checkpoint is not None else 1
+            )
+            package["viewpoint"] = (
+                orchestration_checkpoint.viewpoint
+                if orchestration_checkpoint is not None else "unassigned"
+            )
+            package["decomposition_novelty_ledger"] = (
+                compact_decomposition_novelty_ledger(orchestration_checkpoint)
+                if orchestration_checkpoint is not None else {
+                    "proposal_count": 0,
+                    "novel_proposals": 0,
+                    "recent": [],
+                }
+            )
+        if role in {"formalizer", "prover", "adversarial_proponent"}:
+            package["parent_formal_status"] = parent.formal_status
+            if parent.formal_status != "UNFORMALIZED":
+                package.update({
+                    "parent_lean_signature": parent.lean_signature,
+                    "parent_lean_signature_hash": parent.lean_signature_hash,
+                })
+        if (
+            role == "formalizer"
+            and orchestration_checkpoint is not None
+            and checkpoint_path is not None
+            and getattr(run_role, "_supports_split_formalizer", False)
+        ):
+            artifact, unit_transcripts, split_error = _run_split_formalizer(
+                run_role,
+                package=package,
+                project_root=project_root,
+                signature_validator=signature_validator,
+                checkpoint_path=checkpoint_path,
+                checkpoint=orchestration_checkpoint,
+                expected_run_id=expected_run_id,
+            )
+            transcripts.update(unit_transcripts)
+            if artifact is None:
+                errors.append(f"formalizer split-unit failure: {split_error}")
+                break
+            artifacts[role] = artifact
+            hashes[role] = _canonical_json_hash(asdict(artifact))
+            role_run_ids[role] = artifact.producer_run_id
+            persist_validated_artifact(
+                checkpoint_path,
+                orchestration_checkpoint,
+                role=role,
+                payload=asdict(artifact),
+                dependencies=upstream,
+                source_run_id=artifact.producer_run_id,
+            )
+            orchestration_checkpoint.transition(
+                ProofState.PROVER,
+                "formalizer-split-units-assembled",
+                source_run_id=artifact.producer_run_id,
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
+            continue
+        if role == "adversarial_proponent":
+            host_validation, host_errors = _validate_decomposition_certificate(
+                ledger,
+                parent,
+                artifacts["definition_auditor"],
+                artifacts["counterexample_worker"],
+                artifacts["decomposer"],
+                artifacts["formalizer"],
+                artifacts["prover"],
+                None,
+                project_root=project_root,
+                signature_validator=signature_validator,
+                proof_validator=proof_validator,
+            )
+            package["validated_artifact_hashes"] = dict(hashes)
+            package["host_gate_results"] = {
+                "validation": host_validation,
+                "errors": host_errors,
+            }
+        messages = _certified_role_messages(role, heading, package)
+        attempts = (
+            2
+            if role in {"decomposer", "formalizer", "adversarial_proponent"}
+            else 1
         )
-        if error:
-            errors.append(error)
+        artifact = None
+        for attempt in range(attempts):
+            attempt_run_id = (
+                expected_run_id
+                if attempt == 0
+                else f"{expected_run_id}:protocol-repair-1"
+            )
+            try:
+                text, actual_run_id = run_role(
+                    role,
+                    messages,
+                    attempt_run_id,
+                )
+            except Exception as exc:
+                partial_text = str(getattr(exc, "partial_text", ""))
+                if partial_text:
+                    transcripts[
+                        f"{role}_partial_attempt_{attempt + 1}"
+                    ] = partial_text
+                failure = f"{type(exc).__name__}: {exc}"
+                if (
+                    role in {
+                        "decomposer",
+                        "formalizer",
+                        "adversarial_proponent",
+                    }
+                    and attempt == 0
+                    and isinstance(exc, SemanticResponseIncomplete)
+                ):
+                    if role == "decomposer":
+                        messages = _decomposer_repair_messages(
+                            package,
+                            validation_errors=[failure],
+                            rejected_artifact=None,
+                        )
+                    elif role == "formalizer":
+                        messages = _formalizer_repair_messages(
+                            package,
+                            validation_errors=[failure],
+                        )
+                    else:
+                        messages = _defense_repair_messages(
+                            package,
+                            validation_errors=[failure],
+                        )
+                    continue
+                prefix = (
+                    "decomposer protocol repair failed"
+                    if role == "decomposer" and attempt
+                    else (
+                        "formalizer protocol repair failed "
+                        f"(attempt={attempt_run_id})"
+                        if role == "formalizer" and attempt
+                        else (
+                            "adversarial_proponent protocol repair failed "
+                            f"(attempt={attempt_run_id})"
+                            if role == "adversarial_proponent" and attempt
+                            else f"{role} failed"
+                        )
+                    )
+                )
+                failure_text = f"{prefix}: {failure}"
+                errors.append(failure_text)
+                if orchestration_checkpoint is not None:
+                    orchestration_checkpoint.adapter_blocked(
+                        failure_text,
+                        status="ADAPTER_BLOCKED",
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
+                break
+            transcript_key = (
+                role if attempt == 0 else f"{role}_protocol_repair_1"
+            )
+            transcripts[transcript_key] = text
+            if actual_run_id != attempt_run_id:
+                errors.append(f"{role} run ID mismatch")
+                break
+            parsed, error = parse_certified_artifact(
+                text,
+                heading,
+                target_obligation_id=target_id,
+                parent_statement_hash=statement_hash,
+                root_goal_hash=goal_hash,
+                producer_run_id=attempt_run_id,
+                upstream_artifact_hashes=upstream,
+            )
+            protocol_errors = []
+            semantic_errors = []
+            if role == "decomposer":
+                protocol_errors.extend(_decomposer_protocol_errors(text))
+            if not error and role == "decomposer":
+                protocol_errors.extend(_validate_decomposition_shape(parsed))
+                semantic_errors.extend(
+                    _validate_definition_child_selection(
+                        artifacts["definition_auditor"],
+                        parsed,
+                    ),
+                )
+                semantic_errors.extend(
+                    _validate_decomposition_progress(ledger, parent, parsed),
+                )
+                semantic_hash = _decomposition_semantic_hash(parsed)
+                structural_signature = _decomposition_structural_signature(
+                    parsed,
+                )
+                prior_semantic = {
+                    item.get("semantic_hash")
+                    for item in orchestration_checkpoint.decomposition_proposals
+                } if orchestration_checkpoint is not None else set()
+                prior_structural = {
+                    item.get("structural_signature")
+                    for item in orchestration_checkpoint.decomposition_proposals
+                } if orchestration_checkpoint is not None else set()
+                if semantic_hash in prior_semantic:
+                    semantic_errors.append(
+                        "semantic-signature-duplicate after alpha normalization",
+                    )
+                if structural_signature in prior_structural:
+                    semantic_errors.append(
+                        "structural-signature-duplicate; no genuine delta",
+                    )
+            if not error and role == "formalizer":
+                protocol_errors.extend(
+                    _validate_formalization_shape(parsed, package),
+                )
+                if not protocol_errors:
+                    protocol_errors.extend(
+                        _validate_formalization_elaboration(
+                            parsed,
+                            package,
+                            project_root=project_root,
+                            signature_validator=signature_validator,
+                        ),
+                    )
+            if not error and role == "prover":
+                proof_result = proof_validator(
+                    parsed.reduction_theorem_source,
+                    project_root=project_root,
+                )
+                formalization = artifacts["formalizer"]
+                if (
+                    parsed.status != "PROVED"
+                    or not proof_result.ok
+                    or proof_result.status != "PROVED"
+                ):
+                    protocol_errors.append(
+                        "complete reduction proof failed or is not Lean-elaborated",
+                    )
+                elif (
+                    lean_theorem_signature_hash(parsed.reduction_theorem_source)
+                    != formalization.reduction_signature_hash
+                ):
+                    protocol_errors.append(
+                        "complete reduction proof targets another theorem",
+                    )
+                elif _circular_reduction_proof(
+                    parsed.reduction_theorem_source,
+                ):
+                    protocol_errors.append(
+                        "complete reduction proof circularly assumes its conclusion",
+                    )
+            if not error and role == "adversarial_proponent":
+                protocol_errors.extend(_validate_defense_shape(parsed))
+            if error and not protocol_errors:
+                protocol_errors.append(error)
+            if semantic_errors and not protocol_errors:
+                failure_text = (
+                    "decomposer semantic rejection: "
+                    + "; ".join(dict.fromkeys(semantic_errors))
+                )
+                errors.append(failure_text)
+                transcripts["decomposer_semantic_rejection"] = text
+                if orchestration_checkpoint is not None:
+                    archive_decomposition_rejection(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                        proposal=asdict(parsed),
+                        rejection_reasons=list(dict.fromkeys(semantic_errors)),
+                        semantic_hash=semantic_hash,
+                        structural_signature=structural_signature,
+                        source_run_id=actual_run_id,
+                    )
+                    for stale_role in (
+                        "decomposer",
+                        "formalizer_parent_signature",
+                        "formalizer_child_signature",
+                        "formalizer_reduction_signature",
+                        "formalizer",
+                        "prover",
+                        "adversarial_proponent",
+                        "judge",
+                    ):
+                        stale = orchestration_checkpoint.validated_artifacts.pop(
+                            stale_role,
+                            None,
+                        )
+                        if stale is not None:
+                            orchestration_checkpoint.invalidated_artifacts[
+                                stale.sha256
+                            ] = {
+                                **asdict(stale),
+                                "reason_codes": ["SEMANTIC_DECOMPOSITION_REJECTION"],
+                                "audit_only": True,
+                            }
+                    next_viewpoint = _select_decomposer_viewpoint(
+                        orchestration_checkpoint,
+                        artifacts["definition_auditor"],
+                    )
+                    orchestration_checkpoint.begin_decomposition_iteration(
+                        next_viewpoint,
+                        failure_text,
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
+                    print(
+                        "[decomposer-search] "
+                        f"semantic_iteration="
+                        f"{orchestration_checkpoint.decomposition_iteration} "
+                        f"viewpoint={next_viewpoint} "
+                        "strategy_reused=true",
+                        flush=True,
+                    )
+                break
+            if protocol_errors:
+                if (
+                    role in {
+                        "decomposer",
+                        "formalizer",
+                        "adversarial_proponent",
+                    }
+                    and attempt == 0
+                ):
+                    if role == "decomposer":
+                        messages = _decomposer_repair_messages(
+                            package,
+                            validation_errors=protocol_errors,
+                            rejected_artifact=_decomposer_payload(text) or None,
+                        )
+                    elif role == "formalizer":
+                        messages = _formalizer_repair_messages(
+                            package,
+                            validation_errors=protocol_errors,
+                        )
+                    else:
+                        messages = _defense_repair_messages(
+                            package,
+                            validation_errors=protocol_errors,
+                        )
+                    continue
+                prefix = (
+                    "decomposer protocol repair failed"
+                    if role == "decomposer" and attempt
+                    else (
+                        "formalizer protocol repair failed "
+                        f"(attempt={attempt_run_id})"
+                        if role == "formalizer" and attempt
+                        else (
+                            "adversarial_proponent protocol repair failed "
+                            f"(attempt={attempt_run_id})"
+                            if role == "adversarial_proponent" and attempt
+                            else role
+                        )
+                    )
+                )
+                errors.append(
+                    f"{prefix}: " + "; ".join(protocol_errors),
+                )
+                if orchestration_checkpoint is not None:
+                    failure_text = errors[-1]
+                    orchestration_checkpoint.adapter_blocked(
+                        failure_text,
+                        status="ADAPTER_BLOCKED",
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
+                break
+            if role == "prover" and parsed.status != "PROVED":
+                failure_text = (
+                    f"prover mathematical proof failure: {parsed.status}"
+                )
+                errors.append(failure_text)
+                if orchestration_checkpoint is not None:
+                    orchestration_checkpoint.mathematical_retries += 1
+                    orchestration_checkpoint.retry(
+                        ProofState.PROVER,
+                        failure_text,
+                        protocol_retry_limit,
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
+                break
+            artifact = parsed
+            role_run_ids[role] = actual_run_id
+            break
+        if artifact is None:
             break
         artifacts[role] = artifact
         hashes[role] = _canonical_json_hash(asdict(artifact))
+        if orchestration_checkpoint is not None:
+            persist_validated_artifact(
+                checkpoint_path,
+                orchestration_checkpoint,
+                role=role,
+                payload=asdict(artifact),
+                dependencies=upstream,
+                source_run_id=role_run_ids[role],
+            )
+            next_index = [spec[0] for spec in role_specs].index(role) + 1
+            next_state = (
+                state_for_role(role_specs[next_index][0])
+                if next_index < len(role_specs)
+                else ProofState.JUDGE
+            )
+            orchestration_checkpoint.transition(
+                next_state,
+                f"{role}-artifact-validated",
+                source_run_id=role_run_ids[role],
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
     validation = {"host_gates_passed": False}
     if not errors and len(artifacts) == 6:
         validation, errors = _validate_decomposition_certificate(
@@ -1895,6 +5837,69 @@ def run_certified_decomposition(
             signature_validator=signature_validator,
             proof_validator=proof_validator,
         )
+        if errors and orchestration_checkpoint is not None:
+            failure_text = "host-validation-rejected: " + "; ".join(errors)
+            if _is_decomposition_semantic_rejection(errors):
+                proposal = artifacts["decomposer"]
+                semantic_hash = _decomposition_semantic_hash(proposal)
+                structural_signature = _decomposition_structural_signature(
+                    proposal,
+                )
+                if not any(
+                    item.get("proposal_sha256")
+                    == _canonical_json_hash(asdict(proposal))
+                    for item in orchestration_checkpoint.decomposition_proposals
+                ):
+                    archive_decomposition_rejection(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                        proposal=asdict(proposal),
+                        rejection_reasons=errors,
+                        semantic_hash=semantic_hash,
+                        structural_signature=structural_signature,
+                        source_run_id=role_run_ids["decomposer"],
+                    )
+                for stale_role in (
+                    "decomposer",
+                    "formalizer_parent_signature",
+                    "formalizer_child_signature",
+                    "formalizer_reduction_signature",
+                    "formalizer",
+                    "prover",
+                    "adversarial_proponent",
+                    "judge",
+                ):
+                    stale = orchestration_checkpoint.validated_artifacts.pop(
+                        stale_role,
+                        None,
+                    )
+                    if stale is not None:
+                        orchestration_checkpoint.invalidated_artifacts[
+                            stale.sha256
+                        ] = {
+                            **asdict(stale),
+                            "reason_codes": [
+                                "SEMANTIC_DECOMPOSITION_REJECTION",
+                            ],
+                            "audit_only": True,
+                        }
+                next_viewpoint = _select_decomposer_viewpoint(
+                    orchestration_checkpoint,
+                    artifacts["definition_auditor"],
+                )
+                orchestration_checkpoint.begin_decomposition_iteration(
+                    next_viewpoint,
+                    failure_text,
+                )
+            else:
+                orchestration_checkpoint.adapter_blocked(
+                    failure_text,
+                    status="ADAPTER_BLOCKED",
+                )
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
     judge_manifest = {
         "target_obligation_id": target_id,
         "parent_statement": parent.statement,
@@ -1903,16 +5908,13 @@ def run_certified_decomposition(
         "artifact_hashes": hashes,
         "validation": validation,
         "errors": errors,
-        "retained_child_statements": [
-            child.get("statement", "")
-            for child in (
-                artifacts.get("decomposer").children
-                if artifacts.get("decomposer") else []
-            )
-        ],
+        "retained_child_statement": (
+            artifacts["decomposer"].child.get("statement", "")
+            if "decomposer" in artifacts else ""
+        ),
     }
     manifest_hash = _canonical_json_hash(judge_manifest)
-    if len(artifacts) == 6:
+    if len(artifacts) == 6 and validation.get("host_gates_passed"):
         role = "judge"
         heading = "JUDGE_DECISION"
         expected_run_id = f"{orchestration_id}:{role}"
@@ -1921,6 +5923,12 @@ def run_certified_decomposition(
             "producer_role": role,
             "producer_run_id": expected_run_id,
             "upstream_artifact_hashes": [manifest_hash],
+            "defense_evidence": {
+                "artifact_hash": hashes["adversarial_proponent"],
+                "status": artifacts["adversarial_proponent"].status,
+                "issues": artifacts["adversarial_proponent"].issues,
+                "repairs": artifacts["adversarial_proponent"].repairs,
+            },
         }
         try:
             text, actual_run_id = run_role(
@@ -1941,19 +5949,79 @@ def run_certified_decomposition(
             )
             if error:
                 errors.append(error)
+                if orchestration_checkpoint is not None:
+                    orchestration_checkpoint.retry(
+                        ProofState.JUDGE,
+                        error,
+                        protocol_retry_limit,
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
             else:
                 artifacts[role] = judge
                 hashes[role] = _canonical_json_hash(asdict(judge))
+                if orchestration_checkpoint is not None:
+                    persist_validated_artifact(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                        role=role,
+                        payload=asdict(judge),
+                        dependencies=[manifest_hash],
+                        source_run_id=actual_run_id,
+                    )
                 if judge.decision != "ACCEPT":
                     errors.append(f"Judge decision was {judge.decision}")
+                    if orchestration_checkpoint is not None:
+                        orchestration_checkpoint.retry(
+                            classify_failure(role, errors[-1]),
+                            errors[-1],
+                            protocol_retry_limit,
+                        )
+                        save_orchestration_checkpoint(
+                            checkpoint_path,
+                            orchestration_checkpoint,
+                        )
+                elif orchestration_checkpoint is not None:
+                    orchestration_checkpoint.transition(
+                        ProofState.COMMIT,
+                        "judge-accepted-host-verified-certificate",
+                        source_run_id=actual_run_id,
+                        strategy_reused=True,
+                    )
+                    save_orchestration_checkpoint(
+                        checkpoint_path,
+                        orchestration_checkpoint,
+                    )
         except Exception as exc:
             errors.append(f"judge failed: {type(exc).__name__}: {exc}")
+            if orchestration_checkpoint is not None:
+                orchestration_checkpoint.retry(
+                    ProofState.JUDGE,
+                    errors[-1],
+                    protocol_retry_limit,
+                )
+                save_orchestration_checkpoint(
+                    checkpoint_path,
+                    orchestration_checkpoint,
+                )
     verified = bool(validation.get("host_gates_passed")) and not errors
     certificate_hash = _canonical_json_hash({
         "orchestration_id": orchestration_id,
         "artifact_hashes": hashes,
         "validation": validation,
     })
+    if (
+        verified
+        and orchestration_checkpoint is not None
+        and orchestration_checkpoint.proof_state == ProofState.COMMIT
+    ):
+        orchestration_checkpoint.commit_key = certificate_hash
+        save_orchestration_checkpoint(
+            checkpoint_path,
+            orchestration_checkpoint,
+        )
     return DecompositionCertificateResult(
         verified,
         errors,
@@ -1980,59 +6048,55 @@ def persist_verified_decomposition(
     )
     proposal: DecompositionProposal = result.artifacts["decomposer"]
     formalization: FormalizationBundle = result.artifacts["formalizer"]
-    formal_by_label = {
-        str(child["label"]): child
-        for child in formalization.children
-    }
     if parent.formal_status == "UNFORMALIZED":
         parent.formal_status = "FORMALIZED"
         parent.lean_signature = formalization.parent_signature_source
         parent.lean_signature_hash = formalization.parent_signature_hash
-    label_to_id = {
-        str(child["label"]): (
-            f"{target_id}-"
-            + hashlib.sha256(
-                f"{result.certificate_hash}:{child['label']}".encode(),
-            ).hexdigest()[:10]
-        )
-        for child in proposal.children
-    }
-    dependencies = {
-        label: [] for label in label_to_id
-    }
-    for source, dependency in proposal.dependency_edges:
-        dependencies[source].append(label_to_id[dependency])
-    created = []
-    for child in proposal.children:
-        label = str(child["label"])
-        formal = formal_by_label[label]
-        item = ProofObligation(
-            obligation_id=label_to_id[label],
-            statement=str(child["statement"]),
-            parent_id=target_id,
-            last_run_id=run_id,
-            last_evidence="Persisted from verified decomposition certificate.",
-            formal_status="FORMALIZED",
-            lean_signature=str(formal["lean_signature"]),
-            lean_signature_hash=result.validation[
-                "child_signature_hashes"
-            ][label],
-            decomposition_certificate_hash=result.certificate_hash,
-            reduction_theorem_hash=result.validation[
-                "reduction_proof_hash"
-            ],
-            reduction_theorem_status="PROVED",
-            decomposition_role_run_ids=dict(result.role_run_ids),
-            dependency_labels=[
-                edge[1]
-                for edge in proposal.dependency_edges
-                if edge[0] == label
-            ],
-            dependency_ids=dependencies[label],
-            certificate_reversible_status="ACTIVE",
-        )
-        ledger.obligations.append(item)
-        created.append(item)
+    child = proposal.child
+    formal = formalization.child
+    label = str(child["label"])
+    child_id = (
+        f"{target_id}-"
+        + hashlib.sha256(
+            f"{result.certificate_hash}:{label}".encode(),
+        ).hexdigest()[:10]
+    )
+    item = ProofObligation(
+        obligation_id=child_id,
+        statement=str(child["statement"]),
+        parent_id=target_id,
+        last_run_id=run_id,
+        last_evidence="Persisted from verified decomposition certificate.",
+        formal_status="FORMALIZED",
+        lean_signature=str(formal["lean_signature"]),
+        lean_signature_hash=result.validation[
+            "child_signature_hashes"
+        ][label],
+        decomposition_certificate_hash=result.certificate_hash,
+        reduction_theorem_hash=result.validation[
+            "reduction_proof_hash"
+        ],
+        reduction_theorem_status="PROVED",
+        decomposition_role_run_ids=dict(result.role_run_ids),
+        dependency_labels=[],
+        dependency_ids=[],
+        certificate_reversible_status="ACTIVE",
+    )
+    existing = next(
+        (
+            obligation
+            for obligation in ledger.obligations
+            if obligation.obligation_id == child_id
+        ),
+        None,
+    )
+    if existing is not None:
+        if existing.decomposition_certificate_hash != result.certificate_hash:
+            raise ValueError("child ID collision with another certificate")
+        result.created = [existing]
+        return [existing]
+    ledger.obligations.append(item)
+    created = [item]
     parent.decomposition_certificate_hash = result.certificate_hash
     parent.reduction_theorem_hash = result.validation["reduction_proof_hash"]
     parent.reduction_theorem_status = "PROVED"
@@ -3500,15 +7564,18 @@ def build_critic_messages(
 
 
 class TokenPrinter:
-    def __init__(self, tokenizer, label: str) -> None:
+    def __init__(self, tokenizer, label: str, progress_callback=None) -> None:
         self.tokenizer = tokenizer
         self.last = ""
+        self.progress_callback = progress_callback
         print(f"{label}> ", end="", flush=True)
 
     def __call__(self, token_ids) -> None:
         text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
         print(text[len(self.last):], end="", flush=True)
         self.last = text
+        if self.progress_callback is not None:
+            self.progress_callback(len(token_ids))
 
     def finish(self) -> None:
         print(flush=True)
@@ -3520,6 +7587,8 @@ class PrefillHeartbeat:
         label: str,
         interval_s: float = 30.0,
         stats_provider=None,
+        progress_callback=None,
+        status_interval_s: float = 5.0,
     ) -> None:
         self.label = label
         self.interval_s = interval_s
@@ -3527,6 +7596,8 @@ class PrefillHeartbeat:
         self.stop = threading.Event()
         self.started = 0.0
         self.thread = None
+        self.progress_callback = progress_callback
+        self.status_interval_s = min(status_interval_s, interval_s)
 
     def __enter__(self):
         self.started = time.perf_counter()
@@ -3539,9 +7610,12 @@ class PrefillHeartbeat:
         self.thread.join(timeout=1)
 
     def _run(self):
-        while not self.stop.wait(self.interval_s):
+        next_print = self.interval_s
+        while not self.stop.wait(self.status_interval_s):
             elapsed = time.perf_counter() - self.started
             progress = ""
+            total = 0
+            computed = 0
             if self.stats_provider is not None:
                 stats = self.stats_provider()
                 total = int(stats.get("remote_job_tokens_total", 0))
@@ -3556,6 +7630,11 @@ class PrefillHeartbeat:
                         f" · {computed}/{total} tokens ({percent:.1f}%)"
                         + (f" · ETA {eta:.0f}s" if computed > 0 else "")
                     )
+            if self.progress_callback is not None:
+                self.progress_callback(computed, total)
+            if elapsed < next_print:
+                continue
+            next_print += self.interval_s
             print(
                 f"[allens] {self.label} Prefill: {elapsed:.0f}s{progress}",
                 flush=True,
@@ -3605,6 +7684,202 @@ def _gate_failure(name: str, warm: dict, actual: dict) -> RuntimeError:
     return RuntimeError(
         f"{name} KV gate failed: "
         f"warm={compact(warm['delta'])} actual={compact(actual['delta'])}",
+    )
+
+
+def _run_isolated_certified_role(
+    role_name,
+    messages,
+    expected_run_id,
+    *,
+    tokenizer,
+    args,
+    client,
+    eos_ids,
+    get_stats,
+    live_status,
+    active_obligation_id,
+    target_ids,
+    telemetry_state,
+    isolated_role_stages,
+):
+    role_ids = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=False,
+        enable_thinking=False,
+    )
+    unit_headroom = (
+        FORMALIZER_UNIT_HEADROOM_TOKENS
+        if str(role_name).startswith("formalizer_")
+        and str(role_name).endswith("_signature")
+        else 0
+    )
+    admit_token_ids(
+        role_name,
+        role_ids,
+        configured_prefill_tokens=args.max_prefill_tokens,
+        max_retained_tokens=args.max_retained_tokens,
+    )
+    role_output_cap = structured_output_cap(
+        role=role_name,
+        max_retained_tokens=args.max_retained_tokens,
+        retained_input_tokens=len(role_ids),
+        minimum_output_tokens=structured_role_minimum_output_tokens(role_name),
+        configured_output_tokens=(args.max_response_tokens or None),
+        control_reserve_tokens=64 + unit_headroom,
+    )
+    print(
+        "[structured-budget] "
+        f"role={role_name} retained_input={len(role_ids)} "
+        f"minimum_complete_schema="
+        f"{structured_role_minimum_output_tokens(role_name)} "
+        f"output_cap={role_output_cap} "
+        f"headroom={unit_headroom} "
+        f"max_retained={args.max_retained_tokens}",
+        flush=True,
+    )
+    print(
+        f"[allens] {role_name} Prefill: {len(role_ids)} tokens...",
+        flush=True,
+    )
+    role_key = str(role_name).lower().replace(" ", "_")
+    live_status.emit(
+        phase=f"{role_key}_prefill",
+        role=role_key,
+        state="prefill",
+        progress_current=0,
+        progress_total=len(role_ids),
+        progress_unit="tokens",
+        active_obligation_id=active_obligation_id,
+        worker="allens",
+        source="agent_gan_repl",
+        force=True,
+    )
+    with PrefillHeartbeat(
+        role_name,
+        stats_provider=get_stats,
+        progress_callback=lambda current, total: live_status.emit(
+            phase=f"{role_key}_prefill",
+            role=role_key,
+            state="prefill",
+            progress_current=current,
+            progress_total=total or len(role_ids),
+            progress_unit="tokens",
+            active_obligation_id=active_obligation_id,
+            worker="allens",
+            source="agent_gan_repl",
+        ),
+    ):
+        _, role_warm = _infer(
+            client,
+            eos_ids,
+            role_ids,
+            1,
+            get_stats,
+            client_label=f"agent-gan-{role_name}-warm",
+            max_retained_tokens=args.max_retained_tokens,
+        )
+    live_status.emit(
+        phase=f"{role_key}_decode",
+        role=role_key,
+        state="decode",
+        progress_current=0,
+        progress_total=role_output_cap,
+        progress_unit="tokens",
+        active_obligation_id=active_obligation_id,
+        worker="primary",
+        source="agent_gan_repl",
+        hit_source="primary_hot",
+        force=True,
+    )
+    role_printer = TokenPrinter(
+        tokenizer,
+        role_name,
+        progress_callback=lambda current: live_status.emit(
+            phase=f"{role_key}_decode",
+            role=role_key,
+            state="decode",
+            progress_current=current,
+            progress_total=role_output_cap,
+            progress_unit="tokens",
+            active_obligation_id=active_obligation_id,
+            worker="primary",
+            source="agent_gan_repl",
+            hit_source="primary_hot",
+        ),
+    )
+    contract_role = _message_artifact_contract(messages, role_name)
+    if str(role_name).endswith("_scratchpad"):
+        # Private scratchpads are untrusted prose terminated only by model EOS.
+        # They are never fed to any structured adapter or proof gate.
+        semantic_complete = lambda _generated: False
+    else:
+        semantic_complete = lambda generated: (
+            _structured_transport_semantically_complete(
+                tokenizer.decode(generated, skip_special_tokens=True),
+                contract_role,
+            )
+        )
+    role_tokens, role_actual = _infer(
+        client,
+        eos_ids,
+        role_ids,
+        args.output_tokens,
+        get_stats,
+        on_token=role_printer,
+        max_response_tokens=role_output_cap,
+        semantic_progress=lambda chunk: bool(
+            tokenizer.decode(chunk, skip_special_tokens=True).strip()
+        ),
+        semantic_complete=semantic_complete,
+        client_label=f"agent-gan-{role_name}",
+        max_retained_tokens=args.max_retained_tokens,
+    )
+    role_printer.finish()
+    try:
+        role_text = decode_complete_response(
+            tokenizer,
+            role_name,
+            role_tokens,
+            role_actual,
+        )
+    except SemanticResponseIncomplete as exc:
+        exc.partial_text = tokenizer.decode(
+            role_tokens,
+            skip_special_tokens=True,
+        )
+        raise
+    role_stage = _stage(
+        role_name,
+        role_warm,
+        role_actual,
+        role_text,
+        extra_metrics={
+            "isolated_role_session": True,
+            "explicit_text_handoff_only": True,
+        },
+    )
+    if not role_stage["ok"] and not telemetry_state["degraded"]:
+        raise _gate_failure(role_name, role_warm, role_actual)
+    isolated_role_stages.append(role_stage)
+    live_status.emit(
+        phase=f"{role_key}_complete",
+        role=role_key,
+        state="review",
+        progress_current=1,
+        progress_total=1,
+        progress_unit="role",
+        active_obligation_id=active_obligation_id,
+        source="agent_gan_repl",
+        force=True,
+    )
+    return (
+        role_text,
+        expected_run_id or (
+            f"local:{role_name}:{next(iter(target_ids))}"
+        ),
     )
 
 
@@ -3745,6 +8020,28 @@ def main() -> int:
     decomposition_review_dir = Path(
         args.decomposition_review_dir,
     ).expanduser()
+    orchestration_state_path = Path(os.environ.get(
+        "KAKEYA_ORCHESTRATION_STATE_PATH",
+        str(Path.home() / ".kakeya/autoresearch/proof_orchestration.json"),
+    )).expanduser()
+    orchestration_candidate_sha256 = os.environ.get(
+        "KAKEYA_CANDIDATE_SHA256",
+        "",
+    )
+    live_status_path = Path(os.environ.get(
+        "KAKEYA_LIVE_STATUS_PATH",
+        str(Path.home() / ".kakeya/proof_live_status.json"),
+    )).expanduser()
+    supervisor_pid = int(os.environ.get("KAKEYA_SUPERVISOR_PID", os.getppid()))
+    supervisor_iteration = int(
+        os.environ.get("KAKEYA_SUPERVISOR_ITERATION", "0"),
+    )
+    live_status = AtomicLiveStatus(
+        live_status_path,
+        supervisor_pid=supervisor_pid,
+        iteration=supervisor_iteration,
+    )
+    active_obligation_id = ""
     if args.recover_run:
         recovered = recover_checkpoint_from_log(
             Path(args.recover_log).expanduser(),
@@ -3846,6 +8143,13 @@ def main() -> int:
             if command.action in {"continue", "steer"} and args.auto_loop:
                 auto_loop_active = True
             phase = ReplPhase.RUNNING
+            live_status.emit(
+                phase="proof_turn_queued",
+                role="orchestrator",
+                state="queued",
+                source="agent_gan_repl",
+                force=True,
+            )
             critic_issue_batch = load_pending_critic_issues(
                 critic_inbox_path,
             )
@@ -3880,6 +8184,10 @@ def main() -> int:
                     )
             elif len(turn_obligations) > 1:
                 turn_obligations = turn_obligations[:1]
+            active_obligation_id = (
+                turn_obligations[0].obligation_id
+                if turn_obligations else ""
+            )
             proof_step_interface_text = ""
             if proof_ledger is not None and len(turn_obligations) == 1:
                 target = turn_obligations[0]
@@ -3944,6 +8252,9 @@ def main() -> int:
                     )
             run_nonce = uuid.uuid4().hex
             telemetry_state["degraded"] = False
+            resume_checkpoint = load_orchestration_checkpoint(
+                orchestration_state_path,
+            )
             run = _telemetry_request(
                 f"{args.dashboard}/v1/network/benchmarks",
                 api_key=api_key,
@@ -3960,8 +8271,10 @@ def main() -> int:
                             "definition_auditor",
                             "counterexample_worker",
                             "decomposer",
-                            "formalizer",
-                            "prover",
+                            "math_ir_translator",
+                            "host_typed_ir_gate",
+                            "lean_elaboration_gate",
+                            "proof_search",
                             "adversarial_proponent",
                             "judge",
                         ],
@@ -4001,6 +8314,7 @@ def main() -> int:
             )
             remote_run = run is not None
             run_id = run["id"] if remote_run else f"local_{run_nonce[:16]}"
+            live_status.set_context(run_id=run_id)
             started_at = datetime.now().astimezone().isoformat(
                 timespec="milliseconds",
             )
@@ -4010,6 +8324,253 @@ def main() -> int:
                 flush=True,
             )
             try:
+                certified_resume_states = {
+                    ProofState.DEFINITION_AUDITOR,
+                    ProofState.COUNTEREXAMPLE_WORKER,
+                    ProofState.SYNTHESIS,
+                    ProofState.REFRAME,
+                    ProofState.DECOMPOSER,
+                    ProofState.FORMALIZER,
+                    ProofState.HOST_TYPED_IR_GATE,
+                    ProofState.LEAN_ELABORATION_GATE,
+                    ProofState.PROVER,
+                    ProofState.ADVERSARIAL_REVIEW,
+                    ProofState.JUDGE,
+                    ProofState.COMMIT,
+                    ProofState.BLOCKED,
+                }
+                resume_certified = bool(
+                    proof_ledger is not None
+                    and resume_checkpoint is not None
+                    and resume_checkpoint.proof_state
+                    in certified_resume_states
+                    and any(
+                        item.obligation_id
+                        == resume_checkpoint.target_obligation_id
+                        for item in turn_obligations
+                    )
+                    and (
+                        not orchestration_candidate_sha256
+                        or resume_checkpoint.candidate_sha256
+                        == orchestration_candidate_sha256
+                    )
+                )
+                if resume_certified:
+                    architecture7 = resume_checkpoint.architecture_version >= 7
+                    critic_payload = {}
+                    if not architecture7:
+                        critic_ref = resume_checkpoint.validated_artifacts.get(
+                            "critic",
+                        )
+                        critic_payload = load_critic_artifact(
+                            asdict(critic_ref) if critic_ref is not None else {},
+                            expected_bindings={
+                            "target_obligation_id": (
+                                resume_checkpoint.target_obligation_id
+                            ),
+                            "candidate_sha256": (
+                                resume_checkpoint.candidate_sha256
+                            ),
+                            "strategy_sha256": (
+                                resume_checkpoint.strategy_sha256
+                            ),
+                            "parent_statement_sha256": (
+                                resume_checkpoint.parent_statement_sha256
+                            ),
+                            "parent_signature_sha256": (
+                                resume_checkpoint.parent_signature_sha256
+                            ),
+                            "root_goal_sha256": (
+                                resume_checkpoint.root_goal_sha256
+                            ),
+                            "ledger_id": resume_checkpoint.ledger_id,
+                            "ledger_version": resume_checkpoint.ledger_version,
+                            },
+                        )
+                    decomposition_target = (
+                        resume_checkpoint.target_obligation_id
+                    )
+                    target_ids = {decomposition_target}
+                    isolated_role_stages = []
+
+                    def direct_review_role(
+                        role_name,
+                        messages,
+                        expected_run_id="",
+                    ):
+                        return _run_isolated_certified_role(
+                            role_name,
+                            messages,
+                            expected_run_id,
+                            tokenizer=tokenizer,
+                            args=args,
+                            client=client,
+                            eos_ids=eos_ids,
+                            get_stats=get_stats,
+                            live_status=live_status,
+                            active_obligation_id=active_obligation_id,
+                            target_ids=target_ids,
+                            telemetry_state=telemetry_state,
+                            isolated_role_stages=isolated_role_stages,
+                        )
+
+                    direct_review_role._supports_split_formalizer = True
+
+                    orchestration_id = (
+                        resume_checkpoint.orchestration_id
+                        or (
+                            f"{run_id}:decomposition:"
+                            + hashlib.sha256(
+                                decomposition_target.encode(),
+                            ).hexdigest()[:12]
+                        )
+                    )
+                    print(
+                        "[orchestration-direct-resume] "
+                        f"state={resume_checkpoint.state} "
+                        f"target={decomposition_target} "
+                        "generator_reused=true critic_reused=true "
+                        "strategy_reused=true",
+                        flush=True,
+                    )
+                    certificate = run_certified_decomposition(
+                        proof_ledger,
+                        decomposition_target,
+                        research_goal,
+                        direct_review_role,
+                        project_root=Path(__file__).resolve().parents[1],
+                        orchestration_id=orchestration_id,
+                        checkpoint_path=orchestration_state_path,
+                        candidate_sha256=orchestration_candidate_sha256,
+                    )
+                    created_obligations = persist_verified_decomposition(
+                        proof_ledger,
+                        decomposition_target,
+                        certificate,
+                        run_id,
+                    )
+                    manifest_path = decomposition_review_dir / (
+                        hashlib.sha256(
+                            orchestration_id.encode(),
+                        ).hexdigest()[:20]
+                        + ".json"
+                    )
+                    save_decomposition_manifest(manifest_path, {
+                        "schema_version": 3,
+                        "decomposition_contract": "single_child_resumable_v3",
+                        "orchestration_id": orchestration_id,
+                        "target_obligation_id": decomposition_target,
+                        "verified": certificate.verified,
+                        "certificate_hash": certificate.certificate_hash,
+                        "errors": certificate.errors,
+                        "artifact_hashes": certificate.artifact_hashes,
+                        "artifacts": {
+                            role: asdict(artifact)
+                            for role, artifact in certificate.artifacts.items()
+                        },
+                        "validation": certificate.validation,
+                        "role_run_ids": certificate.role_run_ids,
+                        "transcripts": certificate.transcripts,
+                        "created_obligation_ids": [
+                            item.obligation_id
+                            for item in created_obligations
+                        ],
+                        "resumed": True,
+                        "resume_origin": resume_checkpoint.state,
+                        "strategy_reused": not architecture7,
+                        "generator_reused": not architecture7,
+                        "critic_reused": not architecture7,
+                    })
+                    save_proof_ledger(proof_ledger_path, proof_ledger)
+                    committed_checkpoint = load_orchestration_checkpoint(
+                        orchestration_state_path,
+                    )
+                    if (
+                        committed_checkpoint is not None
+                        and committed_checkpoint.proof_state
+                        == ProofState.COMMIT
+                    ):
+                        committed_checkpoint.committed = True
+                        committed_checkpoint.ledger_version = (
+                            proof_ledger.version
+                        )
+                        committed_checkpoint.transition(
+                            ProofState.IDLE,
+                            "direct-resume-ledger-commit-complete",
+                            source_run_id=run_id,
+                            strategy_reused=True,
+                        )
+                        save_orchestration_checkpoint(
+                            orchestration_state_path,
+                            committed_checkpoint,
+                        )
+                    if research_candidate is not None:
+                        print(
+                            "[autoresearch-verdict] "
+                            + json.dumps(
+                                build_autoresearch_verdict(
+                                    research_candidate,
+                                    proof_ledger,
+                                    {decomposition_target: "UNRESOLVED"},
+                                    created_obligations,
+                                    certificate.errors,
+                                ),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            flush=True,
+                        )
+                    if remote_run:
+                        provenance = (
+                            build_architecture7_report_provenance(
+                                resume_checkpoint,
+                                isolated_role_stages,
+                            )
+                            if architecture7 else
+                            build_resumed_report_provenance(
+                                resume_checkpoint,
+                                critic_payload,
+                                isolated_role_stages,
+                            )
+                        )
+                        print(
+                            "[report-provenance] "
+                            + json.dumps(
+                                provenance,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            flush=True,
+                        )
+                        _telemetry_request(
+                            f"{args.dashboard}/v1/network/benchmarks/{run_id}",
+                            api_key=api_key,
+                            method="PATCH",
+                            body={
+                                "stages": isolated_role_stages,
+                                "provenance": provenance,
+                                "status": "completed",
+                                "finished_at": time.time(),
+                            },
+                        )
+                    print(
+                        "[inference-complete] "
+                        f"time={datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+                        f"run={run_id} resumed=true "
+                        "generator_reused=true critic_reused=true",
+                        flush=True,
+                    )
+                    save_checkpoint(
+                        state_path,
+                        ReplCheckpoint(
+                            research_goal=research_goal,
+                            previous_generator=previous_generator,
+                            previous_critic=previous_critic,
+                            last_run_id=run_id,
+                        ),
+                    )
+                    phase = ReplPhase.READY
+                    continue
                 generator_messages = build_generator_messages(
                     research_goal,
                     steering="\n\n".join(filter(None, (
@@ -4083,12 +8644,66 @@ def main() -> int:
                     f"[allens] Generator Prefill: {len(generator_ids)} tokens...",
                     flush=True,
                 )
-                with PrefillHeartbeat("Generator", stats_provider=get_stats):
+                live_status.emit(
+                    phase="generator_prefill",
+                    role="generator",
+                    state="prefill",
+                    progress_current=0,
+                    progress_total=len(generator_ids),
+                    progress_unit="tokens",
+                    active_obligation_id=active_obligation_id,
+                    worker="allens",
+                    source="agent_gan_repl",
+                    force=True,
+                )
+                with PrefillHeartbeat(
+                    "Generator",
+                    stats_provider=get_stats,
+                    progress_callback=lambda current, total: live_status.emit(
+                        phase="generator_prefill",
+                        role="generator",
+                        state="prefill",
+                        progress_current=current,
+                        progress_total=total or len(generator_ids),
+                        progress_unit="tokens",
+                        active_obligation_id=active_obligation_id,
+                        worker="allens",
+                        source="agent_gan_repl",
+                    ),
+                ):
                     _, generator_warm = _infer(
                         client, eos_ids, generator_ids, 1, get_stats,
                         max_retained_tokens=args.max_retained_tokens,
                     )
-                generator_printer = TokenPrinter(tokenizer, "generator")
+                live_status.emit(
+                    phase="generator_decode",
+                    role="generator",
+                    state="decode",
+                    progress_current=0,
+                    progress_total=generator_cap,
+                    progress_unit="tokens",
+                    active_obligation_id=active_obligation_id,
+                    worker="primary",
+                    source="agent_gan_repl",
+                    hit_source="primary_hot",
+                    force=True,
+                )
+                generator_printer = TokenPrinter(
+                    tokenizer,
+                    "generator",
+                    progress_callback=lambda current: live_status.emit(
+                        phase="generator_decode",
+                        role="generator",
+                        state="decode",
+                        progress_current=current,
+                        progress_total=generator_cap,
+                        progress_unit="tokens",
+                        active_obligation_id=active_obligation_id,
+                        worker="primary",
+                        source="agent_gan_repl",
+                        hit_source="primary_hot",
+                    ),
+                )
                 generator_tokens, generator_actual = _infer(
                     client,
                     eos_ids,
@@ -4111,6 +8726,36 @@ def main() -> int:
                     "Generator",
                     generator_tokens,
                     generator_actual,
+                )
+                orchestration_checkpoint = load_orchestration_checkpoint(
+                    orchestration_state_path,
+                )
+                if (
+                    orchestration_checkpoint is not None
+                    and orchestration_checkpoint.proof_state
+                    == ProofState.GENERATOR
+                ):
+                    orchestration_checkpoint.transition(
+                        ProofState.CRITIC,
+                        "generator-output-validated",
+                        source_run_id=run_id,
+                        strategy_reused=True,
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                live_status.emit(
+                    phase="generator_complete",
+                    role="generator",
+                    state="review",
+                    progress_current=len(generator_tokens),
+                    progress_total=len(generator_tokens),
+                    progress_unit="tokens",
+                    active_obligation_id=active_obligation_id,
+                    source="agent_gan_repl",
+                    hit_source="primary_hot",
+                    force=True,
                 )
                 covered_issues, missing_issues = generator_issue_coverage(
                     generator_text,
@@ -4204,12 +8849,66 @@ def main() -> int:
                     f"[allens] Critic Prefill: {len(critic_ids)} tokens...",
                     flush=True,
                 )
-                with PrefillHeartbeat("Critic", stats_provider=get_stats):
+                live_status.emit(
+                    phase="critic_prefill",
+                    role="critic",
+                    state="prefill",
+                    progress_current=0,
+                    progress_total=len(critic_ids),
+                    progress_unit="tokens",
+                    active_obligation_id=active_obligation_id,
+                    worker="allens",
+                    source="agent_gan_repl",
+                    force=True,
+                )
+                with PrefillHeartbeat(
+                    "Critic",
+                    stats_provider=get_stats,
+                    progress_callback=lambda current, total: live_status.emit(
+                        phase="critic_prefill",
+                        role="critic",
+                        state="prefill",
+                        progress_current=current,
+                        progress_total=total or len(critic_ids),
+                        progress_unit="tokens",
+                        active_obligation_id=active_obligation_id,
+                        worker="allens",
+                        source="agent_gan_repl",
+                    ),
+                ):
                     _, critic_warm = _infer(
                         client, eos_ids, critic_ids, 1, get_stats,
                         max_retained_tokens=args.max_retained_tokens,
                     )
-                critic_printer = TokenPrinter(tokenizer, "critic")
+                live_status.emit(
+                    phase="critic_decode",
+                    role="critic",
+                    state="decode",
+                    progress_current=0,
+                    progress_total=critic_output_cap,
+                    progress_unit="tokens",
+                    active_obligation_id=active_obligation_id,
+                    worker="primary",
+                    source="agent_gan_repl",
+                    hit_source="primary_hot",
+                    force=True,
+                )
+                critic_printer = TokenPrinter(
+                    tokenizer,
+                    "critic",
+                    progress_callback=lambda current: live_status.emit(
+                        phase="critic_decode",
+                        role="critic",
+                        state="decode",
+                        progress_current=current,
+                        progress_total=critic_output_cap,
+                        progress_unit="tokens",
+                        active_obligation_id=active_obligation_id,
+                        worker="primary",
+                        source="agent_gan_repl",
+                        hit_source="primary_hot",
+                    ),
+                )
                 critic_tokens, critic_actual = _infer(
                     client,
                     eos_ids,
@@ -4233,6 +8932,93 @@ def main() -> int:
                     critic_tokens,
                     critic_actual,
                 )
+                live_status.emit(
+                    phase="critic_complete",
+                    role="critic",
+                    state="review",
+                    progress_current=len(critic_tokens),
+                    progress_total=len(critic_tokens),
+                    progress_unit="tokens",
+                    active_obligation_id=active_obligation_id,
+                    source="agent_gan_repl",
+                    hit_source="primary_hot",
+                    force=True,
+                )
+                critic_stage = _stage(
+                    "critic",
+                    critic_warm,
+                    critic_actual,
+                    critic_text,
+                    extra_metrics={
+                        **context_metrics,
+                        "proof_ledger_id": (
+                            proof_ledger.ledger_id
+                            if proof_ledger is not None else ""
+                        ),
+                        "proof_obligations_total": len(turn_obligations),
+                        "proof_obligations_covered": len(covered_issues),
+                        "proof_obligations_unresolved": (
+                            len(pending_obligations(proof_ledger))
+                            if proof_ledger is not None else 0
+                        ),
+                    },
+                )
+                if not critic_stage["ok"] and not telemetry_state["degraded"]:
+                    raise _gate_failure("Critic", critic_warm, critic_actual)
+                orchestration_checkpoint = load_orchestration_checkpoint(
+                    orchestration_state_path,
+                )
+                if (
+                    orchestration_checkpoint is not None
+                    and orchestration_checkpoint.proof_state == ProofState.CRITIC
+                ):
+                    generator_output_sha256 = str(
+                        generator_stage.get("output_hash", ""),
+                    )
+                    critic_payload = critic_artifact_payload(
+                        critic_stage,
+                        source_run_id=run_id,
+                        target_obligation_id=(
+                            orchestration_checkpoint.target_obligation_id
+                        ),
+                        candidate_sha256=(
+                            orchestration_checkpoint.candidate_sha256
+                        ),
+                        strategy_sha256=(
+                            orchestration_checkpoint.strategy_sha256
+                        ),
+                        parent_statement_sha256=(
+                            orchestration_checkpoint.parent_statement_sha256
+                        ),
+                        parent_signature_sha256=(
+                            orchestration_checkpoint.parent_signature_sha256
+                        ),
+                        root_goal_sha256=(
+                            orchestration_checkpoint.root_goal_sha256
+                        ),
+                        ledger_id=orchestration_checkpoint.ledger_id,
+                        ledger_version=orchestration_checkpoint.ledger_version,
+                        generator_output_sha256=generator_output_sha256,
+                    )
+                    critic_ref = persist_validated_artifact(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                        role="critic",
+                        payload=critic_payload,
+                        dependencies=[
+                            orchestration_checkpoint.candidate_sha256,
+                            orchestration_checkpoint.parent_statement_sha256,
+                            orchestration_checkpoint.parent_signature_sha256,
+                            orchestration_checkpoint.root_goal_sha256,
+                            generator_output_sha256,
+                        ],
+                        source_run_id=run_id,
+                    )
+                    print(
+                        "[critic-artifact-validated] "
+                        f"sha256={critic_ref.sha256} run={run_id}",
+                        flush=True,
+                    )
                 applied_verdicts = {}
                 created_obligations = []
                 id_repairs = []
@@ -4302,22 +9088,68 @@ def main() -> int:
                             configured_prefill_tokens=args.max_prefill_tokens,
                             max_retained_tokens=args.max_retained_tokens,
                         )
-                        role_output_cap = downstream_output_cap(
+                        minimum_role_output = (
+                            structured_role_minimum_output_tokens(role_name)
+                        )
+                        unit_headroom = (
+                            FORMALIZER_UNIT_HEADROOM_TOKENS
+                            if str(role_name).startswith("formalizer_")
+                            and str(role_name).endswith("_signature")
+                            else 0
+                        )
+                        role_output_cap = structured_output_cap(
+                            role=role_name,
                             max_retained_tokens=args.max_retained_tokens,
-                            fixed_downstream_tokens=len(role_ids),
+                            retained_input_tokens=len(role_ids),
+                            minimum_output_tokens=minimum_role_output,
                             configured_output_tokens=(
                                 args.max_response_tokens or None
                             ),
-                            control_reserve_tokens=64,
+                            control_reserve_tokens=64 + unit_headroom,
+                        )
+                        print(
+                            "[structured-budget] "
+                            f"role={role_name} retained_input={len(role_ids)} "
+                            f"minimum_complete_schema={minimum_role_output} "
+                            f"output_cap={role_output_cap} "
+                            f"headroom={unit_headroom} "
+                            f"max_retained={args.max_retained_tokens}",
+                            flush=True,
                         )
                         print(
                             f"[allens] {role_name} Prefill: "
                             f"{len(role_ids)} tokens...",
                             flush=True,
                         )
+                        role_key = str(role_name).lower().replace(" ", "_")
+                        live_status.emit(
+                            phase=f"{role_key}_prefill",
+                            role=role_key,
+                            state="prefill",
+                            progress_current=0,
+                            progress_total=len(role_ids),
+                            progress_unit="tokens",
+                            active_obligation_id=active_obligation_id,
+                            worker="allens",
+                            source="agent_gan_repl",
+                            force=True,
+                        )
                         with PrefillHeartbeat(
                             role_name,
                             stats_provider=get_stats,
+                            progress_callback=lambda current, total: (
+                                live_status.emit(
+                                    phase=f"{role_key}_prefill",
+                                    role=role_key,
+                                    state="prefill",
+                                    progress_current=current,
+                                    progress_total=total or len(role_ids),
+                                    progress_unit="tokens",
+                                    active_obligation_id=active_obligation_id,
+                                    worker="allens",
+                                    source="agent_gan_repl",
+                                )
+                            ),
                         ):
                             _, role_warm = _infer(
                                 client,
@@ -4328,7 +9160,48 @@ def main() -> int:
                                 client_label=f"agent-gan-{role_name}-warm",
                                 max_retained_tokens=args.max_retained_tokens,
                             )
-                        role_printer = TokenPrinter(tokenizer, role_name)
+                        live_status.emit(
+                            phase=f"{role_key}_decode",
+                            role=role_key,
+                            state="decode",
+                            progress_current=0,
+                            progress_total=role_output_cap,
+                            progress_unit="tokens",
+                            active_obligation_id=active_obligation_id,
+                            worker="primary",
+                            source="agent_gan_repl",
+                            hit_source="primary_hot",
+                            force=True,
+                        )
+                        role_printer = TokenPrinter(
+                            tokenizer,
+                            role_name,
+                            progress_callback=lambda current: live_status.emit(
+                                phase=f"{role_key}_decode",
+                                role=role_key,
+                                state="decode",
+                                progress_current=current,
+                                progress_total=role_output_cap,
+                                progress_unit="tokens",
+                                active_obligation_id=active_obligation_id,
+                                worker="primary",
+                                source="agent_gan_repl",
+                                hit_source="primary_hot",
+                            ),
+                        )
+                        contract_role = _message_artifact_contract(
+                            messages,
+                            role_name,
+                        )
+                        semantic_complete = lambda generated: (
+                            _structured_transport_semantically_complete(
+                                tokenizer.decode(
+                                    generated,
+                                    skip_special_tokens=True,
+                                ),
+                                contract_role,
+                            )
+                        )
                         role_tokens, role_actual = _infer(
                             client,
                             eos_ids,
@@ -4343,16 +9216,24 @@ def main() -> int:
                                     skip_special_tokens=True,
                                 ).strip()
                             ),
+                            semantic_complete=semantic_complete,
                             client_label=f"agent-gan-{role_name}",
                             max_retained_tokens=args.max_retained_tokens,
                         )
                         role_printer.finish()
-                        role_text = decode_complete_response(
-                            tokenizer,
-                            role_name,
-                            role_tokens,
-                            role_actual,
-                        )
+                        try:
+                            role_text = decode_complete_response(
+                                tokenizer,
+                                role_name,
+                                role_tokens,
+                                role_actual,
+                            )
+                        except SemanticResponseIncomplete as exc:
+                            exc.partial_text = tokenizer.decode(
+                                role_tokens,
+                                skip_special_tokens=True,
+                            )
+                            raise
                         role_stage = _stage(
                             role_name,
                             role_warm,
@@ -4373,6 +9254,17 @@ def main() -> int:
                                 role_actual,
                             )
                         isolated_role_stages.append(role_stage)
+                        live_status.emit(
+                            phase=f"{role_key}_complete",
+                            role=role_key,
+                            state="review",
+                            progress_current=1,
+                            progress_total=1,
+                            progress_unit="role",
+                            active_obligation_id=active_obligation_id,
+                            source="agent_gan_repl",
+                            force=True,
+                        )
                         return (
                             role_text,
                             expected_run_id or (
@@ -4380,6 +9272,8 @@ def main() -> int:
                                 f"{next(iter(target_ids))}"
                             ),
                         )
+
+                    run_review_role._supports_split_formalizer = True
 
                     for current_suspicion in suspicions.values():
                         print(
@@ -4510,6 +9404,8 @@ def main() -> int:
                             run_review_role,
                             project_root=Path(__file__).resolve().parents[1],
                             orchestration_id=orchestration_id,
+                            checkpoint_path=orchestration_state_path,
+                            candidate_sha256=orchestration_candidate_sha256,
                         )
                         created_obligations = persist_verified_decomposition(
                             proof_ledger,
@@ -4524,7 +9420,8 @@ def main() -> int:
                             + ".json"
                         )
                         manifest_payload = {
-                            "schema_version": 1,
+                            "schema_version": 2,
+                            "decomposition_contract": "single_child_v2",
                             "orchestration_id": orchestration_id,
                             "target_obligation_id": decomposition_target,
                             "verified": certificate.verified,
@@ -4610,29 +9507,16 @@ def main() -> int:
                         f"unresolved={len(pending_obligations(proof_ledger))}",
                         flush=True,
                     )
-                critic_stage = _stage(
-                    "critic",
-                    critic_warm,
-                    critic_actual,
-                    critic_text,
-                    extra_metrics={
-                        **context_metrics,
-                        "proof_ledger_id": (
-                            proof_ledger.ledger_id
-                            if proof_ledger is not None else ""
-                        ),
-                        "proof_obligations_total": len(turn_obligations),
-                        "proof_obligations_covered": len(covered_issues),
-                        "proof_obligations_unresolved": (
-                            len(pending_obligations(proof_ledger))
-                            if proof_ledger is not None else 0
-                        ),
-                    },
-                )
-                if not critic_stage["ok"] and not telemetry_state["degraded"]:
-                    raise _gate_failure("Critic", critic_warm, critic_actual)
                 previous_generator = generator_text
                 previous_critic = critic_text
+                live_status.emit(
+                    phase="host_validation",
+                    role="host_validation",
+                    state="review",
+                    active_obligation_id=active_obligation_id,
+                    source="agent_gan_repl",
+                    force=True,
+                )
                 completed = None
                 if remote_run:
                     completed = _telemetry_request(
@@ -4672,6 +9556,17 @@ def main() -> int:
                     f"run={run_id}",
                     flush=True,
                 )
+                live_status.emit(
+                    phase="proof_turn_completed",
+                    role="orchestrator",
+                    state="completed",
+                    progress_current=1,
+                    progress_total=1,
+                    progress_unit="turn",
+                    active_obligation_id=active_obligation_id,
+                    source="agent_gan_repl",
+                    force=True,
+                )
                 save_checkpoint(
                     state_path,
                     ReplCheckpoint(
@@ -4683,6 +9578,51 @@ def main() -> int:
                 )
                 if proof_ledger is not None and turn_obligations:
                     save_proof_ledger(proof_ledger_path, proof_ledger)
+                    orchestration_checkpoint = (
+                        load_orchestration_checkpoint(
+                            orchestration_state_path,
+                        )
+                    )
+                    if (
+                        orchestration_checkpoint is not None
+                        and orchestration_checkpoint.proof_state
+                        == ProofState.COMMIT
+                    ):
+                        orchestration_checkpoint.committed = True
+                        orchestration_checkpoint.commit_key = (
+                            orchestration_checkpoint.orchestration_id
+                        )
+                        orchestration_checkpoint.ledger_version = (
+                            proof_ledger.version
+                        )
+                        orchestration_checkpoint.transition(
+                            ProofState.IDLE,
+                            "ledger-and-turn-checkpoint-committed",
+                            source_run_id=run_id,
+                            strategy_reused=True,
+                        )
+                        save_orchestration_checkpoint(
+                            orchestration_state_path,
+                            orchestration_checkpoint,
+                        )
+                    elif (
+                        orchestration_checkpoint is not None
+                        and orchestration_checkpoint.proof_state
+                        == ProofState.CRITIC
+                    ):
+                        orchestration_checkpoint.transition(
+                            ProofState.IDLE,
+                            "turn-committed-without-certified-child",
+                            source_run_id=run_id,
+                            strategy_reused=True,
+                        )
+                        orchestration_checkpoint.ledger_version = (
+                            proof_ledger.version
+                        )
+                        save_orchestration_checkpoint(
+                            orchestration_state_path,
+                            orchestration_checkpoint,
+                        )
                     for item in proof_ledger.obligations:
                         if item.obligation_id not in applied_verdicts:
                             continue
@@ -4721,6 +9661,50 @@ def main() -> int:
                         flush=True,
                     )
             except Exception as exc:
+                orchestration_checkpoint = load_orchestration_checkpoint(
+                    orchestration_state_path,
+                )
+                if (
+                    isinstance(exc, ResumeValidationError)
+                    and orchestration_checkpoint is not None
+                ):
+                    orchestration_checkpoint.state = exc.route_state
+                    orchestration_checkpoint.current_role = (
+                        exc.route_state.lower()
+                    )
+                    orchestration_checkpoint.resume_origin = (
+                        orchestration_checkpoint.state
+                    )
+                    orchestration_checkpoint.last_transition_reason = (
+                        f"resume-validation-failed:{exc}"
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                if (
+                    orchestration_checkpoint is not None
+                    and not isinstance(exc, ResumeValidationError)
+                    and orchestration_checkpoint.proof_state
+                    in {ProofState.GENERATOR, ProofState.CRITIC}
+                ):
+                    orchestration_checkpoint.retry(
+                        orchestration_checkpoint.proof_state,
+                        f"{type(exc).__name__}: {exc}",
+                        2,
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                live_status.emit(
+                    phase="proof_turn_failed",
+                    role="orchestrator",
+                    state="failed",
+                    active_obligation_id=active_obligation_id,
+                    source="agent_gan_repl",
+                    force=True,
+                )
                 if remote_run:
                     _telemetry_request(
                         f"{args.dashboard}/v1/network/benchmarks/{run_id}",
@@ -4741,6 +9725,14 @@ def main() -> int:
                     "preserved. Use /continue after remediation.",
                     flush=True,
                 )
+    live_status.emit(
+        phase="orchestrator_exit",
+        role="orchestrator",
+        state="idle",
+        active_obligation_id=active_obligation_id,
+        source="agent_gan_repl",
+        force=True,
+    )
     transcript.log_only("[session-end]")
     return 0
 
