@@ -1327,7 +1327,7 @@ Missing lemma: none
         project_root=tmp_path,
     )
     assert not rejected.ok
-    assert rejected.status == "UNSAFE_REJECTED"
+    assert rejected.status == "CONTRACT_FAILED"
 
 
 def test_complete_minimal_lean_reduction_proof_is_accepted():
