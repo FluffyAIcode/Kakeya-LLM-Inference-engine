@@ -132,13 +132,18 @@ class NetworkState:
         stages: list[dict[str, Any]] | None = None,
         status: str | None = None,
         finished_at: float | None = None,
+        provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if status not in (None, "running", "completed", "failed"):
             raise ValueError("invalid benchmark status")
+        if provenance is not None:
+            assert_public_safe(provenance)
         with self._lock:
             run = self._benchmark_locked(run_id)
             if stages:
                 run["stages"].extend(normalize_stage(stage) for stage in stages)
+            if provenance is not None:
+                run["provenance"] = dict(provenance)
             if status is not None:
                 run["status"] = status
             if finished_at is not None:

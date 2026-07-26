@@ -10,6 +10,34 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
 # This script is the canonical local CI subset. GitHub Actions invokes this
 # exact file, then adds Docker, package, proto, TypeScript, and Mac integration
 # jobs around it.
+"$PYTHON" -m py_compile \
+  autoresearch/prefill/architecture_v7.py \
+  autoresearch/prefill/atomic_definition.py \
+  autoresearch/prefill/creative_decomposition.py \
+  autoresearch/prefill/definition_registry.py \
+  autoresearch/prefill/definition_resolution.py \
+  autoresearch/prefill/evidence_planner.py \
+  autoresearch/prefill/host_compiler.py \
+  autoresearch/prefill/lean_gate.py \
+  autoresearch/prefill/live_status.py \
+  autoresearch/prefill/math_ir.py \
+  autoresearch/prefill/orchestration_state.py \
+  autoresearch/prefill/research_contract.py \
+  autoresearch/prefill/semantic_decompose.py \
+  autoresearch/prefill/stepwise_proof.py \
+  autoresearch/prefill/strategy_tournament.py \
+  autoresearch/prefill/supervisor.py \
+  autoresearch/prefill/theorem_cards.py \
+  autoresearch/prefill/typed_transport.py \
+  scripts/agent_gan_inference_demo.py \
+  scripts/agent_gan_repl.py \
+  scripts/check_typed_role_contracts.py
+
+"$PYTHON" scripts/check_typed_role_contracts.py
+node --check deploy/cloudflare-worker/src/index.js
+node --check deploy/cloudflare-worker/src/page.js
+node --test deploy/cloudflare-worker/test_execution_state.mjs
+
 lake build
 
 "$PYTHON" -m coverage erase

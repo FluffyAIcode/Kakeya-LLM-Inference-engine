@@ -50,6 +50,7 @@ class BenchmarkUpdateRequest(BaseModel):
     stages: list[dict] = Field(default_factory=list)
     status: Optional[str] = None
     finished_at: Optional[float] = None
+    provenance: Optional[dict] = None
 
 
 def create_network_app(
