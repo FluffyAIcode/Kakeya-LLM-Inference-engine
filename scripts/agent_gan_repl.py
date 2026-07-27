@@ -344,6 +344,10 @@ class ProofObligation:
     dependency_ids: list[str] = field(default_factory=list)
     certificate_reversible_status: str = ""
     public_assumptions: list[str] = field(default_factory=list)
+    source_card_ids: list[str] = field(default_factory=list)
+    root_candidate_ids: list[str] = field(default_factory=list)
+    proposition_hash: str = ""
+    root_bootstrap_certificate_hash: str = ""
 
 
 @dataclass

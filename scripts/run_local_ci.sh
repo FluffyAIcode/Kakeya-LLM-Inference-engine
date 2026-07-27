@@ -27,6 +27,7 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
   autoresearch/prefill/oprover_advisor.py \
   autoresearch/prefill/orchestration_state.py \
   autoresearch/prefill/research_contract.py \
+  autoresearch/prefill/root_bootstrap.py \
   autoresearch/prefill/semantic_decompose.py \
   autoresearch/prefill/stepwise_proof.py \
   autoresearch/prefill/strategy_tournament.py \
@@ -37,6 +38,7 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
   scripts/agent_gan_inference_demo.py \
   scripts/agent_gan_repl.py \
   scripts/check_typed_role_contracts.py \
+  scripts/bootstrap_riemann_hypothesis_root.py \
   scripts/migrate_cursor_strategy_oprover_advisor_v1.py \
   scripts/migrate_definition_auditor_routing_provenance_v1.py \
   scripts/oprover_production_preflight.py \

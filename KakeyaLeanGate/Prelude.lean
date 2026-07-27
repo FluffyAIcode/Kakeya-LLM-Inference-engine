@@ -4,6 +4,7 @@ import Mathlib.Analysis.Complex.JensenFormula
 import Mathlib.Analysis.Complex.LocallyUniformLimit
 import Mathlib.Analysis.Complex.Order
 import Mathlib.Analysis.Analytic.Uniqueness
+import Mathlib.NumberTheory.LSeries.RiemannZeta
 
 /-!
 Minimal import target for AutoResearch theorem-signature validation.
