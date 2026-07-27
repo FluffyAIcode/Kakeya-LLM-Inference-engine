@@ -1472,6 +1472,33 @@ def test_host_candidate_rolls_back_to_nearest_valid_ancestor():
     assert candidate["target_obligation_id"] == "RH-C2-gap"
 
 
+def test_host_resume_candidate_uses_bound_root_not_quarantined_child():
+    current = {**_candidate(), "target_obligation_id": "RH-C1"}
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C0-root",
+            "statement": "RiemannHypothesis",
+            "status": "UNRESOLVED",
+            "formal_status": "FORMALIZED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "RH-C1",
+            "statement": "Stale quarantined child.",
+            "status": "QUARANTINED",
+            "parent_id": "RH-C0-root",
+        },
+    ]}
+    candidate = build_host_candidate(
+        current,
+        ledger,
+        target_id="RH-C0-root",
+    )
+    assert candidate["target_obligation_id"] == "RH-C0-root"
+    assert candidate["hypothesis"] == "RiemannHypothesis"
+    assert "RH-C1" not in candidate["generator_directive"]
+
+
 def test_host_candidate_uses_recorded_premise_backjump_target():
     current = {**_candidate(), "target_obligation_id": "ROOT-bad"}
     ledger = {

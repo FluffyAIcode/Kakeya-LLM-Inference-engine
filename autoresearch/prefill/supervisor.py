@@ -2415,14 +2415,19 @@ def run_iteration(args, iteration: int) -> dict:
             )
         elif resume_downstream:
             strategy_mode = "resumed"
-            proposed = current
+            proposed = build_host_candidate(
+                current,
+                ledger_data,
+                target_id=orchestration_checkpoint.target_obligation_id,
+            )
             hypothesis_sha256 = hashlib.sha256(
-                current["hypothesis"].strip().lower().encode(),
+                proposed["hypothesis"].strip().lower().encode(),
             ).hexdigest()
             print(
                 "[autoresearch] phase=orchestration-resume "
                 f"state={orchestration_checkpoint.state} "
                 f"role={orchestration_checkpoint.current_role} "
+                f"target={proposed['target_obligation_id']} "
                 f"origin={orchestration_checkpoint.resume_origin or 'checkpoint'} "
                 "strategy_reused=true",
                 flush=True,
