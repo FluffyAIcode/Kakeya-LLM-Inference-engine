@@ -39,6 +39,23 @@ class ResidencyState:
     updated_at: float = 0.0
     error_code: str = ""
     journal_sequence: int = 0
+    owner_generation: int = 0
+    gemma_executable: str = ""
+    gemma_model_id: str = ""
+    gemma_model_revision: str = ""
+    gemma_start_token: str = ""
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """Non-secret process identity returned by a trusted host inspector."""
+
+    pid: int
+    executable: str
+    model_id: str
+    model_revision: str
+    start_token: str
+    runtime_healthy: bool
 
 
 class ProcessManager(Protocol):
@@ -51,6 +68,7 @@ class ProcessManager(Protocol):
     def restore_gemma(self) -> int: ...
     def gemma_healthy(self) -> bool: ...
     def allens_healthy(self) -> bool: ...
+    def gemma_identity(self) -> ProcessIdentity | None: ...
 
 
 class ResidencyError(RuntimeError):
@@ -69,6 +87,9 @@ class ModelResidencyScheduler:
         tokenizer_id: str,
         gemma_cache_namespace: str,
         oprover_cache_namespace: str,
+        gemma_executable: str = "",
+        gemma_model_id: str = "",
+        gemma_model_revision: str = "",
     ) -> None:
         if not model_revision or not tokenizer_id:
             raise ValueError("OProver revision and tokenizer ID must be pinned")
@@ -84,6 +105,9 @@ class ModelResidencyScheduler:
         self.tokenizer_id = tokenizer_id
         self.gemma_cache_namespace = gemma_cache_namespace
         self.oprover_cache_namespace = oprover_cache_namespace
+        self.gemma_executable = gemma_executable
+        self.gemma_model_id = gemma_model_id
+        self.gemma_model_revision = gemma_model_revision
 
     def run_exclusive(self, advise: Callable[[], object]) -> object:
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -139,6 +163,20 @@ class ModelResidencyScheduler:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             return state
 
+    def reconcile_gemma_owner(self) -> ResidencyState:
+        """Atomically repair stale metadata only after full identity validation."""
+        self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            os.chmod(self.lock_path, 0o600)
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ResidencyError("RESIDENCY_LOCK_HELD") from exc
+            state = self._load()
+            self._reconcile_serving_owner(state)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            return state
+
     def _restore(self, state: ResidencyState) -> None:
         try:
             if self.pm.oprover_is_resident():
@@ -181,11 +219,65 @@ class ModelResidencyScheduler:
         if phase is ResidencyPhase.GEMMA_SERVING:
             if self.pm.oprover_is_resident():
                 raise ResidencyError("STALE_OPROVER_PROCESS_REQUIRES_OWNED_PID")
+            self._reconcile_serving_owner(state)
             state.owner_pid = 0
             state.oprover_pid = 0
             self._save(state)
             return
         self._restore(state)
+
+    def _reconcile_serving_owner(self, state: ResidencyState) -> None:
+        inspector = getattr(self.pm, "gemma_identity", None)
+        if inspector is None:
+            if state.gemma_pid > 0 and not self.pm.gemma_is_resident():
+                raise ResidencyError("GEMMA_OWNER_IDENTITY_INSPECTOR_REQUIRED")
+            return
+        identity = inspector()
+        if identity is None:
+            if state.gemma_pid > 0 or self.pm.gemma_is_resident():
+                raise ResidencyError("GEMMA_OWNER_LIVE_IDENTITY_REQUIRED")
+            return
+        if identity.pid <= 0 or not identity.runtime_healthy:
+            raise ResidencyError("GEMMA_OWNER_RUNTIME_UNHEALTHY")
+        expected = {
+            "executable": self.gemma_executable or state.gemma_executable,
+            "model_id": self.gemma_model_id or state.gemma_model_id,
+            "model_revision": (
+                self.gemma_model_revision or state.gemma_model_revision
+            ),
+        }
+        actual = {
+            "executable": identity.executable,
+            "model_id": identity.model_id,
+            "model_revision": identity.model_revision,
+        }
+        if any(not value for value in (*actual.values(), identity.start_token)):
+            raise ResidencyError("GEMMA_OWNER_IDENTITY_INCOMPLETE")
+        if any(expected[name] and expected[name] != actual[name] for name in expected):
+            raise ResidencyError("GEMMA_OWNER_IDENTITY_MISMATCH")
+        if (
+            state.gemma_pid == identity.pid
+            and state.gemma_start_token
+            and state.gemma_start_token != identity.start_token
+        ):
+            raise ResidencyError("GEMMA_OWNER_PID_REUSE_REJECTED")
+        changed = (
+            state.gemma_pid != identity.pid
+            or state.gemma_start_token != identity.start_token
+            or state.gemma_executable != identity.executable
+            or state.gemma_model_id != identity.model_id
+            or state.gemma_model_revision != identity.model_revision
+        )
+        if changed:
+            state.gemma_pid = identity.pid
+            state.gemma_executable = identity.executable
+            state.gemma_model_id = identity.model_id
+            state.gemma_model_revision = identity.model_revision
+            state.gemma_start_token = identity.start_token
+            state.owner_generation += 1
+            state.journal_sequence += 1
+            state.updated_at = time.time()
+            self._save(state)
 
     def _transition(
         self,

@@ -12,6 +12,11 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Iterable, Mapping
 
+from autoresearch.prefill.cursor_strategy import (
+    STRATEGY_INTENT_UNMAPPABLE,
+    StrategyIntent,
+)
+
 
 TOURNAMENT_VERSION = 2
 MIGRATION_EVENT = "strategy_tournament_stepwise_generator_v1"
@@ -38,6 +43,7 @@ class PlanClass(str, Enum):
     REFRAME_DEFINITIONS_OR_REPRESENTATION = (
         "REFRAME_DEFINITIONS_OR_REPRESENTATION"
     )
+    DEFINITION_RESOLUTION_PLAN = "DEFINITION_RESOLUTION_PLAN"
 
 
 class FeasibilityReason(str, Enum):
@@ -285,6 +291,248 @@ def build_host_plans(
     return tuple(plans)
 
 
+def build_definition_resolution_plan(
+    *,
+    target_ref: str,
+    parent_obligation_ref: str,
+    parent_complexity: int,
+    environment_hash: str,
+    registered_definition_ids: Iterable[str],
+    unresolved_definition_ids: Iterable[str],
+    definition_gap_ids: Iterable[str],
+    definition_auditor_hash: str,
+    dependency_ids: Iterable[str],
+    evidence_refs: Iterable[str],
+) -> StrategyPlan:
+    """Build an executable precontract plan without inventing a theorem."""
+    gaps = tuple(sorted(set(map(str, definition_gap_ids))))
+    unresolved = tuple(sorted(set(map(str, unresolved_definition_ids))))
+    if not gaps:
+        gaps = tuple(f"GAP_DEFINITION:{item}" for item in unresolved)
+    if not gaps:
+        gaps = ("GAP_ELABORATED_TARGET_REQUIRED",)
+    if not target_ref or not environment_hash or not definition_auditor_hash:
+        raise ValueError("DEFINITION_RESOLUTION_PLAN_EVIDENCE_INCOMPLETE")
+    dependencies = tuple(sorted(set(map(str, dependency_ids))))
+    evidence = tuple(sorted(set(map(str, evidence_refs))))
+    canonical = {
+        "version": TOURNAMENT_VERSION,
+        "plan_kind": PlanClass.DEFINITION_RESOLUTION_PLAN.value,
+        "target_ref": target_ref,
+        "parent_obligation_ref": parent_obligation_ref,
+        "environment_hash": environment_hash,
+        "registered_definition_ids": tuple(sorted(set(map(
+            str, registered_definition_ids,
+        )))),
+        "unresolved_definition_ids": unresolved,
+        "definition_gap_ids": gaps,
+        "definition_auditor_hash": definition_auditor_hash,
+        "dependency_ids": dependencies,
+        "evidence_refs": evidence,
+        "success_criterion_id": "SUCCESS_ELABORATED_TARGET_AND_CONTRACT",
+        "abandonment_criterion_id": "ABANDON_EXHAUSTED_DEFINITION_SOURCES",
+        "next_gate": "RESEARCH_CONTRACT_GATE",
+        "proof_search_allowed": False,
+    }
+    content_hash = _digest(canonical)
+    return StrategyPlan(
+        plan_id="DRP-" + content_hash[:20],
+        plan_class=PlanClass.DEFINITION_RESOLUTION_PLAN.value,
+        target_ref=target_ref,
+        required_definition_ids=tuple(sorted(set(map(
+            str, registered_definition_ids,
+        )))),
+        theorem_card_ids=(),
+        dependency_ids=dependencies,
+        lemma_graph=(LemmaNode(
+            "DR-" + content_hash[:12],
+            dependencies,
+            target_ref,
+            max(0, int(parent_complexity) - 1),
+        ),),
+        falsification_test_id="VERIFY_DEFINITION_GAPS_CLOSE",
+        success_criterion_id="SUCCESS_ELABORATED_TARGET_AND_CONTRACT",
+        abandonment_criterion_id="ABANDON_EXHAUSTED_DEFINITION_SOURCES",
+        expected_information_gain=5,
+        assumption_ids=(),
+        restriction_ids=("NO_PROOF_SEARCH", "NO_OPROVER"),
+        parent_obligation_ref=parent_obligation_ref,
+        parent_complexity=int(parent_complexity),
+        target_complexity=max(0, int(parent_complexity) - 1),
+        risk=1,
+        source_move_id="MOVE_DEFINITION_RESOLUTION",
+        environment_hash=environment_hash,
+        evidence_refs=evidence,
+        unresolved_definition_ids=unresolved,
+        definition_gap_ids=gaps,
+        definition_auditor_hash=definition_auditor_hash,
+        proposition_transformation_ref="",
+        case_partition_ids=(),
+        execution_status=PlanExecutionStatus.EXECUTABLE.value,
+        content_hash=content_hash,
+    )
+
+
+def compile_strategy_intent(
+    intent: StrategyIntent,
+    *,
+    target_ref: str,
+    parent_obligation_ref: str,
+    parent_complexity: int,
+    environment_hash: str,
+    registered_definition_ids: Iterable[str],
+    unresolved_definition_ids: Iterable[str],
+    registered_gap_ids: Iterable[str],
+    theorem_cards_by_tag: Mapping[str, Iterable[str]],
+    registered_evidence_refs: Iterable[str],
+    dependency_ids: Iterable[str],
+    definition_auditor_hash: str,
+    elaborated_theorem_id: str = "",
+    proposition_hash: str = "",
+) -> tuple[StrategyPlan, ...]:
+    """Compile registered intent IDs into one content-addressed Host plan."""
+    gaps = set(map(str, registered_gap_ids))
+    evidence = set(map(str, registered_evidence_refs))
+    missing: list[str] = []
+    if intent.target_ref != target_ref:
+        missing.append(f"target_ref:{intent.target_ref}")
+    missing.extend(f"gap_ref:{item}" for item in intent.gap_refs if item not in gaps)
+    missing.extend(
+        f"evidence_ref:{item}" for item in intent.evidence_refs
+        if item not in evidence
+    )
+    unknown_tags = [
+        item for item in intent.theorem_tags
+        if item not in theorem_cards_by_tag
+    ]
+    missing.extend(f"theorem_tag:{item}" for item in unknown_tags)
+    expected_ids = {
+        "falsification": f"FALSIFY_{intent.plan_class}",
+        "success": f"SUCCESS_{intent.plan_class}",
+        "abandonment": f"ABANDON_{intent.plan_class}",
+    }
+    if intent.falsification_criterion_id != expected_ids["falsification"]:
+        missing.append(
+            f"falsification_criterion_id:{intent.falsification_criterion_id}"
+        )
+    if intent.success_criterion_id != expected_ids["success"]:
+        missing.append(f"success_criterion_id:{intent.success_criterion_id}")
+    if intent.abandonment_criterion_id != expected_ids["abandonment"]:
+        missing.append(
+            f"abandonment_criterion_id:{intent.abandonment_criterion_id}"
+        )
+    expected_moves = {
+        PlanClass.DIRECT_PROOF.value: "MOVE_DIRECT",
+        PlanClass.DISPROOF_OR_COUNTEREXAMPLE.value: "MOVE_FALSIFY",
+        PlanClass.REDUCTION_TO_KNOWN_RESULT.value: "MOVE_REDUCE",
+        PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value: "MOVE_REFRAME",
+    }
+    if expected_moves.get(intent.plan_class) != intent.move_family:
+        missing.append(f"move_family:{intent.move_family}")
+    if missing:
+        raise ValueError(
+            f"{STRATEGY_INTENT_UNMAPPABLE}:MISSING_REGISTRY_GAP_EVIDENCE:"
+            + ",".join(sorted(missing))
+        )
+
+    card_ids = tuple(sorted({
+        str(card_id)
+        for tag in intent.theorem_tags
+        for card_id in theorem_cards_by_tag[tag]
+    }))
+    dependencies = tuple(sorted(set(map(str, dependency_ids))))
+    definitions = tuple(sorted(set(map(str, registered_definition_ids))))
+    unresolved = tuple(sorted(set(map(str, unresolved_definition_ids))))
+    target_complexity = max(0, int(parent_complexity) - 1)
+    execution_status = (
+        PlanExecutionStatus.EXECUTABLE.value
+        if elaborated_theorem_id and proposition_hash
+        else PlanExecutionStatus.PLANNING_ONLY.value
+    )
+    transformation_ref = (
+        "typed-reframe:" + proposition_hash
+        if intent.plan_class
+        == PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value
+        and execution_status == PlanExecutionStatus.EXECUTABLE.value
+        else ""
+    )
+    case_partitions = (
+        (f"case:{proposition_hash[:20]}",) if transformation_ref else ()
+    )
+    canonical = {
+        "version": TOURNAMENT_VERSION,
+        "intent_hash": intent.intent_hash,
+        "plan_class": intent.plan_class,
+        "target_ref": target_ref,
+        "required_definition_ids": definitions,
+        "unresolved_definition_ids": unresolved,
+        "definition_gap_ids": tuple(intent.gap_refs),
+        "definition_auditor_hash": definition_auditor_hash,
+        "theorem_card_ids": card_ids,
+        "dependency_ids": dependencies,
+        "falsification_criterion_id": intent.falsification_criterion_id,
+        "success_criterion_id": intent.success_criterion_id,
+        "abandonment_criterion_id": intent.abandonment_criterion_id,
+        "parent_obligation_ref": parent_obligation_ref,
+        "parent_complexity": int(parent_complexity),
+        "target_complexity": target_complexity,
+        "source_move_id": intent.move_family,
+        "environment_hash": environment_hash,
+        "evidence_refs": tuple(intent.evidence_refs),
+        "proposition_transformation_ref": transformation_ref,
+        "case_partition_ids": case_partitions,
+        "execution_status": execution_status,
+    }
+    content_hash = _digest(canonical)
+    gain_by_class = {
+        PlanClass.DIRECT_PROOF.value: 3,
+        PlanClass.DISPROOF_OR_COUNTEREXAMPLE.value: 5,
+        PlanClass.REDUCTION_TO_KNOWN_RESULT.value: 4,
+        PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value: 5,
+    }
+    risk_by_class = {
+        PlanClass.DIRECT_PROOF.value: 2,
+        PlanClass.DISPROOF_OR_COUNTEREXAMPLE.value: 2,
+        PlanClass.REDUCTION_TO_KNOWN_RESULT.value: 3,
+        PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value: 1,
+    }
+    if intent.plan_class not in gain_by_class:
+        raise ValueError(
+            f"{STRATEGY_INTENT_UNMAPPABLE}:PLAN_CLASS:{intent.plan_class}"
+        )
+    return (StrategyPlan(
+        plan_id="SP-" + content_hash[:20],
+        plan_class=intent.plan_class,
+        target_ref=target_ref,
+        required_definition_ids=definitions,
+        theorem_card_ids=card_ids,
+        dependency_ids=dependencies,
+        lemma_graph=(LemmaNode(
+            "L-" + content_hash[:12], dependencies, target_ref, target_complexity,
+        ),),
+        falsification_test_id=intent.falsification_criterion_id,
+        success_criterion_id=intent.success_criterion_id,
+        abandonment_criterion_id=intent.abandonment_criterion_id,
+        expected_information_gain=gain_by_class[intent.plan_class],
+        assumption_ids=(),
+        restriction_ids=(),
+        parent_obligation_ref=parent_obligation_ref,
+        parent_complexity=int(parent_complexity),
+        target_complexity=target_complexity,
+        risk=risk_by_class[intent.plan_class],
+        source_move_id=intent.move_family,
+        environment_hash=environment_hash,
+        evidence_refs=tuple(intent.evidence_refs),
+        unresolved_definition_ids=unresolved,
+        definition_gap_ids=tuple(intent.gap_refs),
+        definition_auditor_hash=definition_auditor_hash,
+        proposition_transformation_ref=transformation_ref,
+        case_partition_ids=case_partitions,
+        execution_status=execution_status,
+        content_hash=content_hash,
+    ),)
+
+
 def evaluate_feasibility(
     plans: Iterable[StrategyPlan],
     *,
@@ -390,8 +638,8 @@ def run_tournament(
 ) -> TournamentResult:
     plans = tuple(plans)
     decisions = tuple(decisions)
-    if {plan.plan_class for plan in plans} != {item.value for item in PlanClass}:
-        raise ValueError("TOURNAMENT_REQUIRES_FOUR_INDEPENDENT_PLAN_CLASSES")
+    if not plans:
+        raise ValueError("TOURNAMENT_REQUIRES_AT_LEAST_ONE_TYPED_PLAN")
     feasible = tuple(item for item in decisions if item.feasible)
     frontier = tuple(sorted(
         item.plan_id for item in feasible

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Mapping
 
 from autoresearch.prefill.cursor_strategy import (
+    STRATEGY_INTENT_UNMAPPABLE,
+    STRATEGY_PROVIDER_UNAVAILABLE,
     CursorStrategyAdapter,
     StrategyProviderError,
     compile_memo_to_plan_id,
@@ -25,10 +28,16 @@ from autoresearch.prefill.orchestration_state import (
 from autoresearch.prefill.research_contract import gate_research_contract
 from autoresearch.prefill.strategy_tournament import (
     CriticReason,
+    PlanClass,
     StrategyEvent,
-    build_host_plans,
+    build_definition_resolution_plan,
+    compile_strategy_intent,
     evaluate_feasibility,
     run_tournament,
+)
+from autoresearch.prefill.target_context import (
+    activate_target_context,
+    update_active_context,
 )
 from autoresearch.prefill.theorem_cards import (
     build_theorem_card_index,
@@ -311,13 +320,39 @@ def run_architecture_v7_entry(
     elaborated_theorem_id: str = "",
     proposition_hash: str = "",
     strategy_adapter: CursorStrategyAdapter | None = None,
+    target_statement: str = "",
+    target_evidence: Mapping[str, object] | None = None,
 ) -> OrchestrationCheckpoint:
     """Run exactly once per strategy event; never once per outer iteration."""
     if checkpoint.proof_state != ProofState.STRATEGY_TOURNAMENT:
         return checkpoint
-    cards = build_theorem_card_index(project_root)
-    card_ids = tuple(card.card_id for card in cards)
+    target_statement = str(target_statement or checkpoint.target_statement).strip()
+    if not target_statement:
+        target_statement = f"Unelaborated proof obligation {target_ref}"
     environment_hash = pinned_environment_hash(project_root)
+    _context, context_changed = activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id=target_ref,
+        statement=target_statement,
+        environment_hash=environment_hash,
+        strategy_plan_hash="STRATEGY_PENDING",
+        evidence=dict(target_evidence or {}),
+    )
+    if context_changed:
+        save_checkpoint(checkpoint_path, checkpoint)
+    all_cards = build_theorem_card_index(project_root)
+    statement_words = {
+        word.lower().strip(".,'\"()[]{}")
+        for word in target_statement.split()
+        if len(word) >= 5
+    }
+    cards = tuple(card for card in all_cards if statement_words.intersection({
+        *card.applicability_tags,
+        *card.required_hypotheses,
+        *card.description.lower().split(),
+    }))
+    card_ids = tuple(card.card_id for card in cards)
     (
         definitions,
         unresolved_definitions,
@@ -330,65 +365,169 @@ def run_architecture_v7_entry(
         if role not in {"strategy", "generator", "critic"}
     )
     evidence_refs = (*dependencies, *checkpoint.advisory_artifacts)
-    plans = build_host_plans(
-        target_ref=target_ref,
-        parent_obligation_ref=parent_obligation_ref,
-        parent_complexity=max(5, int(parent_complexity)),
-        environment_hash=environment_hash,
-        registered_definition_ids=definitions,
-        theorem_card_ids=card_ids,
-        dependency_ids=dependencies,
-        evidence_refs=evidence_refs,
-        unresolved_definition_ids=unresolved_definitions,
-        definition_gap_ids=definition_gap_ids,
-        definition_auditor_hash=definition_auditor_hash,
-        elaborated_theorem_id=elaborated_theorem_id,
-        proposition_hash=proposition_hash,
+    if strategy_adapter is None:
+        checkpoint.strategy_run_status = "STRATEGY_PROVIDER_UNAVAILABLE"
+        checkpoint.adapter_blocked(
+            "STRATEGY_PROVIDER_UNAVAILABLE:CURSOR_REQUIRED",
+            status="INTEGRATION_BLOCKED",
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        return checkpoint
+    checkpoint.strategy_provider = "cursor-sdk"
+    checkpoint.strategy_provider_configured = strategy_adapter.configured()
+    checkpoint.strategy_model_id = strategy_adapter.model_id
+    if not checkpoint.strategy_provider_configured:
+        checkpoint.strategy_run_status = STRATEGY_PROVIDER_UNAVAILABLE
+        checkpoint.adapter_blocked(
+            f"{STRATEGY_PROVIDER_UNAVAILABLE}:CONFIGURATION_REQUIRED",
+            status="INTEGRATION_BLOCKED",
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        return checkpoint
+    evidence_ids = tuple(sorted({
+        *map(str, evidence_refs),
+        "EVIDENCE_TARGET_STATEMENT",
+    }))
+    theorem_tags = tuple(sorted({
+        tag for card in cards for tag in card.applicability_tags
+    }))
+    proof_plan_classes = tuple(
+        item for item in PlanClass
+        if item is not PlanClass.DEFINITION_RESOLUTION_PLAN
     )
-    advisory_plan_id = ""
-    if strategy_adapter is not None:
-        checkpoint.strategy_provider = "cursor-sdk"
-        checkpoint.strategy_provider_configured = strategy_adapter.configured()
-        checkpoint.strategy_model_id = strategy_adapter.model_id
-        try:
-            memo, telemetry = strategy_adapter.advise(
-                evidence={
-                    "event_id": event_id,
-                    "event_type": event_type.value,
-                    "target_ref": target_ref,
-                    "parent_obligation_ref": parent_obligation_ref,
-                    "elaborated_theorem_id": elaborated_theorem_id,
-                    "proposition_hash": proposition_hash,
-                    "definition_ids": definitions,
-                    "unresolved_definition_ids": unresolved_definitions,
-                    "theorem_card_ids": card_ids,
-                    "evidence_refs": evidence_refs,
+    criteria = {
+        "falsification_criterion_id": tuple(
+            f"FALSIFY_{item.value}" for item in proof_plan_classes
+        ),
+        "success_criterion_id": tuple(
+            f"SUCCESS_{item.value}" for item in proof_plan_classes
+        ),
+        "abandonment_criterion_id": tuple(
+            f"ABANDON_{item.value}" for item in proof_plan_classes
+        ),
+    }
+    try:
+        remediation_only = not elaborated_theorem_id or not proposition_hash
+        if remediation_only:
+            remediation = build_definition_resolution_plan(
+                target_ref=target_ref,
+                parent_obligation_ref=parent_obligation_ref,
+                parent_complexity=max(5, int(parent_complexity)),
+                environment_hash=environment_hash,
+                registered_definition_ids=definitions,
+                unresolved_definition_ids=unresolved_definitions,
+                definition_gap_ids=definition_gap_ids,
+                definition_auditor_hash=definition_auditor_hash,
+                dependency_ids=dependencies,
+                evidence_refs=evidence_ids,
+            )
+        memo, telemetry = strategy_adapter.advise(
+            evidence={
+                "event_id": event_id,
+                "event_type": event_type.value,
+                "target_ref": target_ref,
+                "target_statement": target_statement,
+                "parent_obligation_ref": parent_obligation_ref,
+                "elaborated_theorem_id": elaborated_theorem_id,
+                "proposition_hash": proposition_hash,
+                "definition_ids": definitions,
+                "unresolved_definition_ids": unresolved_definitions,
+                "gap_refs": definition_gap_ids,
+                "theorem_card_ids": card_ids,
+                "evidence_refs": evidence_ids,
+            },
+            registered_plan_ids=(
+                (remediation.plan_id,)
+                if remediation_only
+                else tuple(item.value for item in proof_plan_classes)
+            ),
+        )
+        if remediation_only:
+            selected_id = compile_memo_to_plan_id(memo, (remediation.plan_id,))
+            if selected_id != remediation.plan_id:
+                raise ValueError("REMEDIATION_PLAN_SELECTION_MISMATCH")
+            plans = (remediation,)
+            intent_hash = hashlib.sha256(json.dumps({
+                "selected_plan_id": selected_id,
+                "selected_plan_hash": remediation.content_hash,
+                "target_ref": target_ref,
+                "definition_auditor_hash": definition_auditor_hash,
+            }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            intent_run_id = telemetry.run_id
+        else:
+            intent = strategy_adapter.extract_intent(
+                memo,
+                registered_fields={
+                "plan_class": tuple(item.value for item in proof_plan_classes),
+                "target_ref": (target_ref,),
+                "gap_ref": tuple(definition_gap_ids),
+                "move_family": (
+                    "MOVE_DIRECT", "MOVE_FALSIFY", "MOVE_REDUCE",
+                    "MOVE_REFRAME", "MOVE_REGISTRY_EXPANSION",
+                ),
+                "theorem_tag": theorem_tags,
+                "evidence_ref": evidence_ids,
+                    **criteria,
                 },
-                registered_plan_ids=tuple(plan.plan_id for plan in plans),
             )
-            advisory_plan_id = compile_memo_to_plan_id(
-                memo, tuple(plan.plan_id for plan in plans),
-            )
-            checkpoint.strategy_run_status = telemetry.status
-            checkpoint.strategy_agent_id = telemetry.agent_id
-            checkpoint.strategy_run_id = telemetry.run_id
-            checkpoint.strategy_prompt_hash = telemetry.prompt_hash
-            checkpoint.strategy_evidence_hash = telemetry.evidence_hash
-            checkpoint.strategy_memo_hash = telemetry.memo_hash
-            checkpoint.strategy_latency_ms = telemetry.latency_ms
-            checkpoint.strategy_provider_configured = telemetry.configured
-            if checkpoint.adapter_status:
-                checkpoint.clear_adapter_blocked(
-                    "cursor-strategy-authenticated",
+            cards_by_tag = {
+                tag: tuple(
+                    card.card_id for card in cards
+                    if tag in card.applicability_tags
                 )
-        except StrategyProviderError as exc:
-            checkpoint.strategy_run_status = exc.code
-            checkpoint.adapter_blocked(
-                f"{exc.code}:{exc.classification}",
-                status="INTEGRATION_BLOCKED",
+                for tag in theorem_tags
+            }
+            plans = compile_strategy_intent(
+                intent,
+                target_ref=target_ref,
+                parent_obligation_ref=parent_obligation_ref,
+                parent_complexity=max(5, int(parent_complexity)),
+                environment_hash=environment_hash,
+                registered_definition_ids=definitions,
+                unresolved_definition_ids=unresolved_definitions,
+                registered_gap_ids=definition_gap_ids,
+                theorem_cards_by_tag=cards_by_tag,
+                registered_evidence_refs=evidence_ids,
+                dependency_ids=dependencies,
+                definition_auditor_hash=definition_auditor_hash,
+                elaborated_theorem_id=elaborated_theorem_id,
+                proposition_hash=proposition_hash,
             )
-            save_checkpoint(checkpoint_path, checkpoint)
-            return checkpoint
+            intent_hash = intent.intent_hash
+            intent_run_id = intent.provider_run_id
+        checkpoint.strategy_run_status = telemetry.status
+        checkpoint.strategy_agent_id = telemetry.agent_id
+        checkpoint.strategy_run_id = telemetry.run_id
+        checkpoint.strategy_prompt_hash = telemetry.prompt_hash
+        checkpoint.strategy_evidence_hash = telemetry.evidence_hash
+        checkpoint.strategy_memo_hash = telemetry.memo_hash
+        checkpoint.strategy_intent_hash = intent_hash
+        checkpoint.strategy_intent_run_id = intent_run_id
+        checkpoint.strategy_intent_status = "MAPPED"
+        checkpoint.strategy_latency_ms = telemetry.latency_ms
+        checkpoint.strategy_provider_configured = telemetry.configured
+        if checkpoint.adapter_status:
+            checkpoint.clear_adapter_blocked("cursor-strategy-intent-mapped")
+    except StrategyProviderError as exc:
+        checkpoint.strategy_run_status = exc.code
+        checkpoint.adapter_blocked(
+            f"{exc.code}:{exc.classification}",
+            status="INTEGRATION_BLOCKED",
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        return checkpoint
+    except ValueError as exc:
+        checkpoint.strategy_intent_status = STRATEGY_INTENT_UNMAPPABLE
+        checkpoint.strategy_run_status = STRATEGY_INTENT_UNMAPPABLE
+        checkpoint.current_definition_gap_id = "REGISTRY_EVIDENCE_EXPANSION"
+        checkpoint.stagnation_reason = str(exc)
+        checkpoint.transition(
+            ProofState.DEFINITION_RESOLUTION,
+            f"{STRATEGY_INTENT_UNMAPPABLE}:{exc}",
+            strategy_reused=False,
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        return checkpoint
     decisions = evaluate_feasibility(
         plans,
         registered_definition_ids=definitions,
@@ -397,12 +536,7 @@ def run_architecture_v7_entry(
         allowed_assumption_ids=(),
         no_go_hashes=tuple(checkpoint.invalidated_artifacts),
     )
-    critic_ranked_ids = tuple(plan.plan_id for plan in reversed(plans))
-    if advisory_plan_id:
-        critic_ranked_ids = (
-            advisory_plan_id,
-            *(item for item in critic_ranked_ids if item != advisory_plan_id),
-        )
+    critic_ranked_ids = tuple(plan.plan_id for plan in plans)
     tournament = run_tournament(
         event_id=event_id,
         event_type=event_type,
@@ -411,16 +545,49 @@ def run_architecture_v7_entry(
         critic_ranked_plan_ids=critic_ranked_ids,
         critic_reason_codes=(CriticReason.MAXIMIZES_INFORMATION_GAIN,),
     )
+    selected_plan = next(
+        (plan for plan in plans if plan.plan_id == tournament.selected_plan_id),
+        None,
+    )
+    selected_hash = selected_plan.content_hash if selected_plan else ""
+    activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id=target_ref,
+        statement=target_statement,
+        environment_hash=environment_hash,
+        strategy_plan_hash=selected_hash or "NO_FEASIBLE_PLAN",
+        evidence={
+            **dict(target_evidence or {}),
+            "EVIDENCE_TARGET_STATEMENT": target_statement,
+        },
+        gap_ids=definition_gap_ids,
+        definition_ids=definitions,
+        theorem_card_ids=card_ids,
+    )
     checkpoint.strategy_event_id = event_id
     checkpoint.strategy_event_type = event_type.value
     checkpoint.strategy_plan_ids = [plan.plan_id for plan in plans]
+    checkpoint.strategy_plan_hashes = [plan.content_hash for plan in plans]
     checkpoint.feasible_strategy_plan_ids = [
         item.plan_id for item in decisions if item.feasible
     ]
     checkpoint.pareto_plan_ids = list(tournament.pareto_plan_ids)
     checkpoint.selected_strategy_plan_id = tournament.selected_plan_id
+    checkpoint.selected_strategy_plan_hash = selected_hash
     checkpoint.strategy_tournament_hash = tournament.content_hash
     checkpoint.theorem_card_ids = list(card_ids)
+    checkpoint.target_gap_ids = list(definition_gap_ids)
+    checkpoint.strategy_selection_provenance = {
+        "provider": checkpoint.strategy_provider,
+        "provider_run_id": checkpoint.strategy_run_id,
+        "intent_run_id": checkpoint.strategy_intent_run_id,
+        "memo_hash": checkpoint.strategy_memo_hash,
+        "intent_hash": checkpoint.strategy_intent_hash,
+        "selected_plan_id": tournament.selected_plan_id,
+        "selected_plan_hash": selected_hash,
+        "target_context_hash": checkpoint.target_context_hash,
+    }
     persist_validated_artifact(
         checkpoint_path,
         checkpoint,
@@ -435,6 +602,8 @@ def run_architecture_v7_entry(
             "plans": [
                 {
                     "plan_id": plan.plan_id,
+                    "plan_kind": plan.plan_class,
+                    "target_ref": plan.target_ref,
                     "required_definition_ids": list(
                         plan.required_definition_ids
                     ),
@@ -448,6 +617,20 @@ def run_architecture_v7_entry(
                     ),
                     "case_partition_ids": list(plan.case_partition_ids),
                     "execution_status": plan.execution_status,
+                    "success_criterion_id": plan.success_criterion_id,
+                    "abandonment_criterion_id": (
+                        plan.abandonment_criterion_id
+                    ),
+                    "next_gate": (
+                        "RESEARCH_CONTRACT_GATE"
+                        if plan.plan_class
+                        == PlanClass.DEFINITION_RESOLUTION_PLAN.value
+                        else "PROOF_SEARCH"
+                    ),
+                    "proof_search_allowed": (
+                        plan.plan_class
+                        != PlanClass.DEFINITION_RESOLUTION_PLAN.value
+                    ),
                 }
                 for plan in plans
             ],
@@ -466,7 +649,21 @@ def run_architecture_v7_entry(
         },
         dependencies=list(dependencies),
         source_run_id=f"host:{event_id}",
+        save=False,
     )
+    update_active_context(
+        checkpoint_path,
+        checkpoint,
+        gap_ids=definition_gap_ids,
+        definition_ids=definitions,
+        theorem_card_ids=card_ids,
+        artifact_hashes=(
+            checkpoint.validated_artifacts["strategy_tournament"].sha256,
+        ),
+    )
+    # Memo metadata, constrained intent, compiled plans, feasibility, selection,
+    # and the reachable artifact pointer become visible in one checkpoint swap.
+    save_checkpoint(checkpoint_path, checkpoint)
     precontract_reasons = []
     if unresolved_definitions:
         precontract_reasons.append("MISSING_DEFINITION")
@@ -478,11 +675,25 @@ def run_architecture_v7_entry(
         checkpoint.research_contract_id = ""
         checkpoint.research_contract_hash = ""
         checkpoint.research_contract_rejection_codes = []
-        checkpoint.transition(
-            ProofState.DECOMPOSER,
-            "precontract-semantic-routing:" + ",".join(precontract_reasons),
-            strategy_reused=True,
-        )
+        if selected_plan and (
+            selected_plan.plan_class
+            == PlanClass.DEFINITION_RESOLUTION_PLAN.value
+        ):
+            checkpoint.current_definition_gap_id = (
+                selected_plan.definition_gap_ids[0]
+            )
+            checkpoint.transition(
+                ProofState.DEFINITION_RESOLUTION,
+                "typed-definition-resolution-plan:"
+                + ",".join(precontract_reasons),
+                strategy_reused=True,
+            )
+        else:
+            checkpoint.transition(
+                ProofState.DECOMPOSER,
+                "precontract-semantic-routing:" + ",".join(precontract_reasons),
+                strategy_reused=True,
+            )
         save_checkpoint(checkpoint_path, checkpoint)
         return checkpoint
     selected = next(

@@ -1738,8 +1738,13 @@ def candidate_novelty_rejections(
     return reasons, hypothesis_sha256, candidate_sha256
 
 
-def build_host_candidate(current: dict, ledger: dict) -> dict:
-    target_id = _select_repair_target(current, ledger)
+def build_host_candidate(
+    current: dict,
+    ledger: dict,
+    *,
+    target_id: str = "",
+) -> dict:
+    target_id = str(target_id or _select_repair_target(current, ledger))
     target = next(
         item
         for item in ledger.get("obligations", [])
@@ -2245,7 +2250,25 @@ def run_iteration(args, iteration: int) -> dict:
                 "typed-premise-"
                 + orchestration_checkpoint.premise_outcome_type.lower()
             )
-        if resume_downstream:
+        architecture9_strategy = bool(
+            orchestration_checkpoint is not None
+            and orchestration_checkpoint.architecture_version >= 9
+            and orchestration_checkpoint.proof_state
+            == ProofState.STRATEGY_TOURNAMENT
+        )
+        if architecture9_strategy:
+            strategy_mode = "cursor_strategy"
+            proposed = build_host_candidate(
+                current,
+                ledger_data,
+                target_id=orchestration_checkpoint.target_obligation_id,
+            )
+            print(
+                "[autoresearch] phase=strategy-proposal "
+                "mode=cursor_strategy fallback=disabled",
+                flush=True,
+            )
+        elif resume_downstream:
             strategy_mode = "resumed"
             proposed = current
             hypothesis_sha256 = hashlib.sha256(
@@ -2318,9 +2341,14 @@ def run_iteration(args, iteration: int) -> dict:
                 f"target={proposed['target_obligation_id']}",
                 flush=True,
             )
-        if resume_downstream:
+        if resume_downstream or architecture9_strategy:
             used_host_fallback = False
-            candidate_sha256 = hashlib.sha256(previous_candidate).hexdigest()
+            hypothesis_sha256 = hashlib.sha256(
+                proposed["hypothesis"].strip().lower().encode()
+            ).hexdigest()
+            candidate_sha256 = hashlib.sha256(
+                render_candidate(proposed).encode()
+            ).hexdigest()
         else:
             (
                 proposed,
@@ -2432,6 +2460,16 @@ def run_iteration(args, iteration: int) -> dict:
                     orchestration_checkpoint.elaborated_theorem_id
                 ),
                 proposition_hash=orchestration_checkpoint.proposition_hash,
+                target_statement=str(selected_parent.get("statement", "")),
+                target_evidence={
+                    "last_evidence": str(
+                        selected_parent.get("last_evidence", "")
+                    ),
+                    "formal_status": str(
+                        selected_parent.get("formal_status", "")
+                    ),
+                    "ledger_version": int(ledger_data.get("version", 0)),
+                },
             )
             if orchestration_checkpoint.adapter_status == "INTEGRATION_BLOCKED":
                 live_status.emit(
@@ -2455,37 +2493,41 @@ def run_iteration(args, iteration: int) -> dict:
                     "error": "",
                     "inference_started": False,
                 }
-            # Architecture 9 must never fall through into the legacy
-            # Generator/Critic GAN. Until the production residency process
-            # manager and converted model pass acceptance, stop honestly.
-            orchestration_checkpoint.adapter_blocked(
-                "PROOF_ADVISOR_UNAVAILABLE:"
-                "MODEL_PREPARATION_OR_RESIDENCY_ACCEPTANCE_REQUIRED",
-                status="INTEGRATION_BLOCKED",
-            )
-            save_orchestration_checkpoint(
-                orchestration_state_path,
-                orchestration_checkpoint,
-            )
-            live_status.emit(
-                phase="proof_advisor_unavailable",
-                role="oprover_advisor",
-                state="idle",
-                active_obligation_id=(
-                    orchestration_checkpoint.target_obligation_id
-                ),
-                source="proof_supervisor",
-                force=True,
-            )
-            return {
-                "iteration": iteration,
-                "research_outcome": "BLOCKED",
-                "orchestration_state": "INTEGRATION_BLOCKED",
-                "transition_reason": orchestration_checkpoint.blocked_reason,
-                "failure_class": "",
-                "error": "",
-                "inference_started": False,
-            }
+            if (
+                orchestration_checkpoint.proof_state == ProofState.PROOF_SEARCH
+                and orchestration_checkpoint.research_contract_id
+            ):
+                # OProver residency is permitted only behind an accepted,
+                # elaborated Research Contract. The downstream typed-role GAN
+                # remains available for definition/evidence expansion.
+                orchestration_checkpoint.adapter_blocked(
+                    "PROOF_ADVISOR_UNAVAILABLE:"
+                    "RESIDENCY_PROCESS_MANAGER_REQUIRED",
+                    status="INTEGRATION_BLOCKED",
+                )
+                save_orchestration_checkpoint(
+                    orchestration_state_path,
+                    orchestration_checkpoint,
+                )
+                live_status.emit(
+                    phase="proof_advisor_unavailable",
+                    role="oprover_advisor",
+                    state="idle",
+                    active_obligation_id=(
+                        orchestration_checkpoint.target_obligation_id
+                    ),
+                    source="proof_supervisor",
+                    force=True,
+                )
+                return {
+                    "iteration": iteration,
+                    "research_outcome": "BLOCKED",
+                    "orchestration_state": "INTEGRATION_BLOCKED",
+                    "transition_reason": orchestration_checkpoint.blocked_reason,
+                    "failure_class": "",
+                    "error": "",
+                    "inference_started": False,
+                }
         experiment_id = (
             f"ar_{int(time.time())}_{iteration}_"
             f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"

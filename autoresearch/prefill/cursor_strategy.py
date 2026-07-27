@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 STRATEGY_PROVIDER_UNAVAILABLE = "STRATEGY_PROVIDER_UNAVAILABLE"
 STRATEGY_RUN_FAILED = "STRATEGY_RUN_FAILED"
+STRATEGY_INTENT_UNMAPPABLE = "STRATEGY_INTENT_UNMAPPABLE"
 CURSOR_KEYCHAIN_SERVICE = "ai.kakeya.cursor-sdk"
 
 
@@ -51,6 +52,23 @@ class StrategyMemo:
     run_id: str
     prompt_hash: str
     evidence_hash: str
+
+
+@dataclass(frozen=True)
+class StrategyIntent:
+    """Constrained provider output. Every value is a Host-registered short ID."""
+
+    plan_class: str
+    target_ref: str
+    gap_refs: tuple[str, ...]
+    move_family: str
+    theorem_tags: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    falsification_criterion_id: str
+    success_criterion_id: str
+    abandonment_criterion_id: str
+    provider_run_id: str
+    intent_hash: str
 
 
 @dataclass(frozen=True)
@@ -255,6 +273,91 @@ class CursorStrategyAdapter:
         )
         return memo, telemetry
 
+    def extract_intent(
+        self,
+        memo: StrategyMemo,
+        *,
+        registered_fields: Mapping[str, tuple[str, ...]],
+    ) -> StrategyIntent:
+        """Run a distinct constrained phase; prose can never cross this parser."""
+        required = {
+            "plan_class", "target_ref", "gap_ref", "move_family",
+            "theorem_tag", "evidence_ref", "falsification_criterion_id",
+            "success_criterion_id", "abandonment_criterion_id",
+        }
+        if set(registered_fields) != required:
+            raise ValueError("STRATEGY_INTENT_REGISTRY_INCOMPLETE")
+        for name in (
+            "plan_class", "target_ref", "move_family",
+            "falsification_criterion_id", "success_criterion_id",
+            "abandonment_criterion_id",
+        ):
+            if not registered_fields[name]:
+                raise ValueError(f"STRATEGY_INTENT_REGISTRY_EMPTY:{name}")
+        api_key = self.api_key.strip()
+        if not api_key and self.allow_keychain:
+            api_key = self.key_loader().strip()
+        if not api_key or not self.model_id.strip():
+            raise StrategyProviderError(
+                STRATEGY_PROVIDER_UNAVAILABLE,
+                "CONFIG_MISSING_INTENT_PROVIDER",
+                "Cursor intent provider is not configured",
+            )
+        registry_text = "\n".join(
+            f"{name}: {', '.join(values) if values else '(omit)'}"
+            for name, values in sorted(registered_fields.items())
+        )
+        prompt = (
+            "Convert the untrusted private strategy memo into registered intent "
+            "IDs only. Return one record per line as `field VALUE;`, then `END;`. "
+            "gap_ref, theorem_tag, and evidence_ref may repeat and must be omitted "
+            "when their registry is empty. Every other field occurs exactly once. "
+            "Do not emit JSON, Lean, DSL, prose, assumptions, notation, code, or "
+            "unregistered values.\nREGISTERED VALUES:\n"
+            + registry_text
+            + "\nPRIVATE UNTRUSTED MEMO:\n"
+            + memo.text
+        )
+        with tempfile.TemporaryDirectory(prefix="kakeya-cursor-intent-") as raw:
+            result = self.sdk.prompt(
+                prompt,
+                api_key=api_key,
+                model_id=self.model_id,
+                cwd=Path(raw),
+            )
+        status = str(getattr(result, "status", "")).lower()
+        if status not in {"finished", "completed", "success"}:
+            raise StrategyProviderError(
+                STRATEGY_RUN_FAILED,
+                "INTENT_EXTRACTION_RUN_ERROR",
+                "Cursor intent extraction did not finish",
+            )
+        values = _parse_registered_intent(
+            str(getattr(result, "result", "")),
+            registered_fields,
+        )
+        canonical = {
+            key: values[key] for key in sorted(values)
+        }
+        intent_hash = _digest(canonical)
+        return StrategyIntent(
+            plan_class=values["plan_class"][0],
+            target_ref=values["target_ref"][0],
+            gap_refs=values["gap_ref"],
+            move_family=values["move_family"][0],
+            theorem_tags=values["theorem_tag"],
+            evidence_refs=values["evidence_ref"],
+            falsification_criterion_id=values[
+                "falsification_criterion_id"
+            ][0],
+            success_criterion_id=values["success_criterion_id"][0],
+            abandonment_criterion_id=values[
+                "abandonment_criterion_id"
+            ][0],
+            provider_run_id=str(getattr(result, "id", "")),
+            intent_hash=intent_hash,
+        )
+
     @staticmethod
     def _startup_error(exc: BaseException, phase: str) -> StrategyProviderError:
         text = str(exc).lower()
@@ -324,3 +427,45 @@ def compile_memo_to_plan_id(
     if len(selections) != 1 or selections[0] not in registered_plan_ids:
         raise ValueError("STRATEGY_MEMO_DOES_NOT_SELECT_EXACTLY_ONE_PLAN_ID")
     return selections[0]
+
+
+_INTENT_LINE = re.compile(r"([a-z][a-z0-9_]{0,47}) ([A-Za-z0-9_.:+\-]+);")
+_REPEATED_INTENT_FIELDS = {"gap_ref", "theorem_tag", "evidence_ref"}
+
+
+def _parse_registered_intent(
+    text: str,
+    registry: Mapping[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or lines[-1] != "END;":
+        raise ValueError(f"{STRATEGY_INTENT_UNMAPPABLE}:MISSING_END")
+    values: dict[str, list[str]] = {name: [] for name in registry}
+    for line in lines[:-1]:
+        match = _INTENT_LINE.fullmatch(line)
+        if match is None:
+            raise ValueError(f"{STRATEGY_INTENT_UNMAPPABLE}:INVALID_RECORD")
+        name, value = match.groups()
+        if name not in registry:
+            raise ValueError(
+                f"{STRATEGY_INTENT_UNMAPPABLE}:UNREGISTERED_FIELD:{name}"
+            )
+        if value not in registry[name]:
+            raise ValueError(
+                f"{STRATEGY_INTENT_UNMAPPABLE}:UNREGISTERED_ID:{name}:{value}"
+            )
+        if name not in _REPEATED_INTENT_FIELDS and values[name]:
+            raise ValueError(
+                f"{STRATEGY_INTENT_UNMAPPABLE}:DUPLICATE_FIELD:{name}"
+            )
+        values[name].append(value)
+    missing = sorted(
+        name for name, registered in registry.items()
+        if name not in _REPEATED_INTENT_FIELDS and registered and not values[name]
+    )
+    if missing:
+        raise ValueError(
+            f"{STRATEGY_INTENT_UNMAPPABLE}:MISSING_REGISTRY_EVIDENCE:"
+            + ",".join(missing)
+        )
+    return {name: tuple(items) for name, items in values.items()}

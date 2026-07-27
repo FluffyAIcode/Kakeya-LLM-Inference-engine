@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 ARCHITECTURE_VERSION = 9
 TYPED_ARCHITECTURE_MIN_VERSION = 7
 TYPED_IR_MIGRATION_EVENT = "typed_ir_host_constrained_selector_v2"
@@ -20,6 +20,9 @@ CREATIVE_DECOMPOSITION_MIGRATION_EVENT = (
 )
 STRATEGY_TOURNAMENT_MIGRATION_EVENT = (
     "cursor_strategy_oprover_advisor_v1"
+)
+STRATEGY_INTENT_TARGET_CONTEXT_MIGRATION_EVENT = (
+    "strategy_intent_target_context_v1"
 )
 REQUIRED_TYPED_CAPABILITIES = {
     "typed_role_transport": True,
@@ -325,6 +328,11 @@ class ArtifactRef:
     path: str
     source_run_id: str
     validated_at: float
+    target_context_hash: str = ""
+    target_obligation_id: str = ""
+    parent_statement_hash: str = ""
+    strategy_plan_hash: str = ""
+    environment_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -523,9 +531,11 @@ class OrchestrationCheckpoint:
     strategy_event_id: str = ""
     strategy_event_type: str = ""
     strategy_plan_ids: list[str] = field(default_factory=list)
+    strategy_plan_hashes: list[str] = field(default_factory=list)
     feasible_strategy_plan_ids: list[str] = field(default_factory=list)
     pareto_plan_ids: list[str] = field(default_factory=list)
     selected_strategy_plan_id: str = ""
+    selected_strategy_plan_hash: str = ""
     strategy_tournament_hash: str = ""
     research_contract_id: str = ""
     research_contract_hash: str = ""
@@ -590,7 +600,18 @@ class OrchestrationCheckpoint:
     strategy_prompt_hash: str = ""
     strategy_evidence_hash: str = ""
     strategy_memo_hash: str = ""
+    strategy_intent_hash: str = ""
+    strategy_intent_run_id: str = ""
+    strategy_intent_status: str = ""
+    strategy_selection_provenance: dict[str, Any] = field(default_factory=dict)
     strategy_latency_ms: int = 0
+    target_context_hash: str = ""
+    target_environment_hash: str = ""
+    target_strategy_plan_hash: str = ""
+    target_statement: str = ""
+    target_evidence: dict[str, Any] = field(default_factory=dict)
+    target_gap_ids: list[str] = field(default_factory=list)
+    scratchpad_math_fingerprints: list[str] = field(default_factory=list)
     residency_phase: str = "GEMMA_SERVING"
     active_model: str = "gemma"
     oprover_candidate_count: int = 0
@@ -1425,7 +1446,39 @@ def persist_validated_artifact(
     dependencies: list[str],
     source_run_id: str,
     artifact_schema_version: int = 1,
+    save: bool = True,
 ) -> ArtifactRef:
+    if checkpoint.target_context_hash:
+        from autoresearch.prefill.target_context import require_binding
+
+        require_binding(
+            checkpoint,
+            target_obligation_id=str(
+                payload.get("target_obligation_id", checkpoint.target_obligation_id)
+            ),
+            parent_statement_hash=str(
+                payload.get(
+                    "parent_statement_hash",
+                    payload.get(
+                        "parent_statement_sha256",
+                        checkpoint.parent_statement_sha256,
+                    ),
+                )
+            ),
+            context_hash=str(
+                payload.get("target_context_hash", checkpoint.target_context_hash)
+            ),
+            strategy_plan_hash=str(
+                payload.get(
+                    "strategy_plan_hash", checkpoint.target_strategy_plan_hash,
+                )
+            ),
+            environment_hash=str(
+                payload.get(
+                    "environment_hash", checkpoint.target_environment_hash,
+                )
+            ),
+        )
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode()
@@ -1452,9 +1505,15 @@ def persist_validated_artifact(
         path=str(artifact_path),
         source_run_id=source_run_id,
         validated_at=time.time(),
+        target_context_hash=checkpoint.target_context_hash,
+        target_obligation_id=checkpoint.target_obligation_id,
+        parent_statement_hash=checkpoint.parent_statement_sha256,
+        strategy_plan_hash=checkpoint.target_strategy_plan_hash,
+        environment_hash=checkpoint.target_environment_hash,
     )
     checkpoint.validated_artifacts[role] = ref
-    save_checkpoint(checkpoint_path, checkpoint)
+    if save:
+        save_checkpoint(checkpoint_path, checkpoint)
     return ref
 
 
@@ -1708,6 +1767,14 @@ def load_validated_artifacts(
         if role is None or role not in checkpoint.validated_artifacts:
             break
         ref = checkpoint.validated_artifacts[role]
+        if checkpoint.target_context_hash and (
+            ref.target_context_hash != checkpoint.target_context_hash
+            or ref.target_obligation_id != checkpoint.target_obligation_id
+            or ref.parent_statement_hash != checkpoint.parent_statement_sha256
+            or ref.strategy_plan_hash != checkpoint.target_strategy_plan_hash
+            or ref.environment_hash != checkpoint.target_environment_hash
+        ):
+            raise ValueError(f"{role} artifact target context mismatch")
         dependencies_valid = (
             len(ref.dependencies) == 1
             if role == "judge"

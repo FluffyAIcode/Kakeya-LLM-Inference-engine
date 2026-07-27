@@ -115,6 +115,13 @@ from autoresearch.prefill.theorem_cards import (
     pinned_environment_hash,
     search_theorem_cards,
 )
+from autoresearch.prefill.target_context import mathematical_state_fingerprint
+from autoresearch.prefill.resume_certificate import (
+    ResumeCertificateError,
+    consume_resume_certificate,
+    current_runtime_binding,
+    resume_requires_certificate,
+)
 from autoresearch.prefill.semantic_decompose import (
     SemanticResponseIncomplete,
     SemanticUnitTooLarge,
@@ -3914,6 +3921,10 @@ def _typed_package_text(package: dict, *, role: str) -> str:
     sections = [
         ("PARENT CLAIM REF", package.get("parent_claim_ref", "")),
         ("TARGET ID", package.get("target_obligation_id", "")),
+        ("TARGET STATEMENT", package.get("target_statement", "")),
+        ("SELECTED STRATEGY PLAN ID", package.get("strategy_plan_id", "")),
+        ("VERIFIED TARGET EVIDENCE", package.get("verified_target_evidence", "")),
+        ("CURRENT TARGET GAPS", package.get("current_target_gaps", "")),
         ("PLAIN SEMANTIC SUMMARY", package.get("plain_semantic_summary", "")),
         ("VIEWPOINT", package.get("viewpoint", "")),
     ]
@@ -4028,7 +4039,7 @@ def _run_typed_definition_auditor(
     statement_hash = hashlib.sha256(parent.statement.encode()).hexdigest()
     goal_hash = hashlib.sha256(root_goal.encode()).hexdigest()
     target_ref = f"claim:{statement_hash}"
-    registry = build_definition_choice_registry(target_ref)
+    registry = build_definition_choice_registry(target_ref, parent.statement)
     expected_run_id = f"{orchestration_id}:definition_auditor:typed-v1"
     package = {
         "target_obligation_id": parent.obligation_id,
@@ -4179,12 +4190,9 @@ def _run_typed_ir_v2(
     parent_claim_ref = f"claim:{statement_hash}"
     dependency_ids = (hashes["definition_auditor"],)
     theorem_index = build_theorem_card_index(project_root)
-    theorem_cards = search_theorem_cards(
-        theorem_index,
-        (
-            "locally_uniform_limit", "holomorphic_sum",
-            "removable_singularity", "identity_principle",
-        ),
+    current_card_ids = set(checkpoint.theorem_card_ids)
+    theorem_cards = tuple(
+        card for card in theorem_index if card.card_id in current_card_ids
     )
     trigger = synthesis_trigger(
         novel_rejections=checkpoint.semantic_stagnation_count,
@@ -4200,6 +4208,69 @@ def _run_typed_ir_v2(
         checkpoint.proof_state in {ProofState.SYNTHESIS, ProofState.REFRAME}
         or (trigger.invoke and not checkpoint.ranking_hash)
     )
+    candidate_registry = build_candidate_set(
+        target_ref=parent_claim_ref,
+        viewpoint=checkpoint.viewpoint or "definitions",
+        dependency_ids=dependency_ids,
+        theorem_cards=theorem_cards,
+        ancestor_hashes=(
+            *_decomposition_ancestor_hashes(ledger, parent),
+            *(
+                str(event["novelty_hash"])
+                for event in checkpoint.recovery_events
+                if (
+                    event.get("event_type")
+                    == "HOST_TYPED_MOVE_SEMANTIC_REJECTION"
+                    and event.get("novelty_hash")
+                )
+            ),
+        ),
+        satisfied_precondition_ids=host_evidence_context(
+            artifacts, artifact_hashes=hashes,
+        ).satisfied_precondition_ids,
+        satisfied_theorem_hypothesis_ids=host_evidence_context(
+            artifacts, artifact_hashes=hashes,
+        ).satisfied_theorem_hypothesis_ids,
+        available_dependency_artifact_ids=hashes.values(),
+        required_dependency_artifact_ids=dependency_ids,
+    )
+    empty_fingerprint = mathematical_state_fingerprint(
+        checkpoint,
+        failure_code="EMPTY_CANDIDATE_SET",
+        move_ids=(
+            item[0] for item in candidate_registry.ineligible
+        ),
+    )
+    if not candidate_registry.candidates:
+        if empty_fingerprint in checkpoint.scratchpad_math_fingerprints:
+            checkpoint.stagnation_reason = (
+                "IDENTICAL_EMPTY_CANDIDATE_STATE:"
+                + empty_fingerprint
+            )
+            checkpoint.current_definition_gap_id = (
+                checkpoint.current_definition_gap_id
+                or "REGISTRY_EVIDENCE_EXPANSION"
+            )
+            if checkpoint.proof_state != ProofState.DEFINITION_RESOLUTION:
+                checkpoint.transition(
+                    ProofState.DEFINITION_RESOLUTION,
+                    checkpoint.stagnation_reason,
+                    strategy_reused=True,
+                )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                [checkpoint.stagnation_reason],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": "MATHEMATICAL_STAGNATION",
+                },
+            )
+        checkpoint.scratchpad_math_fingerprints.append(empty_fingerprint)
     scratch_role = (
         "synthesis_scratchpad" if synthesis_mode else "decomposer_scratchpad"
     )
@@ -4255,32 +4326,6 @@ def _run_typed_ir_v2(
                 "failure_status": "INFRASTRUCTURE_BLOCKED",
             },
         )
-    candidate_registry = build_candidate_set(
-        target_ref=parent_claim_ref,
-        viewpoint=checkpoint.viewpoint or "definitions",
-        dependency_ids=dependency_ids,
-        theorem_cards=theorem_cards,
-        ancestor_hashes=(
-            *_decomposition_ancestor_hashes(ledger, parent),
-            *(
-                str(event["novelty_hash"])
-                for event in checkpoint.recovery_events
-                if (
-                    event.get("event_type")
-                    == "HOST_TYPED_MOVE_SEMANTIC_REJECTION"
-                    and event.get("novelty_hash")
-                )
-            ),
-        ),
-        satisfied_precondition_ids=host_evidence_context(
-            artifacts, artifact_hashes=hashes,
-        ).satisfied_precondition_ids,
-        satisfied_theorem_hypothesis_ids=host_evidence_context(
-            artifacts, artifact_hashes=hashes,
-        ).satisfied_theorem_hypothesis_ids,
-        available_dependency_artifact_ids=hashes.values(),
-        required_dependency_artifact_ids=dependency_ids,
-    )
     if not candidate_registry.candidates:
         event = {
             "event_type": "NO_REGISTERED_DECOMPOSITION_MOVE",
@@ -4369,6 +4414,17 @@ def _run_typed_ir_v2(
             )
         checkpoint.synthesis_iteration += 1
         synthesis_package = {
+            "target_obligation_id": parent.obligation_id,
+            "target_statement": parent.statement,
+            "strategy_plan_id": checkpoint.selected_strategy_plan_id,
+            "verified_target_evidence": json.dumps(
+                checkpoint.target_evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "current_target_gaps": " ".join(
+                checkpoint.target_gap_ids
+            ) or "none",
             "registered_output_choices": {
                 "choice_code": candidate_registry.short_choice_codes,
                 "reason_code": (
@@ -7784,13 +7840,20 @@ def _stage(
     extra_metrics=None,
 ) -> dict:
     delta = actual["delta"]
+    warm_route = warm.get("route_provenance")
+    actual_route = actual.get("route_provenance")
     stage = {
         **actual,
         "name": f"agent_{name}",
         "agent": name,
         "round": 1,
         "hit_source": "primary_hot" if delta["local_hits"] else "unknown",
-        "ok": _agent_cache_gate(warm["delta"], delta) and actual["complete"],
+        "ok": _agent_cache_gate(
+            warm["delta"],
+            delta,
+            warm_route=warm_route,
+            actual_route=actual_route,
+        ) and actual["complete"],
         "warmup_prefix_tokens": warm["prefix_tokens"],
         "warmup_tokens_reused": (
             warm["delta"]["tokens_reused"]
@@ -7798,6 +7861,10 @@ def _stage(
         ),
         "warmup_wall_s": warm["e2e_s"],
         "warmup_remote_jobs": warm["delta"]["remote_jobs"],
+        "route_provenance": {
+            "warm": warm_route,
+            "actual": actual_route,
+        },
         "output_chars": len(text),
         "output_hash": hashlib.sha256(text.encode()).hexdigest(),
     }
@@ -7913,7 +7980,11 @@ def _run_isolated_certified_role(
             role_ids,
             1,
             get_stats,
-            client_label=f"agent-gan-{role_name}-warm",
+            route_binding={
+                "target_id": active_obligation_id,
+                "run_id": expected_run_id,
+            },
+            route_phase="warm",
             max_retained_tokens=args.max_retained_tokens,
         )
     live_status.emit(
@@ -7969,7 +8040,11 @@ def _run_isolated_certified_role(
             tokenizer.decode(chunk, skip_special_tokens=True).strip()
         ),
         semantic_complete=semantic_complete,
-        client_label=f"agent-gan-{role_name}",
+        route_binding={
+            "target_id": active_obligation_id,
+            "run_id": expected_run_id,
+        },
+        route_phase="actual",
         max_retained_tokens=args.max_retained_tokens,
     )
     role_printer.finish()
@@ -8394,6 +8469,10 @@ def main() -> int:
                 resume_checkpoint is not None
                 and resume_checkpoint.architecture_version >= 9
             )
+            architecture9_fresh_entry = bool(
+                architecture9
+                and resume_checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
+            )
             if architecture9:
                 if proof_ledger is None:
                     raise RuntimeError(
@@ -8550,26 +8629,13 @@ def main() -> int:
                 flush=True,
             )
             try:
-                certified_resume_states = {
-                    ProofState.DEFINITION_AUDITOR,
-                    ProofState.COUNTEREXAMPLE_WORKER,
-                    ProofState.SYNTHESIS,
-                    ProofState.REFRAME,
-                    ProofState.DECOMPOSER,
-                    ProofState.FORMALIZER,
-                    ProofState.HOST_TYPED_IR_GATE,
-                    ProofState.LEAN_ELABORATION_GATE,
-                    ProofState.PROVER,
-                    ProofState.ADVERSARIAL_REVIEW,
-                    ProofState.JUDGE,
-                    ProofState.COMMIT,
-                    ProofState.BLOCKED,
-                }
-                resume_certified = bool(
+                resumed_architecture9_role = resume_requires_certificate(
+                    resume_checkpoint,
+                    fresh_architecture_entry=architecture9_fresh_entry,
+                )
+                resume_preconditions_hold = bool(
                     proof_ledger is not None
                     and resume_checkpoint is not None
-                    and resume_checkpoint.proof_state
-                    in certified_resume_states
                     and any(
                         item.obligation_id
                         == resume_checkpoint.target_obligation_id
@@ -8581,10 +8647,45 @@ def main() -> int:
                         == orchestration_candidate_sha256
                     )
                 )
-                if architecture9 and not resume_certified:
-                    raise RuntimeError(
-                        "ARCHITECTURE9_CERTIFIED_RESUME_REQUIRED",
+                resume_certificate_hash = ""
+                if resumed_architecture9_role:
+                    if not resume_preconditions_hold:
+                        raise ResumeCertificateError(
+                            "ARCHITECTURE9_RESUME_PRECONDITION_MISMATCH"
+                        )
+                    lease_id = os.environ.get("KAKEYA_RESUME_LEASE_ID", "")
+                    if not lease_id:
+                        raise ResumeCertificateError(
+                            "ARCHITECTURE9_CERTIFIED_RESUME_REQUIRED"
+                        )
+                    resume_certificate_hash = consume_resume_certificate(
+                        orchestration_state_path,
+                        resume_checkpoint,
+                        asdict(proof_ledger),
+                        runtime_binding=current_runtime_binding(
+                            Path(__file__).resolve().parents[1],
+                            tokenizer_id=args.tokenizer_id,
+                            residency_path=Path.home()
+                            / ".kakeya/oprover-residency.json",
+                        ),
+                        intended_next_role=resume_checkpoint.current_role,
+                        owner_pid=os.getpid(),
+                        lease_id=lease_id,
                     )
+                    print(
+                        "[resume-certificate-consumed] "
+                        f"sha256={resume_certificate_hash} "
+                        f"role={resume_checkpoint.current_role}",
+                        flush=True,
+                    )
+                resume_certified = bool(
+                    resume_preconditions_hold
+                    and (
+                        not architecture9
+                        or not resumed_architecture9_role
+                        or resume_certificate_hash
+                    )
+                )
                 if resume_certified:
                     architecture7 = resume_checkpoint.architecture_version >= 7
                     critic_payload = {}

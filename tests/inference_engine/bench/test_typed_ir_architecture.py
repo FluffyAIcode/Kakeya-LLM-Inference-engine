@@ -122,7 +122,10 @@ def test_host_alone_adds_version_hash_bindings_and_json_envelope():
 
 def test_definition_auditor_uses_only_registered_ids_and_host_serialization():
     target_ref = "claim:" + "a" * 64
-    registry = build_definition_choice_registry(target_ref)
+    registry = build_definition_choice_registry(
+        target_ref,
+        "A fixed genus sequence density statement.",
+    )
     text = "\n".join((
         f"target_ref {target_ref};",
         "symbol_id SYM_SEQUENCE;",

@@ -22,6 +22,7 @@ from autoresearch.prefill.orchestration_state import (
 from autoresearch.prefill.strategy_tournament import StrategyEvent
 from autoresearch.prefill.model_residency import (
     ModelResidencyScheduler,
+    ProcessIdentity,
     ResidencyError,
     ResidencyPhase,
 )
@@ -219,6 +220,88 @@ def test_residency_recovery_is_idempotent_and_redacts_errors(tmp_path):
     state = json.loads((tmp_path / "residency.json").read_text())
     assert "must-not-survive" not in state["error_code"]
     assert state["phase"] == ResidencyPhase.GEMMA_SERVING.value
+
+
+class IdentityProcesses(FakeProcesses):
+    def __init__(self, identity):
+        super().__init__()
+        self.identity = identity
+
+    def gemma_identity(self):
+        return self.identity
+
+
+def test_residency_reconciles_stale_pid_by_full_identity(tmp_path):
+    identity = ProcessIdentity(
+        99146, "/usr/bin/python3", "gemma-4", "rev-1", "boot:42", True,
+    )
+    pm = IdentityProcesses(identity)
+    instance = ModelResidencyScheduler(
+        state_path=tmp_path / "residency.json",
+        process_manager=pm,
+        headroom_check=lambda: True,
+        model_id="oprover",
+        model_revision="rev-o",
+        tokenizer_id="oprover",
+        gemma_cache_namespace="gemma",
+        oprover_cache_namespace="oprover",
+        gemma_executable="/usr/bin/python3",
+        gemma_model_id="gemma-4",
+        gemma_model_revision="rev-1",
+    )
+    (tmp_path / "residency.json").write_text(json.dumps({
+        "phase": "GEMMA_SERVING",
+        "active_model": "gemma",
+        "owner_pid": 0,
+        "gemma_pid": 111,
+        "oprover_pid": 0,
+        "model_id": "",
+        "model_revision": "",
+        "tokenizer_id": "",
+        "cache_namespace": "",
+        "updated_at": 0,
+        "error_code": "",
+        "journal_sequence": 0,
+    }))
+    state = instance.reconcile_gemma_owner()
+    assert state.gemma_pid == 99146
+    assert state.owner_generation == 1
+    assert state.gemma_start_token == "boot:42"
+    assert "api" not in (tmp_path / "residency.json").read_text()
+
+
+def test_residency_rejects_pid_reuse_and_dead_owner(tmp_path):
+    pm = IdentityProcesses(ProcessIdentity(
+        77, "/usr/bin/python3", "gemma-4", "rev-1", "new-start", True,
+    ))
+    instance = ModelResidencyScheduler(
+        state_path=tmp_path / "residency.json",
+        process_manager=pm,
+        headroom_check=lambda: True,
+        model_id="oprover",
+        model_revision="rev-o",
+        tokenizer_id="oprover",
+        gemma_cache_namespace="gemma",
+        oprover_cache_namespace="oprover",
+        gemma_executable="/usr/bin/python3",
+        gemma_model_id="gemma-4",
+        gemma_model_revision="rev-1",
+    )
+    state = {
+        "phase": "GEMMA_SERVING", "active_model": "gemma",
+        "owner_pid": 0, "gemma_pid": 77, "oprover_pid": 0,
+        "model_id": "", "model_revision": "", "tokenizer_id": "",
+        "cache_namespace": "", "updated_at": 0, "error_code": "",
+        "journal_sequence": 1, "owner_generation": 1,
+        "gemma_executable": "/usr/bin/python3", "gemma_model_id": "gemma-4",
+        "gemma_model_revision": "rev-1", "gemma_start_token": "old-start",
+    }
+    (tmp_path / "residency.json").write_text(json.dumps(state))
+    with pytest.raises(ResidencyError, match="PID_REUSE"):
+        instance.reconcile_gemma_owner()
+    pm.identity = None
+    with pytest.raises(ResidencyError, match="LIVE_IDENTITY"):
+        instance.reconcile_gemma_owner()
 
 
 class FakeOProver:
