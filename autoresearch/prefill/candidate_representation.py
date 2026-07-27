@@ -12,7 +12,7 @@ from typing import Iterable
 
 
 REPRESENTATION_ANALYSIS_VERSION = 1
-MAPPER_CAPABILITY_VERSION = 1
+MAPPER_CAPABILITY_VERSION = 2
 
 
 def _digest(value: object) -> str:
@@ -166,7 +166,8 @@ def _primitive_ids(text: str) -> tuple[str, ...]:
         ("ESSENTIAL_SPECTRUM", (r"essential spectrum",)),
         ("SPECTRAL_GAP", (r"spectral gap",)),
         ("DIRICHLET_L_FUNCTION", (
-            r"dirichlet l[- ]function", r"\bl[- ]function",
+            r"dirichlet(?:\s|\$|\\)*l(?:\s|\$|-)*function",
+            r"(?:\b|\$)l(?:\s|\$|-)*function",
         )),
         ("SELBERG_CLASS", (r"selberg class",)),
         ("RANK_ONE_PERTURBATION", (r"rank-1", r"rank-one")),

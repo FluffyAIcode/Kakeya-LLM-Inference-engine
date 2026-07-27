@@ -34,7 +34,8 @@ NINE_CANDIDATE_FIXTURE = (
      "A stochastic PDE operator case split and spectral gap proposal.",
      {"DISCONNECTED_FROM_TARGET"}, {"SPECTRAL_GAP"}),
     ("XC-261076a02069094a733b", "SUFFICIENT_CONDITION",
-     "For any L-function satisfying the Riemann Hypothesis, choose an analytic map.",
+     "For any Dirichlet $L$-function satisfying the Riemann Hypothesis, "
+     "choose an analytic map.",
      set(), {"DIRICHLET_L_FUNCTION"}),
     ("XC-d3c0a173f7ff728d29a2", "EQUIVALENT_CRITERION",
      "A zeta zero sequence GUE condition equivalent to the assertion that no "
@@ -175,7 +176,7 @@ def test_state_machine_inserts_analysis_before_rejection():
 
 
 def test_mapper_catalog_is_closed_content_addressed_and_sourced():
-    assert MAPPER_CAPABILITY_VERSION == 1
+    assert MAPPER_CAPABILITY_VERSION == 2
     assert len(mapper_capability_hash()) == 64
     assert all(item.primitive_id == key for key, item in PRIMITIVE_CATALOG.items())
     assert all(
