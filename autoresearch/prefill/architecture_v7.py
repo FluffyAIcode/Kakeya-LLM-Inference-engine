@@ -764,7 +764,7 @@ def run_architecture_v7_entry(
         "selected_plan_hash": selected_hash,
         "target_context_hash": checkpoint.target_context_hash,
     }
-    persist_validated_artifact(
+    tournament_ref = persist_validated_artifact(
         checkpoint_path,
         checkpoint,
         role="strategy_tournament",
@@ -917,7 +917,7 @@ def run_architecture_v7_entry(
                 **contract.__dict__,
                 "schema_version": 1,
             },
-            dependencies=[tournament.content_hash],
+            dependencies=[tournament_ref.sha256],
             source_run_id=f"host:{event_id}:contract",
         )
     checkpoint.transition(

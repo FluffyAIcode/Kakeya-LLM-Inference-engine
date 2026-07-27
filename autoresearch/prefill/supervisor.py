@@ -1462,6 +1462,11 @@ def run_gan_experiment(
     )
     if certified_resume:
         assert resume_checkpoint is not None
+        if repair_research_contract_artifact_dependency(resume_checkpoint):
+            save_orchestration_checkpoint(
+                orchestration_state_path,
+                resume_checkpoint,
+            )
         runtime_binding = current_runtime_binding(
             repo,
             tokenizer_id=tokenizer_id,
@@ -1791,6 +1796,37 @@ def is_contract_bound_subgoal_resume(
         and checkpoint.research_contract_id
         and not checkpoint.adapter_status
     )
+
+
+def repair_research_contract_artifact_dependency(
+    checkpoint: OrchestrationCheckpoint,
+) -> bool:
+    """Replace the legacy tournament content hash with its artifact hash."""
+    tournament = checkpoint.validated_artifacts.get("strategy_tournament")
+    contract = checkpoint.validated_artifacts.get("research_contract")
+    if (
+        tournament is None
+        or contract is None
+        or contract.dependencies != [checkpoint.strategy_tournament_hash]
+        or contract.dependencies == [tournament.sha256]
+    ):
+        return False
+    contract.dependencies = [tournament.sha256]
+    checkpoint.recovery_events.append({
+        "event_type": "RESEARCH_CONTRACT_ARTIFACT_DAG_REPAIRED",
+        "event_id": hashlib.sha256(
+            (
+                checkpoint.research_contract_id
+                + checkpoint.strategy_tournament_hash
+                + tournament.sha256
+            ).encode()
+        ).hexdigest(),
+        "research_contract_id": checkpoint.research_contract_id,
+        "strategy_tournament_artifact_sha256": tournament.sha256,
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "created_at": time.time(),
+    })
+    return True
 
 
 def recover_contract_subgoal_duplicate_block(

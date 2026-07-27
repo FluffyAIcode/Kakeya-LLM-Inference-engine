@@ -46,6 +46,7 @@ from autoresearch.prefill.supervisor import (
     parse_strategy_candidate_transport,
     parse_research_verdict,
     read_results,
+    repair_research_contract_artifact_dependency,
     repair_candidate_schema,
     recover_contract_subgoal_duplicate_block,
     render_candidate,
@@ -150,6 +151,35 @@ def test_duplicate_wrapper_block_recovers_bound_decomposer():
     assert checkpoint.proof_state == ProofState.DECOMPOSER
     assert checkpoint.blocked_reason == ""
     assert recover_contract_subgoal_duplicate_block(checkpoint) is None
+
+
+def test_research_contract_dependency_repairs_to_artifact_hash(tmp_path):
+    checkpoint = OrchestrationCheckpoint(
+        strategy_tournament_hash="tournament-content-hash",
+        research_contract_id="RC-root",
+        target_obligation_id="RH-C0-root",
+    )
+    path = tmp_path / "orchestration.json"
+    tournament = persist_validated_artifact(
+        path,
+        checkpoint,
+        role="strategy_tournament",
+        payload={"schema_version": 1, "plans": []},
+        dependencies=[],
+        source_run_id="host:strategy",
+    )
+    contract = persist_validated_artifact(
+        path,
+        checkpoint,
+        role="research_contract",
+        payload={"schema_version": 1, "contract_id": "RC-root"},
+        dependencies=[checkpoint.strategy_tournament_hash],
+        source_run_id="host:contract",
+    )
+    assert contract.dependencies != [tournament.sha256]
+    assert repair_research_contract_artifact_dependency(checkpoint)
+    assert contract.dependencies == [tournament.sha256]
+    assert not repair_research_contract_artifact_dependency(checkpoint)
 
 
 def test_live_status_atomic_transitions_and_permissions(tmp_path):
