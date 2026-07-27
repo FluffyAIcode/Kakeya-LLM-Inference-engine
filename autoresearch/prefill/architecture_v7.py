@@ -330,17 +330,25 @@ def run_architecture_v7_entry(
     if not target_statement:
         target_statement = f"Unelaborated proof obligation {target_ref}"
     environment_hash = pinned_environment_hash(project_root)
-    _context, context_changed = activate_target_context(
-        checkpoint_path,
-        checkpoint,
-        target_obligation_id=target_ref,
-        statement=target_statement,
-        environment_hash=environment_hash,
-        strategy_plan_hash="STRATEGY_PENDING",
-        evidence=dict(target_evidence or {}),
+    current_input_context = bool(
+        checkpoint.target_context_hash
+        and checkpoint.target_obligation_id == target_ref
+        and checkpoint.parent_statement_sha256
+        == hashlib.sha256(target_statement.encode()).hexdigest()
+        and checkpoint.target_environment_hash == environment_hash
     )
-    if context_changed:
-        save_checkpoint(checkpoint_path, checkpoint)
+    if not current_input_context:
+        _context, context_changed = activate_target_context(
+            checkpoint_path,
+            checkpoint,
+            target_obligation_id=target_ref,
+            statement=target_statement,
+            environment_hash=environment_hash,
+            strategy_plan_hash="STRATEGY_PENDING",
+            evidence=dict(target_evidence or {}),
+        )
+        if context_changed:
+            save_checkpoint(checkpoint_path, checkpoint)
     all_cards = build_theorem_card_index(project_root)
     statement_words = {
         word.lower().strip(".,'\"()[]{}")
@@ -550,21 +558,15 @@ def run_architecture_v7_entry(
         None,
     )
     selected_hash = selected_plan.content_hash if selected_plan else ""
-    activate_target_context(
-        checkpoint_path,
-        checkpoint,
-        target_obligation_id=target_ref,
-        statement=target_statement,
-        environment_hash=environment_hash,
-        strategy_plan_hash=selected_hash or "NO_FEASIBLE_PLAN",
-        evidence={
-            **dict(target_evidence or {}),
-            "EVIDENCE_TARGET_STATEMENT": target_statement,
-        },
-        gap_ids=definition_gap_ids,
-        definition_ids=definitions,
-        theorem_card_ids=card_ids,
+    # The active TargetContext is immutable input evidence. Selection is a
+    # downstream pointer and must never rewrite/rebind its upstream auditor.
+    checkpoint.target_strategy_plan_hash = (
+        selected_hash or "NO_FEASIBLE_PLAN"
     )
+    checkpoint.target_evidence = {
+        **dict(target_evidence or checkpoint.target_evidence),
+        "EVIDENCE_TARGET_STATEMENT": target_statement,
+    }
     checkpoint.strategy_event_id = event_id
     checkpoint.strategy_event_type = event_type.value
     checkpoint.strategy_plan_ids = [plan.plan_id for plan in plans]

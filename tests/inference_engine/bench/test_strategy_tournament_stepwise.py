@@ -382,6 +382,15 @@ def test_unelaborated_missing_definition_and_quarantine_route_to_decomposer(
     assert result.proof_state == ProofState.DEFINITION_RESOLUTION
     assert result.research_contract_id == ""
     assert "research_contract" not in result.validated_artifacts
+    assert "definition_auditor" in result.validated_artifacts
+    assert (
+        result.validated_artifacts["definition_auditor"].strategy_plan_hash
+        == "STRATEGY_PENDING"
+    )
+    assert (
+        result.validated_artifacts["strategy_tournament"].strategy_plan_hash
+        == result.selected_strategy_plan_hash
+    )
     assert result.research_contract_rejection_codes == []
     assert result.last_transition_reason == (
         "typed-definition-resolution-plan:MISSING_DEFINITION,"

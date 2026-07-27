@@ -4,6 +4,7 @@ import copy
 import hashlib
 import hmac
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,10 @@ def _checkpoint(path: Path) -> OrchestrationCheckpoint:
         dependencies=[],
         source_run_id="run-definition-auditor",
         save=False,
+    )
+    checkpoint.validated_artifacts["definition_auditor"] = replace(
+        checkpoint.validated_artifacts["definition_auditor"],
+        strategy_plan_hash="NO_FEASIBLE_PLAN",
     )
     return checkpoint
 

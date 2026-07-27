@@ -225,17 +225,24 @@ def _artifact_dag(
     dag = []
     payloads: dict[str, dict[str, Any]] = {}
     for role, reference in sorted(checkpoint.validated_artifacts.items()):
-        if (
+        common_binding_mismatch = (
             reference.schema_version != 1
             or reference.target_obligation_id != checkpoint.target_obligation_id
             or reference.target_context_hash != checkpoint.target_context_hash
             or reference.parent_statement_hash
             != checkpoint.parent_statement_sha256
-            or reference.strategy_plan_hash
-            != checkpoint.target_strategy_plan_hash
             or reference.environment_hash
             != checkpoint.target_environment_hash
-        ):
+        )
+        # Definition Auditor is upstream evidence used to compile a selected
+        # plan. Requiring it to claim the downstream plan hash would fabricate
+        # provenance. Every downstream artifact remains plan-bound.
+        plan_binding_mismatch = (
+            role != "definition_auditor"
+            and reference.strategy_plan_hash
+            != checkpoint.target_strategy_plan_hash
+        )
+        if common_binding_mismatch or plan_binding_mismatch:
             raise ResumeCertificateError(
                 f"RESUME_CERTIFICATE_ARTIFACT_BINDING_MISMATCH:{role}"
             )
