@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -5200,11 +5200,25 @@ def retain_contract_provenance_after_artifact_failure(
     checkpoint: OrchestrationCheckpoint,
 ) -> None:
     """Invalidate executable role artifacts without erasing accepted strategy."""
-    checkpoint.validated_artifacts = {
+    prior = checkpoint.validated_artifacts
+    preserved = {
         role: reference
-        for role, reference in checkpoint.validated_artifacts.items()
+        for role, reference in prior.items()
         if role in {"strategy_tournament", "research_contract"}
     }
+    definition = prior.get("definition_auditor")
+    tournament = prior.get("strategy_tournament")
+    if (
+        definition is not None
+        and tournament is not None
+        and definition.sha256 in tournament.dependencies
+    ):
+        preserved["contract_definition_auditor"] = replace(
+            definition,
+            role="contract_definition_auditor",
+            strategy_plan_hash=checkpoint.target_strategy_plan_hash,
+        )
+    checkpoint.validated_artifacts = preserved
 
 
 def run_certified_decomposition(

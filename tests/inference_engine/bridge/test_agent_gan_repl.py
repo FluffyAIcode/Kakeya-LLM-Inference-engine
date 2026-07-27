@@ -15,6 +15,7 @@ from autoresearch.prefill.lean_gate import (
     validate_lean_proof,
 )
 from autoresearch.prefill.orchestration_state import (
+    ArtifactRef,
     OrchestrationCheckpoint,
     ProofState,
     load_checkpoint as load_orchestration_checkpoint,
@@ -3640,18 +3641,43 @@ def test_artifact_migration_failure_preserves_contract_provenance():
         research_contract_hash="contract-hash",
         selected_strategy_plan_id="SP-root",
         selected_strategy_plan_hash="plan-hash",
+        target_strategy_plan_hash="plan-hash",
     )
+    def ref(role, sha, dependencies=()):
+        return ArtifactRef(
+            role=role,
+            sha256=sha,
+            schema_version=1,
+            dependencies=list(dependencies),
+            path=f"/tmp/{sha}.json",
+            source_run_id="host:test",
+            validated_at=1.0,
+        )
     checkpoint.validated_artifacts = {
-        "definition_auditor": object(),
-        "counterexample_worker": object(),
-        "strategy_tournament": object(),
-        "research_contract": object(),
+        "definition_auditor": ref("definition_auditor", "definition"),
+        "counterexample_worker": ref("counterexample_worker", "worker"),
+        "strategy_tournament": ref(
+            "strategy_tournament",
+            "tournament",
+            ["definition"],
+        ),
+        "research_contract": ref(
+            "research_contract",
+            "contract",
+            ["tournament"],
+        ),
     }
     retain_contract_provenance_after_artifact_failure(checkpoint)
     assert set(checkpoint.validated_artifacts) == {
+        "contract_definition_auditor",
         "strategy_tournament",
         "research_contract",
     }
+    contract_definition = checkpoint.validated_artifacts[
+        "contract_definition_auditor"
+    ]
+    assert contract_definition.sha256 == "definition"
+    assert contract_definition.strategy_plan_hash == "plan-hash"
     assert checkpoint.research_contract_id == "RC-root"
     assert checkpoint.research_contract_hash == "contract-hash"
     assert checkpoint.selected_strategy_plan_id == "SP-root"
