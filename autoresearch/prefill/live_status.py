@@ -252,6 +252,55 @@ class AtomicLiveStatus:
                             "ranking_hash": _safe_text(
                                 orchestration.get("ranking_hash", ""),
                             ),
+                            "decomposition_exploration": {
+                                "contract_id": _safe_text(
+                                    orchestration.get(
+                                        "exploration_contract_id", "",
+                                    ),
+                                ),
+                                "generated": int(orchestration.get(
+                                    "candidate_count", 0,
+                                )),
+                                "surviving": (
+                                    int(orchestration.get("candidate_count", 0))
+                                    - len(orchestration.get(
+                                        "exploration_rejections", {},
+                                    ))
+                                ),
+                                "selected_candidate_ids": [
+                                    _safe_text(item, 80)
+                                    for item in orchestration.get(
+                                        "exploration_selected_candidate_ids",
+                                        [],
+                                    )
+                                ],
+                                "current_index": int(orchestration.get(
+                                    "exploration_current_index", 0,
+                                )),
+                                "current_candidate_id": _safe_text(
+                                    orchestration.get(
+                                        "exploration_current_candidate_id", "",
+                                    ),
+                                    80,
+                                ),
+                                "formalization_status": _safe_text(
+                                    orchestration.get(
+                                        "exploration_formalization_status", "",
+                                    ),
+                                ),
+                                "reduction_status": _safe_text(
+                                    orchestration.get(
+                                        "exploration_reduction_status", "",
+                                    ),
+                                ),
+                                "rejected_reason_codes": sorted({
+                                    _safe_text(reason, 80)
+                                    for reasons in orchestration.get(
+                                        "exploration_rejections", {},
+                                    ).values()
+                                    for reason in reasons
+                                }),
+                            },
                             "theorem_card_count": len(
                                 orchestration.get("theorem_card_ids", []),
                             ),

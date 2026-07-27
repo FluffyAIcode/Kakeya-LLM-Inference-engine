@@ -20,6 +20,17 @@ from autoresearch.prefill.cursor_strategy import (
 
 TOURNAMENT_VERSION = 2
 MIGRATION_EVENT = "strategy_tournament_stepwise_generator_v1"
+DECOMPOSITION_CATEGORIES = (
+    "DEFINITION",
+    "LOCAL_LEMMA",
+    "CASE_SPLIT",
+    "SUFFICIENT_CONDITION",
+    "EQUIVALENT_CRITERION",
+    "OBSTRUCTION_OR_COUNTEREXAMPLE",
+    "SPECIAL_CASE",
+    "BRIDGE_THEOREM",
+    "TOY_MODEL_ANALOGUE",
+)
 
 
 def _digest(value: object) -> str:
@@ -44,6 +55,7 @@ class PlanClass(str, Enum):
         "REFRAME_DEFINITIONS_OR_REPRESENTATION"
     )
     DEFINITION_RESOLUTION_PLAN = "DEFINITION_RESOLUTION_PLAN"
+    DECOMPOSE_TO_SUBPROBLEMS = "DECOMPOSE_TO_SUBPROBLEMS"
 
 
 class FeasibilityReason(str, Enum):
@@ -71,6 +83,7 @@ class CriticReason(str, Enum):
 class PlanExecutionStatus(str, Enum):
     EXECUTABLE = "EXECUTABLE"
     PLANNING_ONLY = "PLANNING_ONLY"
+    EXPLORATION_ONLY = "EXPLORATION_ONLY"
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,10 @@ class StrategyPlan:
     case_partition_ids: tuple[str, ...]
     execution_status: str
     content_hash: str
+    candidate_categories: tuple[str, ...] = ()
+    candidate_budget: int = 0
+    diversity_minimum: int = 0
+    known_no_go_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -288,7 +305,88 @@ def build_host_plans(
             execution_status=execution_status,
             content_hash=content_hash,
         ))
+    plans.append(build_decomposition_exploration_plan(
+        target_ref=target_ref,
+        parent_obligation_ref=parent_obligation_ref,
+        parent_complexity=parent_complexity,
+        environment_hash=environment_hash,
+        registered_definition_ids=definitions,
+        theorem_card_ids=cards,
+        dependency_ids=dependencies,
+        evidence_refs=evidence,
+    ))
     return tuple(plans)
+
+
+def build_decomposition_exploration_plan(
+    *,
+    target_ref: str,
+    parent_obligation_ref: str,
+    parent_complexity: int,
+    environment_hash: str,
+    registered_definition_ids: Iterable[str],
+    theorem_card_ids: Iterable[str],
+    dependency_ids: Iterable[str],
+    evidence_refs: Iterable[str],
+    known_no_go_refs: Iterable[str] = (),
+    candidate_budget: int = 9,
+) -> StrategyPlan:
+    """Build a bounded search plan that deliberately precedes proof gates."""
+    categories = DECOMPOSITION_CATEGORIES
+    if not 8 <= candidate_budget <= 16:
+        raise ValueError("DECOMPOSITION_EXPLORATION_BUDGET_INVALID")
+    canonical = {
+        "version": TOURNAMENT_VERSION,
+        "plan_class": PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value,
+        "target_ref": target_ref,
+        "parent_obligation_ref": parent_obligation_ref,
+        "environment_hash": environment_hash,
+        "definitions": tuple(sorted(set(registered_definition_ids))),
+        "theorem_cards": tuple(sorted(set(theorem_card_ids))),
+        "dependencies": tuple(sorted(set(dependency_ids))),
+        "evidence_refs": tuple(sorted(set(evidence_refs))),
+        "known_no_go_refs": tuple(sorted(set(known_no_go_refs))),
+        "candidate_categories": categories,
+        "candidate_budget": candidate_budget,
+        "diversity_minimum": 8,
+        "success_criterion": "ELABORATED_REDUCIBLE_CHILD_FOUND",
+        "abandonment_criterion": "ALL_PRIVATE_CANDIDATES_EXHAUSTED",
+        "execution_status": PlanExecutionStatus.EXPLORATION_ONLY.value,
+    }
+    content_hash = _digest(canonical)
+    return StrategyPlan(
+        plan_id="PX-" + content_hash[:20],
+        plan_class=PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value,
+        target_ref=target_ref,
+        required_definition_ids=tuple(sorted(set(registered_definition_ids))),
+        theorem_card_ids=tuple(sorted(set(theorem_card_ids))),
+        dependency_ids=tuple(sorted(set(dependency_ids))),
+        lemma_graph=(),
+        falsification_test_id="FALSIFY_EACH_EXPLORATION_CANDIDATE",
+        success_criterion_id="ELABORATED_REDUCIBLE_CHILD_FOUND",
+        abandonment_criterion_id="ALL_PRIVATE_CANDIDATES_EXHAUSTED",
+        expected_information_gain=5,
+        assumption_ids=(),
+        restriction_ids=(),
+        parent_obligation_ref=parent_obligation_ref,
+        parent_complexity=parent_complexity,
+        target_complexity=max(0, parent_complexity - 1),
+        risk=2,
+        source_move_id="MOVE_EXPLORE_SUBPROBLEMS",
+        environment_hash=environment_hash,
+        evidence_refs=tuple(sorted(set(evidence_refs))),
+        unresolved_definition_ids=(),
+        definition_gap_ids=(),
+        definition_auditor_hash="",
+        proposition_transformation_ref="",
+        case_partition_ids=(),
+        execution_status=PlanExecutionStatus.EXPLORATION_ONLY.value,
+        content_hash=content_hash,
+        candidate_categories=categories,
+        candidate_budget=candidate_budget,
+        diversity_minimum=8,
+        known_no_go_refs=tuple(sorted(set(known_no_go_refs))),
+    )
 
 
 def build_definition_resolution_plan(
@@ -426,6 +524,9 @@ def compile_strategy_intent(
         PlanClass.DISPROOF_OR_COUNTEREXAMPLE.value: "MOVE_FALSIFY",
         PlanClass.REDUCTION_TO_KNOWN_RESULT.value: "MOVE_REDUCE",
         PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value: "MOVE_REFRAME",
+        PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value: (
+            "MOVE_EXPLORE_SUBPROBLEMS"
+        ),
     }
     if expected_moves.get(intent.plan_class) != intent.move_family:
         missing.append(f"move_family:{intent.move_family}")
@@ -445,9 +546,16 @@ def compile_strategy_intent(
     unresolved = tuple(sorted(set(map(str, unresolved_definition_ids))))
     target_complexity = max(0, int(parent_complexity) - 1)
     execution_status = (
-        PlanExecutionStatus.EXECUTABLE.value
+        PlanExecutionStatus.EXPLORATION_ONLY.value
+        if intent.plan_class == PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value
+        else PlanExecutionStatus.EXECUTABLE.value
         if elaborated_theorem_id and proposition_hash
         else PlanExecutionStatus.PLANNING_ONLY.value
+    )
+    exploration_categories = (
+        DECOMPOSITION_CATEGORIES
+        if intent.plan_class == PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value
+        else ()
     )
     transformation_ref = (
         "typed-reframe:" + proposition_hash
@@ -482,6 +590,9 @@ def compile_strategy_intent(
         "proposition_transformation_ref": transformation_ref,
         "case_partition_ids": case_partitions,
         "execution_status": execution_status,
+        "candidate_categories": exploration_categories,
+        "candidate_budget": 9 if exploration_categories else 0,
+        "diversity_minimum": 8 if exploration_categories else 0,
     }
     content_hash = _digest(canonical)
     gain_by_class = {
@@ -489,12 +600,14 @@ def compile_strategy_intent(
         PlanClass.DISPROOF_OR_COUNTEREXAMPLE.value: 5,
         PlanClass.REDUCTION_TO_KNOWN_RESULT.value: 4,
         PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value: 5,
+        PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value: 5,
     }
     risk_by_class = {
         PlanClass.DIRECT_PROOF.value: 2,
         PlanClass.DISPROOF_OR_COUNTEREXAMPLE.value: 2,
         PlanClass.REDUCTION_TO_KNOWN_RESULT.value: 3,
         PlanClass.REFRAME_DEFINITIONS_OR_REPRESENTATION.value: 1,
+        PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value: 2,
     }
     if intent.plan_class not in gain_by_class:
         raise ValueError(
@@ -507,15 +620,25 @@ def compile_strategy_intent(
         required_definition_ids=definitions,
         theorem_card_ids=card_ids,
         dependency_ids=dependencies,
-        lemma_graph=(LemmaNode(
-            "L-" + content_hash[:12], dependencies, target_ref, target_complexity,
-        ),),
+        lemma_graph=(
+            ()
+            if exploration_categories else
+            (LemmaNode(
+                "L-" + content_hash[:12],
+                dependencies,
+                target_ref,
+                target_complexity,
+            ),)
+        ),
         falsification_test_id=intent.falsification_criterion_id,
         success_criterion_id=intent.success_criterion_id,
         abandonment_criterion_id=intent.abandonment_criterion_id,
         expected_information_gain=gain_by_class[intent.plan_class],
         assumption_ids=(),
-        restriction_ids=(),
+        restriction_ids=(
+            ("NO_LEDGER_MUTATION", "NO_PROOF_SEARCH")
+            if exploration_categories else ()
+        ),
         parent_obligation_ref=parent_obligation_ref,
         parent_complexity=int(parent_complexity),
         target_complexity=target_complexity,
@@ -530,6 +653,9 @@ def compile_strategy_intent(
         case_partition_ids=case_partitions,
         execution_status=execution_status,
         content_hash=content_hash,
+        candidate_categories=exploration_categories,
+        candidate_budget=9 if exploration_categories else 0,
+        diversity_minimum=8 if exploration_categories else 0,
     ),)
 
 
@@ -553,7 +679,10 @@ def evaluate_feasibility(
         reasons: list[str] = []
         if not set(plan.required_definition_ids) <= definitions:
             reasons.append(FeasibilityReason.UNMET_DEFINITION.value)
-        if plan.execution_status != PlanExecutionStatus.EXECUTABLE.value:
+        if plan.execution_status not in {
+            PlanExecutionStatus.EXECUTABLE.value,
+            PlanExecutionStatus.EXPLORATION_ONLY.value,
+        }:
             reasons.append(FeasibilityReason.PLANNING_ONLY.value)
         if (
             plan.plan_class

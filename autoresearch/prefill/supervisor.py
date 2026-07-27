@@ -81,6 +81,10 @@ RESUMABLE_ORCHESTRATION_STATES = frozenset({
     ProofState.SYNTHESIS,
     ProofState.DEFINITION_RESOLUTION,
     ProofState.DECOMPOSER,
+    ProofState.DECOMPOSITION_EXPLORATION,
+    ProofState.CANDIDATE_PREFILTER,
+    ProofState.CANDIDATE_FORMALIZATION,
+    ProofState.REDUCTION_CERTIFICATION,
     ProofState.MATH_IR_TRANSLATION,
     ProofState.HOST_TYPED_IR_GATE,
     ProofState.LEAN_ELABORATION_GATE,
@@ -1883,12 +1887,29 @@ def is_contract_bound_subgoal_resume(
     """Recognize a typed decomposition resume independent of wrapper candidate."""
     return bool(
         checkpoint is not None
-        and checkpoint.proof_state == ProofState.DECOMPOSER
+        and checkpoint.proof_state in {
+            ProofState.DECOMPOSER,
+            ProofState.DECOMPOSITION_EXPLORATION,
+            ProofState.CANDIDATE_PREFILTER,
+            ProofState.CANDIDATE_FORMALIZATION,
+            ProofState.REDUCTION_CERTIFICATION,
+        }
         and checkpoint.target_obligation_id
         and checkpoint.proposition_hash
         and checkpoint.target_context_hash
         and checkpoint.selected_strategy_plan_id
-        and checkpoint.research_contract_id
+        and (
+            checkpoint.research_contract_id
+            or (
+                checkpoint.proof_state in {
+                    ProofState.DECOMPOSITION_EXPLORATION,
+                    ProofState.CANDIDATE_PREFILTER,
+                    ProofState.CANDIDATE_FORMALIZATION,
+                    ProofState.REDUCTION_CERTIFICATION,
+                }
+                and checkpoint.exploration_contract_id
+            )
+        )
         and not checkpoint.adapter_status
     )
 

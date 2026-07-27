@@ -106,6 +106,10 @@ class ProofState(str, Enum):
     DEFINITION_RESOLUTION = "DEFINITION_RESOLUTION"
     PARENT_STATEMENT_UNDERSPECIFIED = "PARENT_STATEMENT_UNDERSPECIFIED"
     DECOMPOSER = "DECOMPOSER"
+    DECOMPOSITION_EXPLORATION = "DECOMPOSITION_EXPLORATION"
+    CANDIDATE_PREFILTER = "CANDIDATE_PREFILTER"
+    CANDIDATE_FORMALIZATION = "CANDIDATE_FORMALIZATION"
+    REDUCTION_CERTIFICATION = "REDUCTION_CERTIFICATION"
     MATH_IR_TRANSLATION = "MATH_IR_TRANSLATION"
     HOST_TYPED_IR_GATE = "HOST_TYPED_IR_GATE"
     LEAN_ELABORATION_GATE = "LEAN_ELABORATION_GATE"
@@ -195,6 +199,7 @@ ROLE_ARTIFACT_KEYS = {
 ALLOWED_TRANSITIONS = {
     ProofState.STRATEGY_TOURNAMENT: {
         ProofState.RESEARCH_CONTRACT_GATE, ProofState.DECOMPOSER,
+        ProofState.DECOMPOSITION_EXPLORATION,
         ProofState.DEFINITION_RESOLUTION,
         ProofState.BLOCKED,
     },
@@ -237,9 +242,29 @@ ALLOWED_TRANSITIONS = {
     },
     ProofState.DECOMPOSER: {
         ProofState.DECOMPOSER, ProofState.MATH_IR_TRANSLATION,
+        ProofState.DECOMPOSITION_EXPLORATION,
         ProofState.SYNTHESIS, ProofState.DEFINITION_RESOLUTION,
         ProofState.DECOMPOSITION_STAGNATED, ProofState.MATHEMATICAL_STAGNATION,
         ProofState.BLOCKED,
+    },
+    ProofState.DECOMPOSITION_EXPLORATION: {
+        ProofState.CANDIDATE_PREFILTER, ProofState.DECOMPOSER,
+        ProofState.STRATEGY_TOURNAMENT, ProofState.BLOCKED,
+    },
+    ProofState.CANDIDATE_PREFILTER: {
+        ProofState.CANDIDATE_FORMALIZATION, ProofState.DECOMPOSER,
+        ProofState.STRATEGY_TOURNAMENT, ProofState.BLOCKED,
+    },
+    ProofState.CANDIDATE_FORMALIZATION: {
+        ProofState.CANDIDATE_FORMALIZATION,
+        ProofState.REDUCTION_CERTIFICATION, ProofState.DECOMPOSER,
+        ProofState.STRATEGY_TOURNAMENT, ProofState.BLOCKED,
+    },
+    ProofState.REDUCTION_CERTIFICATION: {
+        ProofState.REDUCTION_CERTIFICATION,
+        ProofState.CANDIDATE_FORMALIZATION, ProofState.PROOF_SEARCH,
+        ProofState.ADVERSARIAL_REVIEW, ProofState.JUDGE, ProofState.COMMIT,
+        ProofState.DECOMPOSER, ProofState.BLOCKED,
     },
     ProofState.MATH_IR_TRANSLATION: {
         ProofState.MATH_IR_TRANSLATION, ProofState.DECOMPOSER,
@@ -310,6 +335,10 @@ ALLOWED_TRANSITIONS = {
     ProofState.BLOCKED: {
         ProofState.BLOCKED, ProofState.STRATEGY_TOURNAMENT,
         ProofState.RESEARCH_CONTRACT_GATE,
+        ProofState.DECOMPOSITION_EXPLORATION,
+        ProofState.CANDIDATE_PREFILTER,
+        ProofState.CANDIDATE_FORMALIZATION,
+        ProofState.REDUCTION_CERTIFICATION,
         *ROLE_ORDER[:-1],
     },
     ProofState.IDLE: {
@@ -514,6 +543,16 @@ class OrchestrationCheckpoint:
     candidate_count: int = 0
     ranking_hash: str = ""
     ranked_candidate_ids: list[str] = field(default_factory=list)
+    exploration_contract_id: str = ""
+    exploration_contract_hash: str = ""
+    exploration_candidate_refs: list[dict[str, Any]] = field(default_factory=list)
+    exploration_rejections: dict[str, list[str]] = field(default_factory=dict)
+    exploration_selected_candidate_ids: list[str] = field(default_factory=list)
+    exploration_current_index: int = 0
+    exploration_current_candidate_id: str = ""
+    exploration_formalization_status: str = ""
+    exploration_reduction_status: str = ""
+    exploration_exhaustion_hash: str = ""
     selected_move_id: str = ""
     evidence_gap_graph_hash: str = ""
     proof_plan_hash: str = ""

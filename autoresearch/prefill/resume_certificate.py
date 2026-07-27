@@ -396,6 +396,9 @@ def build_resume_certificate(
     remediation = (
         selected_payload.get("plan_kind") == "DEFINITION_RESOLUTION_PLAN"
     )
+    exploration = (
+        selected_payload.get("plan_kind") == "DECOMPOSE_TO_SUBPROBLEMS"
+    )
     if remediation and (
         intended_next_role != "definition_resolution"
         or selected_payload.get("proof_search_allowed") is not False
@@ -403,6 +406,19 @@ def build_resume_certificate(
     ):
         raise ResumeCertificateError(
             "RESUME_CERTIFICATE_REMEDIATION_ROUTE_INVALID"
+        )
+    if exploration and (
+        intended_next_role not in {
+            "decomposition_exploration",
+            "candidate_prefilter",
+            "candidate_formalization",
+            "reduction_certification",
+        }
+        or selected_payload.get("proof_search_allowed") is not False
+        or selected_payload.get("next_gate") != "DECOMPOSITION_EXPLORATION"
+    ):
+        raise ResumeCertificateError(
+            "RESUME_CERTIFICATE_EXPLORATION_ROUTE_INVALID"
         )
     body = {
         "schema_version": CERTIFICATE_SCHEMA_VERSION,
@@ -456,10 +472,13 @@ def build_resume_certificate(
         },
         "execution_policy": {
             "definition_resolution_only": remediation,
-            "proof_search_allowed": not remediation,
-            "oprover_allowed": not remediation,
+            "decomposition_exploration_only": exploration,
+            "proof_search_allowed": not remediation and not exploration,
+            "oprover_allowed": not remediation and not exploration,
             "next_gate": (
-                "RESEARCH_CONTRACT_GATE" if remediation else "PROOF_SEARCH"
+                "RESEARCH_CONTRACT_GATE"
+                if remediation else "DECOMPOSITION_EXPLORATION"
+                if exploration else "PROOF_SEARCH"
             ),
         },
         "issued_at": now,

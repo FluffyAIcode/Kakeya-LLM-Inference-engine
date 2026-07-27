@@ -60,7 +60,17 @@ from autoresearch.prefill.architecture_v9 import (
     run_host_definition_gate,
 )
 from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
-from autoresearch.prefill.strategy_tournament import StrategyEvent
+from autoresearch.prefill.strategy_tournament import (
+    StrategyEvent,
+    build_decomposition_exploration_plan,
+)
+from autoresearch.prefill.decomposition_exploration import (
+    gate_decomposition_exploration,
+    generate_private_candidate_refs,
+    next_formalization_candidate,
+    prefilter_private_candidates,
+    rank_private_candidates,
+)
 from autoresearch.prefill.stepwise_proof import (
     ActionSelection,
     LeanExecutionContext,
@@ -4218,6 +4228,147 @@ def _run_typed_definition_auditor(
     return artifact, ref.sha256, text, expected_run_id
 
 
+def _start_decomposition_exploration(
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    checkpoint_path: Path,
+    run_role,
+    orchestration_id: str,
+    artifact_hashes: Mapping[str, str],
+) -> dict[str, object]:
+    """Generate private candidates and persist only Host-owned references."""
+    plan = build_decomposition_exploration_plan(
+        target_ref=checkpoint.target_obligation_id,
+        parent_obligation_ref=checkpoint.target_obligation_id,
+        parent_complexity=12,
+        environment_hash=checkpoint.target_environment_hash,
+        registered_definition_ids=(),
+        theorem_card_ids=checkpoint.theorem_card_ids,
+        dependency_ids=artifact_hashes.values(),
+        evidence_refs=artifact_hashes.values(),
+        known_no_go_refs=checkpoint.forbidden_semantic_fingerprints,
+        candidate_budget=9,
+    )
+    contract = gate_decomposition_exploration(
+        plan,
+        target_obligation_id=checkpoint.target_obligation_id,
+        target_context_hash=checkpoint.target_context_hash,
+        proposition_hash=checkpoint.proposition_hash,
+        evidence_refs=artifact_hashes.values(),
+        no_go_refs=checkpoint.forbidden_semantic_fingerprints,
+        theorem_card_ids=checkpoint.theorem_card_ids,
+        candidate_budget=9,
+    )
+    checkpoint.transition(
+        ProofState.DECOMPOSITION_EXPLORATION,
+        "no-registered-move:private-candidate-exploration",
+        strategy_reused=True,
+    )
+
+    def run_candidate(short_id: str, prompt: str) -> str:
+        run_id = f"{orchestration_id}:exploration:{short_id}:v1"
+        text, actual_run_id = run_role(
+            "decomposer_scratchpad",
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Write one private untrusted mathematical memo in prose "
+                        "or LaTeX. Never emit JSON, Lean, a DSL, hidden "
+                        "assumptions, secrets, or an authoritative artifact."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            run_id,
+        )
+        if actual_run_id != run_id:
+            raise RuntimeError("exploration candidate run ID mismatch")
+        return text
+
+    candidates = generate_private_candidate_refs(
+        contract,
+        memo_dir=checkpoint_path.with_suffix(".exploration_memos"),
+        run_candidate=run_candidate,
+    )
+    checkpoint.transition(
+        ProofState.CANDIDATE_PREFILTER,
+        "private-candidates-generated",
+        strategy_reused=True,
+    )
+    filtered = prefilter_private_candidates(
+        candidates,
+        target_obligation_id=checkpoint.target_obligation_id,
+        no_go_refs=contract.no_go_refs,
+    )
+    ranking = rank_private_candidates(filtered.survivors, top_k=3)
+    checkpoint.exploration_contract_id = contract.contract_id
+    checkpoint.exploration_contract_hash = contract.content_hash
+    checkpoint.exploration_candidate_refs = [
+        {
+            key: value for key, value in asdict(candidate).items()
+            if key != "memo_path"
+        }
+        for candidate in candidates
+    ]
+    checkpoint.exploration_rejections = {
+        candidate_id: list(reasons)
+        for candidate_id, reasons in filtered.rejected
+    }
+    checkpoint.candidate_set_hash = filtered.candidate_set_hash
+    checkpoint.candidate_count = len(candidates)
+    checkpoint.candidate_hashes = [
+        candidate.semantic_fingerprint for candidate in candidates
+    ]
+    checkpoint.ranking_hash = ranking.ranking_hash
+    checkpoint.ranked_candidate_ids = list(ranking.ranked_candidate_ids)
+    checkpoint.exploration_selected_candidate_ids = list(
+        ranking.selected_candidate_ids
+    )
+    checkpoint.exploration_current_index = 0
+    checkpoint.exploration_current_candidate_id = (
+        ranking.selected_candidate_ids[0]
+        if ranking.selected_candidate_ids else ""
+    )
+    checkpoint.exploration_formalization_status = (
+        "PENDING" if ranking.selected_candidate_ids else "EXHAUSTED"
+    )
+    checkpoint.recovery_events.append({
+        "event_type": "DECOMPOSITION_EXPLORATION_CANDIDATES_READY",
+        "event_id": filtered.candidate_set_hash,
+        "contract_id": contract.contract_id,
+        "candidate_count": len(candidates),
+        "survivor_count": len(filtered.survivors),
+        "selected_candidate_ids": list(ranking.selected_candidate_ids),
+        "rejected_reason_codes": sorted({
+            reason for _, reasons in filtered.rejected for reason in reasons
+        }),
+        "private_memo_text_exposed": False,
+        "ledger_mutated": False,
+        "created_at": time.time(),
+    })
+    if ranking.selected_candidate_ids:
+        checkpoint.transition(
+            ProofState.CANDIDATE_FORMALIZATION,
+            "top-k-private-candidates-selected",
+            strategy_reused=True,
+        )
+    else:
+        checkpoint.transition(
+            ProofState.DECOMPOSER,
+            "decomposition-exploration-empty-backjump",
+            strategy_reused=True,
+        )
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    return {
+        "exploration_contract_id": contract.contract_id,
+        "candidate_set_hash": filtered.candidate_set_hash,
+        "candidate_count": len(candidates),
+        "survivor_count": len(filtered.survivors),
+        "selected_candidate_ids": list(ranking.selected_candidate_ids),
+    }
+
+
 def _run_typed_ir_v2(
     ledger: ProofObligationLedger,
     parent: ProofObligation,
@@ -4248,6 +4399,116 @@ def _run_typed_ir_v2(
             transcripts, role_run_ids, {
                 "host_gates_passed": False,
                 "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
+            },
+        )
+    if (
+        checkpoint.proof_state == ProofState.CANDIDATE_FORMALIZATION
+        and checkpoint.ranked_candidate_ids
+    ):
+        index = checkpoint.exploration_current_index
+        formalization_queue = checkpoint.ranked_candidate_ids
+        candidate_id, next_candidate_id, queue_exhausted = (
+            next_formalization_candidate(
+                formalization_queue,
+                current_index=index,
+            )
+        )
+        candidate = next(
+            item for item in checkpoint.exploration_candidate_refs
+            if item.get("candidate_id") == candidate_id
+        )
+        intent_hash = _canonical_json_hash({
+            "schema_version": 1,
+            "target_obligation_id": checkpoint.target_obligation_id,
+            "candidate_id": candidate_id,
+            "category": candidate.get("category", ""),
+            "required_definition_ids": candidate.get(
+                "required_definition_ids", (),
+            ),
+            "registered_symbols_only": True,
+            "private_memo_consumed": False,
+        })
+        checkpoint.exploration_rejections[candidate_id] = [
+            "UNMAPPABLE_TYPED_CANDIDATE_INTENT",
+        ]
+        checkpoint.exploration_formalization_status = (
+            "REJECTED_UNMAPPABLE_TYPED_CANDIDATE_INTENT"
+        )
+        checkpoint.recovery_events.append({
+            "event_type": "EXPLORATION_CANDIDATE_FORMALIZATION_REJECTED",
+            "event_id": intent_hash,
+            "candidate_id": candidate_id,
+            "candidate_index": index,
+            "reason_code": "UNMAPPABLE_TYPED_CANDIDATE_INTENT",
+            "lean_invoked": False,
+            "ledger_mutated": False,
+            "created_at": time.time(),
+        })
+        if not queue_exhausted:
+            checkpoint.exploration_current_index = index + 1
+            checkpoint.exploration_current_candidate_id = (
+                next_candidate_id
+            )
+            checkpoint.exploration_formalization_status = "PENDING"
+            checkpoint.transition(
+                ProofState.CANDIDATE_FORMALIZATION,
+                "candidate-unmappable:try-next-ranked-candidate",
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                ["EXPLORATION_CANDIDATE_UNMAPPABLE_TRY_NEXT"],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
+                    "candidate_id": candidate_id,
+                    "next_candidate_id": next_candidate_id,
+                    "strategy_rerun": False,
+                },
+            )
+        exhaustion = _canonical_json_hash({
+            "contract_id": checkpoint.exploration_contract_id,
+            "candidate_set_hash": checkpoint.candidate_set_hash,
+            "formalization_queue_ids": formalization_queue,
+            "rejections": checkpoint.exploration_rejections,
+            "ledger_mutated": False,
+        })
+        checkpoint.exploration_exhaustion_hash = exhaustion
+        checkpoint.exploration_current_candidate_id = ""
+        checkpoint.exploration_formalization_status = "EXHAUSTED"
+        checkpoint.recovery_events.append({
+            "event_type": "DECOMPOSITION_EXPLORATION_EXHAUSTED",
+            "event_id": exhaustion,
+            "contract_id": checkpoint.exploration_contract_id,
+            "candidate_set_hash": checkpoint.candidate_set_hash,
+            "rejected_candidate_ids": list(formalization_queue),
+            "ledger_mutated": False,
+            "oprover_invoked": False,
+            "target_state": ProofState.STRATEGY_TOURNAMENT.value,
+            "created_at": time.time(),
+        })
+        checkpoint.transition(
+            ProofState.DECOMPOSER,
+            "decomposition-exploration-exhausted:typed-backjump",
+            strategy_reused=True,
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False,
+            ["DECOMPOSITION_EXPLORATION_EXHAUSTED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "MATHEMATICAL_STAGNATION",
+                "exploration_exhaustion_hash": exhaustion,
             },
         )
     missing = artifacts["definition_auditor"].missing_definitions
@@ -4308,34 +4569,24 @@ def _run_typed_ir_v2(
     )
     if not candidate_registry.candidates:
         if empty_fingerprint in checkpoint.scratchpad_math_fingerprints:
-            checkpoint.stagnation_reason = (
-                "IDENTICAL_EMPTY_CANDIDATE_STATE:"
-                + empty_fingerprint
-            )
-            checkpoint.current_definition_gap_id = (
-                checkpoint.current_definition_gap_id
-                or "REGISTRY_EVIDENCE_EXPANSION"
-            )
-            if checkpoint.proof_state != ProofState.DEFINITION_RESOLUTION:
-                checkpoint.transition(
-                    ProofState.DEFINITION_RESOLUTION,
-                    checkpoint.stagnation_reason,
-                    strategy_reused=True,
+            if checkpoint.exploration_exhaustion_hash:
+                return DecompositionCertificateResult(
+                    False,
+                    ["DECOMPOSITION_EXPLORATION_EXHAUSTED"],
+                    artifacts,
+                    hashes,
+                    transcripts,
+                    role_run_ids,
+                    {
+                        "host_gates_passed": False,
+                        "failure_status": "MATHEMATICAL_STAGNATION",
+                        "exploration_exhaustion_hash": (
+                            checkpoint.exploration_exhaustion_hash
+                        ),
+                    },
                 )
-            save_orchestration_checkpoint(checkpoint_path, checkpoint)
-            return DecompositionCertificateResult(
-                False,
-                [checkpoint.stagnation_reason],
-                artifacts,
-                hashes,
-                transcripts,
-                role_run_ids,
-                {
-                    "host_gates_passed": False,
-                    "failure_status": "MATHEMATICAL_STAGNATION",
-                },
-            )
-        checkpoint.scratchpad_math_fingerprints.append(empty_fingerprint)
+        else:
+            checkpoint.scratchpad_math_fingerprints.append(empty_fingerprint)
     scratch_role = (
         "synthesis_scratchpad" if synthesis_mode else "decomposer_scratchpad"
     )
@@ -4392,28 +4643,16 @@ def _run_typed_ir_v2(
             },
         )
     if not candidate_registry.candidates:
-        event = {
-            "event_type": "NO_REGISTERED_DECOMPOSITION_MOVE",
-            "event_id": (
-                "no-registered-decomposition-move-"
-                + candidate_registry.content_hash[:16]
-            ),
-            "target_state": ProofState.DECOMPOSER.value,
-            "viewpoint": checkpoint.viewpoint or "definitions",
-            "candidate_registry_hash": candidate_registry.content_hash,
-            "created_at": time.time(),
-        }
-        checkpoint.recovery_events.append(event)
-        checkpoint.begin_decomposition_iteration(
-            _select_decomposer_viewpoint(
-                checkpoint, artifacts["definition_auditor"],
-            ),
-            "NO_REGISTERED_DECOMPOSITION_MOVE",
+        exploration = _start_decomposition_exploration(
+            checkpoint,
+            checkpoint_path=checkpoint_path,
+            run_role=run_role,
+            orchestration_id=orchestration_id,
+            artifact_hashes=hashes,
         )
-        save_orchestration_checkpoint(checkpoint_path, checkpoint)
         return DecompositionCertificateResult(
             False,
-            ["NO_REGISTERED_DECOMPOSITION_MOVE"],
+            ["DECOMPOSITION_EXPLORATION_STARTED"],
             artifacts,
             hashes,
             transcripts,
@@ -4422,6 +4661,7 @@ def _run_typed_ir_v2(
                 "host_gates_passed": False,
                 "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
                 "candidate_registry_hash": candidate_registry.content_hash,
+                **exploration,
             },
         )
     checkpoint.candidate_set_hash = candidate_registry.content_hash
@@ -5519,7 +5759,15 @@ def run_certified_decomposition(
                     )
                 if persisted:
                     definition_artifact = artifacts.get("definition_auditor")
-                    if definition_artifact is not None:
+                    if (
+                        definition_artifact is not None
+                        and orchestration_checkpoint.proof_state not in {
+                            ProofState.DECOMPOSITION_EXPLORATION,
+                            ProofState.CANDIDATE_PREFILTER,
+                            ProofState.CANDIDATE_FORMALIZATION,
+                            ProofState.REDUCTION_CERTIFICATION,
+                        }
+                    ):
                         definition_ref = (
                             orchestration_checkpoint.validated_artifacts[
                                 "definition_auditor"

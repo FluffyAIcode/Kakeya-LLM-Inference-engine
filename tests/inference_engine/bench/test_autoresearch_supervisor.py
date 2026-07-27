@@ -361,6 +361,18 @@ def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
         lean_symbol_table_id="lean-symbols-test",
         lean_symbol_table_version=1,
         formalizer_unit_hashes={"PARENT_SIGNATURE": "a" * 64},
+        candidate_count=9,
+        exploration_contract_id="DEC-test",
+        exploration_selected_candidate_ids=["XC-1", "XC-2", "XC-3"],
+        exploration_current_index=1,
+        exploration_current_candidate_id="XC-2",
+        exploration_formalization_status="PENDING",
+        exploration_reduction_status="NOT_STARTED",
+        exploration_rejections={"XC-0": ["EXACT_DUPLICATE"]},
+        exploration_candidate_refs=[{
+            "candidate_id": "XC-1",
+            "memo_sha256": "m" * 64,
+        }],
     )
     save_orchestration_checkpoint(state_path, checkpoint)
     monkeypatch.setenv(
@@ -397,6 +409,12 @@ def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
     assert live["validated_formalizer_unit_hashes"] == {
         "PARENT_SIGNATURE": "a" * 64,
     }
+    exploration = live["decomposition_exploration"]
+    assert exploration["generated"] == 9
+    assert exploration["selected_candidate_ids"] == ["XC-1", "XC-2", "XC-3"]
+    assert exploration["current_candidate_id"] == "XC-2"
+    assert exploration["rejected_reason_codes"] == ["EXACT_DUPLICATE"]
+    assert "memo_sha256" not in json.dumps(exploration)
 
 
 @pytest.mark.parametrize(

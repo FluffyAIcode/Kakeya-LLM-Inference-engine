@@ -59,9 +59,18 @@ ENV = "e" * 64
 
 
 class _IntentSDK:
-    def __init__(self, target, gap_ref=""):
+    def __init__(
+        self,
+        target,
+        gap_ref="",
+        *,
+        plan_class="DIRECT_PROOF",
+        move_family="MOVE_DIRECT",
+    ):
         self.target = target
         self.gap_ref = gap_ref
+        self.plan_class = plan_class
+        self.move_family = move_family
         self.calls = 0
 
     def list_models(self, api_key):
@@ -88,14 +97,14 @@ class _IntentSDK:
         return SimpleNamespace(
             status="finished",
             result=(
-                "plan_class DIRECT_PROOF;\n"
+                f"plan_class {self.plan_class};\n"
                 f"target_ref {self.target};\n"
                 f"{gap}"
-                "move_family MOVE_DIRECT;\n"
+                f"move_family {self.move_family};\n"
                 "evidence_ref EVIDENCE_TARGET_STATEMENT;\n"
-                "falsification_criterion_id FALSIFY_DIRECT_PROOF;\n"
-                "success_criterion_id SUCCESS_DIRECT_PROOF;\n"
-                "abandonment_criterion_id ABANDON_DIRECT_PROOF;\n"
+                f"falsification_criterion_id FALSIFY_{self.plan_class};\n"
+                f"success_criterion_id SUCCESS_{self.plan_class};\n"
+                f"abandonment_criterion_id ABANDON_{self.plan_class};\n"
                 "END;"
             ),
             agent_id="intent",
@@ -103,11 +112,22 @@ class _IntentSDK:
         )
 
 
-def _strategy_adapter(target, gap_ref=""):
+def _strategy_adapter(
+    target,
+    gap_ref="",
+    *,
+    plan_class="DIRECT_PROOF",
+    move_family="MOVE_DIRECT",
+):
     return CursorStrategyAdapter(
         api_key="key",
         model_id="gpt-5.6-sol",
-        sdk=_IntentSDK(target, gap_ref),
+        sdk=_IntentSDK(
+            target,
+            gap_ref,
+            plan_class=plan_class,
+            move_family=move_family,
+        ),
         max_attempts=1,
     )
 
@@ -155,15 +175,18 @@ def _contract():
     return decision.contract
 
 
-def test_four_independent_plan_classes_and_event_only_trigger():
+def test_five_independent_plan_classes_and_event_only_trigger():
     plans = _plans()
     assert {item.plan_class for item in plans} == {
         item.value for item in PlanClass
         if item is not PlanClass.DEFINITION_RESOLUTION_PLAN
     }
-    assert len({item.source_move_id for item in plans}) == 4
+    assert len({item.source_move_id for item in plans}) == 5
     assert all(
-        item.execution_status == PlanExecutionStatus.EXECUTABLE.value
+        item.execution_status in {
+            PlanExecutionStatus.EXECUTABLE.value,
+            PlanExecutionStatus.EXPLORATION_ONLY.value,
+        }
         for item in plans
     )
     assert not strategy_event_due(
@@ -324,6 +347,84 @@ def test_full_preproof_transition_sequence_and_valid_contract(tmp_path, monkeypa
     ).read_text())
     assert contract_payload["definition_auditor_hash"]
     assert contract_payload["definition_gap_ids"] == []
+
+
+def test_strategy_exploration_plan_bypasses_proof_contract_and_search(tmp_path):
+    checkpoint_path = tmp_path / "proof_orchestration.json"
+    project_root = Path(__file__).resolve().parents[3]
+    statement = "A canonical target for private decomposition exploration."
+    target = "exploration-root"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id=target,
+    )
+    activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id=target,
+        statement=statement,
+        environment_hash=pinned_environment_hash(project_root),
+        strategy_plan_hash="STRATEGY_PENDING",
+    )
+    persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="definition_auditor",
+        payload={
+            "definitions": [{"definition_id": "D1"}],
+            "missing_definitions": [],
+        },
+        dependencies=[],
+        source_run_id="audit",
+    )
+    checkpoint.transition(ProofState.MATH_IR_TRANSLATION, "decomposed")
+    checkpoint.transition(ProofState.HOST_TYPED_IR_GATE, "translated")
+    checkpoint.transition(ProofState.LEAN_ELABORATION_GATE, "host-gated")
+    checkpoint.transition(ProofState.STRATEGY_TOURNAMENT, "lean-elaborated")
+    result = run_architecture_v7_entry(
+        checkpoint_path,
+        checkpoint,
+        project_root=project_root,
+        target_ref=target,
+        target_statement=statement,
+        parent_obligation_ref=target,
+        parent_complexity=20,
+        event_type=StrategyEvent.MATHEMATICAL_STAGNATION,
+        event_id="MATHEMATICAL_STAGNATION:explore",
+        elaborated_theorem_id="hostTheorem",
+        proposition_hash="p" * 64,
+        strategy_adapter=_strategy_adapter(
+            target,
+            plan_class="DECOMPOSE_TO_SUBPROBLEMS",
+            move_family="MOVE_EXPLORE_SUBPROBLEMS",
+        ),
+    )
+    assert result.proof_state == ProofState.DECOMPOSITION_EXPLORATION, (
+        result.last_transition_reason,
+        result.adapter_status,
+        result.research_contract_rejection_codes,
+        result.selected_strategy_plan_id,
+    )
+    assert result.exploration_contract_id
+    assert result.research_contract_id == ""
+    assert "research_contract" not in result.validated_artifacts
+    payload = json.loads(Path(
+        result.validated_artifacts[
+            "decomposition_exploration_contract"
+        ].path
+    ).read_text())
+    assert payload["ledger_mutation_allowed"] is False
+    assert payload["proof_search_allowed"] is False
+    tournament = json.loads(Path(
+        result.validated_artifacts["strategy_tournament"].path
+    ).read_text())
+    selected = next(
+        item for item in tournament["plans"]
+        if item["plan_id"] == result.selected_strategy_plan_id
+    )
+    assert selected["next_gate"] == "DECOMPOSITION_EXPLORATION"
+    assert selected["proof_search_allowed"] is False
 
 
 def test_unelaborated_missing_definition_and_quarantine_route_to_decomposer(

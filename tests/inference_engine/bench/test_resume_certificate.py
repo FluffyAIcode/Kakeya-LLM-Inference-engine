@@ -406,6 +406,7 @@ def test_definition_resolution_certificate_forbids_proof_and_oprover(tmp_path):
     assert certificate["intended_next_role"] == "definition_resolution"
     assert certificate["execution_policy"] == {
         "definition_resolution_only": True,
+        "decomposition_exploration_only": False,
         "proof_search_allowed": False,
         "oprover_allowed": False,
         "next_gate": "RESEARCH_CONTRACT_GATE",

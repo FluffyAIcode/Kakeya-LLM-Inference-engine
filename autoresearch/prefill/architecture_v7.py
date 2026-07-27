@@ -19,6 +19,9 @@ from autoresearch.prefill.definition_resolution import (
     load_resolution_store,
     resolve_one_concept,
 )
+from autoresearch.prefill.decomposition_exploration import (
+    gate_decomposition_exploration,
+)
 from autoresearch.prefill.orchestration_state import (
     OrchestrationCheckpoint,
     ProofState,
@@ -646,6 +649,7 @@ def run_architecture_v7_entry(
                 "move_family": (
                     "MOVE_DIRECT", "MOVE_FALSIFY", "MOVE_REDUCE",
                     "MOVE_REFRAME", "MOVE_REGISTRY_EXPANSION",
+                    "MOVE_EXPLORE_SUBPROBLEMS",
                 ),
                 "theorem_tag": theorem_tags,
                 "evidence_ref": evidence_ids,
@@ -801,11 +805,16 @@ def run_architecture_v7_entry(
                         "RESEARCH_CONTRACT_GATE"
                         if plan.plan_class
                         == PlanClass.DEFINITION_RESOLUTION_PLAN.value
+                        else "DECOMPOSITION_EXPLORATION"
+                        if plan.plan_class
+                        == PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value
                         else "PROOF_SEARCH"
                     ),
                     "proof_search_allowed": (
-                        plan.plan_class
-                        != PlanClass.DEFINITION_RESOLUTION_PLAN.value
+                        plan.plan_class not in {
+                            PlanClass.DEFINITION_RESOLUTION_PLAN.value,
+                            PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value,
+                        }
                     ),
                 }
                 for plan in plans
@@ -840,6 +849,41 @@ def run_architecture_v7_entry(
     # Memo metadata, constrained intent, compiled plans, feasibility, selection,
     # and the reachable artifact pointer become visible in one checkpoint swap.
     save_checkpoint(checkpoint_path, checkpoint)
+    selected = next(
+        (plan for plan in plans if plan.plan_id == tournament.selected_plan_id),
+        None,
+    )
+    if (
+        selected is not None
+        and selected.plan_class == PlanClass.DECOMPOSE_TO_SUBPROBLEMS.value
+    ):
+        exploration = gate_decomposition_exploration(
+            selected,
+            target_obligation_id=target_ref,
+            target_context_hash=checkpoint.target_context_hash,
+            proposition_hash=proposition_hash,
+            evidence_refs=selected.evidence_refs,
+            no_go_refs=selected.known_no_go_refs,
+            theorem_card_ids=selected.theorem_card_ids,
+            candidate_budget=selected.candidate_budget,
+        )
+        checkpoint.exploration_contract_id = exploration.contract_id
+        checkpoint.exploration_contract_hash = exploration.content_hash
+        persist_validated_artifact(
+            checkpoint_path,
+            checkpoint,
+            role="decomposition_exploration_contract",
+            payload=asdict(exploration),
+            dependencies=[tournament_ref.sha256],
+            source_run_id=f"host:{event_id}:exploration-contract",
+        )
+        checkpoint.transition(
+            ProofState.DECOMPOSITION_EXPLORATION,
+            "decomposition-exploration-contract-accepted",
+            strategy_reused=False,
+        )
+        save_checkpoint(checkpoint_path, checkpoint)
+        return checkpoint
     precontract_reasons = []
     if unresolved_definitions:
         precontract_reasons.append("MISSING_DEFINITION")
@@ -872,10 +916,6 @@ def run_architecture_v7_entry(
             )
         save_checkpoint(checkpoint_path, checkpoint)
         return checkpoint
-    selected = next(
-        (plan for plan in plans if plan.plan_id == tournament.selected_plan_id),
-        None,
-    )
     if selected is None:
         checkpoint.research_contract_rejection_codes = []
         checkpoint.transition(
