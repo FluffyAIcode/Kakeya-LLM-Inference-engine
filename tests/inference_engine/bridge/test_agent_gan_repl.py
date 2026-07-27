@@ -4315,12 +4315,16 @@ def test_host_generated_autoresearch_verdict_uses_new_child_frontier():
     assert verdict["outcome"] == "DECOMPOSED"
     assert verdict["created_obligation_ids"] == ["RH-C2-child"]
     ledger.obligations[1].decomposition_certificate_hash = ""
-    assert build_autoresearch_verdict(
+    inconclusive = build_autoresearch_verdict(
         Candidate,
         ledger,
         {"RH-C2": "UNRESOLVED"},
         [ledger.obligations[1]],
-    )["outcome"] == "INCONCLUSIVE"
+    )
+    assert inconclusive["outcome"] == "INCONCLUSIVE"
+    assert inconclusive["new_frontier"] == (
+        "Continue unresolved target RH-C2: Prove zero convergence."
+    )
 
 
 def test_critic_leaf_table_cannot_bypass_certificate():

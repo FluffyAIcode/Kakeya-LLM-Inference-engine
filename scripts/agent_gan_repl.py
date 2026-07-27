@@ -7946,7 +7946,10 @@ def build_autoresearch_verdict(
             )
         )
         frontier = (
-            target.statement if target is not None else
+            (
+                f"Continue unresolved target {target.obligation_id}: "
+                f"{target.statement}"
+            ) if target is not None else
             "Construct a concrete smaller proof obligation."
         )
     return {
