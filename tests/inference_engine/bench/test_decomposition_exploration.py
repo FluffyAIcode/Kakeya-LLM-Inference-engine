@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,7 +31,10 @@ from autoresearch.prefill.strategy_tournament import (
     build_host_plans,
     evaluate_feasibility,
 )
-from scripts.agent_gan_repl import _start_decomposition_exploration
+from scripts.agent_gan_repl import (
+    _run_typed_ir_v2,
+    _start_decomposition_exploration,
+)
 
 
 ROOT = hashlib.sha256(b"RiemannHypothesis").hexdigest()
@@ -354,3 +358,34 @@ def test_exploration_path_has_no_authoritative_model_transport():
     assert "json.loads" not in source
     assert "parse_math_ir" not in source
     assert "validate_lean" not in source
+
+
+def test_exhaustion_replay_never_reruns_strategy_or_private_scratchpad(
+    tmp_path,
+):
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id=TARGET,
+        exploration_exhaustion_hash="x" * 64,
+    )
+    calls = []
+    result = _run_typed_ir_v2(
+        SimpleNamespace(),
+        SimpleNamespace(statement="RiemannHypothesis"),
+        "RiemannHypothesis",
+        lambda *args: calls.append(args),
+        project_root=tmp_path,
+        orchestration_id="orch",
+        checkpoint_path=tmp_path / "checkpoint.json",
+        checkpoint=checkpoint,
+        signature_validator=lambda *args: True,
+        proof_validator=lambda *args: True,
+        artifacts={"definition_auditor": object()},
+        hashes={},
+        role_run_ids={},
+    )
+    assert result.errors == ["DECOMPOSITION_EXPLORATION_EXHAUSTED"]
+    assert result.validation["scratchpad_rerun"] is False
+    assert calls == []
+    assert checkpoint.proof_state == ProofState.DECOMPOSER

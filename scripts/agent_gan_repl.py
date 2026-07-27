@@ -4401,6 +4401,24 @@ def _run_typed_ir_v2(
                 "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
             },
         )
+    if checkpoint.exploration_exhaustion_hash:
+        return DecompositionCertificateResult(
+            False,
+            ["DECOMPOSITION_EXPLORATION_EXHAUSTED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "MATHEMATICAL_STAGNATION",
+                "exploration_exhaustion_hash": (
+                    checkpoint.exploration_exhaustion_hash
+                ),
+                "scratchpad_rerun": False,
+                "strategy_rerun": False,
+            },
+        )
     if (
         checkpoint.proof_state == ProofState.CANDIDATE_FORMALIZATION
         and checkpoint.ranked_candidate_ids
