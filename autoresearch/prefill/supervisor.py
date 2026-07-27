@@ -1791,6 +1791,92 @@ def route_contract_to_subgoal_generation(
     return True
 
 
+def reconcile_canonical_root_binding(
+    checkpoint: OrchestrationCheckpoint,
+    ledger: dict,
+    *,
+    state_path: Path,
+) -> bool:
+    """Derive mutable root caches from the formalized ledger root."""
+    obligation = next(
+        (
+            item for item in ledger.get("obligations", ())
+            if item.get("obligation_id") == checkpoint.target_obligation_id
+        ),
+        None,
+    )
+    if obligation is None:
+        raise ValueError("CANONICAL_ROOT_OBLIGATION_MISSING")
+    proposition_hash = str(obligation.get("proposition_hash", ""))
+    signature_hash = str(obligation.get("lean_signature_hash", ""))
+    canonical_hash = proposition_hash or signature_hash
+    statement = str(obligation.get("statement", ""))
+    if (
+        obligation.get("parent_id")
+        or obligation.get("formal_status") != "FORMALIZED"
+        or len(canonical_hash) != 64
+        or hashlib.sha256(statement.encode()).hexdigest() != canonical_hash
+    ):
+        raise ValueError("CANONICAL_ROOT_BINDING_INVALID")
+    protected = {
+        "proposition_hash": checkpoint.proposition_hash,
+        "parent_statement_sha256": checkpoint.parent_statement_sha256,
+        "parent_signature_sha256": checkpoint.parent_signature_sha256,
+    }
+    if any(
+        value and value != canonical_hash for value in protected.values()
+    ):
+        raise ValueError("CANONICAL_ROOT_PROPOSITION_MISMATCH")
+    try:
+        cached = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        cached = {"schema_version": 1}
+    if not isinstance(cached, dict):
+        raise ValueError("DERIVED_ROOT_GOAL_CACHE_INVALID")
+    changed = any((
+        checkpoint.root_goal_sha256 != canonical_hash,
+        checkpoint.proposition_hash != canonical_hash,
+        checkpoint.parent_statement_sha256 != canonical_hash,
+        checkpoint.parent_signature_sha256 != canonical_hash,
+        checkpoint.target_statement != statement,
+        ledger.get("root_goal_hash") != canonical_hash,
+        cached.get("research_goal") != statement,
+    ))
+    if not changed:
+        return False
+    checkpoint.root_goal_sha256 = canonical_hash
+    checkpoint.proposition_hash = canonical_hash
+    checkpoint.parent_statement_sha256 = canonical_hash
+    checkpoint.parent_signature_sha256 = canonical_hash
+    checkpoint.target_statement = statement
+    ledger["root_goal_hash"] = canonical_hash
+    cached["research_goal"] = statement
+    cached.setdefault("schema_version", 1)
+    encoded = json.dumps(cached, indent=2, ensure_ascii=False) + "\n"
+    temporary = state_path.with_name(
+        f".{state_path.name}.{os.getpid()}.canonical-root.tmp",
+    )
+    temporary.write_text(encoded, encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, state_path)
+    checkpoint.recovery_events.append({
+        "event_type": "CANONICAL_ROOT_BINDING_RECONCILED",
+        "event_id": hashlib.sha256(
+            (
+                checkpoint.target_obligation_id
+                + canonical_hash
+                + checkpoint.research_contract_id
+            ).encode()
+        ).hexdigest(),
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "proposition_hash": canonical_hash,
+        "research_contract_id": checkpoint.research_contract_id,
+        "derived_cache": str(state_path.name),
+        "created_at": time.time(),
+    })
+    return True
+
+
 def is_contract_bound_subgoal_resume(
     checkpoint: OrchestrationCheckpoint | None,
 ) -> bool:
@@ -2277,6 +2363,31 @@ def run_iteration(args, iteration: int) -> dict:
     orchestration_checkpoint = load_orchestration_checkpoint(
         orchestration_state_path,
     )
+    normalized_ledger = asdict(ledger_object)
+    canonical_target = next(
+        (
+            item for item in normalized_ledger.get("obligations", ())
+            if item.get("obligation_id")
+            == (
+                orchestration_checkpoint.target_obligation_id
+                if orchestration_checkpoint is not None else ""
+            )
+        ),
+        {},
+    )
+    if (
+        orchestration_checkpoint is not None
+        and canonical_target.get("proposition_hash")
+        and reconcile_canonical_root_binding(
+            orchestration_checkpoint,
+            normalized_ledger,
+            state_path=state_path,
+        )
+    ):
+        save_orchestration_checkpoint(
+            orchestration_state_path,
+            orchestration_checkpoint,
+        )
     if (
         orchestration_checkpoint is not None
         and ledger_object is not None

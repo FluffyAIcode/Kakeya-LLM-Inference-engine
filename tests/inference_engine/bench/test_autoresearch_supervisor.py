@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import pytest
+from dataclasses import asdict
 from types import SimpleNamespace
 
 from autoresearch.prefill.live_status import AtomicLiveStatus
@@ -46,6 +48,7 @@ from autoresearch.prefill.supervisor import (
     parse_strategy_candidate_transport,
     parse_research_verdict,
     read_results,
+    reconcile_canonical_root_binding,
     repair_research_contract_artifact_dependency,
     repair_candidate_schema,
     recover_contract_subgoal_duplicate_block,
@@ -180,6 +183,92 @@ def test_research_contract_dependency_repairs_to_artifact_hash(tmp_path):
     assert repair_research_contract_artifact_dependency(checkpoint)
     assert contract.dependencies == [tournament.sha256]
     assert not repair_research_contract_artifact_dependency(checkpoint)
+
+
+def test_stale_root_goal_cache_reconciles_without_losing_contract(tmp_path):
+    canonical = hashlib.sha256(b"RiemannHypothesis").hexdigest()
+    state_path = tmp_path / "agent_state.json"
+    state_path.write_text(json.dumps({
+        "schema_version": 1,
+        "research_goal": "stale Hilbert-Polya cache",
+    }))
+    ledger = {
+        "ledger_id": "rh",
+        "version": 96,
+        "obligations": [{
+            "obligation_id": "RH-C0-root",
+            "statement": "RiemannHypothesis",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+            "formal_status": "FORMALIZED",
+            "lean_signature_hash": canonical,
+            "proposition_hash": canonical,
+        }],
+    }
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id="RH-C0-root",
+        target_statement="RiemannHypothesis",
+        proposition_hash=canonical,
+        parent_statement_sha256=canonical,
+        parent_signature_sha256=canonical,
+        root_goal_sha256=hashlib.sha256(b"stale").hexdigest(),
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+    )
+    assert reconcile_canonical_root_binding(
+        checkpoint,
+        ledger,
+        state_path=state_path,
+    )
+    assert checkpoint.root_goal_sha256 == canonical
+    assert checkpoint.research_contract_id == "RC-root"
+    assert checkpoint.research_contract_hash == "contract-hash"
+    assert ledger["root_goal_hash"] == canonical
+    assert json.loads(state_path.read_text())["research_goal"] == (
+        "RiemannHypothesis"
+    )
+    assert not reconcile_canonical_root_binding(
+        checkpoint,
+        ledger,
+        state_path=state_path,
+    )
+
+
+def test_true_canonical_proposition_mismatch_preserves_checkpoint(tmp_path):
+    canonical = hashlib.sha256(b"RiemannHypothesis").hexdigest()
+    state_path = tmp_path / "agent_state.json"
+    state_path.write_text(json.dumps({
+        "schema_version": 1,
+        "research_goal": "stale cache",
+    }))
+    ledger = {"obligations": [{
+        "obligation_id": "RH-C0-root",
+        "statement": "RiemannHypothesis",
+        "parent_id": "",
+        "formal_status": "FORMALIZED",
+        "proposition_hash": canonical,
+    }]}
+    checkpoint = OrchestrationCheckpoint(
+        target_obligation_id="RH-C0-root",
+        proposition_hash="f" * 64,
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+    )
+    before = asdict(checkpoint)
+    with pytest.raises(
+        ValueError,
+        match="CANONICAL_ROOT_PROPOSITION_MISMATCH",
+    ):
+        reconcile_canonical_root_binding(
+            checkpoint,
+            ledger,
+            state_path=state_path,
+        )
+    assert asdict(checkpoint) == before
+    assert json.loads(state_path.read_text())["research_goal"] == "stale cache"
 
 
 def test_live_status_atomic_transitions_and_permissions(tmp_path):

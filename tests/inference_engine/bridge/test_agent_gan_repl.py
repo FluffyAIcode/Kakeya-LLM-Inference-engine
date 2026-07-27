@@ -3570,6 +3570,69 @@ def test_two_defense_repair_failures_block_once_and_restart_is_quiet(tmp_path):
     assert len(calls) == calls_before_restart
 
 
+def test_true_binding_mismatch_preserves_accepted_contract(tmp_path):
+    statement = "RiemannHypothesis"
+    root_hash = hashlib.sha256(statement.encode()).hexdigest()
+    ledger = ProofObligationLedger(
+        "rh",
+        [ProofObligation(
+            "RH-C0-root",
+            statement,
+            formal_status="FORMALIZED",
+            lean_signature_hash=root_hash,
+            proposition_hash=root_hash,
+        )],
+        version=96,
+    )
+    state_path = tmp_path / "orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id="RH-C0-root",
+        candidate_sha256="candidate-hash",
+        parent_statement_sha256=root_hash,
+        parent_signature_sha256=root_hash,
+        root_goal_sha256=root_hash,
+        proposition_hash=root_hash,
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+        ledger_id="rh",
+        ledger_version=96,
+    )
+    artifact = persist_validated_artifact(
+        state_path,
+        checkpoint,
+        role="research_contract",
+        payload={"schema_version": 1, "contract_id": "RC-root"},
+        dependencies=[],
+        source_run_id="host:contract",
+    )
+    runner, calls = _certificate_runner()
+    result = run_certified_decomposition(
+        ledger,
+        "RH-C0-root",
+        "Different proposition",
+        runner,
+        project_root=tmp_path,
+        orchestration_id="orch-mismatch",
+        signature_validator=_fake_signature_validator,
+        proof_validator=_fake_proof_validator,
+        checkpoint_path=state_path,
+        candidate_sha256="candidate-hash",
+    )
+    assert result.validation["blocked"] is True
+    assert result.validation["preserved_research_contract_id"] == "RC-root"
+    assert calls == []
+    preserved = load_orchestration_checkpoint(state_path)
+    assert preserved.research_contract_id == "RC-root"
+    assert preserved.research_contract_hash == "contract-hash"
+    assert preserved.validated_artifacts["research_contract"].sha256 == (
+        artifact.sha256
+    )
+    assert preserved.proof_state == ProofState.DECOMPOSER
+    assert preserved.adapter_status == "INTEGRATION_BLOCKED"
+
+
 @pytest.mark.skip(reason="legacy model-authored artifact execution is read-only")
 def test_resume_binding_mismatch_invalidates_cached_artifacts(tmp_path):
     state_path = tmp_path / "orchestration.json"

@@ -5344,7 +5344,57 @@ def run_certified_decomposition(
                 ledger_id=ledger.ledger_id,
                 ledger_version=ledger.version,
             )
-        if orchestration_checkpoint is None or mismatch:
+        if orchestration_checkpoint is not None and mismatch:
+            orchestration_checkpoint.adapter_blocked(
+                "CANONICAL_BINDING_OWNERSHIP_REQUIRED:" + mismatch,
+                status="INTEGRATION_BLOCKED",
+            )
+            orchestration_checkpoint.recovery_events.append({
+                "event_type": "CANONICAL_BINDING_MISMATCH_REJECTED",
+                "event_id": (
+                    "canonical-binding-mismatch:"
+                    + hashlib.sha256(
+                        (
+                            mismatch
+                            + orchestration_checkpoint.target_obligation_id
+                            + orchestration_checkpoint.proposition_hash
+                        ).encode()
+                    ).hexdigest()[:20]
+                ),
+                "reason": mismatch,
+                "preserved_artifact_hashes": sorted(
+                    reference.sha256
+                    for reference
+                    in orchestration_checkpoint.validated_artifacts.values()
+                ),
+                "preserved_research_contract_id": (
+                    orchestration_checkpoint.research_contract_id
+                ),
+                "created_at": time.time(),
+            })
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
+            return DecompositionCertificateResult(
+                verified=False,
+                errors=[
+                    "CANONICAL_BINDING_OWNERSHIP_REQUIRED:" + mismatch,
+                ],
+                artifacts={},
+                artifact_hashes={},
+                transcripts={},
+                role_run_ids={},
+                validation={
+                    "host_gates_passed": False,
+                    "blocked": True,
+                    "failure_status": "INTEGRATION_BLOCKED",
+                    "preserved_research_contract_id": (
+                        orchestration_checkpoint.research_contract_id
+                    ),
+                },
+            )
+        if orchestration_checkpoint is None:
             previous_checkpoint = orchestration_checkpoint
             orchestration_checkpoint = OrchestrationCheckpoint(
                 state=ProofState.DEFINITION_AUDITOR.value,
@@ -8845,6 +8895,16 @@ def main() -> int:
                     decomposition_target = (
                         resume_checkpoint.target_obligation_id
                     )
+                    canonical_root_goal = next(
+                        item.statement for item in proof_ledger.obligations
+                        if item.obligation_id == decomposition_target
+                        and not item.parent_id
+                        and item.formal_status == "FORMALIZED"
+                        and (
+                            item.proposition_hash
+                            or item.lean_signature_hash
+                        ) == resume_checkpoint.proposition_hash
+                    )
                     target_ids = {decomposition_target}
                     isolated_role_stages = []
 
@@ -8891,7 +8951,7 @@ def main() -> int:
                     certificate = run_certified_decomposition(
                         proof_ledger,
                         decomposition_target,
-                        research_goal,
+                        canonical_root_goal,
                         direct_review_role,
                         project_root=Path(__file__).resolve().parents[1],
                         orchestration_id=orchestration_id,
