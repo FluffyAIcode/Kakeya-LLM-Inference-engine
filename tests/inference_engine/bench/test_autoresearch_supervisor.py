@@ -47,6 +47,7 @@ from autoresearch.prefill.supervisor import (
     read_results,
     repair_candidate_schema,
     render_candidate,
+    route_contract_to_subgoal_generation,
     run_supervisor_iterations,
     select_novel_candidate,
     should_resume_downstream,
@@ -59,6 +60,44 @@ from autoresearch.prefill.supervisor import (
     validate_candidate,
 )
 from pathlib import Path
+
+
+def test_contract_requires_elaborated_subgoal_before_oprover():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.PROOF_SEARCH.value,
+        current_role="proof_search",
+        target_obligation_id="RH-C0-root",
+        target_statement="RiemannHypothesis",
+        proposition_hash="p" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        adapter_status="INTEGRATION_BLOCKED",
+        blocked_reason=(
+            "PROOF_ADVISOR_UNAVAILABLE:"
+            "RESIDENCY_PROCESS_MANAGER_REQUIRED"
+        ),
+    )
+    assert route_contract_to_subgoal_generation(checkpoint)
+    assert checkpoint.proof_state == ProofState.DECOMPOSER
+    assert checkpoint.adapter_status == ""
+    assert checkpoint.recovery_events[-1]["event_type"] == (
+        "RESEARCH_CONTRACT_SUBGOAL_REQUIRED"
+    )
+    assert not route_contract_to_subgoal_generation(checkpoint)
+
+
+def test_contract_with_executable_subgoal_does_not_backjump():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.PROOF_SEARCH.value,
+        current_role="proof_search",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        research_contract_id="RC-root",
+        proof_plan_id="PP-child",
+        executable_plan_node_id="L1",
+    )
+    assert not route_contract_to_subgoal_generation(checkpoint)
+    assert checkpoint.proof_state == ProofState.PROOF_SEARCH
 
 
 def test_live_status_atomic_transitions_and_permissions(tmp_path):

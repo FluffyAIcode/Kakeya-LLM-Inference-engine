@@ -1646,6 +1646,56 @@ def is_nonfatal_semantic_continuation(
     )
 
 
+def route_contract_to_subgoal_generation(
+    checkpoint: OrchestrationCheckpoint,
+) -> bool:
+    """Require a typed elaborated subgoal before any OProver residency request."""
+    if (
+        checkpoint.proof_state != ProofState.PROOF_SEARCH
+        or not checkpoint.research_contract_id
+        or checkpoint.proof_plan_id
+        or checkpoint.executable_plan_node_id
+    ):
+        return False
+    if checkpoint.adapter_status:
+        if checkpoint.blocked_reason != (
+            "PROOF_ADVISOR_UNAVAILABLE:RESIDENCY_PROCESS_MANAGER_REQUIRED"
+        ):
+            return False
+        checkpoint.clear_adapter_blocked(
+            "research-contract-awaits-elaborated-subgoal",
+        )
+    event_id = hashlib.sha256(
+        (
+            checkpoint.target_obligation_id
+            + checkpoint.research_contract_id
+            + checkpoint.proposition_hash
+        ).encode()
+    ).hexdigest()
+    if any(
+        item.get("event_type") == "RESEARCH_CONTRACT_SUBGOAL_REQUIRED"
+        and item.get("event_id") == event_id
+        for item in checkpoint.recovery_events
+    ):
+        return False
+    checkpoint.transition(
+        ProofState.DECOMPOSER,
+        "research-contract:generate-strictly-reducing-elaborated-subgoal",
+        strategy_reused=True,
+    )
+    checkpoint.recovery_events.append({
+        "event_type": "RESEARCH_CONTRACT_SUBGOAL_REQUIRED",
+        "event_id": event_id,
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "research_contract_id": checkpoint.research_contract_id,
+        "selected_strategy_plan_id": checkpoint.selected_strategy_plan_id,
+        "proposition_hash": checkpoint.proposition_hash,
+        "target_state": ProofState.DECOMPOSER.value,
+        "created_at": time.time(),
+    })
+    return True
+
+
 def should_resume_downstream(
     checkpoint: OrchestrationCheckpoint | None,
     *,
@@ -2042,6 +2092,23 @@ def run_iteration(args, iteration: int) -> dict:
         save_orchestration_checkpoint(
             orchestration_state_path,
             orchestration_checkpoint,
+        )
+    if (
+        orchestration_checkpoint is not None
+        and route_contract_to_subgoal_generation(orchestration_checkpoint)
+    ):
+        save_orchestration_checkpoint(
+            orchestration_state_path,
+            orchestration_checkpoint,
+        )
+        print(
+            "[proof-live] stage=subgoal-generation "
+            f"target={orchestration_checkpoint.target_obligation_id} "
+            f"proposition={orchestration_checkpoint.target_statement} "
+            f"plan={orchestration_checkpoint.selected_strategy_plan_id} "
+            f"contract={orchestration_checkpoint.research_contract_id} "
+            "next=DECOMPOSER reason=elaborated-subgoal-required",
+            flush=True,
         )
     if (
         orchestration_checkpoint is not None
@@ -2504,37 +2571,55 @@ def run_iteration(args, iteration: int) -> dict:
                 orchestration_checkpoint.proof_state == ProofState.PROOF_SEARCH
                 and orchestration_checkpoint.research_contract_id
             ):
-                # OProver residency is permitted only behind an accepted,
-                # elaborated Research Contract. The downstream typed-role GAN
-                # remains available for definition/evidence expansion.
-                orchestration_checkpoint.adapter_blocked(
-                    "PROOF_ADVISOR_UNAVAILABLE:"
-                    "RESIDENCY_PROCESS_MANAGER_REQUIRED",
-                    status="INTEGRATION_BLOCKED",
-                )
-                save_orchestration_checkpoint(
-                    orchestration_state_path,
+                if route_contract_to_subgoal_generation(
                     orchestration_checkpoint,
-                )
-                live_status.emit(
-                    phase="proof_advisor_unavailable",
-                    role="oprover_advisor",
-                    state="idle",
-                    active_obligation_id=(
-                        orchestration_checkpoint.target_obligation_id
-                    ),
-                    source="proof_supervisor",
-                    force=True,
-                )
-                return {
-                    "iteration": iteration,
-                    "research_outcome": "BLOCKED",
-                    "orchestration_state": "INTEGRATION_BLOCKED",
-                    "transition_reason": orchestration_checkpoint.blocked_reason,
-                    "failure_class": "",
-                    "error": "",
-                    "inference_started": False,
-                }
+                ):
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                    print(
+                        "[proof-live] stage=research-contract "
+                        f"target={orchestration_checkpoint.target_obligation_id} "
+                        f"plan={orchestration_checkpoint.selected_strategy_plan_id} "
+                        f"contract={orchestration_checkpoint.research_contract_id} "
+                        "accepted=true next=DECOMPOSER "
+                        "reason=elaborated-subgoal-required",
+                        flush=True,
+                    )
+                else:
+                    # OProver residency is permitted only after both an accepted
+                    # contract and a concrete typed proof-plan node exist.
+                    orchestration_checkpoint.adapter_blocked(
+                        "PROOF_ADVISOR_UNAVAILABLE:"
+                        "RESIDENCY_PROCESS_MANAGER_REQUIRED",
+                        status="INTEGRATION_BLOCKED",
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                    live_status.emit(
+                        phase="proof_advisor_unavailable",
+                        role="oprover_advisor",
+                        state="idle",
+                        active_obligation_id=(
+                            orchestration_checkpoint.target_obligation_id
+                        ),
+                        source="proof_supervisor",
+                        force=True,
+                    )
+                    return {
+                        "iteration": iteration,
+                        "research_outcome": "BLOCKED",
+                        "orchestration_state": "INTEGRATION_BLOCKED",
+                        "transition_reason": (
+                            orchestration_checkpoint.blocked_reason
+                        ),
+                        "failure_class": "",
+                        "error": "",
+                        "inference_started": False,
+                    }
         experiment_id = (
             f"ar_{int(time.time())}_{iteration}_"
             f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"
