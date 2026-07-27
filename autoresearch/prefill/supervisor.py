@@ -39,6 +39,7 @@ from autoresearch.prefill.architecture_v9 import (
 from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
 from autoresearch.prefill.strategy_tournament import StrategyEvent
 from autoresearch.prefill.orchestration_state import (
+    BlockedEventType,
     BlockedExitEvent,
     OrchestrationCheckpoint,
     ProofState,
@@ -1696,6 +1697,73 @@ def route_contract_to_subgoal_generation(
     return True
 
 
+def is_contract_bound_subgoal_resume(
+    checkpoint: OrchestrationCheckpoint | None,
+) -> bool:
+    """Recognize a typed decomposition resume independent of wrapper candidate."""
+    return bool(
+        checkpoint is not None
+        and checkpoint.proof_state == ProofState.DECOMPOSER
+        and checkpoint.target_obligation_id
+        and checkpoint.proposition_hash
+        and checkpoint.target_context_hash
+        and checkpoint.selected_strategy_plan_id
+        and checkpoint.research_contract_id
+        and not checkpoint.adapter_status
+    )
+
+
+def recover_contract_subgoal_duplicate_block(
+    checkpoint: OrchestrationCheckpoint | None,
+) -> BlockedExitEvent | None:
+    """Repair only the legacy novelty block on a bound decomposition resume."""
+    duplicate_reason = (
+        "Strategy proposals were duplicates; reuse the current candidate "
+        "and unresolved role."
+    )
+    if (
+        checkpoint is None
+        or checkpoint.proof_state != ProofState.BLOCKED
+        or checkpoint.blocked_reason != duplicate_reason
+        or checkpoint.proof_plan_id
+        or checkpoint.executable_plan_node_id
+        or not checkpoint.research_contract_id
+        or not checkpoint.selected_strategy_plan_id
+        or not checkpoint.target_context_hash
+    ):
+        return None
+    evidence = next(
+        (
+            str(item.get("event_id", ""))
+            for item in reversed(checkpoint.recovery_events)
+            if item.get("event_type") == "RESEARCH_CONTRACT_SUBGOAL_REQUIRED"
+            and item.get("target_obligation_id")
+            == checkpoint.target_obligation_id
+            and item.get("research_contract_id")
+            == checkpoint.research_contract_id
+        ),
+        "",
+    )
+    if not evidence:
+        return None
+    event = BlockedExitEvent(
+        event_id=hashlib.sha256(
+            (
+                "contract-subgoal-duplicate-recovery:"
+                + evidence
+                + checkpoint.target_context_hash
+            ).encode()
+        ).hexdigest(),
+        event_type=BlockedEventType.VALIDATED_EVIDENCE_BACKJUMP.value,
+        reason="target-bound decomposition bypasses candidate novelty",
+        target_state=ProofState.DECOMPOSER.value,
+        reset_role=ProofState.DECOMPOSER.value,
+        metadata={"evidence_sha256": evidence},
+    )
+    apply_blocked_exit_event(checkpoint, event)
+    return event
+
+
 def should_resume_downstream(
     checkpoint: OrchestrationCheckpoint | None,
     *,
@@ -1705,9 +1773,12 @@ def should_resume_downstream(
 ) -> bool:
     """Keep a persisted role unless an explicit Strategy policy overrides it."""
     return bool(
-        is_resumable_checkpoint(
-            checkpoint,
-            candidate_sha256=candidate_sha256,
+        (
+            is_resumable_checkpoint(
+                checkpoint,
+                candidate_sha256=candidate_sha256,
+            )
+            or is_contract_bound_subgoal_resume(checkpoint)
         )
         and not (
             checkpoint is not None
@@ -3064,6 +3135,28 @@ def run_supervisor_iterations(args) -> int:
                 next_state=checkpoint.state,
                 cause=event.event_type,
                 event_id=event.event_id,
+            )
+        recovered_event = recover_contract_subgoal_duplicate_block(checkpoint)
+        if recovered_event is not None and orchestration_path is not None:
+            save_orchestration_checkpoint(orchestration_path, checkpoint)
+            append_blocked_event_journal(
+                orchestration_path.with_name(
+                    "proof_orchestration.journal.jsonl",
+                ),
+                recovered_event,
+                before_state=ProofState.BLOCKED.value,
+                after_state=checkpoint.state,
+            )
+            blocked_logger.transition(
+                next_state=checkpoint.state,
+                cause=recovered_event.event_type,
+                event_id=recovered_event.event_id,
+            )
+            print(
+                "[proof-live] stage=backjump "
+                "from=BLOCKED to=DECOMPOSER "
+                "reason=target-bound-candidate-novelty-bypass",
+                flush=True,
             )
         if (
             checkpoint is not None

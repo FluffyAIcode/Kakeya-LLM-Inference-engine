@@ -40,12 +40,14 @@ from autoresearch.prefill.supervisor import (
     extract_gan_failure_reason,
     failure_class_for_exception,
     infrastructure_failure_fingerprint,
+    is_contract_bound_subgoal_resume,
     is_resumable_checkpoint,
     is_nonfatal_semantic_continuation,
     parse_strategy_candidate_transport,
     parse_research_verdict,
     read_results,
     repair_candidate_schema,
+    recover_contract_subgoal_duplicate_block,
     render_candidate,
     route_contract_to_subgoal_generation,
     run_supervisor_iterations,
@@ -98,6 +100,56 @@ def test_contract_with_executable_subgoal_does_not_backjump():
     )
     assert not route_contract_to_subgoal_generation(checkpoint)
     assert checkpoint.proof_state == ProofState.PROOF_SEARCH
+
+
+def test_target_bound_decomposer_resume_ignores_wrapper_candidate_hash():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        target_context_hash="c" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        candidate_sha256="",
+    )
+    assert is_contract_bound_subgoal_resume(checkpoint)
+    assert should_resume_downstream(
+        checkpoint,
+        candidate_sha256="different-wrapper-hash",
+        force_strategy=False,
+        strategy_trigger_exists=False,
+    )
+
+
+def test_duplicate_wrapper_block_recovers_bound_decomposer():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        current_role="blocked",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        target_context_hash="c" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        blocked_reason=(
+            "Strategy proposals were duplicates; reuse the current candidate "
+            "and unresolved role."
+        ),
+        recovery_events=[{
+            "event_type": "RESEARCH_CONTRACT_SUBGOAL_REQUIRED",
+            "event_id": "e" * 64,
+            "target_obligation_id": "RH-C0-root",
+            "research_contract_id": "RC-root",
+        }],
+    )
+    event = recover_contract_subgoal_duplicate_block(checkpoint)
+    assert event is not None
+    assert event.event_type == (
+        BlockedEventType.VALIDATED_EVIDENCE_BACKJUMP.value
+    )
+    assert checkpoint.proof_state == ProofState.DECOMPOSER
+    assert checkpoint.blocked_reason == ""
+    assert recover_contract_subgoal_duplicate_block(checkpoint) is None
 
 
 def test_live_status_atomic_transitions_and_permissions(tmp_path):
