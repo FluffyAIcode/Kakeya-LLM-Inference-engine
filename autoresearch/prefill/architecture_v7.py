@@ -93,6 +93,55 @@ def run_host_definition_gate(
         if isinstance(item, Mapping) and item.get("definition_id")
     )
     if not missing:
+        if (
+            checkpoint.current_definition_gap_id
+            == "GAP_ELABORATED_TARGET_REQUIRED"
+        ):
+            checkpoint.selected_move_id = (
+                "REQUEST_ELABORATED_TARGET_INTERFACE"
+            )
+            checkpoint.active_gate = "AUTONOMOUS_DEFINITION_RESOLUTION"
+            checkpoint.lean_definition_status = "INTERFACE_REQUIRED"
+            checkpoint.stagnation_reason = (
+                "INTERFACE_REQUIRED:ELABORATED_TARGET_REQUIRED"
+            )
+            checkpoint.progress_vector = {
+                "definitions_added": 0,
+                "existing_definitions_resolved": 0,
+                "lemmas_proved": 0,
+                "accepted_children": 0,
+                "subgoals_closed": 0,
+                "verified_counterexamples": 0,
+            }
+            persist_validated_artifact(
+                checkpoint_path,
+                checkpoint,
+                role="definition_resolution",
+                payload={
+                    "schema_version": 1,
+                    "status": "INTERFACE_REQUIRED",
+                    "reason": "ELABORATED_TARGET_REQUIRED",
+                    "gap_id": checkpoint.current_definition_gap_id,
+                    "target_obligation_id": checkpoint.target_obligation_id,
+                    "definition_auditor_artifact_hash": reference.sha256,
+                    "selected_strategy_plan_id": (
+                        checkpoint.selected_strategy_plan_id
+                    ),
+                    "selected_strategy_plan_hash": (
+                        checkpoint.selected_strategy_plan_hash
+                    ),
+                    "next_gate": "RESEARCH_CONTRACT_GATE",
+                    "proof_search_allowed": False,
+                    "oprover_allowed": False,
+                },
+                dependencies=[reference.sha256],
+                source_run_id=(
+                    "host:definition-resolution:"
+                    "GAP_ELABORATED_TARGET_REQUIRED"
+                ),
+            )
+            save_checkpoint(checkpoint_path, checkpoint)
+            return checkpoint, "INTERFACE_REQUIRED"
         return checkpoint, ""
     base_environment_hash = pinned_environment_hash(project_root)
     store_path = checkpoint_path.with_name(

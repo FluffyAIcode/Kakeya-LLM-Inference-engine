@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,7 @@ from autoresearch.prefill.orchestration_state import (
     PremiseAuditOutcomeType,
     ProofState,
     apply_typed_premise_outcome,
+    persist_validated_artifact,
     reconcile_checkpoint_ledger_version,
 )
 from autoresearch.prefill.architecture_v7 import run_host_definition_gate
@@ -248,3 +250,47 @@ def test_exhausted_gap_cannot_rerun_from_strategy(tmp_path):
     assert returned is checkpoint
     assert outcome == ""
     assert checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
+
+
+def test_unelaborated_target_records_interface_required_transaction(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    plan_hash = "a" * 64
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DEFINITION_RESOLUTION.value,
+        current_role="definition_resolution",
+        target_obligation_id=TARGET,
+        current_definition_gap_id="GAP_ELABORATED_TARGET_REQUIRED",
+        selected_strategy_plan_id="DRP-a",
+        selected_strategy_plan_hash=plan_hash,
+        target_strategy_plan_hash=plan_hash,
+    )
+    persist_validated_artifact(
+        path,
+        checkpoint,
+        role="definition_auditor",
+        payload={"definitions": [], "missing_definitions": []},
+        dependencies=[],
+        source_run_id="definition",
+    )
+    auditor_hash = checkpoint.validated_artifacts["definition_auditor"].sha256
+
+    returned, outcome = run_host_definition_gate(
+        path,
+        checkpoint,
+        project_root=tmp_path,
+    )
+
+    assert returned is checkpoint
+    assert outcome == "INTERFACE_REQUIRED"
+    assert checkpoint.proof_state == ProofState.DEFINITION_RESOLUTION
+    assert checkpoint.active_gate == "AUTONOMOUS_DEFINITION_RESOLUTION"
+    assert checkpoint.lean_definition_status == "INTERFACE_REQUIRED"
+    assert checkpoint.selected_move_id == "REQUEST_ELABORATED_TARGET_INTERFACE"
+    artifact = checkpoint.validated_artifacts["definition_resolution"]
+    payload = json.loads(Path(artifact.path).read_text())
+    assert payload["gap_id"] == "GAP_ELABORATED_TARGET_REQUIRED"
+    assert payload["definition_auditor_artifact_hash"] == auditor_hash
+    assert payload["selected_strategy_plan_hash"] == plan_hash
+    assert payload["next_gate"] == "RESEARCH_CONTRACT_GATE"
+    assert payload["proof_search_allowed"] is False
+    assert payload["oprover_allowed"] is False
