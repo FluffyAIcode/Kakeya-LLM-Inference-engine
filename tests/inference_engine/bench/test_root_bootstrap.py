@@ -95,6 +95,10 @@ def test_atomic_root_creation_is_idempotent_and_isolates_quarantine(tmp_path):
         ledger_id=ledger["ledger_id"],
         ledger_version=95,
         blocked_reason="ROOT_UNAVAILABLE",
+        strategy_run_status="FINISHED",
+        strategy_run_id="stale-rh-c1-run",
+        strategy_intent_hash="stale-rh-c1-intent",
+        strategy_selection_provenance={"target": "RH-C1"},
     )
     rh_c1_before = ledger["obligations"][0]
 
@@ -125,6 +129,10 @@ def test_atomic_root_creation_is_idempotent_and_isolates_quarantine(tmp_path):
     assert restored.target_obligation_id == first.root_id
     assert restored.target_context_hash
     assert restored.elaborated_theorem_id == "KakeyaRiemannHypothesisRoot"
+    assert restored.strategy_run_status == "CONFIGURATION_REQUIRED"
+    assert restored.strategy_run_id == ""
+    assert restored.strategy_intent_hash == ""
+    assert restored.strategy_selection_provenance == {}
     assert restored.validated_artifacts["definition_auditor"].target_obligation_id == (
         first.root_id
     )

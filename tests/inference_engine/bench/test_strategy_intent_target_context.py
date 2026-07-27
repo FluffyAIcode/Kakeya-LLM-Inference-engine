@@ -181,6 +181,11 @@ def test_cross_target_switch_archives_c2_and_cleans_c1(tmp_path):
         "missing_definition_ids": ["DEF_SEQUENCE_DENSITY", "DEF_GENUS"],
     }
     checkpoint.premise_outcome_type = "REFRAME_REQUIRED"
+    checkpoint.strategy_run_status = "FINISHED"
+    checkpoint.strategy_run_id = "stale-c2-run"
+    checkpoint.strategy_intent_hash = "stale-c2-intent"
+    checkpoint.strategy_selection_provenance = {"target": "RH-C2"}
+    checkpoint.proof_plan_id = "stale-c2-plan"
     activate_target_context(
         path,
         checkpoint,
@@ -195,6 +200,11 @@ def test_cross_target_switch_archives_c2_and_cleans_c1(tmp_path):
     assert checkpoint.premise_evidence == {}
     assert checkpoint.premise_outcome_type == ""
     assert checkpoint.theorem_card_ids == []
+    assert checkpoint.strategy_run_status == "CONFIGURATION_REQUIRED"
+    assert checkpoint.strategy_run_id == ""
+    assert checkpoint.strategy_intent_hash == ""
+    assert checkpoint.strategy_selection_provenance == {}
+    assert checkpoint.proof_plan_id == ""
     store = json.loads(context_store_path(path).read_text())
     active = store["contexts"][store["active_context_hash"]]
     assert active["binding"]["target_obligation_id"] == "RH-C1"
