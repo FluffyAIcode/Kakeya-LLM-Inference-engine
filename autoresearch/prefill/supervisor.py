@@ -1417,8 +1417,17 @@ def run_gan_experiment(
     ledger: dict,
     tokenizer_id: str,
 ) -> tuple[str, str]:
+    bench_python = os.environ.get(
+        "KAKEYA_BENCH_PYTHON",
+        str(Path.home() / ".venv-distwan/bin/python"),
+    )
+    bench_model = os.environ.get(
+        "KAKEYA_BENCH_MODEL",
+        str(Path.home() / "kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"),
+    )
     command = [
-        "bash", str(repo / "scripts/run_agent_gan_repl.sh"),
+        bench_python, str(repo / "scripts/agent_gan_repl.py"),
+        "--tokenizer-id", bench_model,
         "--skip-ensure", "--no-auto-loop",
         "--candidate-file", str(candidate_path),
         "--state-file", str(state_path),
