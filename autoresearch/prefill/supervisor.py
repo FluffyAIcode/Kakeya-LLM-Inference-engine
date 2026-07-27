@@ -3067,6 +3067,24 @@ def run_supervisor_iterations(args) -> int:
             )
         if (
             checkpoint is not None
+            and route_contract_to_subgoal_generation(checkpoint)
+        ):
+            save_orchestration_checkpoint(orchestration_path, checkpoint)
+            blocked_logger.transition(
+                next_state=checkpoint.state,
+                cause="research-contract-subgoal-required",
+            )
+            print(
+                "[proof-live] stage=subgoal-generation "
+                f"target={checkpoint.target_obligation_id} "
+                f"proposition={checkpoint.target_statement} "
+                f"plan={checkpoint.selected_strategy_plan_id} "
+                f"contract={checkpoint.research_contract_id} "
+                "next=DECOMPOSER reason=elaborated-subgoal-required",
+                flush=True,
+            )
+        if (
+            checkpoint is not None
             and checkpoint.proof_state == ProofState.DEFINITION_AUDITOR
             and checkpoint.adapter_status == "ADAPTER_BLOCKED"
             and "DEFINITION_AUDIT Artifact JSON" in checkpoint.blocked_reason
