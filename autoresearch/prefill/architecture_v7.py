@@ -370,7 +370,9 @@ def run_architecture_v7_entry(
     dependencies = tuple(
         reference.sha256
         for role, reference in sorted(checkpoint.validated_artifacts.items())
-        if role not in {"strategy", "generator", "critic"}
+        if role not in {
+            "strategy", "strategy_tournament", "generator", "critic",
+        }
     )
     evidence_refs = (*dependencies, *checkpoint.advisory_artifacts)
     if strategy_adapter is None:

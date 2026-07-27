@@ -391,6 +391,9 @@ def test_unelaborated_missing_definition_and_quarantine_route_to_decomposer(
         result.validated_artifacts["strategy_tournament"].strategy_plan_hash
         == result.selected_strategy_plan_hash
     )
+    assert result.validated_artifacts["strategy_tournament"].dependencies == [
+        result.validated_artifacts["definition_auditor"].sha256,
+    ]
     assert result.research_contract_rejection_codes == []
     assert result.last_transition_reason == (
         "typed-definition-resolution-plan:MISSING_DEFINITION,"
