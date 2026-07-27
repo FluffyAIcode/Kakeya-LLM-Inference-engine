@@ -55,7 +55,10 @@ from autoresearch.prefill.lean_gate import (
 )
 from autoresearch.prefill.live_status import AtomicLiveStatus
 from autoresearch.prefill.host_compiler import run_host_gates
-from autoresearch.prefill.architecture_v9 import run_architecture_v9_entry
+from autoresearch.prefill.architecture_v9 import (
+    run_architecture_v9_entry,
+    run_host_definition_gate,
+)
 from autoresearch.prefill.strategy_tournament import StrategyEvent
 from autoresearch.prefill.stepwise_proof import (
     ActionSelection,
@@ -236,6 +239,22 @@ def _telemetry_request(url: str, **kwargs):
             flush=True,
         )
         return None
+
+
+def dispatch_certified_architecture9_role(
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    project_root: Path,
+) -> tuple[OrchestrationCheckpoint, str]:
+    """Dispatch a consumed certificate to its host-owned role."""
+    if checkpoint.proof_state != ProofState.DEFINITION_RESOLUTION:
+        return checkpoint, ""
+    return run_host_definition_gate(
+        checkpoint_path,
+        checkpoint,
+        project_root=project_root,
+    )
 
 
 _RUNTIME_ARTIFACT = re.compile(
@@ -8678,6 +8697,26 @@ def main() -> int:
                         f"role={resume_checkpoint.current_role}",
                         flush=True,
                     )
+                    if (
+                        resume_checkpoint.proof_state
+                        == ProofState.DEFINITION_RESOLUTION
+                    ):
+                        resume_checkpoint, definition_outcome = (
+                            dispatch_certified_architecture9_role(
+                                orchestration_state_path,
+                                resume_checkpoint,
+                                project_root=Path(__file__).resolve().parents[1],
+                            )
+                        )
+                        print(
+                            "[definition-resolution-start] "
+                            f"outcome={definition_outcome or 'NO_OPEN_QUERY'} "
+                            f"state={resume_checkpoint.proof_state.value}",
+                            flush=True,
+                        )
+                        phase = ReplPhase.READY
+                        auto_loop_active = False
+                        continue
                 resume_certified = bool(
                     resume_preconditions_hold
                     and (

@@ -95,6 +95,7 @@ from scripts.agent_gan_repl import (
     format_proof_ledger,
     generator_issue_coverage,
     decide_premise_review,
+    dispatch_certified_architecture9_role,
     extract_premise_suspicions,
     load_checkpoint,
     load_decomposition_manifest,
@@ -116,6 +117,45 @@ from scripts.agent_gan_repl import (
     persist_verified_decomposition,
     validate_evidence_artifact,
 )
+
+
+def test_certified_definition_resolution_dispatches_host_gate(
+    tmp_path, monkeypatch,
+):
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DEFINITION_RESOLUTION.value,
+        current_role="definition_resolution",
+        target_obligation_id="ROOT",
+    )
+    calls = []
+
+    def fake_gate(checkpoint_path, selected, *, project_root):
+        calls.append((checkpoint_path, selected, project_root))
+        return selected, "COMMITTED"
+
+    monkeypatch.setattr(
+        "scripts.agent_gan_repl.run_host_definition_gate",
+        fake_gate,
+    )
+    state_path = tmp_path / "orchestration.json"
+    selected, outcome = dispatch_certified_architecture9_role(
+        state_path,
+        checkpoint,
+        project_root=tmp_path,
+    )
+    assert selected is checkpoint
+    assert outcome == "COMMITTED"
+    assert calls == [(state_path, checkpoint, tmp_path)]
+
+    checkpoint.state = ProofState.DECOMPOSER.value
+    selected, outcome = dispatch_certified_architecture9_role(
+        state_path,
+        checkpoint,
+        project_root=tmp_path,
+    )
+    assert selected is checkpoint
+    assert outcome == ""
+    assert len(calls) == 1
 
 
 def test_json_artifact_repairs_invalid_latex_escapes_losslessly():
