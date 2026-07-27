@@ -59,6 +59,7 @@ from autoresearch.prefill.architecture_v9 import (
     run_architecture_v9_entry,
     run_host_definition_gate,
 )
+from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
 from autoresearch.prefill.strategy_tournament import StrategyEvent
 from autoresearch.prefill.stepwise_proof import (
     ActionSelection,
@@ -246,6 +247,7 @@ def dispatch_certified_architecture9_role(
     checkpoint: OrchestrationCheckpoint,
     *,
     project_root: Path,
+    interface_strategy_adapter: CursorStrategyAdapter | None = None,
 ) -> tuple[OrchestrationCheckpoint, str]:
     """Dispatch a consumed certificate to its host-owned role."""
     if checkpoint.proof_state != ProofState.DEFINITION_RESOLUTION:
@@ -254,6 +256,7 @@ def dispatch_certified_architecture9_role(
         checkpoint_path,
         checkpoint,
         project_root=project_root,
+        interface_strategy_adapter=interface_strategy_adapter,
     )
 
 
@@ -759,6 +762,45 @@ def pending_obligations(
             and item.obligation_id not in unresolved_parent_ids
         )
     ]
+
+
+def quarantine_terminal_interface_target(
+    ledger: ProofObligationLedger,
+    *,
+    target_id: str,
+    exhaustion_hash: str,
+    source_run_id: str,
+) -> bool:
+    """Atomically prepare one root target for durable terminal quarantine."""
+    target = next(
+        (item for item in ledger.obligations if item.obligation_id == target_id),
+        None,
+    )
+    if target is None:
+        raise ValueError("interface exhaustion target is absent from ledger")
+    reason = "TARGET_INTERFACE_EXHAUSTED:" + exhaustion_hash
+    if (
+        target.status == "QUARANTINED"
+        and target.quarantine_reason == reason
+        and target.quarantine_reversible_status == "ACTIVE"
+    ):
+        return False
+    if target.status != "UNRESOLVED":
+        raise ValueError("only an unresolved target may be quarantined")
+    target.quarantine_prior_status = target.status
+    target.status = "QUARANTINED"
+    target.quarantine_reason = reason
+    target.quarantine_root_id = target_id
+    target.quarantine_run_id = source_run_id
+    target.quarantine_confidence = 1.0
+    target.quarantine_evidence_type = "CONTENT_ADDRESSED_EXHAUSTION"
+    target.quarantine_evidence_source = exhaustion_hash
+    target.quarantine_auditor_run_id = source_run_id
+    target.quarantine_proponent_run_id = ""
+    target.quarantine_reversible_status = "ACTIVE"
+    ledger.backjump_target_id = "ROOT_UNAVAILABLE"
+    ledger.version += 1
+    return True
 
 
 def format_proof_ledger(
@@ -8706,6 +8748,9 @@ def main() -> int:
                                 orchestration_state_path,
                                 resume_checkpoint,
                                 project_root=Path(__file__).resolve().parents[1],
+                                interface_strategy_adapter=(
+                                    CursorStrategyAdapter()
+                                ),
                             )
                         )
                         print(
@@ -8714,6 +8759,42 @@ def main() -> int:
                             f"state={resume_checkpoint.proof_state.value}",
                             flush=True,
                         )
+                        if (
+                            definition_outcome
+                            == ProofState.PARENT_STATEMENT_UNDERSPECIFIED.value
+                            and resume_checkpoint.definition_exhaustion_hash
+                        ):
+                            source_run_id = (
+                                resume_checkpoint.source_run_ids[-1]
+                                if resume_checkpoint.source_run_ids
+                                else "host:target-interface-exhaustion"
+                            )
+                            if quarantine_terminal_interface_target(
+                                proof_ledger,
+                                target_id=resume_checkpoint.target_obligation_id,
+                                exhaustion_hash=(
+                                    resume_checkpoint.definition_exhaustion_hash
+                                ),
+                                source_run_id=source_run_id,
+                            ):
+                                save_proof_ledger(
+                                    proof_ledger_path,
+                                    proof_ledger,
+                                )
+                                resume_checkpoint.ledger_version = (
+                                    proof_ledger.version
+                                )
+                                save_orchestration_checkpoint(
+                                    orchestration_state_path,
+                                    resume_checkpoint,
+                                )
+                            print(
+                                "[typed-interface-terminal-quarantine] "
+                                f"target={resume_checkpoint.target_obligation_id} "
+                                "backjump=ROOT_UNAVAILABLE "
+                                f"ledger_version={proof_ledger.version}",
+                                flush=True,
+                            )
                         phase = ReplPhase.READY
                         auto_loop_active = False
                         continue

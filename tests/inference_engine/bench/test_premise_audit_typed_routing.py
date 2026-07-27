@@ -245,14 +245,14 @@ def test_exhausted_gap_cannot_rerun_from_strategy(tmp_path):
     returned, outcome = run_host_definition_gate(
         path,
         checkpoint,
-        project_root=tmp_path,
+        project_root=Path(__file__).resolve().parents[3],
     )
     assert returned is checkpoint
     assert outcome == ""
     assert checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
 
 
-def test_unelaborated_target_records_interface_required_transaction(tmp_path):
+def test_unelaborated_target_exhausts_interfaces_and_quarantines(tmp_path):
     path = tmp_path / "checkpoint.json"
     plan_hash = "a" * 64
     checkpoint = OrchestrationCheckpoint(
@@ -263,6 +263,13 @@ def test_unelaborated_target_records_interface_required_transaction(tmp_path):
         selected_strategy_plan_id="DRP-a",
         selected_strategy_plan_hash=plan_hash,
         target_strategy_plan_hash=plan_hash,
+        target_environment_hash="e" * 64,
+        target_evidence={
+            "EVIDENCE_TARGET_STATEMENT": (
+                "Distinguish -zeta'(s)/zeta(s) from xi(s) and construct "
+                "any zero/spectrum mapping without circularly reading zeros."
+            ),
+        },
     )
     persist_validated_artifact(
         path,
@@ -277,20 +284,36 @@ def test_unelaborated_target_records_interface_required_transaction(tmp_path):
     returned, outcome = run_host_definition_gate(
         path,
         checkpoint,
-        project_root=tmp_path,
+        project_root=Path(__file__).resolve().parents[3],
     )
 
     assert returned is checkpoint
-    assert outcome == "INTERFACE_REQUIRED"
-    assert checkpoint.proof_state == ProofState.DEFINITION_RESOLUTION
-    assert checkpoint.active_gate == "AUTONOMOUS_DEFINITION_RESOLUTION"
-    assert checkpoint.lean_definition_status == "INTERFACE_REQUIRED"
-    assert checkpoint.selected_move_id == "REQUEST_ELABORATED_TARGET_INTERFACE"
-    artifact = checkpoint.validated_artifacts["definition_resolution"]
+    assert outcome == "PARENT_STATEMENT_UNDERSPECIFIED"
+    assert checkpoint.proof_state == ProofState.BLOCKED
+    assert checkpoint.active_gate == "TARGET_TYPED_INTERFACE_GATE"
+    assert checkpoint.lean_definition_status == "PARENT_STATEMENT_UNDERSPECIFIED"
+    assert checkpoint.selected_move_id == "EXHAUST_TARGET_INTERFACE_REGISTRY"
+    assert checkpoint.blocked_reason.startswith("MATHEMATICAL_TERMINAL_BLOCKER:")
+    artifact = checkpoint.validated_artifacts[
+        "interface_exhaustion_certificate"
+    ]
     payload = json.loads(Path(artifact.path).read_text())
-    assert payload["gap_id"] == "GAP_ELABORATED_TARGET_REQUIRED"
-    assert payload["definition_auditor_artifact_hash"] == auditor_hash
-    assert payload["selected_strategy_plan_hash"] == plan_hash
-    assert payload["next_gate"] == "RESEARCH_CONTRACT_GATE"
+    assert payload["auditor_hash"] == auditor_hash
+    assert payload["certificate_kind"] == (
+        "target_interface_exhaustion_certificate"
+    )
+    assert payload["typed_backjump_target"] == "ROOT_UNAVAILABLE"
+    assert payload["quarantine_target"] == TARGET
     assert payload["proof_search_allowed"] is False
     assert payload["oprover_allowed"] is False
+    assert len(payload["candidates"]) == 4
+    assert all(not item["feasible"] for item in payload["candidates"])
+    assert any(
+        item["status"] == "VERIFIED"
+        for item in payload["source_statuses"]
+        if item["source_id"] == "pinned_mathlib"
+    )
+    assert checkpoint.branch_history
+    quarantine = next(iter(checkpoint.branch_history.values()))
+    assert quarantine["status"] == "QUARANTINED"
+    assert quarantine["plan_ids"] == [TARGET]

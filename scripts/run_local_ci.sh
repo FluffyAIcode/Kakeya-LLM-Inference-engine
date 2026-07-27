@@ -32,6 +32,7 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
   autoresearch/prefill/strategy_tournament.py \
   autoresearch/prefill/supervisor.py \
   autoresearch/prefill/theorem_cards.py \
+  autoresearch/prefill/typed_interface_resolution.py \
   autoresearch/prefill/typed_transport.py \
   scripts/agent_gan_inference_demo.py \
   scripts/agent_gan_repl.py \

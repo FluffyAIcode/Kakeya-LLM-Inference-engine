@@ -36,6 +36,7 @@ from autoresearch.prefill.architecture_v9 import (
     run_architecture_v9_entry,
     run_host_definition_gate,
 )
+from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
 from autoresearch.prefill.strategy_tournament import StrategyEvent
 from autoresearch.prefill.orchestration_state import (
     BlockedExitEvent,
@@ -2145,10 +2146,16 @@ def run_iteration(args, iteration: int) -> dict:
             orchestration_state_path,
             orchestration_checkpoint,
         )
+    interface_strategy_adapter = CursorStrategyAdapter()
     orchestration_checkpoint, definition_outcome = run_host_definition_gate(
         orchestration_state_path,
         orchestration_checkpoint,
         project_root=root,
+        interface_strategy_adapter=(
+            interface_strategy_adapter
+            if interface_strategy_adapter.configured()
+            else None
+        ),
     )
     if definition_outcome:
         live_status.emit(

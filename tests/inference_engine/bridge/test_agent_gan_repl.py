@@ -106,6 +106,7 @@ from scripts.agent_gan_repl import (
     parse_repl_command,
     parse_premise_audit,
     parse_premise_defense,
+    quarantine_terminal_interface_target,
     parse_certified_artifact,
     recover_checkpoint_from_log,
     save_critic_issue_batch,
@@ -129,8 +130,19 @@ def test_certified_definition_resolution_dispatches_host_gate(
     )
     calls = []
 
-    def fake_gate(checkpoint_path, selected, *, project_root):
-        calls.append((checkpoint_path, selected, project_root))
+    def fake_gate(
+        checkpoint_path,
+        selected,
+        *,
+        project_root,
+        interface_strategy_adapter,
+    ):
+        calls.append((
+            checkpoint_path,
+            selected,
+            project_root,
+            interface_strategy_adapter,
+        ))
         return selected, "COMMITTED"
 
     monkeypatch.setattr(
@@ -145,7 +157,7 @@ def test_certified_definition_resolution_dispatches_host_gate(
     )
     assert selected is checkpoint
     assert outcome == "COMMITTED"
-    assert calls == [(state_path, checkpoint, tmp_path)]
+    assert calls == [(state_path, checkpoint, tmp_path, None)]
 
     checkpoint.state = ProofState.DECOMPOSER.value
     selected, outcome = dispatch_certified_architecture9_role(
@@ -156,6 +168,32 @@ def test_certified_definition_resolution_dispatches_host_gate(
     assert selected is checkpoint
     assert outcome == ""
     assert len(calls) == 1
+
+
+def test_terminal_interface_quarantine_is_durable_and_idempotent():
+    target = ProofObligation("RH-C1", "imperative target")
+    ledger = ProofObligationLedger("ledger", [target], version=94)
+    changed = quarantine_terminal_interface_target(
+        ledger,
+        target_id="RH-C1",
+        exhaustion_hash="e" * 64,
+        source_run_id="run-interface",
+    )
+    assert changed
+    assert ledger.version == 95
+    assert ledger.backjump_target_id == "ROOT_UNAVAILABLE"
+    assert target.status == "QUARANTINED"
+    assert target.quarantine_prior_status == "UNRESOLVED"
+    assert target.quarantine_reason == "TARGET_INTERFACE_EXHAUSTED:" + "e" * 64
+    assert target.quarantine_reversible_status == "ACTIVE"
+    assert target.quarantine_evidence_type == "CONTENT_ADDRESSED_EXHAUSTION"
+    assert not quarantine_terminal_interface_target(
+        ledger,
+        target_id="RH-C1",
+        exhaustion_hash="e" * 64,
+        source_run_id="run-interface",
+    )
+    assert ledger.version == 95
 
 
 def test_json_artifact_repairs_invalid_latex_escapes_losslessly():

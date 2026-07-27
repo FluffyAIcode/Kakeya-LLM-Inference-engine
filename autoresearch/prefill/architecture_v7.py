@@ -43,6 +43,10 @@ from autoresearch.prefill.theorem_cards import (
     build_theorem_card_index,
     pinned_environment_hash,
 )
+from autoresearch.prefill.typed_interface_resolution import (
+    build_target_interface_registry,
+    resolve_target_interface,
+)
 
 
 def _definition_audit(
@@ -74,6 +78,7 @@ def run_host_definition_gate(
     checkpoint: OrchestrationCheckpoint,
     *,
     project_root: Path,
+    interface_strategy_adapter: CursorStrategyAdapter | None = None,
 ) -> tuple[OrchestrationCheckpoint, str]:
     """Execute exactly one Autonomous Definition Resolution transaction."""
     if checkpoint.proof_state not in {
@@ -97,13 +102,88 @@ def run_host_definition_gate(
             checkpoint.current_definition_gap_id
             == "GAP_ELABORATED_TARGET_REQUIRED"
         ):
-            checkpoint.selected_move_id = (
-                "REQUEST_ELABORATED_TARGET_INTERFACE"
+            target_statement = str(
+                checkpoint.target_evidence.get(
+                    "EVIDENCE_TARGET_STATEMENT", "",
+                ),
             )
-            checkpoint.active_gate = "AUTONOMOUS_DEFINITION_RESOLUTION"
-            checkpoint.lean_definition_status = "INTERFACE_REQUIRED"
+            candidates, source_statuses, theorem_card_ids = (
+                build_target_interface_registry(
+                    target_ref=checkpoint.target_obligation_id,
+                    target_statement=target_statement,
+                    target_evidence=checkpoint.target_evidence,
+                    auditor_hash=reference.sha256,
+                    project_root=project_root,
+                )
+            )
+            ranked_ids: tuple[str, ...] = ()
+            provider_provenance: dict[str, object] = {
+                "status": "NOT_REQUESTED",
+            }
+            if interface_strategy_adapter is not None:
+                memo, telemetry = interface_strategy_adapter.advise(
+                    evidence={
+                        "target_ref": checkpoint.target_obligation_id,
+                        "target_statement": target_statement,
+                        "definition_auditor_hash": reference.sha256,
+                        "target_context_hash": checkpoint.target_context_hash,
+                        "candidate_schemas": [
+                            {
+                                "short_id": item.short_id,
+                                "candidate_kind": item.candidate_kind,
+                                "proposition_schema": item.proposition_schema,
+                                "host_feasible": item.feasible,
+                                "host_rejection_codes": item.rejection_codes,
+                            }
+                            for item in candidates
+                        ],
+                        "source_statuses": [
+                            asdict(item) for item in source_statuses
+                        ],
+                        "theorem_card_ids": theorem_card_ids,
+                    },
+                    registered_plan_ids=tuple(
+                        item.short_id for item in candidates
+                    ),
+                )
+                ranked_ids = (
+                    compile_memo_to_plan_id(
+                        memo,
+                        tuple(item.short_id for item in candidates),
+                    ),
+                )
+                provider_provenance = {
+                    **asdict(telemetry),
+                    "selected_candidate_id": ranked_ids[0],
+                }
+            result = resolve_target_interface(
+                target_ref=checkpoint.target_obligation_id,
+                target_statement=target_statement,
+                target_evidence=checkpoint.target_evidence,
+                auditor_hash=reference.sha256,
+                environment_hash=checkpoint.target_environment_hash,
+                project_root=project_root,
+                ranked_candidate_ids=ranked_ids,
+                provider_provenance=provider_provenance,
+            )
+            source_run_id = str(
+                provider_provenance.get("run_id")
+                or "host:target-interface-exhaustion"
+            )
+            persist_validated_artifact(
+                checkpoint_path,
+                checkpoint,
+                role="typed_interface_resolution",
+                payload=asdict(result),
+                dependencies=[reference.sha256],
+                source_run_id=source_run_id,
+            )
+            checkpoint.selected_move_id = "EXHAUST_TARGET_INTERFACE_REGISTRY"
+            checkpoint.active_gate = "TARGET_TYPED_INTERFACE_GATE"
+            checkpoint.lean_definition_status = result.status
+            checkpoint.definition_exhaustion_hash = result.exhaustion_hash
             checkpoint.stagnation_reason = (
-                "INTERFACE_REQUIRED:ELABORATED_TARGET_REQUIRED"
+                result.status + ":" + result.terminal_reason
             )
             checkpoint.progress_vector = {
                 "definitions_added": 0,
@@ -116,32 +196,75 @@ def run_host_definition_gate(
             persist_validated_artifact(
                 checkpoint_path,
                 checkpoint,
-                role="definition_resolution",
+                role="interface_exhaustion_certificate",
                 payload={
-                    "schema_version": 1,
-                    "status": "INTERFACE_REQUIRED",
-                    "reason": "ELABORATED_TARGET_REQUIRED",
-                    "gap_id": checkpoint.current_definition_gap_id,
-                    "target_obligation_id": checkpoint.target_obligation_id,
-                    "definition_auditor_artifact_hash": reference.sha256,
-                    "selected_strategy_plan_id": (
-                        checkpoint.selected_strategy_plan_id
+                    **asdict(result),
+                    "certificate_kind": (
+                        "target_interface_exhaustion_certificate"
                     ),
-                    "selected_strategy_plan_hash": (
-                        checkpoint.selected_strategy_plan_hash
-                    ),
-                    "next_gate": "RESEARCH_CONTRACT_GATE",
+                    "typed_backjump_target": "ROOT_UNAVAILABLE",
+                    "quarantine_target": checkpoint.target_obligation_id,
                     "proof_search_allowed": False,
                     "oprover_allowed": False,
                 },
-                dependencies=[reference.sha256],
-                source_run_id=(
-                    "host:definition-resolution:"
-                    "GAP_ELABORATED_TARGET_REQUIRED"
-                ),
+                dependencies=[
+                    reference.sha256,
+                    checkpoint.validated_artifacts[
+                        "typed_interface_resolution"
+                    ].sha256,
+                ],
+                source_run_id=source_run_id,
+            )
+            checkpoint.premise_outcome_type = (
+                ProofState.PARENT_STATEMENT_UNDERSPECIFIED.value
+            )
+            checkpoint.premise_outcome_owner = "target_typed_interface_gate"
+            checkpoint.premise_decision = result.status
+            checkpoint.premise_confidence = 1.0
+            checkpoint.premise_evidence = {
+                "exhaustion_hash": result.exhaustion_hash,
+                "target_statement_hash": result.target_statement_hash,
+                "auditor_hash": result.auditor_hash,
+                "candidate_hashes": [
+                    item.content_hash for item in result.candidates
+                ],
+                "source_status_hash": hashlib.sha256(json.dumps(
+                    [asdict(item) for item in result.source_statuses],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()).hexdigest(),
+            }
+            checkpoint.premise_backjump_target = "ROOT_UNAVAILABLE"
+            checkpoint.branch_history[
+                "interface-exhaustion:" + result.exhaustion_hash
+            ] = {
+                "status": "QUARANTINED",
+                "reason": result.terminal_reason,
+                "plan_ids": [checkpoint.target_obligation_id],
+                "evidence_ids": [result.exhaustion_hash],
+                "source_run_id": source_run_id,
+                "typed_backjump_target": "ROOT_UNAVAILABLE",
+                "created_at": checkpoint.updated_at,
+            }
+            checkpoint.transition(
+                ProofState.PARENT_STATEMENT_UNDERSPECIFIED,
+                "target-interface-exhausted:typed-backjump",
+                source_run_id=source_run_id,
+                strategy_reused=False,
             )
             save_checkpoint(checkpoint_path, checkpoint)
-            return checkpoint, "INTERFACE_REQUIRED"
+            checkpoint.blocked_reason = (
+                "MATHEMATICAL_TERMINAL_BLOCKER:"
+                + result.exhaustion_hash
+            )
+            checkpoint.transition(
+                ProofState.BLOCKED,
+                checkpoint.blocked_reason,
+                source_run_id=source_run_id,
+                strategy_reused=False,
+            )
+            save_checkpoint(checkpoint_path, checkpoint)
+            return checkpoint, result.status
         return checkpoint, ""
     base_environment_hash = pinned_environment_hash(project_root)
     store_path = checkpoint_path.with_name(
