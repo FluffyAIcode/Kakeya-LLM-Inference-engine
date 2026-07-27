@@ -126,6 +126,27 @@ def test_target_bound_decomposer_resume_ignores_wrapper_candidate_hash():
     )
 
 
+def test_contract_bound_definition_resolution_preserves_provenance_on_wrapper_drift():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DEFINITION_RESOLUTION.value,
+        current_role="definition_resolution",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        target_context_hash="c" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        candidate_sha256="stale-wrapper-hash",
+        definition_audit_outcome="COMPLETE",
+    )
+    assert is_contract_bound_subgoal_resume(checkpoint)
+    assert should_resume_downstream(
+        checkpoint,
+        candidate_sha256="new-wrapper-hash",
+        force_strategy=False,
+        strategy_trigger_exists=False,
+    )
+
+
 def test_duplicate_wrapper_block_recovers_bound_decomposer():
     checkpoint = OrchestrationCheckpoint(
         state=ProofState.BLOCKED.value,

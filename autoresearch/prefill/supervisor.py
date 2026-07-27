@@ -1888,6 +1888,7 @@ def is_contract_bound_subgoal_resume(
     return bool(
         checkpoint is not None
         and checkpoint.proof_state in {
+            ProofState.DEFINITION_RESOLUTION,
             ProofState.DECOMPOSER,
             ProofState.DECOMPOSITION_EXPLORATION,
             ProofState.CANDIDATE_PREFILTER,
