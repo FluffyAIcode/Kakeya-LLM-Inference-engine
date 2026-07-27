@@ -428,10 +428,11 @@ def test_resume_report_provenance_is_target_bound_and_durable(tmp_path):
     assert artifact_path.is_file()
 
 
-def test_resume_lease_conflict_and_tamper_fail_closed(tmp_path):
+def test_resume_lease_conflict_and_tamper_fail_closed(tmp_path, monkeypatch):
     path = tmp_path / "proof_orchestration.json"
     checkpoint = _checkpoint(path)
     certificate = _issue(path, checkpoint)
+    monkeypatch.setattr("os.kill", lambda pid, signal: None)
     with pytest.raises(ResumeCertificateError, match="ACTIVE_CONFLICT"):
         acquire_resume_lease(
             path,
@@ -454,3 +455,33 @@ def test_resume_lease_conflict_and_tamper_fail_closed(tmp_path):
     with pytest.raises(ResumeCertificateError, match="LEASE_TAMPERED"):
         _consume(path, checkpoint)
     assert certificate_pointer_path(path).exists()
+
+
+def test_dead_resume_lease_owner_is_reclaimed(tmp_path, monkeypatch):
+    path = tmp_path / "proof_orchestration.json"
+    checkpoint = _checkpoint(path)
+    _issue(path, checkpoint)
+
+    def dead_owner(pid, signal):
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr("os.kill", dead_owner)
+    replacement = acquire_resume_lease(
+        path,
+        checkpoint,
+        lease_id="replacement",
+        supervisor_pid=PID + 1,
+        supervisor_generation="replacement-generation",
+        ledger_sha256=ledger_hash(_ledger()),
+        environment_sha256=ENVIRONMENT,
+        runtime_binding=RUNTIME,
+        intended_next_role="definition_resolution",
+        active_conflict=False,
+        issued_at=1001,
+        ttl_s=60,
+    )
+    assert replacement["lease_id"] == "replacement"
+    journal = path.with_name(
+        "proof_orchestration.resume_leases.journal.jsonl",
+    ).read_text()
+    assert "resume_lease_dead_owner_reclaimed" in journal

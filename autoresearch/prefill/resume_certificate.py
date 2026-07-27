@@ -568,7 +568,28 @@ def acquire_resume_lease(
                 not existing.get("consumed")
                 and now < float(existing.get("expires_at", 0))
             ):
-                raise ResumeCertificateError("RESUME_LEASE_ACTIVE_CONFLICT")
+                owner_pid = int(existing.get("supervisor_pid", 0))
+                try:
+                    os.kill(owner_pid, 0)
+                except ProcessLookupError:
+                    _append_journal(
+                        resume_lease_journal_path(checkpoint_path),
+                        {
+                            "kind": "resume_lease_dead_owner_reclaimed",
+                            "lease_id": existing.get("lease_id", ""),
+                            "lease_hash": existing.get("lease_hash", ""),
+                            "owner_pid": owner_pid,
+                            "reclaimed_at": now,
+                        },
+                    )
+                except (PermissionError, OSError):
+                    raise ResumeCertificateError(
+                        "RESUME_LEASE_ACTIVE_CONFLICT",
+                    )
+                else:
+                    raise ResumeCertificateError(
+                        "RESUME_LEASE_ACTIVE_CONFLICT",
+                    )
         _atomic_write(path, _canonical(body))
         _append_journal(resume_lease_journal_path(checkpoint_path), {
             "kind": "resume_lease_acquired",
