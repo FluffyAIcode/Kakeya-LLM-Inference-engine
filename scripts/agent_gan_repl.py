@@ -71,6 +71,11 @@ from autoresearch.prefill.decomposition_exploration import (
     prefilter_private_candidates,
     rank_private_candidates,
 )
+from autoresearch.prefill.candidate_representation import (
+    RepresentationOutcome,
+    analyze_private_candidate_representation,
+    persist_representation_gap_report,
+)
 from autoresearch.prefill.stepwise_proof import (
     ActionSelection,
     LeanExecutionContext,
@@ -4401,6 +4406,24 @@ def _run_typed_ir_v2(
                 "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
             },
         )
+    if checkpoint.representation_exhaustion_hash:
+        return DecompositionCertificateResult(
+            False,
+            ["CANDIDATE_REPRESENTATION_EXHAUSTED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "REPRESENTATION_STAGNATION",
+                "representation_exhaustion_hash": (
+                    checkpoint.representation_exhaustion_hash
+                ),
+                "scratchpad_rerun": False,
+                "strategy_rerun": False,
+            },
+        )
     if checkpoint.exploration_exhaustion_hash:
         return DecompositionCertificateResult(
             False,
@@ -4419,10 +4442,7 @@ def _run_typed_ir_v2(
                 "strategy_rerun": False,
             },
         )
-    if (
-        checkpoint.proof_state == ProofState.CANDIDATE_FORMALIZATION
-        and checkpoint.ranked_candidate_ids
-    ):
+    if checkpoint.proof_state == ProofState.CANDIDATE_REPRESENTATION_ANALYSIS:
         index = checkpoint.exploration_current_index
         formalization_queue = checkpoint.ranked_candidate_ids
         candidate_id, next_candidate_id, queue_exhausted = (
@@ -4435,33 +4455,120 @@ def _run_typed_ir_v2(
             item for item in checkpoint.exploration_candidate_refs
             if item.get("candidate_id") == candidate_id
         )
-        intent_hash = _canonical_json_hash({
-            "schema_version": 1,
-            "target_obligation_id": checkpoint.target_obligation_id,
-            "candidate_id": candidate_id,
-            "category": candidate.get("category", ""),
-            "required_definition_ids": candidate.get(
-                "required_definition_ids", (),
-            ),
-            "registered_symbols_only": True,
-            "private_memo_consumed": False,
-        })
-        checkpoint.exploration_rejections[candidate_id] = [
-            "UNMAPPABLE_TYPED_CANDIDATE_INTENT",
-        ]
-        checkpoint.exploration_formalization_status = (
-            "REJECTED_UNMAPPABLE_TYPED_CANDIDATE_INTENT"
+        memo_hash = str(candidate.get("memo_sha256", ""))
+        memo_path = checkpoint_path.with_suffix(
+            ".exploration_memos",
+        ) / f"{memo_hash}.private"
+        memo_bytes = memo_path.read_bytes()
+        if hashlib.sha256(memo_bytes).hexdigest() != memo_hash:
+            raise RuntimeError("PRIVATE_CANDIDATE_MEMO_HASH_MISMATCH")
+        duplicate_ids = tuple(
+            str(item.get("candidate_id", ""))
+            for item in checkpoint.exploration_candidate_refs
+            if (
+                item.get("candidate_id") != candidate_id
+                and item.get("semantic_fingerprint")
+                == candidate.get("semantic_fingerprint")
+            )
+        )
+        report = analyze_private_candidate_representation(
+            candidate_id=candidate_id,
+            candidate_hash=memo_hash,
+            category=str(candidate.get("category", "")),
+            memo_text=memo_bytes.decode("utf-8"),
+            target_obligation_id=checkpoint.target_obligation_id,
+            target_context_hash=checkpoint.target_context_hash,
+            environment_hash=checkpoint.target_environment_hash,
+            duplicate_candidate_ids=duplicate_ids,
+        )
+        report_path = persist_representation_gap_report(
+            report,
+            checkpoint_path.with_suffix(".representation_reports"),
+        )
+        checkpoint.representation_report_refs[candidate_id] = {
+            "report_id": report.report_id,
+            "sha256": report.content_hash,
+            "path": str(report_path),
+            "mapper_registry_hash": report.mapper_registry_hash,
+            "environment_hash": report.environment_hash,
+            "audit_only": True,
+        }
+        checkpoint.representation_current_status = report.outcome
+        checkpoint.representation_missing_primitive_ids = list(
+            report.missing_primitive_ids
+        )
+        checkpoint.representation_source_resolution = report.outcome
+        checkpoint.representation_retry_state = (
+            "ELIGIBLE_AFTER_HASH_CHANGE"
+            if report.retry_allowed else "NOT_ALLOWED"
         )
         checkpoint.recovery_events.append({
-            "event_type": "EXPLORATION_CANDIDATE_FORMALIZATION_REJECTED",
-            "event_id": intent_hash,
+            "event_type": "CANDIDATE_REPRESENTATION_ANALYZED",
+            "event_id": report.content_hash,
             "candidate_id": candidate_id,
             "candidate_index": index,
-            "reason_code": "UNMAPPABLE_TYPED_CANDIDATE_INTENT",
+            "report_id": report.report_id,
+            "outcome": report.outcome,
+            "missing_primitive_ids": list(report.missing_primitive_ids),
+            "semantic_issue_ids": list(report.semantic_issue_ids),
+            "hidden_assumption_ids": list(report.hidden_assumption_ids),
+            "private_text_exposed": False,
             "lean_invoked": False,
             "ledger_mutated": False,
             "created_at": time.time(),
         })
+        if report.outcome in {
+            RepresentationOutcome.MAPPER_EXTENSION_REQUIRED.value,
+            RepresentationOutcome.REGISTRY_RESOLUTION.value,
+        }:
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                [report.outcome],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": "ENGINEERING_REPRESENTATION_GAP",
+                    "candidate_id": candidate_id,
+                    "representation_report_hash": report.content_hash,
+                    "math_budget_charged": False,
+                    "ledger_mutated": False,
+                },
+            )
+        if report.outcome == RepresentationOutcome.DEFINITION_RESOLUTION.value:
+            checkpoint.transition(
+                ProofState.DEFINITION_RESOLUTION,
+                "candidate-representation:autonomous-definition-resolution",
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                ["AUTONOMOUS_DEFINITION_RESOLUTION_REQUIRED"],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": report.outcome,
+                    "candidate_id": candidate_id,
+                    "representation_report_hash": report.content_hash,
+                    "ledger_mutated": False,
+                },
+            )
+        checkpoint.exploration_rejections[candidate_id] = [
+            "UNMAPPABLE_TYPED_CANDIDATE_INTENT",
+            report.outcome,
+            *report.semantic_issue_ids,
+            *report.hidden_assumption_ids,
+        ]
+        checkpoint.exploration_formalization_status = (
+            "REJECTED_" + report.outcome
+        )
         if not queue_exhausted:
             checkpoint.exploration_current_index = index + 1
             checkpoint.exploration_current_candidate_id = (
@@ -4470,13 +4577,13 @@ def _run_typed_ir_v2(
             checkpoint.exploration_formalization_status = "PENDING"
             checkpoint.transition(
                 ProofState.CANDIDATE_FORMALIZATION,
-                "candidate-unmappable:try-next-ranked-candidate",
+                "candidate-representation-rejected:try-next-ranked-candidate",
                 strategy_reused=True,
             )
             save_orchestration_checkpoint(checkpoint_path, checkpoint)
             return DecompositionCertificateResult(
                 False,
-                ["EXPLORATION_CANDIDATE_UNMAPPABLE_TRY_NEXT"],
+                ["CANDIDATE_REPRESENTATION_REJECTED_TRY_NEXT"],
                 artifacts,
                 hashes,
                 transcripts,
@@ -4490,43 +4597,95 @@ def _run_typed_ir_v2(
                 },
             )
         exhaustion = _canonical_json_hash({
+            "schema_version": 1,
             "contract_id": checkpoint.exploration_contract_id,
             "candidate_set_hash": checkpoint.candidate_set_hash,
             "formalization_queue_ids": formalization_queue,
+            "representation_report_hashes": sorted(
+                item["sha256"]
+                for item in checkpoint.representation_report_refs.values()
+            ),
             "rejections": checkpoint.exploration_rejections,
             "ledger_mutated": False,
         })
-        checkpoint.exploration_exhaustion_hash = exhaustion
+        checkpoint.representation_exhaustion_hash = exhaustion
         checkpoint.exploration_current_candidate_id = ""
-        checkpoint.exploration_formalization_status = "EXHAUSTED"
+        checkpoint.exploration_formalization_status = (
+            "REPRESENTATION_EXHAUSTED"
+        )
+        checkpoint.representation_current_status = (
+            RepresentationOutcome.REPRESENTATION_EXHAUSTED.value
+        )
         checkpoint.recovery_events.append({
-            "event_type": "DECOMPOSITION_EXPLORATION_EXHAUSTED",
+            "event_type": "CANDIDATE_REPRESENTATION_EXHAUSTED",
             "event_id": exhaustion,
             "contract_id": checkpoint.exploration_contract_id,
             "candidate_set_hash": checkpoint.candidate_set_hash,
-            "rejected_candidate_ids": list(formalization_queue),
+            "analyzed_candidate_ids": list(formalization_queue),
+            "representation_report_hashes": sorted(
+                item["sha256"]
+                for item in checkpoint.representation_report_refs.values()
+            ),
             "ledger_mutated": False,
             "oprover_invoked": False,
-            "target_state": ProofState.STRATEGY_TOURNAMENT.value,
+            "target_state": ProofState.DECOMPOSER.value,
             "created_at": time.time(),
         })
         checkpoint.transition(
             ProofState.DECOMPOSER,
-            "decomposition-exploration-exhausted:typed-backjump",
+            "candidate-representation-exhausted:typed-backjump",
             strategy_reused=True,
         )
         save_orchestration_checkpoint(checkpoint_path, checkpoint)
         return DecompositionCertificateResult(
             False,
-            ["DECOMPOSITION_EXPLORATION_EXHAUSTED"],
+            ["CANDIDATE_REPRESENTATION_EXHAUSTED"],
             artifacts,
             hashes,
             transcripts,
             role_run_ids,
             {
                 "host_gates_passed": False,
-                "failure_status": "MATHEMATICAL_STAGNATION",
-                "exploration_exhaustion_hash": exhaustion,
+                "failure_status": "REPRESENTATION_STAGNATION",
+                "representation_exhaustion_hash": exhaustion,
+            },
+        )
+    if (
+        checkpoint.proof_state == ProofState.CANDIDATE_FORMALIZATION
+        and checkpoint.ranked_candidate_ids
+    ):
+        index = checkpoint.exploration_current_index
+        candidate_id, _, _ = next_formalization_candidate(
+            checkpoint.ranked_candidate_ids,
+            current_index=index,
+        )
+        checkpoint.exploration_current_candidate_id = candidate_id
+        checkpoint.exploration_formalization_status = (
+            "UNMAPPABLE_TYPED_CANDIDATE_INTENT"
+        )
+        checkpoint.representation_current_status = "PENDING_STATIC_ANALYSIS"
+        checkpoint.representation_missing_primitive_ids = []
+        checkpoint.representation_source_resolution = ""
+        checkpoint.representation_retry_state = "NOT_ANALYZED"
+        checkpoint.transition(
+            ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+            "candidate-unmappable:representation-analysis",
+            strategy_reused=True,
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False,
+            ["CANDIDATE_REPRESENTATION_ANALYSIS_REQUIRED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "REPRESENTATION_ANALYSIS_PENDING",
+                "candidate_id": candidate_id,
+                "lean_invoked": False,
+                "ledger_mutated": False,
             },
         )
     missing = artifacts["definition_auditor"].missing_definitions
@@ -5783,6 +5942,7 @@ def run_certified_decomposition(
                             ProofState.DECOMPOSITION_EXPLORATION,
                             ProofState.CANDIDATE_PREFILTER,
                             ProofState.CANDIDATE_FORMALIZATION,
+                            ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
                             ProofState.REDUCTION_CERTIFICATION,
                         }
                     ):

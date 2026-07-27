@@ -41,3 +41,16 @@ def agreesWithSimplePoleOnPuncturedDisk
 def nonzeroComplex (z : ℂ) : Prop := z ≠ 0
 
 def positiveRadius (radius : ℝ) : Prop := 0 < radius
+
+/- General, target-independent constructors admitted by candidate
+representation analysis.  These only wrap Mathlib types and predicates. -/
+def continuousComplexMap (f : ℂ → ℂ) : Prop := Continuous f
+
+def holomorphicComplexMapOn (f : ℂ → ℂ) (domain : Set ℂ) : Prop :=
+  DifferentiableOn ℂ f domain
+
+def convergesComplexSequence (seq : ℕ → ℂ) (limit : ℂ) : Prop :=
+  Tendsto seq atTop (nhds limit)
+
+def boundedComplexMapOn (f : ℂ → ℂ) (domain : Set ℂ) : Prop :=
+  ∃ bound : ℝ, 0 ≤ bound ∧ ∀ z ∈ domain, ‖f z‖ ≤ bound

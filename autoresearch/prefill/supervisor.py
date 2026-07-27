@@ -84,6 +84,7 @@ RESUMABLE_ORCHESTRATION_STATES = frozenset({
     ProofState.DECOMPOSITION_EXPLORATION,
     ProofState.CANDIDATE_PREFILTER,
     ProofState.CANDIDATE_FORMALIZATION,
+    ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
     ProofState.REDUCTION_CERTIFICATION,
     ProofState.MATH_IR_TRANSLATION,
     ProofState.HOST_TYPED_IR_GATE,
@@ -1893,6 +1894,7 @@ def is_contract_bound_subgoal_resume(
             ProofState.DECOMPOSITION_EXPLORATION,
             ProofState.CANDIDATE_PREFILTER,
             ProofState.CANDIDATE_FORMALIZATION,
+            ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
             ProofState.REDUCTION_CERTIFICATION,
         }
         and checkpoint.target_obligation_id
@@ -1906,6 +1908,7 @@ def is_contract_bound_subgoal_resume(
                     ProofState.DECOMPOSITION_EXPLORATION,
                     ProofState.CANDIDATE_PREFILTER,
                     ProofState.CANDIDATE_FORMALIZATION,
+                    ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
                     ProofState.REDUCTION_CERTIFICATION,
                 }
                 and checkpoint.exploration_contract_id

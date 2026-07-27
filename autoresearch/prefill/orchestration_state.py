@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 ARCHITECTURE_VERSION = 9
 TYPED_ARCHITECTURE_MIN_VERSION = 7
 TYPED_IR_MIGRATION_EVENT = "typed_ir_host_constrained_selector_v2"
@@ -23,6 +23,9 @@ STRATEGY_TOURNAMENT_MIGRATION_EVENT = (
 )
 STRATEGY_INTENT_TARGET_CONTEXT_MIGRATION_EVENT = (
     "strategy_intent_target_context_v1"
+)
+CANDIDATE_REPRESENTATION_MIGRATION_EVENT = (
+    "candidate_representation_analysis_v1"
 )
 REQUIRED_TYPED_CAPABILITIES = {
     "typed_role_transport": True,
@@ -69,6 +72,10 @@ def current_capability_manifest() -> dict[str, Any]:
         registry_hash as transport_registry_hash,
     )
     from autoresearch.prefill.definition_resolution import PROTOCOL_VERSION
+    from autoresearch.prefill.candidate_representation import (
+        MAPPER_CAPABILITY_VERSION,
+        mapper_capability_hash,
+    )
 
     return {
         "typed_transport_version": TRANSPORT_VERSION,
@@ -83,6 +90,8 @@ def current_capability_manifest() -> dict[str, Any]:
         "research_contract_version": CONTRACT_VERSION,
         "proof_search_version": PROOF_SEARCH_VERSION,
         "atomic_definition_version": PROTOCOL_VERSION,
+        "candidate_mapper_version": MAPPER_CAPABILITY_VERSION,
+        "candidate_mapper_hash": mapper_capability_hash(),
         "capability_flags": dict(REQUIRED_TYPED_CAPABILITIES),
     }
 
@@ -109,6 +118,7 @@ class ProofState(str, Enum):
     DECOMPOSITION_EXPLORATION = "DECOMPOSITION_EXPLORATION"
     CANDIDATE_PREFILTER = "CANDIDATE_PREFILTER"
     CANDIDATE_FORMALIZATION = "CANDIDATE_FORMALIZATION"
+    CANDIDATE_REPRESENTATION_ANALYSIS = "CANDIDATE_REPRESENTATION_ANALYSIS"
     REDUCTION_CERTIFICATION = "REDUCTION_CERTIFICATION"
     MATH_IR_TRANSLATION = "MATH_IR_TRANSLATION"
     HOST_TYPED_IR_GATE = "HOST_TYPED_IR_GATE"
@@ -257,8 +267,16 @@ ALLOWED_TRANSITIONS = {
     },
     ProofState.CANDIDATE_FORMALIZATION: {
         ProofState.CANDIDATE_FORMALIZATION,
+        ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
         ProofState.REDUCTION_CERTIFICATION, ProofState.DECOMPOSER,
         ProofState.STRATEGY_TOURNAMENT, ProofState.BLOCKED,
+    },
+    ProofState.CANDIDATE_REPRESENTATION_ANALYSIS: {
+        ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+        ProofState.CANDIDATE_FORMALIZATION,
+        ProofState.DEFINITION_RESOLUTION,
+        ProofState.DECOMPOSER, ProofState.STRATEGY_TOURNAMENT,
+        ProofState.BLOCKED,
     },
     ProofState.REDUCTION_CERTIFICATION: {
         ProofState.REDUCTION_CERTIFICATION,
@@ -338,6 +356,7 @@ ALLOWED_TRANSITIONS = {
         ProofState.DECOMPOSITION_EXPLORATION,
         ProofState.CANDIDATE_PREFILTER,
         ProofState.CANDIDATE_FORMALIZATION,
+        ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
         ProofState.REDUCTION_CERTIFICATION,
         *ROLE_ORDER[:-1],
     },
@@ -505,6 +524,12 @@ class OrchestrationCheckpoint:
     math_registry_hash: str = field(
         default_factory=lambda: _manifest_default("math_registry_hash"),
     )
+    candidate_mapper_version: int = field(
+        default_factory=lambda: _manifest_default("candidate_mapper_version"),
+    )
+    candidate_mapper_hash: str = field(
+        default_factory=lambda: _manifest_default("candidate_mapper_hash"),
+    )
     host_compiler_version: int = field(
         default_factory=lambda: _manifest_default("host_compiler_version"),
     )
@@ -553,6 +578,13 @@ class OrchestrationCheckpoint:
     exploration_formalization_status: str = ""
     exploration_reduction_status: str = ""
     exploration_exhaustion_hash: str = ""
+    representation_report_refs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    representation_current_status: str = ""
+    representation_missing_primitive_ids: list[str] = field(default_factory=list)
+    representation_source_resolution: str = ""
+    representation_retry_state: str = ""
+    representation_retry_fingerprints: list[str] = field(default_factory=list)
+    representation_exhaustion_hash: str = ""
     selected_move_id: str = ""
     evidence_gap_graph_hash: str = ""
     proof_plan_hash: str = ""
@@ -1392,7 +1424,10 @@ def load_checkpoint(path: Path) -> OrchestrationCheckpoint | None:
                 "strategy-tournament-v1:legacy-strategy-generator-audit-only"
             )
             raw["blocked_reason"] = ""
-        raw["migration_event"] = STRATEGY_TOURNAMENT_MIGRATION_EVENT
+        raw["migration_event"] = (
+            CANDIDATE_REPRESENTATION_MIGRATION_EVENT
+            if legacy_schema >= 12 else STRATEGY_TOURNAMENT_MIGRATION_EVENT
+        )
         raw["architecture_version"] = ARCHITECTURE_VERSION
         raw.update(current_capability_manifest())
         raw["adapter_status"] = ""

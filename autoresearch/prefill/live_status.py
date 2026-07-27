@@ -300,6 +300,39 @@ class AtomicLiveStatus:
                                     ).values()
                                     for reason in reasons
                                 }),
+                                "representation_analysis": {
+                                    "status": _safe_text(orchestration.get(
+                                        "representation_current_status", "",
+                                    )),
+                                    "missing_primitive_ids": [
+                                        _safe_text(item, 80)
+                                        for item in orchestration.get(
+                                            "representation_missing_primitive_ids",
+                                            [],
+                                        )
+                                    ],
+                                    "source_resolution": _safe_text(
+                                        orchestration.get(
+                                            "representation_source_resolution",
+                                            "",
+                                        ),
+                                    ),
+                                    "retry_state": _safe_text(
+                                        orchestration.get(
+                                            "representation_retry_state", "",
+                                        ),
+                                    ),
+                                    "report_count": len(orchestration.get(
+                                        "representation_report_refs", {},
+                                    )),
+                                    "exhaustion_hash": _safe_text(
+                                        orchestration.get(
+                                            "representation_exhaustion_hash",
+                                            "",
+                                        ),
+                                        80,
+                                    ),
+                                },
                             },
                             "theorem_card_count": len(
                                 orchestration.get("theorem_card_ids", []),

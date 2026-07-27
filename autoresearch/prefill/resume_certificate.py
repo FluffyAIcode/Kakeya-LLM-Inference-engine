@@ -412,6 +412,7 @@ def build_resume_certificate(
             "decomposition_exploration",
             "candidate_prefilter",
             "candidate_formalization",
+            "candidate_representation_analysis",
             "reduction_certification",
         }
         or selected_payload.get("proof_search_allowed") is not False
