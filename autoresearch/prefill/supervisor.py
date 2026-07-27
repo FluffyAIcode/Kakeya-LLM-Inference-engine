@@ -2856,7 +2856,7 @@ def run_iteration(args, iteration: int) -> dict:
             iteration=iteration,
             orchestration_state_path=orchestration_state_path,
             candidate_sha256=candidate_sha256,
-            ledger=ledger_data,
+            ledger=asdict(ledger_object),
             tokenizer_id=args.tokenizer_id,
         )
         gan_completed = True
