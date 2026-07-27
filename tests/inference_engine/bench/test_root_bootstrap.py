@@ -158,3 +158,54 @@ def test_atomic_root_creation_is_idempotent_and_isolates_quarantine(tmp_path):
         ).read_text().splitlines()
     ]
     assert [item["phase"] for item in records] == ["PREPARED", "COMMITTED"]
+
+
+def test_existing_root_repairs_overwritten_checkpoint_without_ledger_bump(
+    tmp_path,
+):
+    ledger_path = tmp_path / "ledger.json"
+    checkpoint_path = tmp_path / "proof_orchestration.json"
+    ledger = _ledger()
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        current_role="blocked",
+        target_obligation_id="RH-C1",
+        ledger_id=ledger["ledger_id"],
+        ledger_version=95,
+        blocked_reason="ROOT_UNAVAILABLE",
+    )
+    created = bootstrap_rh_root(
+        project_root=ROOT,
+        ledger_path=ledger_path,
+        checkpoint_path=checkpoint_path,
+        checkpoint=checkpoint,
+        ledger=ledger,
+    )
+    committed = json.loads(ledger_path.read_text())
+    checkpoint.validated_artifacts.clear()
+    checkpoint.proposition_hash = ""
+    checkpoint.elaborated_theorem_id = ""
+    checkpoint.state = ProofState.BLOCKED.value
+    checkpoint.current_role = "blocked"
+    checkpoint.blocked_reason = "downstream overwrite"
+
+    repaired = bootstrap_rh_root(
+        project_root=ROOT,
+        ledger_path=ledger_path,
+        checkpoint_path=checkpoint_path,
+        checkpoint=checkpoint,
+        ledger=committed,
+    )
+
+    assert repaired.changed
+    assert repaired.root_id == created.root_id
+    assert json.loads(ledger_path.read_text())["version"] == 96
+    restored = load_checkpoint(checkpoint_path)
+    assert restored is not None
+    assert restored.proof_state == ProofState.STRATEGY_TOURNAMENT
+    assert restored.elaborated_theorem_id == "KakeyaRiemannHypothesisRoot"
+    assert restored.proposition_hash == created.proposition_hash
+    assert (
+        restored.validated_artifacts["definition_auditor"].target_obligation_id
+        == created.root_id
+    )

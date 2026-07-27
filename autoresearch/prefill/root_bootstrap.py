@@ -367,6 +367,130 @@ def _append_transaction(path: Path, record: Mapping[str, Any]) -> None:
         os.close(descriptor)
 
 
+def _repair_existing_root_checkpoint(
+    *,
+    project_root: Path,
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+    ledger: Mapping[str, Any],
+    root: Mapping[str, Any],
+    cards: tuple[RootSourceCard, ...],
+    candidates: tuple[RootCandidate, ...],
+) -> bool:
+    """Rehydrate a root checkpoint after an interrupted downstream overwrite."""
+    selected = candidates[0]
+    root_id = str(root["obligation_id"])
+    reference = checkpoint.validated_artifacts.get("definition_auditor")
+    healthy = (
+        checkpoint.target_obligation_id == root_id
+        and checkpoint.proposition_hash == selected.proposition_hash
+        and checkpoint.elaborated_theorem_id == "KakeyaRiemannHypothesisRoot"
+        and checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
+        and reference is not None
+        and reference.target_obligation_id == root_id
+    )
+    if healthy:
+        return False
+    certificate_hash = str(root["root_bootstrap_certificate_hash"])
+    source_index_hash = _digest([asdict(card) for card in cards])
+    branch_index_hash = _digest([asdict(item) for item in candidates])
+    environment_hash = pinned_environment_hash(project_root)
+    repair_id = hashlib.sha256(
+        f"{certificate_hash}:checkpoint-repair-v1".encode()
+    ).hexdigest()
+    context, _ = activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id=root_id,
+        statement=CANONICAL_PROPOSITION,
+        environment_hash=environment_hash,
+        strategy_plan_hash="STRATEGY_PENDING:" + repair_id[:16],
+        evidence={
+            "EVIDENCE_TARGET_STATEMENT": CANONICAL_PROPOSITION,
+            "root_source_index_hash": source_index_hash,
+            "root_candidate_index_hash": branch_index_hash,
+            "root_bootstrap_certificate_hash": certificate_hash,
+            "checkpoint_repair_id": repair_id,
+            "mathlib_revision": MATHLIB_REVISION,
+        },
+        definition_ids=tuple(card.declaration_name for card in cards),
+        candidate_ids=tuple(item.candidate_id for item in candidates),
+        theorem_card_ids=tuple(card.card_id for card in cards),
+    )
+    checkpoint.ledger_version = int(ledger["version"])
+    checkpoint.ledger_id = str(ledger["ledger_id"])
+    checkpoint.root_goal_sha256 = selected.proposition_hash
+    checkpoint.elaborated_theorem_id = "KakeyaRiemannHypothesisRoot"
+    checkpoint.proposition_hash = selected.proposition_hash
+    checkpoint.lean_declaration_hash = hashlib.sha256(
+        (Path(project_root) / "KakeyaLeanGate/RiemannHypothesisRoot.lean").read_bytes()
+    ).hexdigest()
+    auditor = persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="definition_auditor",
+        payload={
+            "schema_version": 1,
+            "target_obligation_id": root_id,
+            "target_context_hash": context.binding.context_hash,
+            "parent_statement_hash": context.binding.parent_statement_hash,
+            "strategy_plan_hash": context.binding.strategy_plan_hash,
+            "environment_hash": environment_hash,
+            "definitions": [{
+                "definition_id": card.declaration_name,
+                "source_card_id": card.card_id,
+                "source_hash": card.source_sha256,
+            } for card in cards],
+            "missing_definitions": [],
+            "source_index_hash": source_index_hash,
+            "candidate_index_hash": branch_index_hash,
+            "root_specific": True,
+            "checkpoint_repair_id": repair_id,
+        },
+        dependencies=[],
+        source_run_id="host:rh-root-repair:" + repair_id[:20],
+        save=False,
+    )
+    checkpoint.definition_audit_outcome = "COMPLETE"
+    checkpoint.definition_audit_fingerprint = auditor.sha256
+    if checkpoint.proof_state == ProofState.BLOCKED:
+        apply_blocked_exit_event(checkpoint, BlockedExitEvent(
+            event_id=repair_id,
+            event_type=BlockedEventType.NEW_STRATEGY_TRIGGER.value,
+            reason="rehydrated sourced RH root checkpoint",
+            target_state=ProofState.STRATEGY_TOURNAMENT.value,
+            reset_role=ProofState.STRATEGY_TOURNAMENT.value,
+            metadata={
+                "strategy_trigger": "RH_ROOT_CHECKPOINT_REPAIR",
+                "root_id": root_id,
+                "certificate_hash": certificate_hash,
+            },
+        ))
+    elif checkpoint.proof_state != ProofState.STRATEGY_TOURNAMENT:
+        raise ValueError("ROOT_CHECKPOINT_REPAIR_REQUIRES_BLOCKED_OR_STRATEGY")
+    checkpoint.recovery_events.append({
+        "event_type": "RH_ROOT_CHECKPOINT_REPAIRED",
+        "event_id": repair_id,
+        "root_id": root_id,
+        "certificate_hash": certificate_hash,
+        "created_at": time.time(),
+    })
+    save_checkpoint(checkpoint_path, checkpoint)
+    _append_transaction(
+        checkpoint_path.with_name("proof_root_bootstrap.journal.jsonl"),
+        {
+            "kind": "root_bootstrap_transaction",
+            "phase": "CHECKPOINT_REPAIRED",
+            "transaction_id": "rh-root-repair:" + repair_id,
+            "root_id": root_id,
+            "certificate_hash": certificate_hash,
+            "ledger_version": int(ledger["version"]),
+            "target_context_hash": checkpoint.target_context_hash,
+        },
+    )
+    return True
+
+
 def bootstrap_rh_root(
     *,
     project_root: Path,
@@ -391,9 +515,18 @@ def bootstrap_rh_root(
         ):
             raise ValueError("ROOT_BOOTSTRAP_REPLAY_STATE_MISMATCH")
         certificate_hash = str(existing["root_bootstrap_certificate_hash"])
+        repaired = _repair_existing_root_checkpoint(
+            project_root=project_root,
+            checkpoint_path=checkpoint_path,
+            checkpoint=checkpoint,
+            ledger=ledger,
+            root=existing,
+            cards=cards,
+            candidates=candidates,
+        )
         return RootBootstrapResult(
             root_id, selected.proposition_hash, certificate_hash,
-            int(ledger["version"]), cards, candidates, False,
+            int(ledger["version"]), cards, candidates, repaired,
         )
     if ledger.get("backjump_target_id") != "ROOT_UNAVAILABLE":
         raise ValueError("ROOT_BOOTSTRAP_REQUIRES_ROOT_UNAVAILABLE")

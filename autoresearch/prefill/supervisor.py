@@ -2388,7 +2388,7 @@ def run_iteration(args, iteration: int) -> dict:
             flush=True,
         )
         candidate_sha256 = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
-        if not resume_downstream:
+        if not resume_downstream and not architecture9_strategy:
             selected_parent = next(
                 (
                     item for item in ledger_data.get("obligations", [])
