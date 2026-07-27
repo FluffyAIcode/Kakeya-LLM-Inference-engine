@@ -5196,6 +5196,17 @@ def _run_typed_ir_v2(
     )
 
 
+def retain_contract_provenance_after_artifact_failure(
+    checkpoint: OrchestrationCheckpoint,
+) -> None:
+    """Invalidate executable role artifacts without erasing accepted strategy."""
+    checkpoint.validated_artifacts = {
+        role: reference
+        for role, reference in checkpoint.validated_artifacts.items()
+        if role in {"strategy_tournament", "research_contract"}
+    }
+
+
 def run_certified_decomposition(
     ledger: ProofObligationLedger,
     target_id: str,
@@ -5542,7 +5553,9 @@ def run_certified_decomposition(
                         flush=True,
                     )
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                orchestration_checkpoint.validated_artifacts = {}
+                retain_contract_provenance_after_artifact_failure(
+                    orchestration_checkpoint,
+                )
                 orchestration_checkpoint.state = (
                     ProofState.DEFINITION_AUDITOR.value
                 )
@@ -5550,6 +5563,24 @@ def run_certified_decomposition(
                 orchestration_checkpoint.last_transition_reason = (
                     f"artifact-resume-invalidated:{type(exc).__name__}"
                 )
+                orchestration_checkpoint.recovery_events.append({
+                    "event_type": "EXECUTABLE_ARTIFACT_RESUME_INVALIDATED",
+                    "event_id": hashlib.sha256(
+                        (
+                            type(exc).__name__
+                            + orchestration_checkpoint.target_obligation_id
+                            + orchestration_checkpoint.research_contract_id
+                        ).encode()
+                    ).hexdigest(),
+                    "reason": type(exc).__name__,
+                    "preserved_artifact_roles": sorted(
+                        orchestration_checkpoint.validated_artifacts
+                    ),
+                    "research_contract_id": (
+                        orchestration_checkpoint.research_contract_id
+                    ),
+                    "created_at": time.time(),
+                })
                 save_orchestration_checkpoint(
                     checkpoint_path,
                     orchestration_checkpoint,

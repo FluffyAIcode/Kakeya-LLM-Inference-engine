@@ -115,6 +115,7 @@ from scripts.agent_gan_repl import (
     save_checkpoint,
     run_isolated_premise_review,
     run_certified_decomposition,
+    retain_contract_provenance_after_artifact_failure,
     persist_verified_decomposition,
     validate_evidence_artifact,
 )
@@ -3631,6 +3632,29 @@ def test_true_binding_mismatch_preserves_accepted_contract(tmp_path):
     )
     assert preserved.proof_state == ProofState.DECOMPOSER
     assert preserved.adapter_status == "INTEGRATION_BLOCKED"
+
+
+def test_artifact_migration_failure_preserves_contract_provenance():
+    checkpoint = OrchestrationCheckpoint(
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+        selected_strategy_plan_id="SP-root",
+        selected_strategy_plan_hash="plan-hash",
+    )
+    checkpoint.validated_artifacts = {
+        "definition_auditor": object(),
+        "counterexample_worker": object(),
+        "strategy_tournament": object(),
+        "research_contract": object(),
+    }
+    retain_contract_provenance_after_artifact_failure(checkpoint)
+    assert set(checkpoint.validated_artifacts) == {
+        "strategy_tournament",
+        "research_contract",
+    }
+    assert checkpoint.research_contract_id == "RC-root"
+    assert checkpoint.research_contract_hash == "contract-hash"
+    assert checkpoint.selected_strategy_plan_id == "SP-root"
 
 
 @pytest.mark.skip(reason="legacy model-authored artifact execution is read-only")
