@@ -49,6 +49,16 @@ from autoresearch.prefill.orchestration_state import (
     reconcile_checkpoint_ledger_version,
     save_checkpoint as save_orchestration_checkpoint,
 )
+from autoresearch.prefill.resume_certificate import (
+    acquire_resume_lease,
+    build_resume_certificate,
+    build_resume_report_provenance,
+    checkpoint_hash,
+    current_runtime_binding,
+    ledger_hash,
+    persist_resume_certificate,
+    resume_requires_certificate,
+)
 from autoresearch.prefill.semantic_decompose import (
     SemanticResponseIncomplete,
     SemanticUnitTooLarge,
@@ -1404,6 +1414,8 @@ def run_gan_experiment(
     iteration: int,
     orchestration_state_path: Path,
     candidate_sha256: str,
+    ledger: dict,
+    tokenizer_id: str,
 ) -> tuple[str, str]:
     command = [
         "bash", str(repo / "scripts/run_agent_gan_repl.sh"),
@@ -1412,6 +1424,22 @@ def run_gan_experiment(
         "--state-file", str(state_path),
         "--max-retained-tokens", str(max_retained_tokens),
     ]
+    resume_checkpoint = load_orchestration_checkpoint(
+        orchestration_state_path,
+    )
+    certified_resume = resume_requires_certificate(
+        resume_checkpoint,
+        fresh_architecture_entry=False,
+    )
+    lease_id = (
+        hashlib.sha256(
+            (
+                f"{supervisor_pid}:{iteration}:{candidate_sha256}:"
+                f"{time.time_ns()}"
+            ).encode()
+        ).hexdigest()
+        if certified_resume else ""
+    )
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -1429,8 +1457,60 @@ def run_gan_experiment(
                 orchestration_state_path,
             ),
             "KAKEYA_CANDIDATE_SHA256": candidate_sha256,
+            "KAKEYA_RESUME_LEASE_ID": lease_id,
         },
     )
+    if certified_resume:
+        assert resume_checkpoint is not None
+        runtime_binding = current_runtime_binding(
+            repo,
+            tokenizer_id=tokenizer_id,
+            residency_path=Path.home() / ".kakeya/oprover-residency.json",
+        )
+        _report, report_hash, _report_path = build_resume_report_provenance(
+            orchestration_state_path,
+            resume_checkpoint,
+        )
+        after_hash = checkpoint_hash(resume_checkpoint)
+        lease = acquire_resume_lease(
+            orchestration_state_path,
+            resume_checkpoint,
+            lease_id=lease_id,
+            supervisor_pid=process.pid,
+            supervisor_generation=(
+                f"supervisor-{supervisor_pid}-iteration-{iteration}"
+            ),
+            ledger_sha256=ledger_hash(ledger),
+            environment_sha256=resume_checkpoint.target_environment_hash,
+            runtime_binding=runtime_binding,
+            intended_next_role=resume_checkpoint.current_role,
+            active_conflict=False,
+        )
+        certificate = build_resume_certificate(
+            resume_checkpoint,
+            ledger,
+            checkpoint_before_hash=after_hash,
+            checkpoint_after_hash=after_hash,
+            report_provenance_hash=report_hash,
+            runtime_binding=runtime_binding,
+            intended_next_role=resume_checkpoint.current_role,
+            owner_pid=process.pid,
+            lease_id=lease_id,
+            lease=lease,
+            nonce=hashlib.sha256(
+                f"{lease_id}:certificate".encode()
+            ).hexdigest(),
+        )
+        persist_resume_certificate(
+            orchestration_state_path,
+            certificate,
+        )
+        print(
+            "[proof-live] stage=resume-certificate "
+            f"role={resume_checkpoint.current_role} "
+            f"target={resume_checkpoint.target_obligation_id} issued=true",
+            flush=True,
+        )
     assert process.stdin is not None
     assert process.stdout is not None
     process.stdin.write("/continue\n/quit\n")
@@ -2531,6 +2611,12 @@ def run_iteration(args, iteration: int) -> dict:
             flush=True,
         )
         candidate_sha256 = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        if resume_downstream:
+            orchestration_checkpoint.candidate_sha256 = candidate_sha256
+            save_orchestration_checkpoint(
+                orchestration_state_path,
+                orchestration_checkpoint,
+            )
         if not resume_downstream and not architecture9_strategy:
             selected_parent = next(
                 (
@@ -2725,6 +2811,8 @@ def run_iteration(args, iteration: int) -> dict:
             iteration=iteration,
             orchestration_state_path=orchestration_state_path,
             candidate_sha256=candidate_sha256,
+            ledger=ledger_data,
+            tokenizer_id=args.tokenizer_id,
         )
         gan_completed = True
         transcript_path.write_text(gan_output)
