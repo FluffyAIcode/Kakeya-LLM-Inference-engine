@@ -59,6 +59,39 @@ exceptional points required by the chosen transform. Those hypotheses must
 be instantiated, not omitted, before applying the generalized theorem to
 zeta zeros.
 
+Lagarias (2007), §1, records a useful two-sided refinement. Under the stated
+multiset summability hypotheses, positivity for positive indices controls one
+half-plane, positivity for negative indices controls the opposite half-plane,
+and invariance under \(\rho\mapsto1-\rho\) identifies the two real parts. This
+explains why positive indices suffice for zeta only after the functional
+symmetry and convergence hypotheses have been established. It is an
+all-index theorem, not a recurrence or a finite-prefix extrapolation.
+
+## Finite-product generating identity
+
+For a finite multiplicity-aware family, set
+\(a_\rho=1-\rho^{-1}\). The elementary product
+
+\[
+P_F(z)=\prod_{\rho\in F}\frac{1-a_\rho z}{1-z}
+\]
+
+satisfies the exact rational identity
+
+\[
+\frac{P_F'(z)}{P_F(z)}
+=\sum_{\rho\in F}\left(
+  \frac1{1-z}-\frac{a_\rho}{1-a_\rho z}\right).
+\]
+
+The coefficient of \(z^{n-1}\) in each summand is
+\(1-a_\rho^n\). The Lean route proves this finite-product logarithmic
+derivative identity (and its value at \(z=0\)) without any convergence
+assumption. Passing from these finite products to xi requires the
+zeta-specific symmetric Hadamard product and locally strong convergence
+sufficient to interchange the limit with logarithmic differentiation/Taylor
+coefficient extraction.
+
 ## Normalization warning
 
 The often-used Riemann function
@@ -89,3 +122,8 @@ It does not currently provide:
 Accordingly, `RiemannLiCriterionStatement` is a typed unproved proposition,
 and `HeightSymmetricLiLimit` is only the exact convergence shape for an
 already supplied indexed multiset. Neither is inhabited by an axiom.
+
+The route additionally proves that an explicit Cauchy hypothesis produces
+such a limit by completeness of `ℂ`, and proves limit transfer through exact
+finite approximants. These are functional-analytic interfaces only; they do
+not claim that the zeta-zero truncations are Cauchy.

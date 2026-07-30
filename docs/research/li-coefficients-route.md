@@ -9,7 +9,12 @@
 - the real coefficient sequence and its explicit reality obligation;
 - all-index non-negativity and finite-prefix non-negativity;
 - the Li zero summand and indexed finite truncations;
+- a concrete finite indexed multiset with nonzero roots and retained
+  multiplicities;
 - the symmetric-height convergence obligation;
+- the corresponding Cauchy interface and completeness transfer;
+- a finite rational product whose logarithmic derivative generates the
+  finite zero contributions;
 - truncated generating polynomials;
 - `RiemannLiCriterionStatement`, the unproved source bridge to the canonical
   Mathlib RH root.
@@ -36,6 +41,21 @@ The route proves without `sorry`, `admit`, or `axiom`:
 - every fixed finite prefix can be positive while the next term is negative;
 - zero-summand identities at indices zero and one, compatibility with complex
   conjugation, and the zero partial sum;
+- exact finite-multiset identities at indices zero and one;
+- non-negativity of every finite sum when each transform
+  `1 - rho⁻¹` lies in the closed unit disk;
+- the algebraic critical-line implication
+  `rho.re = 1/2 -> ‖1 - rho⁻¹‖ = 1`, and therefore finite Li-sum
+  non-negativity for every multiplicity-aware family on the critical line;
+- every explicit Cauchy family of symmetric truncations converges in `ℂ`,
+  producing a `HeightSymmetricLiLimit`;
+- uniqueness/transfer of that limit through exact finite approximants;
+- the exact finite-product logarithmic-derivative identity
+  `logDeriv (prod_i ((1-a_i z)/(1-z))) =
+   sum_i (1/(1-z) - a_i/(1-a_i z))`, with
+  `a_i = 1 - rho_i⁻¹`;
+- at `z = 0`, the finite-product logarithmic derivative is exactly the first
+  finite Li sum;
 - the one-step recurrence for truncated generating polynomials.
 
 No numerical Li value is asserted, because no interval certificate was
@@ -55,12 +75,18 @@ tautologically valid truncation recurrence.
 
 ## Exact remaining bridge
 
-There are two nested blockers:
+There are two nested blockers. The new finite and convergence-transfer
+theorems show precisely where the first one begins:
 
 1. Analytic infrastructure: construct the non-trivial zeta zeros as an
-   indexed multiset counted with analytic multiplicity, prove the
-   symmetric-height sums converge, prove their equality to the derivatives
-   at `1`, and prove those derivatives are real.
+   indexed multiset counted with analytic multiplicity; prove Cauchy estimates
+   for every symmetric-height Li truncation; construct finite xi/Hadamard
+   approximants whose logarithmic derivatives equal the finite rational
+   identities proved here; and prove those approximants converge strongly
+   enough near `z = 0` to transfer all Taylor coefficients to
+   `log (riemannXiLi (1 / (1-z)))`. This yields the derivative/zero-sum
+   identity and reality. None of these zeta-specific analytic facts is
+   currently in pinned Mathlib.
 2. Mathematical criterion: formalize Li's theorem that all
    `λ_n ≥ 0` for `n ≥ 1` is equivalent to every non-trivial zeta zero lying
    on `re(s)=1/2`, then identify that statement with Mathlib's canonical
@@ -71,3 +97,8 @@ After infrastructure (1), proving all coefficients nonnegative directly
 would itself prove RH via (2); it is not a finite or computational next step.
 The development therefore stops at the first genuine missing theorem rather
 than assuming either bridge.
+
+The finite logarithmic-derivative formula is not a recurrence in `n`.
+Coefficient positivity supplies no relation determining a later coefficient
+from earlier ones, and the existing `finitePrefixSpoof` theorem continues to
+rule out extrapolation from any fixed prefix.

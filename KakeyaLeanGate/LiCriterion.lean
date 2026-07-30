@@ -1,4 +1,5 @@
 import KakeyaLeanGate.RiemannHypothesisRoot
+import Mathlib.Analysis.Calculus.LogDeriv
 import Mathlib.Analysis.Calculus.IteratedDeriv.Lemmas
 import Mathlib.Analysis.SpecialFunctions.Complex.Analytic
 import Mathlib.NumberTheory.LSeries.ZetaZeros
@@ -185,6 +186,94 @@ def liZeroPartialSum {ι : Type*} (root : ι → ℂ)
     liZeroPartialSum root cutoff 0 = 0 := by
   simp [liZeroPartialSum]
 
+/-- A finite, multiplicity-aware family of nonzero zeros.
+
+Repeated values at distinct `Fin` indices are retained, so this is an
+indexed multiset rather than a set.  It is concrete data, not an assumption
+about the zeros of zeta. -/
+structure FiniteZeroMultiset where
+  card : ℕ
+  root : Fin card → ℂ
+  root_ne_zero : ∀ i, root i ≠ 0
+
+/-- One zero repeated with a prescribed positive analytic multiplicity. -/
+def FiniteZeroMultiset.replicate (multiplicity : ℕ) (rho : ℂ)
+    (hρ : rho ≠ 0) : FiniteZeroMultiset where
+  card := multiplicity
+  root := fun _ ↦ rho
+  root_ne_zero := fun _ ↦ hρ
+
+/-- The exact Li sum of a finite indexed multiset. -/
+def FiniteZeroMultiset.liSum (zeros : FiniteZeroMultiset) (n : ℕ) : ℂ :=
+  ∑ i, liZeroSummand n (zeros.root i)
+
+@[simp] theorem FiniteZeroMultiset.liSum_replicate
+    (multiplicity n : ℕ) (rho : ℂ) (hρ : rho ≠ 0) :
+    (FiniteZeroMultiset.replicate multiplicity rho hρ).liSum n =
+      multiplicity * liZeroSummand n rho := by
+  change (∑ _ : Fin multiplicity, liZeroSummand n rho) =
+    multiplicity * liZeroSummand n rho
+  rw [Finset.sum_const, Finset.card_univ]
+  norm_num [Fintype.card_fin, nsmul_eq_mul]
+
+@[simp] theorem FiniteZeroMultiset.liSum_zero (zeros : FiniteZeroMultiset) :
+    zeros.liSum 0 = 0 := by
+  simp [FiniteZeroMultiset.liSum]
+
+theorem FiniteZeroMultiset.liSum_one (zeros : FiniteZeroMultiset) :
+    zeros.liSum 1 = ∑ i, (zeros.root i)⁻¹ := by
+  simp [FiniteZeroMultiset.liSum]
+
+/-- One zero contributes a nonnegative real part whenever its Li transform
+`1 - 1 / rho` lies in the closed unit disk. -/
+theorem liZeroSummand_re_nonneg_of_norm_le_one
+    (n : ℕ) (rho : ℂ) (hρ : ‖1 - rho⁻¹‖ ≤ 1) :
+    0 ≤ (liZeroSummand n rho).re := by
+  have hp : ((1 - rho⁻¹) ^ n).re ≤ 1 := calc
+    ((1 - rho⁻¹) ^ n).re
+        ≤ |((1 - rho⁻¹) ^ n).re| := le_abs_self _
+    _ ≤ ‖(1 - rho⁻¹) ^ n‖ := abs_re_le_norm _
+    _ = ‖1 - rho⁻¹‖ ^ n := norm_pow _ _
+    _ ≤ 1 := pow_le_one₀ (norm_nonneg _) hρ
+  simpa [liZeroSummand] using sub_nonneg.mpr hp
+
+/-- Exact finite positivity: no convergence or zero-enumeration theorem is
+needed for a finite multiplicity-aware family. -/
+theorem FiniteZeroMultiset.liSum_re_nonneg
+    (zeros : FiniteZeroMultiset)
+    (hunit : ∀ i, ‖1 - (zeros.root i)⁻¹‖ ≤ 1)
+    (n : ℕ) :
+    0 ≤ (zeros.liSum n).re := by
+  change 0 ≤ Complex.reCLM (∑ i, liZeroSummand n (zeros.root i))
+  rw [map_sum]
+  exact Finset.sum_nonneg fun i _ ↦
+    liZeroSummand_re_nonneg_of_norm_le_one n (zeros.root i) (hunit i)
+
+/-- On the critical line, the Li transform has norm exactly one. -/
+theorem norm_one_sub_inv_eq_one_of_re_eq_half
+    {rho : ℂ} (hρ0 : rho ≠ 0) (hline : rho.re = 1 / 2) :
+    ‖1 - rho⁻¹‖ = 1 := by
+  have hnormSq : ‖rho - 1‖ ^ 2 = ‖rho‖ ^ 2 := by
+    rw [Complex.sq_norm, Complex.sq_norm, Complex.normSq_apply, Complex.normSq_apply]
+    simp only [sub_re, one_re, sub_im, one_im, sub_zero]
+    rw [hline]
+    ring
+  have hnorm : ‖rho - 1‖ = ‖rho‖ := by
+    nlinarith [norm_nonneg (rho - 1), norm_nonneg rho]
+  have hid : 1 - rho⁻¹ = (rho - 1) / rho := by
+    field_simp
+  rw [hid, norm_div, hnorm, div_self]
+  exact norm_ne_zero_iff.mpr hρ0
+
+theorem FiniteZeroMultiset.liSum_re_nonneg_of_on_criticalLine
+    (zeros : FiniteZeroMultiset)
+    (hline : ∀ i, (zeros.root i).re = 1 / 2)
+    (n : ℕ) :
+    0 ≤ (zeros.liSum n).re :=
+  zeros.liSum_re_nonneg
+    (fun i ↦ (norm_one_sub_inv_eq_one_of_re_eq_half
+      (zeros.root_ne_zero i) (hline i)).le) n
+
 /-- The analytic convergence part of the height-symmetric zero formula.
 Completeness and multiplicity-correctness of `root` are separate obligations,
 because pinned Mathlib exposes only a zero set, not analytic zero orders. -/
@@ -195,6 +284,109 @@ def HeightSymmetricLiLimit {ι : Type*} [DecidableEq ι]
     (∀ N i, i ∈ cutoff N ↔ |(root i).im| ≤ height N) ∧
     ∀ n : ℕ, Tendsto (fun N ↦ liZeroPartialSum root (cutoff N) n)
       atTop (𝓝 (coefficient n))
+
+/-- Cauchy form of the analytic convergence obligation.  This does not assert
+that zeta zeros satisfy it. -/
+def HeightSymmetricLiCauchy {ι : Type*} [DecidableEq ι]
+    (root : ι → ℂ) (cutoff : ℕ → Finset ι) : Prop :=
+  ∀ n : ℕ, CauchySeq (fun N ↦ liZeroPartialSum root (cutoff N) n)
+
+/-- Completeness of `ℂ` transfers explicit Cauchy estimates into a coefficient
+sequence and the corresponding symmetric-limit interface. -/
+theorem exists_heightSymmetricLiLimit_of_cauchy
+    {ι : Type*} [DecidableEq ι]
+    (root : ι → ℂ) (cutoff : ℕ → Finset ι) (height : ℕ → ℝ)
+    (hheight : Tendsto height atTop atTop)
+    (hcutoff : ∀ N i, i ∈ cutoff N ↔ |(root i).im| ≤ height N)
+    (hcauchy : HeightSymmetricLiCauchy root cutoff) :
+    ∃ coefficient : ℕ → ℂ,
+      HeightSymmetricLiLimit root cutoff height coefficient := by
+  choose coefficient hcoefficient using
+    fun n ↦ cauchySeq_tendsto_of_complete (hcauchy n)
+  exact ⟨coefficient, hheight, hcutoff, hcoefficient⟩
+
+/-- Transfer a symmetric zero-sum limit through exact finite approximants.
+This isolates the derivative/zero-sum bridge: for xi, one must construct
+`approximation` and prove both hypotheses below. -/
+theorem HeightSymmetricLiLimit.coefficient_eq_of_approximation
+    {ι : Type*} [DecidableEq ι]
+    {root : ι → ℂ} {cutoff : ℕ → Finset ι} {height : ℕ → ℝ}
+    {coefficient : ℕ → ℂ}
+    (hlimit : HeightSymmetricLiLimit root cutoff height coefficient)
+    (approximation : ℕ → ℕ → ℂ) (target : ℕ → ℂ)
+    (hexact : ∀ N n, approximation N n =
+      liZeroPartialSum root (cutoff N) n)
+    (htarget : ∀ n, Tendsto (fun N ↦ approximation N n)
+      atTop (𝓝 (target n))) :
+    coefficient = target := by
+  funext n
+  apply tendsto_nhds_unique (hlimit.2.2 n)
+  simpa only [hexact] using htarget n
+
+/-- The finite factor whose logarithmic derivative generates one zero's Li
+summands. -/
+def liFiniteProductFactor (rho z : ℂ) : ℂ :=
+  (1 - (1 - rho⁻¹) * z) / (1 - z)
+
+/-- A finite product retaining every indexed occurrence of a repeated zero. -/
+def FiniteZeroMultiset.generatingProduct
+    (zeros : FiniteZeroMultiset) (z : ℂ) : ℂ :=
+  ∏ i, liFiniteProductFactor (zeros.root i) z
+
+/-- The rational generating term for one zero.  Its formal power-series
+coefficients are `liZeroSummand (n + 1) rho`. -/
+def liZeroGeneratingTerm (rho z : ℂ) : ℂ :=
+  1 / (1 - z) - (1 - rho⁻¹) / (1 - (1 - rho⁻¹) * z)
+
+theorem logDeriv_liFiniteProductFactor
+    (rho z : ℂ) (hz : 1 - z ≠ 0)
+    (hρz : 1 - (1 - rho⁻¹) * z ≠ 0) :
+    logDeriv (liFiniteProductFactor rho) z =
+      liZeroGeneratingTerm rho z := by
+  rw [logDeriv_apply]
+  unfold liFiniteProductFactor liZeroGeneratingTerm
+  have hnum : HasDerivAt
+      (fun w : ℂ ↦ 1 - (1 - rho⁻¹) * w) (-(1 - rho⁻¹)) z := by
+    simpa [sub_eq_add_neg] using
+      ((hasDerivAt_id z).const_mul (1 - rho⁻¹)).neg.const_add 1
+  have hden : HasDerivAt (fun w : ℂ ↦ 1 - w) (-1) z := by
+    simpa [sub_eq_add_neg] using (hasDerivAt_id z).neg.const_add 1
+  have hρz' : 1 + rho⁻¹ * z - z ≠ 0 := by
+    convert hρz using 1
+    ring
+  rw [(hnum.fun_div hden hz).deriv]
+  field_simp [hz, hρz, hρz']
+  ring
+
+/-- Exact finite-product logarithmic-derivative identity.  The hypotheses
+simply say that the displayed rational factors are defined and nonzero at
+`z`; near `z = 0` they hold automatically. -/
+theorem FiniteZeroMultiset.logDeriv_generatingProduct
+    (zeros : FiniteZeroMultiset) (z : ℂ)
+    (hz : 1 - z ≠ 0)
+    (hfactor : ∀ i, 1 - (1 - (zeros.root i)⁻¹) * z ≠ 0) :
+    logDeriv zeros.generatingProduct z =
+      ∑ i, liZeroGeneratingTerm (zeros.root i) z := by
+  unfold FiniteZeroMultiset.generatingProduct
+  rw [logDeriv_prod]
+  · apply Finset.sum_congr rfl
+    intro i _
+    exact logDeriv_liFiniteProductFactor (zeros.root i) z hz (hfactor i)
+  · intro i _
+    exact div_ne_zero (hfactor i) hz
+  · intro i _
+    unfold liFiniteProductFactor
+    fun_prop
+
+@[simp] theorem liZeroGeneratingTerm_zero (rho : ℂ) :
+    liZeroGeneratingTerm rho 0 = liZeroSummand 1 rho := by
+  simp [liZeroGeneratingTerm]
+
+theorem FiniteZeroMultiset.logDeriv_generatingProduct_zero
+    (zeros : FiniteZeroMultiset) :
+    logDeriv zeros.generatingProduct 0 = zeros.liSum 1 := by
+  rw [zeros.logDeriv_generatingProduct 0 (by norm_num) (by simp)]
+  simp [FiniteZeroMultiset.liSum]
 
 /-- Truncated generating polynomial for any coefficient sequence. -/
 def liGeneratingPolynomial (a : ℕ → ℝ) (N : ℕ) (x : ℝ) : ℝ :=
