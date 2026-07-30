@@ -225,7 +225,12 @@ def main() -> int:
             card for item in plans for card in item.theorem_card_ids
         ),
     )
-    if context_changed:
+    if checkpoint.proof_state == ProofState.BLOCKED:
+        checkpoint.transition(
+            ProofState.STRATEGY_TOURNAMENT,
+            "operator-strategy-redirect:resume-certified-contract",
+        )
+    elif context_changed:
         checkpoint.transition(
             ProofState.MATHEMATICAL_STAGNATION,
             "operator-strategy-redirect:replace-audit-only-exhaustion",
