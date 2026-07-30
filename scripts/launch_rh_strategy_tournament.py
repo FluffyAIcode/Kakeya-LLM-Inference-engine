@@ -11,7 +11,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from autoresearch.prefill.orchestration_state import (
+    BlockedEventType,
+    BlockedExitEvent,
     ProofState,
+    apply_blocked_exit_event,
     load_checkpoint,
     persist_validated_artifact,
     save_checkpoint,
@@ -226,9 +229,16 @@ def main() -> int:
         ),
     )
     if checkpoint.proof_state == ProofState.BLOCKED:
-        checkpoint.transition(
-            ProofState.STRATEGY_TOURNAMENT,
-            "operator-strategy-redirect:resume-certified-contract",
+        apply_blocked_exit_event(
+            checkpoint,
+            BlockedExitEvent(
+                event_id=event_id + ":blocked-exit",
+                event_type=BlockedEventType.NEW_STRATEGY_TRIGGER.value,
+                reason="operator-strategy-redirect:resume-certified-contract",
+                target_state=ProofState.STRATEGY_TOURNAMENT.value,
+                reset_role=ProofState.STRATEGY_TOURNAMENT.value,
+                metadata={"strategy_trigger": event_id},
+            ),
         )
     elif context_changed:
         checkpoint.transition(
