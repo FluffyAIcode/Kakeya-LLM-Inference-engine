@@ -83,6 +83,11 @@ def main() -> int:
         "--project-root",
         default=str(Path(__file__).resolve().parents[1]),
     )
+    parser.add_argument("--strategy-agent-id", default="")
+    parser.add_argument("--strategy-run-id", default="")
+    parser.add_argument("--strategy-prompt-hash", default="")
+    parser.add_argument("--strategy-evidence-hash", default="")
+    parser.add_argument("--strategy-memo-hash", default="")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     ledger_path = Path(args.ledger).expanduser().resolve()
@@ -155,9 +160,22 @@ def main() -> int:
         "root": RH_ROOT_ID,
         "ledger_version": ledger["version"],
         "event_id": event_id,
+        "plan_ids": [item.plan_id for item in plans],
+        "plan_hashes": [item.content_hash for item in plans],
         "semantic_fingerprint": _digest([
             item.content_hash for item in plans
         ]),
+        "strategy_advisory": {
+            "provider": "cursor-sdk",
+            "model_id": "gpt-5.6-sol",
+            "agent_id": args.strategy_agent_id,
+            "run_id": args.strategy_run_id,
+            "prompt_hash": args.strategy_prompt_hash,
+            "evidence_hash": args.strategy_evidence_hash,
+            "memo_hash": args.strategy_memo_hash,
+            "private_memo_persisted": False,
+            "authoritative": False,
+        },
         "plans": [{
             "spec": asdict(spec),
             "spec_hash": spec.content_hash,
@@ -171,12 +189,21 @@ def main() -> int:
     if not args.apply:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return 0
+    telemetry_values = (
+        args.strategy_agent_id,
+        args.strategy_run_id,
+        args.strategy_prompt_hash,
+        args.strategy_evidence_hash,
+        args.strategy_memo_hash,
+    )
+    if any(not item for item in telemetry_values):
+        raise SystemExit("apply requires complete Cursor Strategy telemetry")
 
     snapshot = _snapshot(
         checkpoint_path, ledger_path,
         Path(args.snapshot_root).expanduser().resolve(),
     )
-    context, _ = activate_target_context(
+    context, context_changed = activate_target_context(
         checkpoint_path,
         checkpoint,
         target_obligation_id=RH_ROOT_ID,
@@ -198,14 +225,15 @@ def main() -> int:
             card for item in plans for card in item.theorem_card_ids
         ),
     )
-    checkpoint.transition(
-        ProofState.MATHEMATICAL_STAGNATION,
-        "operator-strategy-redirect:replace-audit-only-exhaustion",
-    )
-    checkpoint.transition(
-        ProofState.STRATEGY_TOURNAMENT,
-        "operator-strategy-redirect:three-sourced-rh-directions",
-    )
+    if context_changed:
+        checkpoint.transition(
+            ProofState.MATHEMATICAL_STAGNATION,
+            "operator-strategy-redirect:replace-audit-only-exhaustion",
+        )
+        checkpoint.transition(
+            ProofState.STRATEGY_TOURNAMENT,
+            "operator-strategy-redirect:three-sourced-rh-directions",
+        )
     auditor = persist_validated_artifact(
         checkpoint_path,
         checkpoint,
@@ -237,10 +265,11 @@ def main() -> int:
         source_run_id="host:" + event_id[:40],
         save=False,
     )
-    checkpoint.transition(
-        ProofState.RESEARCH_CONTRACT_GATE,
-        "strategy-tournament:selected-executable-jensen-subgoal",
-    )
+    if checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT:
+        checkpoint.transition(
+            ProofState.RESEARCH_CONTRACT_GATE,
+            "strategy-tournament:selected-executable-jensen-subgoal",
+        )
     contract_ref = persist_validated_artifact(
         checkpoint_path,
         checkpoint,
@@ -250,10 +279,11 @@ def main() -> int:
         source_run_id="host:" + event_id[:40] + ":contract",
         save=False,
     )
-    checkpoint.transition(
-        ProofState.PROOF_SEARCH,
-        "research-contract:accepted-jensen-quadratic-subgoal",
-    )
+    if checkpoint.proof_state == ProofState.RESEARCH_CONTRACT_GATE:
+        checkpoint.transition(
+            ProofState.PROOF_SEARCH,
+            "research-contract:accepted-jensen-quadratic-subgoal",
+        )
     checkpoint.strategy_event_id = event_id
     checkpoint.strategy_event_type = StrategyEvent.TARGET_CHANGE.value
     checkpoint.strategy_plan_ids = [item.plan_id for item in plans]
@@ -270,7 +300,10 @@ def main() -> int:
     checkpoint.elaborated_theorem_id = (
         contract_decision.contract.theorem_id
     )
-    checkpoint.proposition_hash = proposition_hash
+    # The root-level checkpoint remains bound to the canonical Mathlib
+    # proposition.  The selected helper target hash lives in the Research
+    # Contract and must not overwrite this protected root cache.
+    checkpoint.proposition_hash = RH_ROOT_HASH
     checkpoint.proof_plan_id = selected.plan_id
     checkpoint.proof_plan_hash = selected.content_hash
     checkpoint.executable_plan_node_id = selected.lemma_graph[0].lemma_id
@@ -300,6 +333,17 @@ def main() -> int:
         "created_at": time.time(),
     })
     checkpoint.ledger_version = int(ledger["version"])
+    checkpoint.strategy_provider = "cursor-sdk"
+    checkpoint.strategy_provider_configured = True
+    checkpoint.strategy_model_id = "gpt-5.6-sol"
+    checkpoint.strategy_run_status = "FINISHED"
+    checkpoint.strategy_agent_id = args.strategy_agent_id
+    checkpoint.strategy_run_id = args.strategy_run_id
+    checkpoint.strategy_prompt_hash = args.strategy_prompt_hash
+    checkpoint.strategy_evidence_hash = args.strategy_evidence_hash
+    checkpoint.strategy_memo_hash = args.strategy_memo_hash
+    checkpoint.strategy_intent_status = "HOST_PLAN_AUTHORITATIVE"
+    checkpoint.strategy_selection_provenance = summary["strategy_advisory"]
     checkpoint.lean_actions_attempted += 1
     checkpoint.lean_actions_accepted += 1
     checkpoint.new_elaborated_lemmas += 1
