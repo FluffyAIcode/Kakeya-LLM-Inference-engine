@@ -1,7 +1,7 @@
 # Weil positivity / energy route to RH
 
-Status: **partial, unconditional infrastructure only**.  Nothing in this route
-asserts the explicit formula or RH.
+Status: **partial, unconditional finite/limit infrastructure**.  Nothing in
+this route asserts the full explicit formula or RH.
 
 ## Exact classical criterion (multiplicative normalization)
 
@@ -95,11 +95,17 @@ Available and used:
 
 * `TestFunction`: bundled \(C_c^\infty\) functions, including linear
   operations and compact support;
+* `HasCompactSupport.toSchwartzMap`, giving the canonical map
+  \(C_c^\infty(\mathbb R)\to\mathcal S(\mathbb R)\);
 * Bochner convolution, compact-support closure, and smoothness of
   convolution;
 * `mellin`, `MellinConvergent`, and Mellin inversion infrastructure;
-* Fourier transforms and Fourier transforms of Schwartz functions;
+* `Real.fourier_eq'`, Schwartz Fourier transforms, Fourier convolution, and
+  Plancherel infrastructure (with Mathlib's \(e^{-2\pi i x\xi}\)
+  normalization);
 * `Matrix.PosSemidef`, Gram matrices, and positive-semidefinite submatrices;
+* closed-order limits and `tendsto_atTop_ciSup` for bounded monotone real
+  families;
 * `riemannZeta`, `completedRiemannZeta`, the functional equation, and the
   proposition `RiemannHypothesis`.
 
@@ -111,11 +117,90 @@ Absent after repository-wide API search:
 * a completed-zeta zero distribution;
 * any theorem connecting distribution positivity to `RiemannHypothesis`.
 
-The Lean file therefore defines the admissible domain, centred transform,
-involution, convolution, a typed distribution interface, its exact quadratic
-functional and positivity predicate, and the proposition
-`BridgeObligation W := IsPositive W ↔ RiemannHypothesis`.  It supplies no
-inhabitant of that proposition.
+The Lean file therefore defines the admissible domain, its actual inclusion
+into Mathlib's Schwartz space, a multiplicative representative, the actual
+`mellin` expression, centred transform, involution, convolution, a typed
+distribution interface, its exact quadratic functional and positivity
+predicate, and the proposition
+`BridgeObligation W := IsPositive W ↔ RiemannHypothesis`.  The multiplicative
+change of variables is named `MellinNormalizationObligation`; it is not
+silently assumed.  The route supplies no inhabitant of either obligation.
+The critical-line Fourier normalization is proved:
+\[
+ F_f(-2\pi i\xi)=\mathcal F_{\rm Mathlib}(f)(\xi).
+\]
+
+## Finite approximants proved exactly
+
+`FiniteFormulaData` records a finite multiset of spectral parameters (by a
+finite index type, so repetition records multiplicity), finite weighted
+prime-power samples in logarithmic coordinates, and pole/archimedean terms.
+`FiniteFormulaData.IsExactAt f` is the exact finite identity
+\[
+ \sum_{\rho\in Z_N}F_f(\rho)
+ =
+ P_N(f)-\sum_{q\in\mathcal P_N}w_q f(\ell_q)-A_N(f).
+\]
+It is an explicit hypothesis, not a claim that zeta satisfies the identity.
+
+For ordinates \(\gamma_j\in\mathbb R\), the formalized finite energy is
+\[
+ E_N(f)=\sum_j\left|F_f(i\gamma_j)\right|^2\ge0.
+\]
+Under the explicitly stated local factorization hypothesis
+\[
+ F_{f*f^\star}(i\gamma_j)=|F_f(i\gamma_j)|^2,
+\]
+Lean proves that the real part of the finite zero sum equals \(E_N(f)\), and
+hence is nonnegative.  This is an exact algebraic/positivity result; it does
+not assert the Fubini theorem needed to establish factorization for every
+test.
+
+`FiniteExplicitStage` packages the same finite identity with all four terms
+as linear distributions.  If the spectral, pole, prime-power, and
+archimedean distributions converge pointwise, Lean proves that the
+explicit-formula identity passes to their limits.
+
+## Limit interfaces and what they do not prove
+
+The route proves:
+
+* a pointwise limit of nonnegative real quadratic forms is nonnegative;
+* no uniform convergence hypothesis is needed for this implication;
+* a bounded monotone family converges pointwise to its conditional supremum
+  via Mathlib's `tendsto_atTop_ciSup`;
+* the resulting supremum is nonnegative when every finite stage is;
+* finite-stage nonnegativity alone says nothing about an independently
+  declared limiting value.  A formal counterexample uses the constantly
+  zero stages and the falsely declared limit \(-1\).
+
+The last item is why zero-sum regularization cannot be omitted or replaced by
+numerical positivity at every cutoff.
+
+## Precise bridge decomposition
+
+The remaining work is split into named propositions:
+
+1. `MellinNormalizationObligation`: prove convergence and the
+   \(x=e^t\), \(s=1/2+z\) change of variables for every logarithmic test.
+2. `ZeroRegularizationObligation`: define symmetric zero truncations,
+   including multiplicity/order, and prove pointwise convergence to a
+   distribution.
+3. `PrimePowerStabilizationObligation`: define the von Mangoldt
+   prime-power stages and prove eventual exactness on each compactly
+   supported test.
+4. `ArchimedeanLimitObligation`: construct the regularized gamma-factor
+   integral and prove the selected truncations converge on every test.
+5. `AnalyticBridgeObligations`: combine the four finite distributions and
+   their limits; `explicitFormula_passes_to_limit` then yields the limiting
+   linear identity.
+6. `AllTestPositivityObligation`: separately prove both
+   `IsPositive W → RiemannHypothesis` and
+   `RiemannHypothesis → IsPositive W`.
+
+The analytic explicit formula does not by itself discharge item 6: the
+all-test separation argument and the treatment of off-critical-line zeros
+are additional theorems.
 
 ## Proved support and terminal blocker
 
@@ -124,6 +209,15 @@ The module proves, without `sorry`, `admit`, or axioms:
 * involution is closed, involutive, additive, zero-preserving, and
   conjugate-linear;
 * convolution is again a smooth compactly-supported test;
+* every logarithmic test canonically gives a Mathlib Schwartz function;
+* the centred transform on \(-2\pi i\xi\) equals Mathlib's Schwartz Fourier
+  transform at \(\xi\);
+* finite zero/prime sums and finite formula stages are typed explicitly;
+* finite critical-line spectral energies are nonnegative;
+* the finite convolution-square sum equals that energy under an explicit
+  factorization hypothesis;
+* exact finite explicit-formula identities pass through pointwise limits;
+* positivity passes through pointwise and bounded monotone limits;
 * every finite Gram kernel is positive semidefinite;
 * every reindexed finite Gram restriction remains positive semidefinite;
 * rank-one real quadratic certificates are nonnegative;
@@ -132,9 +226,10 @@ The module proves, without `sorry`, `admit`, or axioms:
   \((1,-1)\), so Hermitian symmetry alone cannot replace the exact
   arithmetic functional.
 
-The remaining blocker is mathematical: construct the zeta Weil distribution
-with the displayed normalization, formalize and prove the full explicit
-formula, control the zero sum, and prove its positivity is equivalent to
-Mathlib's `RiemannHypothesis` for **all** admissible tests.  Finite Gram/SDP
-certificates prove only restrictions and cannot discharge that universal
-bridge.
+The remaining blocker is mathematical: discharge the six named obligations
+above for the actual zeta zero and prime-power distributions.  In particular,
+Mathlib still has no nontrivial-zero multiset with multiplicity and no
+Guinand--Weil theorem from which the finite stages or their regularized limit
+could be instantiated.  Finite Gram/SDP certificates and the new exact finite
+energies prove only restrictions and cannot discharge universal all-test
+positivity.

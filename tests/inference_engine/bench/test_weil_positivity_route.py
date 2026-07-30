@@ -34,3 +34,31 @@ def test_route_document_records_exact_unproved_bridge():
     assert "BridgeObligation W := IsPositive W ↔ RiemannHypothesis" in text
     assert re.search(r"supplies no\s+inhabitant", text, flags=re.IGNORECASE)
     assert "C_c^\\infty((0,\\infty),\\mathbb C)" in text
+
+
+def test_weil_route_exposes_finite_and_limit_interfaces():
+    source = LEAN_SOURCE.read_text()
+    required = (
+        "MellinNormalizationObligation",
+        "finiteZeroSum",
+        "finitePrimePowerSum",
+        "FiniteFormulaData.IsExactAt",
+        "finiteZeroSum_convolution_eq_energy",
+        "explicitFormula_passes_to_limit",
+        "positivity_passes_to_pointwise_limit",
+        "monotoneQuadratic_limit_nonneg",
+        "ZeroRegularizationObligation",
+        "PrimePowerStabilizationObligation",
+        "ArchimedeanLimitObligation",
+        "AllTestPositivityObligation",
+    )
+    for declaration in required:
+        assert declaration in source
+
+
+def test_route_document_does_not_claim_full_formula_or_convergence():
+    text = ROUTE_DOC.read_text()
+    assert "full explicit formula or RH" in text
+    assert "explicit hypothesis" in text
+    assert "finite-stage nonnegativity alone says nothing" in text
+    assert "six named obligations" in text

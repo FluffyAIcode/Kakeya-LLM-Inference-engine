@@ -1,8 +1,11 @@
 import Mathlib.Analysis.Calculus.ContDiff.Convolution
 import Mathlib.Analysis.Distribution.TestFunction
+import Mathlib.Analysis.Distribution.SchwartzSpace.Fourier
+import Mathlib.Analysis.Fourier.Convolution
 import Mathlib.Analysis.InnerProductSpace.GramMatrix
 import Mathlib.Analysis.MellinTransform
 import Mathlib.NumberTheory.LSeries.RiemannZeta
+import Mathlib.Topology.Order.MonotoneConvergence
 
 /-!
 # The Weil-positivity route: unconditional interface and finite lemmas
@@ -21,8 +24,8 @@ Thus RH is the assertion that the spectral parameters `z` are purely
 imaginary.  The involution is `f⋆(t) = conj (f(-t))`.
 -/
 
-open Complex MeasureTheory Set TopologicalSpace
-open scoped ComplexOrder Convolution ContDiff Distributions
+open Complex Filter MeasureTheory Set TopologicalSpace
+open scoped ComplexOrder Convolution ContDiff Distributions FourierTransform SchwartzMap Topology
 
 noncomputable section
 
@@ -31,9 +34,55 @@ namespace WeilPositivity
 /-- Smooth compactly-supported complex tests on the logarithmic line. -/
 abbrev Test := 𝓓((⊤ : Opens ℝ), ℂ)
 
+/-- The ambient Schwartz space containing every logarithmic test.  Mathlib's
+Fourier theory is formulated on this space. -/
+abbrev SchwartzTest := 𝓢(ℝ, ℂ)
+
+/-- The canonical inclusion `C_c^∞(ℝ) ↪ 𝓢(ℝ)`, assembled from Mathlib's
+`HasCompactSupport.toSchwartzMap`. -/
+def toSchwartz (f : Test) : SchwartzTest :=
+  f.hasCompactSupport.toSchwartzMap f.contDiff
+
+@[simp]
+theorem toSchwartz_apply (f : Test) (x : ℝ) : toSchwartz f x = f x :=
+  rfl
+
 /-- The critical-line-centred Mellin transform in logarithmic coordinates. -/
 def transform (f : Test) (z : ℂ) : ℂ :=
   ∫ t : ℝ, f t * exp (z * t)
+
+/-- On the critical line the centred transform is exactly Mathlib's Fourier
+transform, after accounting for Mathlib's `2π` convention. -/
+theorem transform_imaginary_eq_fourier (f : Test) (ξ : ℝ) :
+    transform f (-2 * Real.pi * ξ * I) = 𝓕 (toSchwartz f) ξ := by
+  rw [transform, SchwartzMap.fourier_coe, Real.fourier_eq']
+  apply integral_congr_ae
+  filter_upwards with t
+  simp only [toSchwartz_apply, smul_eq_mul]
+  rw [mul_comm]
+  congr 1
+  congr 1
+  push_cast
+  simp
+  ring
+
+/-- The multiplicative representative corresponding to a logarithmic test:
+`g(x) = x⁻¹/² f(log x)` for `x > 0`, extended by zero.  This is the input to
+Mathlib's `mellin`; proving the change-of-variables identity is kept as an
+explicit bridge obligation below. -/
+def multiplicativeRepresentative (f : Test) (x : ℝ) : ℂ :=
+  if 0 < x then (Real.sqrt x : ℂ)⁻¹ * f (Real.log x) else 0
+
+/-- The actual Mathlib Mellin expression in the source normalization. -/
+def mathlibMellin (f : Test) (s : ℂ) : ℂ :=
+  mellin (multiplicativeRepresentative f) s
+
+/-- Exact normalization needed to identify Mathlib's one-sided Mellin
+integral with the centred bilateral transform. -/
+def MellinNormalizationObligation : Prop :=
+  ∀ (f : Test) (z : ℂ),
+    MellinConvergent (multiplicativeRepresentative f) (1 / 2 + z) ∧
+      mathlibMellin f (1 / 2 + z) = transform f z
 
 /-- Hermitian reflection on logarithmic test functions: `f⋆(t) = conj (f(-t))`. -/
 def involution (f : Test) : Test where
@@ -112,11 +161,232 @@ normalization, and proving its positivity criterion. -/
 def BridgeObligation (W : Distribution) : Prop :=
   IsPositive W ↔ RiemannHypothesis
 
+/-- The two logical directions of the universal Weil criterion are kept
+separate because neither follows from the explicit formula alone. -/
+def PositivityImpliesRH (W : Distribution) : Prop :=
+  IsPositive W → RiemannHypothesis
+
+def RHImpliesPositivity (W : Distribution) : Prop :=
+  RiemannHypothesis → IsPositive W
+
+theorem bridgeObligation_iff_directions (W : Distribution) :
+    BridgeObligation W ↔ PositivityImpliesRH W ∧ RHImpliesPositivity W := by
+  constructor
+  · intro h
+    exact ⟨h.mp, h.mpr⟩
+  · rintro ⟨hforward, hbackward⟩
+    exact ⟨hforward, hbackward⟩
+
 /-- Pullback of a distribution along a linear map of test spaces. -/
 def Distribution.pullback (W : Distribution) (T : Test →ₗ[ℂ] Test) : Distribution where
   eval f := W.eval (T f)
   map_add f g := by simp [W.map_add]
   map_smul c f := by simp [W.map_smul]
+
+/-! ## Finite explicit-formula approximants -/
+
+/-- A finite spectral sum.  The index type carries multiplicity by repetition. -/
+def finiteZeroSum {ι : Type*} [Fintype ι] (zeros : ι → ℂ) (f : Test) : ℂ :=
+  ∑ i, transform f (zeros i)
+
+/-- A finite prime-power sample in logarithmic coordinates.  The caller
+supplies the source-normalized complex weights and signed log locations. -/
+def finitePrimePowerSum {κ : Type*} [Fintype κ]
+    (weight : κ → ℂ) (logLocation : κ → ℝ) (f : Test) : ℂ :=
+  ∑ k, weight k * f (logLocation k)
+
+/-- Concrete data for a finite-zero/finite-prime explicit-formula stage.
+`IsExactAt` below records the analytic equality; no convergence is built in. -/
+structure FiniteFormulaData (ι κ : Type*) [Fintype ι] [Fintype κ] where
+  zeros : ι → ℂ
+  primeWeight : κ → ℂ
+  primeLogLocation : κ → ℝ
+  poleTerm : Test → ℂ
+  archimedeanTerm : Test → ℂ
+
+def FiniteFormulaData.arithmeticSide
+    {ι κ : Type*} [Fintype ι] [Fintype κ] (D : FiniteFormulaData ι κ) (f : Test) : ℂ :=
+  D.poleTerm f - finitePrimePowerSum D.primeWeight D.primeLogLocation f -
+    D.archimedeanTerm f
+
+/-- The exact, deliberately local finite explicit-formula hypothesis. -/
+def FiniteFormulaData.IsExactAt
+    {ι κ : Type*} [Fintype ι] [Fintype κ] (D : FiniteFormulaData ι κ) (f : Test) : Prop :=
+  finiteZeroSum D.zeros f = D.arithmeticSide f
+
+/-- Spectral energy of finitely many ordinates on the critical line. -/
+def finiteCriticalEnergy {ι : Type*} [Fintype ι] (ordinate : ι → ℝ) (f : Test) : ℝ :=
+  ∑ i, normSq (transform f (ordinate i * I))
+
+theorem finiteCriticalEnergy_nonneg
+    {ι : Type*} [Fintype ι] (ordinate : ι → ℝ) (f : Test) :
+    0 ≤ finiteCriticalEnergy ordinate f := by
+  exact Finset.sum_nonneg fun i _ ↦ normSq_nonneg _
+
+/-- Exact finite positivity identity under the local convolution-transform
+factorization hypothesis.  This isolates the analytic theorem still needed
+to derive the hypothesis from Fubini and the chosen normalization. -/
+theorem finiteZeroSum_convolution_eq_energy
+    {ι : Type*} [Fintype ι] (ordinate : ι → ℝ) (f : Test)
+    (hfactor : ∀ i,
+      transform (convolution f (involution f)) (ordinate i * I) =
+        (normSq (transform f (ordinate i * I)) : ℂ)) :
+    (finiteZeroSum (fun i ↦ ordinate i * I) (convolution f (involution f))).re =
+      finiteCriticalEnergy ordinate f := by
+  simp only [finiteZeroSum, finiteCriticalEnergy]
+  rw [Complex.re_sum]
+  apply Finset.sum_congr rfl
+  intro i _
+  rw [hfactor i]
+  simp
+
+theorem finiteZeroSum_convolution_nonneg
+    {ι : Type*} [Fintype ι] (ordinate : ι → ℝ) (f : Test)
+    (hfactor : ∀ i,
+      transform (convolution f (involution f)) (ordinate i * I) =
+        (normSq (transform f (ordinate i * I)) : ℂ)) :
+    0 ≤ (finiteZeroSum (fun i ↦ ordinate i * I)
+      (convolution f (involution f))).re := by
+  rw [finiteZeroSum_convolution_eq_energy ordinate f hfactor]
+  exact finiteCriticalEnergy_nonneg ordinate f
+
+/-- A stage-wise explicit formula packaged entirely in the typed
+distribution interface. -/
+structure FiniteExplicitStage where
+  spectral : Distribution
+  pole : Distribution
+  primePower : Distribution
+  archimedean : Distribution
+  formula : ∀ f, spectral.eval f =
+    pole.eval f - primePower.eval f - archimedean.eval f
+
+/-- Pointwise convergence is the topology needed for passing positivity and
+the linear explicit-formula identity to a limiting distribution. -/
+def Distribution.TendsTo (Wn : ℕ → Distribution) (W : Distribution) : Prop :=
+  ∀ f : Test, Tendsto (fun n ↦ (Wn n).eval f) atTop (𝓝 (W.eval f))
+
+theorem explicitFormula_passes_to_limit
+    (stage : ℕ → FiniteExplicitStage)
+    (spectral pole primePower archimedean : Distribution)
+    (hspectral : Distribution.TendsTo (fun n ↦ (stage n).spectral) spectral)
+    (hpole : Distribution.TendsTo (fun n ↦ (stage n).pole) pole)
+    (hprime : Distribution.TendsTo (fun n ↦ (stage n).primePower) primePower)
+    (harch : Distribution.TendsTo (fun n ↦ (stage n).archimedean) archimedean) :
+    ∀ f, spectral.eval f =
+      pole.eval f - primePower.eval f - archimedean.eval f := by
+  intro f
+  apply tendsto_nhds_unique (hspectral f)
+  exact ((hpole f).sub (hprime f)).sub (harch f) |>.congr' <|
+    Eventually.of_forall fun n ↦ ((stage n).formula f).symm
+
+/-! ## Positivity and monotone/pointwise limits -/
+
+/-- Nonnegativity is closed under ordinary real limits. -/
+theorem nonneg_of_tendsto
+    (q : ℕ → ℝ) (qLimit : ℝ)
+    (hlimit : Tendsto q atTop (𝓝 qLimit)) (hpos : ∀ n, 0 ≤ q n) :
+    0 ≤ qLimit := by
+  exact isClosed_Ici.mem_of_tendsto hlimit (Eventually.of_forall hpos)
+
+/-- Pointwise convergence of quadratic forms is enough to pass universal
+positivity to the limit; uniform convergence is not required. -/
+theorem positivity_passes_to_pointwise_limit
+    (Q : ℕ → Test → ℝ) (Qlimit : Test → ℝ)
+    (hlimit : ∀ f, Tendsto (fun n ↦ Q n f) atTop (𝓝 (Qlimit f)))
+    (hpos : ∀ n f, 0 ≤ Q n f) :
+    ∀ f, 0 ≤ Qlimit f := by
+  intro f
+  exact nonneg_of_tendsto (fun n ↦ Q n f) (Qlimit f) (hlimit f) fun n ↦ hpos n f
+
+/-- A bounded monotone family has the canonical pointwise supremum limit,
+using Mathlib's conditionally-complete monotone convergence theorem. -/
+theorem monotoneQuadratic_tendsto_ciSup
+    (Q : ℕ → Test → ℝ) (f : Test)
+    (hmono : Monotone fun n ↦ Q n f)
+    (hbdd : BddAbove (range fun n ↦ Q n f)) :
+    Tendsto (fun n ↦ Q n f) atTop (𝓝 (⨆ n, Q n f)) :=
+  tendsto_atTop_ciSup hmono hbdd
+
+theorem monotoneQuadratic_limit_nonneg
+    (Q : ℕ → Test → ℝ)
+    (hmono : ∀ f, Monotone fun n ↦ Q n f)
+    (hbdd : ∀ f, BddAbove (range fun n ↦ Q n f))
+    (hpos : ∀ n f, 0 ≤ Q n f) :
+    ∀ f, 0 ≤ ⨆ n, Q n f := by
+  intro f
+  exact nonneg_of_tendsto (fun n ↦ Q n f) (⨆ n, Q n f)
+    (monotoneQuadratic_tendsto_ciSup Q f (hmono f) (hbdd f)) fun n ↦ hpos n f
+
+/-- Finite-stage positivity does not constrain a separately declared value
+unless a convergence/regularization theorem connects them. -/
+theorem finitePositivity_without_convergence_counterexample :
+    (∀ _ : ℕ, 0 ≤ (0 : ℝ)) ∧
+      ¬ Tendsto (fun _ : ℕ ↦ (0 : ℝ)) atTop (𝓝 (-1 : ℝ)) := by
+  constructor
+  · intro _
+    positivity
+  · intro h
+    have hzero : Tendsto (fun _ : ℕ ↦ (0 : ℝ)) atTop (𝓝 (0 : ℝ)) :=
+      tendsto_const_nhds
+    have : (0 : ℝ) = -1 := tendsto_nhds_unique hzero h
+    norm_num at this
+
+/-! ## Named terminal bridge obligations -/
+
+/-- The archimedean truncations must converge on every admissible test. -/
+def ArchimedeanLimitObligation
+    (stage : ℕ → Distribution) (limit : Distribution) : Prop :=
+  Distribution.TendsTo stage limit
+
+/-- Compact support should make a correctly enumerated prime-power
+truncation eventually exact on each test. -/
+def PrimePowerStabilizationObligation
+    (stage : ℕ → Distribution) (limit : Distribution) : Prop :=
+  ∀ f : Test, ∃ N, ∀ n ≥ N, (stage n).eval f = limit.eval f
+
+theorem primePowerStabilization_tendsTo
+    (stage : ℕ → Distribution) (limit : Distribution)
+    (h : PrimePowerStabilizationObligation stage limit) :
+    Distribution.TendsTo stage limit := by
+  intro f
+  rcases h f with ⟨N, hN⟩
+  exact tendsto_const_nhds.congr' <|
+    eventually_atTop.2 ⟨N, fun n hn ↦ (hN n hn).symm⟩
+
+/-- Symmetric zero truncations must converge to the selected regularized
+zero distribution, with multiplicities and ordering fixed by the caller. -/
+def ZeroRegularizationObligation
+    (stage : ℕ → Distribution) (regularized : Distribution) : Prop :=
+  Distribution.TendsTo stage regularized
+
+/-- The finite identities and all component limits form the analytic
+explicit-formula package.  It still does not assert either RH direction. -/
+structure AnalyticBridgeObligations
+    (stage : ℕ → FiniteExplicitStage)
+    (spectral pole primePower archimedean : Distribution) : Prop where
+  spectralRegularization :
+    Distribution.TendsTo (fun n ↦ (stage n).spectral) spectral
+  poleLimit : Distribution.TendsTo (fun n ↦ (stage n).pole) pole
+  primePowerStabilization :
+    PrimePowerStabilizationObligation (fun n ↦ (stage n).primePower) primePower
+  archimedeanLimit :
+    ArchimedeanLimitObligation (fun n ↦ (stage n).archimedean) archimedean
+
+theorem AnalyticBridgeObligations.explicitFormula
+    {stage : ℕ → FiniteExplicitStage}
+    {spectral pole primePower archimedean : Distribution}
+    (h : AnalyticBridgeObligations stage spectral pole primePower archimedean) :
+    ∀ f, spectral.eval f =
+      pole.eval f - primePower.eval f - archimedean.eval f :=
+  explicitFormula_passes_to_limit stage spectral pole primePower archimedean
+    h.spectralRegularization h.poleLimit
+    (primePowerStabilization_tendsTo _ _ h.primePowerStabilization)
+    h.archimedeanLimit
+
+/-- The remaining all-test criterion is exactly the conjunction of the two
+logical directions; finite-stage formulae and limits do not supply it. -/
+def AllTestPositivityObligation (W : Distribution) : Prop :=
+  PositivityImpliesRH W ∧ RHImpliesPositivity W
 
 /-- A finite Gram kernel is the basic exact certificate behind every
 finite-dimensional positive-semidefinite restriction. -/

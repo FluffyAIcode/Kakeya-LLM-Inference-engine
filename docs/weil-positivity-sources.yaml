@@ -28,6 +28,27 @@ sources:
       - convolution/involution normalization
       - broader explicit-formula class E and convergence caveats
 
+  - id: edwards-1974
+    author: H. M. Edwards
+    title: Riemann's Zeta Function
+    venue: Academic Press (1974), Dover reprint (2001)
+    authority: standard monograph
+    used_for:
+      - symmetric interpretation of sums over nontrivial zeros
+      - distinction between finite truncations and the regularized zero sum
+      - critical-line parametrization of zeros
+
+  - id: mathlib-mellin-fourier-api
+    author: Mathlib contributors
+    title: Mathlib Mellin transform, Schwartz space, and Fourier transform APIs
+    url: https://leanprover-community.github.io/mathlib4_docs/
+    authority: pinned formal library API
+    used_for:
+      - MellinConvergent and mellin on the positive real axis
+      - HasCompactSupport.toSchwartzMap
+      - Real.fourier_eq' normalization with the 2-pi phase
+      - tendsto_atTop_ciSup and closed-order positivity limits
+
   - id: lagarias-survey
     author: Jeffrey C. Lagarias
     title: The Riemann Hypothesis - Arithmetic and Geometry
@@ -52,7 +73,14 @@ formalization:
   mathlib_revision: 360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56
   lean_toolchain: leanprover/lean4:v4.32.0-rc1
   module: KakeyaLeanGate/WeilPositivity.lean
-  bridge_status: unproved-proposition-only
+  bridge_status: finite-and-limit-lemmas-proved-full-bridge-unproved
+  named_obligations:
+    - mellin-logarithmic-change-of-variables
+    - zero-sum-regularization-with-multiplicity
+    - prime-power-eventual-stabilization
+    - archimedean-regularized-limit
+    - limiting-explicit-formula
+    - both-directions-of-all-test-positivity
   prohibited_shortcuts:
     - no axiomatized explicit formula
     - no axiomatized RH bridge
