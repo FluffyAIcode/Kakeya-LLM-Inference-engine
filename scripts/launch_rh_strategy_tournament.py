@@ -91,6 +91,8 @@ def main() -> int:
     parser.add_argument("--strategy-prompt-hash", default="")
     parser.add_argument("--strategy-evidence-hash", default="")
     parser.add_argument("--strategy-memo-hash", default="")
+    parser.add_argument("--strategy-intent-hash", default="")
+    parser.add_argument("--strategy-intent-run-id", default="")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     ledger_path = Path(args.ledger).expanduser().resolve()
@@ -198,6 +200,8 @@ def main() -> int:
         args.strategy_prompt_hash,
         args.strategy_evidence_hash,
         args.strategy_memo_hash,
+        args.strategy_intent_hash,
+        args.strategy_intent_run_id,
     )
     if any(not item for item in telemetry_values):
         raise SystemExit("apply requires complete Cursor Strategy telemetry")
@@ -366,6 +370,8 @@ def main() -> int:
     checkpoint.strategy_prompt_hash = args.strategy_prompt_hash
     checkpoint.strategy_evidence_hash = args.strategy_evidence_hash
     checkpoint.strategy_memo_hash = args.strategy_memo_hash
+    checkpoint.strategy_intent_hash = args.strategy_intent_hash
+    checkpoint.strategy_intent_run_id = args.strategy_intent_run_id
     checkpoint.strategy_intent_status = "HOST_PLAN_AUTHORITATIVE"
     checkpoint.strategy_selection_provenance = summary["strategy_advisory"]
     checkpoint.lean_actions_attempted += 1

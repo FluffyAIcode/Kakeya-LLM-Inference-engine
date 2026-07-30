@@ -429,7 +429,9 @@ def compile_memo_to_plan_id(
     return selections[0]
 
 
-_INTENT_LINE = re.compile(r"([a-z][a-z0-9_]{0,47}) ([A-Za-z0-9_.:+\-]+);")
+_INTENT_LINE = re.compile(
+    r"([a-z][a-z0-9_]{0,47}) ([A-Za-z0-9_.:/+\-]+);"
+)
 _REPEATED_INTENT_FIELDS = {"gap_ref", "theorem_tag", "evidence_ref"}
 
 

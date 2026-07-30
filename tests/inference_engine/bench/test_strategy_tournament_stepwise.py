@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from autoresearch.prefill.architecture_v7 import run_architecture_v7_entry
-from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
+from autoresearch.prefill.cursor_strategy import (
+    CursorStrategyAdapter,
+    _parse_registered_intent,
+)
 from autoresearch.prefill.research_contract import gate_research_contract
 from autoresearch.prefill.orchestration_state import (
     OrchestrationCheckpoint,
@@ -110,6 +113,16 @@ class _IntentSDK:
             agent_id="intent",
             id="intent-run",
         )
+
+
+def test_registered_intent_accepts_doi_evidence_reference():
+    values = _parse_registered_intent(
+        "evidence_ref doi:10.1073/pnas.1902572116;\nEND;",
+        {"evidence_ref": ("doi:10.1073/pnas.1902572116",)},
+    )
+    assert values == {
+        "evidence_ref": ("doi:10.1073/pnas.1902572116",),
+    }
 
 
 def _strategy_adapter(
