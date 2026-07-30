@@ -304,6 +304,13 @@ def main() -> int:
     # proposition.  The selected helper target hash lives in the Research
     # Contract and must not overwrite this protected root cache.
     checkpoint.proposition_hash = RH_ROOT_HASH
+    # Bind the runtime wrapper candidate so the supervisor resumes the
+    # certified Research Contract instead of treating legacy stagnation
+    # telemetry as a request for an unrelated Strategy rewrite.
+    runtime_candidate = project_root / "autoresearch" / "candidate.py"
+    checkpoint.candidate_sha256 = hashlib.sha256(
+        runtime_candidate.read_bytes()
+    ).hexdigest()
     checkpoint.proof_plan_id = selected.plan_id
     checkpoint.proof_plan_hash = selected.content_hash
     checkpoint.executable_plan_node_id = selected.lemma_graph[0].lemma_id
