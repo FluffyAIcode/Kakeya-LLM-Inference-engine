@@ -307,7 +307,9 @@ def main() -> int:
     # Bind the runtime wrapper candidate so the supervisor resumes the
     # certified Research Contract instead of treating legacy stagnation
     # telemetry as a request for an unrelated Strategy rewrite.
-    runtime_candidate = project_root / "autoresearch" / "candidate.py"
+    runtime_candidate = (
+        project_root / "autoresearch" / "prefill" / "candidate.py"
+    )
     checkpoint.candidate_sha256 = hashlib.sha256(
         runtime_candidate.read_bytes()
     ).hexdigest()
