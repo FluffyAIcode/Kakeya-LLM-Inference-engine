@@ -33,15 +33,19 @@
       "url": "https://doi.org/10.1007/s40687-020-00240-5",
       "locations": [
         "Equations (1.1)–(1.3): xi is entire of order 1, the centered even Taylor coefficients gamma(m), and shifted Jensen polynomials",
-        "Theorem 1.1: RH iff J^{d,n} is hyperbolic for all d >= 1 and n >= 0 (paper typography writes d > 1, n > 0 around the criterion)",
-        "Section 3.1, Theorem 3.1: Pólya–Schur compact-uniform/Laguerre–Pólya criterion",
-        "Corollary 3.2: derivative hyperbolicity iff all associated Jensen polynomials are hyperbolic",
+        "Theorem 1.1: RH iff J^{d,n} is hyperbolic for every d >= 1 and n >= 0",
+        "Section 3.1, Theorem 3.1: for a formal exponential generating series with real coefficients, compact-uniform convergence to a Laguerre–Pólya entire function iff g_d is hyperbolic for every d >= 1",
+        "Equation (3.1): d/dx g_d(Phi;x) = d g_{d-1}(Phi';x), and d/dx g_d^*(Phi;x) = d g_{d-1}^*(Phi;x)",
+        "Equation (3.2) and Corollary 3.2: J^{d,n}=g_d(Theta^(n)); Theta^(n) is hyperbolic iff every associated J^{d,n}, d >= 1, is hyperbolic",
+        "Corollary 3.3: hyperbolicity of Theta^(n) propagates to every higher derivative",
         "Equation (1.5): degree-two hyperbolicity is the Turán inequality gamma(n+1)^2 >= gamma(n) gamma(n+2)"
       ],
       "claims": [
         "XI_ENTIRE_AND_EVEN_TAYLOR_SERIES",
         "LAGUERRE_POLYA_COMPACT_UNIFORM_CRITERION",
         "RH_IFF_ALL_JENSEN_HYPERBOLIC",
+        "JENSEN_DERIVATIVE_SHIFT_IDENTITY",
+        "DERIVATIVE_HYPERBOLICITY_PROPAGATION",
         "DEGREE_TWO_TURAN_CONDITION"
       ],
       "status": "SOURCE_VERIFIED_FORMAL_BRIDGE_OPEN"
@@ -54,7 +58,7 @@
       "url": "https://doi.org/10.1016/j.aim.2022.108186",
       "locations": [
         "Equations (1.1)–(1.2): centered xi Taylor coefficients and Jensen polynomial convention",
-        "Theorem 1.1: an absolute c exists such that hyperbolicity holds when n >= c exp(d/2)",
+        "Theorem 1.1: an absolute c > 0 exists such that J^{d,n} is hyperbolic for d >= 1 and n >= c exp(d/2)",
         "Remark (3) after Theorem 1.2: partial ranges do not give a converse without every n and every d"
       ],
       "claims": [
@@ -96,13 +100,16 @@
         "HasFPowerSeriesOnBall.tendstoLocallyUniformlyOn'",
         "Polynomial.Splits",
         "Polynomial.IsRoot",
-        "Polynomial.finsetSum_coeff"
+        "Polynomial.finsetSum_coeff",
+        "Polynomial.coeff_derivative",
+        "No theorem packaging Rolle/interlacing as derivative preservation for real-rooted polynomials was found"
       ],
       "claims": [
         "PINNED_TAYLOR_EXPANSION",
         "PINNED_LOCAL_UNIFORM_CONVERGENCE",
         "PINNED_POLYNOMIAL_ROOT_INFRASTRUCTURE",
-        "NO_PINNED_REAL_ROOTEDNESS_OR_LAGUERRE_POLYA_PREDICATE_FOUND"
+        "NO_PINNED_REAL_ROOTEDNESS_OR_LAGUERRE_POLYA_PREDICATE_FOUND",
+        "NO_PINNED_DERIVATIVE_HYPERBOLICITY_CLOSURE_FOUND"
       ],
       "status": "FORMAL_LIBRARY_AUDITED"
     }

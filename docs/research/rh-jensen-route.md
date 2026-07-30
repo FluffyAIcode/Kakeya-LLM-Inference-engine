@@ -28,19 +28,52 @@ with the sourced real Taylor series remain explicit obligations.
    the full Mathlib Taylor expansion. Definitions and listed lemmas proved.
    Reality and the even-only sourced expansion are still bridge obligations.
 4. **Jensen family** — `jensenPolynomial`, its coefficient formula, and exact
-   degree-zero/one/two formulas. Proved.
+   degree-zero/one/two/three formulas. Proved.
 5. **Hyperbolicity interface** — `Hyperbolic` means every complex root of the
    scalar extension is real; `AllJensenHyperbolic` quantifies over every degree
-   and shift. Definitions elaborate.
+   `d >= 1` and every shift `n >= 0`, exactly as in the cited criterion.
+   Definitions elaborate.
 6. **Finite RH-relevant algebra** — every nonconstant degree-one Jensen
    polynomial is hyperbolic.  For degree two, the explicit roots exist exactly
    when `a(n+1)^2 - a(n)a(n+2) >= 0` (assuming the quadratic coefficient is
    nonzero), and that condition proves hyperbolicity in the project predicate.
-   Proved. These statements do not imply RH.
-7. **Classical analytic bridge** — the source says the xi generating function
+   Strict positivity plus sequence log-concavity therefore proves every
+   degree-two Jensen polynomial hyperbolic. Proved. These statements do not
+   imply RH.
+7. **Differentiation identity** — O’Sullivan equation (3.1) specializes to
+
+   `derivative (J(a,d+1,n)) = C(d+1) * J(a,d,n+1)`.
+
+   This identity is proved coefficientwise in Lean.  Consequently, conditional
+   only on the standard theorem that differentiation preserves real-rootedness,
+   all-degree/all-shift hyperbolicity is equivalent to hyperbolicity of
+   `J(a,d,0)` for every degree `d`.  Thus the shift quantifier is not the
+   essential RH obstruction.
+8. **Nested finite obligations** — `JensenSquare a k` asks for hyperbolicity
+   only when positive degree and shift are both at most `k`. Lean proves
+
+   `AllJensenHyperbolic a ↔ ∀ k, JensenSquare a k`
+
+   and proves these squares are nested under decreasing `k`. This is a genuine
+   finite-obligation reduction, not a decision procedure.
+9. **Classical analytic bridge** — the source says the xi generating function
    is in the Laguerre–Pólya class iff all its Jensen polynomials are
    hyperbolic, and this is equivalent to RH. `BridgeObligations` records the
    exact unproved Lean implications; no theorem asserts them.
+
+## Exact source-backed criterion
+
+O’Sullivan (2021), Theorem 3.1, states the Pólya–Schur theorem with no hidden
+analytic hypothesis on the formal series: for real `c_j`, the formal
+exponential generating series `Φ(z)=Σ c_j z^j/j!` converges compact-uniformly
+to a Laguerre–Pólya entire function iff every Jensen polynomial
+`g_d(Φ;x)=Σ choose(d,j)c_j x^j` is hyperbolic, for every `d >= 1`.
+
+For `Θ(z)=ξ(1/2+sqrt(z))=Σ γ(m)z^m/m!`, equation (3.2) identifies
+`J^{d,n}=g_d(Θ^(n))`. Corollary 3.2 gives
+`Θ^(n) hyperbolic ↔ ∀ d>=1, J^{d,n} hyperbolic`, and Theorem 1.1 gives
+`RH ↔ ∀ d>=1 ∀ n>=0, J^{d,n} hyperbolic`. These are the exact obligations;
+eventual hyperbolicity is not substituted for either direction.
 
 ## Pinned Mathlib audit
 
@@ -56,7 +89,7 @@ Available and used:
   `Complex.taylorSeries_eq_of_entire'`,
   `Differentiable.hasFPowerSeriesOnBall`;
 - `Polynomial`, `Polynomial.IsRoot`, `Polynomial.Splits`,
-  `Polynomial.finsetSum_coeff`;
+  `Polynomial.finsetSum_coeff`, `Polynomial.coeff_derivative`;
 - `TendstoLocallyUniformlyOn`,
   `TendstoLocallyUniformlyOn.differentiableOn`,
   `TendstoLocallyUniformlyOn.deriv`, and power-series partial-sum local
@@ -91,15 +124,24 @@ required all-degree/all-shift statement, and compact-uniform convergence to a
 Hermite polynomial for fixed degree does not reverse this quantifier gap.
 
 After the coefficient-reality and Laguerre–Pólya interfaces are formalized,
-the genuine mathematical blocker is therefore:
+the unconditional formal reduction now gives the nested family:
 
-`AllJensenHyperbolic xiGamma`
+`forall k, JensenSquare xiGamma k`.
 
-or an independently proved theorem strong enough to imply it (for example,
-all-order total positivity with a sourced implication to every Jensen
-polynomial).  This statement is equivalent to RH only after the two
-`BridgeObligations.polyaJensen*` implications are proved.  It is not a
-consequence of known eventual hyperbolicity.
+After importing/proving the classical derivative-preservation theorem, the
+same target reduces further to:
+
+`forall d >= 1, Hyperbolic (jensenPolynomial xiGamma d 0)`.
+
+This all-degree unshifted family—not the shift quantifier—is the exact
+coefficient-side mathematical blocker. Strict positivity and log-concavity
+settle only degree two; ordinary Turán inequalities do not imply all-degree
+hyperbolicity. A stronger sourced condition such as the appropriate
+all-order total-positivity/Pólya-frequency condition would still require its
+full implication to Jensen hyperbolicity to be formalized. The target is
+equivalent to RH only after the two `BridgeObligations.polyaJensen*`
+implications are proved, and it is not a consequence of known eventual
+hyperbolicity.
 
 Source metadata and exact locations are in
 `docs/research/rh-jensen-source-cards.json`.

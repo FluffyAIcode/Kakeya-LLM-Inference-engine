@@ -116,6 +116,42 @@ theorem jensenPolynomial_degree_two (a : ℕ → ℝ) (n : ℕ) :
   rw [Polynomial.C_mul]
   ring
 
+/-- The explicit cubic, useful for coefficient-side checks beyond Turán's
+quadratic inequality. -/
+theorem jensenPolynomial_degree_three (a : ℕ → ℝ) (n : ℕ) :
+    jensenPolynomial a 3 n =
+      Polynomial.C (a n) +
+        Polynomial.C (3 * a (n + 1)) * Polynomial.X +
+        Polynomial.C (3 * a (n + 2)) * Polynomial.X ^ 2 +
+        Polynomial.C (a (n + 3)) * Polynomial.X ^ 3 := by
+  classical
+  norm_num [jensenPolynomial, Finset.sum_range_succ, pow_two]
+  simp_rw [← Polynomial.C_mul_X_pow_eq_monomial]
+  simp [pow_two, Polynomial.C_mul, mul_assoc]
+
+/-- O'Sullivan (2021), equation (3.1), in the shifted Jensen convention:
+formal differentiation lowers the degree and raises the shift. -/
+theorem derivative_jensenPolynomial (a : ℕ → ℝ) (d n : ℕ) :
+    (jensenPolynomial a (d + 1) n).derivative =
+      Polynomial.C (d + 1 : ℝ) * jensenPolynomial a d (n + 1) := by
+  ext j
+  rw [Polynomial.coeff_derivative, coeff_jensenPolynomial]
+  simp only [Polynomial.coeff_C_mul, coeff_jensenPolynomial]
+  by_cases hj : j ≤ d
+  · rw [if_pos hj, if_pos (Nat.succ_le_succ hj)]
+    rw [show n + (j + 1) = n + 1 + j by omega]
+    have hchoose :
+        ((d + 1).choose (j + 1) : ℝ) * (j + 1) =
+          (d + 1 : ℝ) * d.choose j := by
+      exact_mod_cast (Nat.add_one_mul_choose_eq d j).symm
+    calc
+      ((d + 1).choose (j + 1) : ℝ) * a (n + 1 + j) * (j + 1) =
+          (((d + 1).choose (j + 1) : ℝ) * (j + 1)) * a (n + 1 + j) := by ring
+      _ = ((d + 1 : ℝ) * d.choose j) * a (n + 1 + j) := by rw [hchoose]
+      _ = (d + 1 : ℝ) * ((d.choose j : ℝ) * a (n + 1 + j)) := by ring
+  · rw [if_neg hj, if_neg (by omega)]
+    simp
+
 /-- A real polynomial is hyperbolic when all roots of its complex scalar
 extension are real. -/
 def Hyperbolic (p : ℝ[X]) : Prop :=
@@ -125,7 +161,65 @@ def Hyperbolic (p : ℝ[X]) : Prop :=
 /-- The all-degree/all-shift statement occurring in the sourced
 Pólya--Jensen criterion.  It is an explicit proof obligation, not a theorem. -/
 def AllJensenHyperbolic (a : ℕ → ℝ) : Prop :=
-  ∀ d n : ℕ, Hyperbolic (jensenPolynomial a d n)
+  ∀ d n : ℕ, 1 ≤ d → Hyperbolic (jensenPolynomial a d n)
+
+/-- A finite square of Jensen obligations.  The family is nested in `k`, and
+each member asks only about positive degrees and shifts at most `k`. -/
+def JensenSquare (a : ℕ → ℝ) (k : ℕ) : Prop :=
+  ∀ d, 1 ≤ d → d ≤ k → ∀ n ≤ k, Hyperbolic (jensenPolynomial a d n)
+
+/-- All-Jensen hyperbolicity is exactly a nested family of finite square
+obligations.  This is an unconditional reduction of the infinite quantifier
+shape; it does not claim that any square is decidable computationally. -/
+theorem allJensenHyperbolic_iff_jensenSquares (a : ℕ → ℝ) :
+    AllJensenHyperbolic a ↔ ∀ k, JensenSquare a k := by
+  constructor
+  · intro h k d hd _ n _
+    exact h d n hd
+  · intro h d n hd
+    exact h (max d n) d hd (le_max_left _ _) n (le_max_right _ _)
+
+theorem jensenSquare_mono (a : ℕ → ℝ) {k l : ℕ}
+    (hkl : k ≤ l) (h : JensenSquare a l) :
+    JensenSquare a k := by
+  intro d hdpos hd n hn
+  exact h d hdpos (hd.trans hkl) n (hn.trans hkl)
+
+/-- Removing a constant polynomial factor cannot introduce a nonreal root. -/
+theorem hyperbolic_of_C_mul {c : ℝ} {p : ℝ[X]}
+    (h : Hyperbolic (Polynomial.C c * p)) :
+    Hyperbolic p := by
+  intro z hz
+  apply h z
+  simp only [Polynomial.map_mul, Polynomial.map_C, IsRoot.def,
+    Polynomial.eval_mul, Polynomial.eval_C]
+  rw [show (p.map (algebraMap ℝ ℂ)).eval z = 0 from hz]
+  simp
+
+/-- The one missing project-local real-rootedness closure theorem needed to
+propagate a Jensen shift by differentiation.  Classical Rolle/interlacing
+proves this property, but pinned Mathlib has no packaged theorem for the
+project's `Hyperbolic` predicate. -/
+def HyperbolicityPreservedByDerivative : Prop :=
+  ∀ p : ℝ[X], Hyperbolic p → Hyperbolic p.derivative
+
+/-- Assuming the standard derivative-closure lemma, every shift follows from
+the unshifted Jensen family.  Together with the reverse implication (shift
+zero), this reduces all-degree/all-shift control to all degrees at one shift. -/
+theorem allJensenHyperbolic_iff_unshifted
+    (a : ℕ → ℝ) (hderiv : HyperbolicityPreservedByDerivative) :
+    AllJensenHyperbolic a ↔
+      ∀ d : ℕ, 1 ≤ d → Hyperbolic (jensenPolynomial a d 0) := by
+  constructor
+  · intro h d hd
+    exact h d 0 hd
+  · intro hzero d n hd
+    induction n generalizing d with
+    | zero => exact hzero d hd
+    | succ n ih =>
+        apply hyperbolic_of_C_mul
+        rw [← derivative_jensenPolynomial]
+        exact hderiv _ (ih (d + 1) (by omega))
 
 theorem jensenPolynomial_degree_one_hyperbolic
     (a : ℕ → ℝ) (n : ℕ) (h : a (n + 1) ≠ 0) :
@@ -231,6 +325,23 @@ theorem jensenPolynomial_degree_two_hyperbolic
       rw [hre, mul_zero]
     nlinarith [hxsq, sq_pos_of_ne_zero hc]
   exact ⟨z.re, Complex.ext (by simp) (by simpa using hy)⟩
+
+/-- The coefficient-side order-two condition: strict positivity supplies the
+nondegenerate leading coefficient, while log-concavity is exactly Turán's
+inequality. -/
+def StrictlyPositive (a : ℕ → ℝ) : Prop :=
+  ∀ n, 0 < a n
+
+def LogConcave (a : ℕ → ℝ) : Prop :=
+  ∀ n, a n * a (n + 2) ≤ a (n + 1) ^ 2
+
+theorem degree_two_hyperbolic_of_positive_logConcave
+    (a : ℕ → ℝ) (hpos : StrictlyPositive a) (hlc : LogConcave a) :
+    ∀ n, Hyperbolic (jensenPolynomial a 2 n) := by
+  intro n
+  apply jensenPolynomial_degree_two_hyperbolic
+  · exact ne_of_gt (hpos (n + 2))
+  · exact sub_nonneg.mpr (hlc n)
 
 /-- These are the exact still-unproved mathematical interfaces separating the
 formalized finite algebra from RH. -/

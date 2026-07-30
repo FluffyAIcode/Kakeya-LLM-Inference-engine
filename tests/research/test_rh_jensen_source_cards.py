@@ -41,3 +41,27 @@ def test_eventual_hyperbolicity_is_not_mislabeled_as_rh() -> None:
     gorz = next(card for card in payload["cards"] if card["id"] == "gorz-2019-jensen")
     assert "EVENTUAL_HYPERBOLICITY_FIXED_DEGREE" in gorz["claims"]
     assert gorz["status"] == "SOURCE_VERIFIED_FORMAL_BRIDGE_OPEN"
+
+
+def test_polya_schur_and_derivative_shift_are_source_pinned() -> None:
+    payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
+    osullivan = next(
+        card for card in payload["cards"] if card["id"] == "osullivan-2021-xi-lp"
+    )
+    assert {
+        "LAGUERRE_POLYA_COMPACT_UNIFORM_CRITERION",
+        "JENSEN_DERIVATIVE_SHIFT_IDENTITY",
+        "DERIVATIVE_HYPERBOLICITY_PROPAGATION",
+    } <= set(osullivan["claims"])
+    locations = " ".join(osullivan["locations"])
+    assert "Theorem 3.1" in locations
+    assert "Equation (3.1)" in locations
+    assert "d >= 1" in locations
+
+
+def test_pinned_mathlib_gap_is_explicit() -> None:
+    payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
+    analysis = next(
+        card for card in payload["cards"] if card["id"] == "mathlib-4.32.0-rc1-analysis"
+    )
+    assert "NO_PINNED_DERIVATIVE_HYPERBOLICITY_CLOSURE_FOUND" in analysis["claims"]
