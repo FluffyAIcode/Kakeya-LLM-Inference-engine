@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "route_id": "JENSEN_LAGUERRE_POLYA",
+  "normalization": "GORZ_2019_EQUATIONS_1_2",
+  "cards": [
+    {
+      "id": "gorz-2019-jensen",
+      "type": "peer_reviewed_primary",
+      "citation": "Michael Griffin, Ken Ono, Larry Rolen, and Don Zagier, “Jensen polynomials for the Riemann zeta function and other sequences”, Proceedings of the National Academy of Sciences 116(23) (2019), 11103–11110.",
+      "doi": "10.1073/pnas.1902572116",
+      "url": "https://doi.org/10.1073/pnas.1902572116",
+      "locations": [
+        "Equation (1): (-1 + 4 z^2) Lambda(1/2 + z) = sum_{n>=0} gamma(n) z^(2n)/n!",
+        "Equation (2): J_alpha^{d,n}(X) = sum_{j=0}^d binom(d,j) alpha(n+j) X^j",
+        "Introduction, pp. 11103–11104: RH is equivalent to hyperbolicity for every degree and shift",
+        "Theorem 1: for each fixed d >= 1, J_gamma^{d,n} is hyperbolic for all sufficiently large n",
+        "Theorem 2: J_gamma^{d,n} is hyperbolic for 1 <= d <= 8 and every n >= 0"
+      ],
+      "claims": [
+        "XI_TAYLOR_NORMALIZATION",
+        "JENSEN_POLYNOMIAL_DEFINITION",
+        "RH_IFF_ALL_DEGREES_ALL_SHIFTS_HYPERBOLIC",
+        "EVENTUAL_HYPERBOLICITY_FIXED_DEGREE",
+        "ALL_SHIFTS_DEGREE_AT_MOST_8"
+      ],
+      "status": "SOURCE_VERIFIED_FORMAL_BRIDGE_OPEN"
+    },
+    {
+      "id": "osullivan-2021-xi-lp",
+      "type": "peer_reviewed_primary",
+      "citation": "Cormac O’Sullivan, “Zeros of Jensen polynomials and asymptotics for the Riemann xi function”, Research in the Mathematical Sciences 8 (2021), article 46.",
+      "doi": "10.1007/s40687-020-00240-5",
+      "url": "https://doi.org/10.1007/s40687-020-00240-5",
+      "locations": [
+        "Equations (1.1)–(1.3): xi is entire of order 1, the centered even Taylor coefficients gamma(m), and shifted Jensen polynomials",
+        "Theorem 1.1: RH iff J^{d,n} is hyperbolic for all d >= 1 and n >= 0 (paper typography writes d > 1, n > 0 around the criterion)",
+        "Section 3.1, Theorem 3.1: Pólya–Schur compact-uniform/Laguerre–Pólya criterion",
+        "Corollary 3.2: derivative hyperbolicity iff all associated Jensen polynomials are hyperbolic",
+        "Equation (1.5): degree-two hyperbolicity is the Turán inequality gamma(n+1)^2 >= gamma(n) gamma(n+2)"
+      ],
+      "claims": [
+        "XI_ENTIRE_AND_EVEN_TAYLOR_SERIES",
+        "LAGUERRE_POLYA_COMPACT_UNIFORM_CRITERION",
+        "RH_IFF_ALL_JENSEN_HYPERBOLIC",
+        "DEGREE_TWO_TURAN_CONDITION"
+      ],
+      "status": "SOURCE_VERIFIED_FORMAL_BRIDGE_OPEN"
+    },
+    {
+      "id": "griffin-et-al-2022-effective",
+      "type": "peer_reviewed_primary",
+      "citation": "Michael J. Griffin, Ken Ono, Larry Rolen, Jesse Thorner, Zachary Tripp, and Ian Wagner, “Jensen polynomials for the Riemann xi-function”, Advances in Mathematics 397 (2022), 108186.",
+      "doi": "10.1016/j.aim.2022.108186",
+      "url": "https://doi.org/10.1016/j.aim.2022.108186",
+      "locations": [
+        "Equations (1.1)–(1.2): centered xi Taylor coefficients and Jensen polynomial convention",
+        "Theorem 1.1: an absolute c exists such that hyperbolicity holds when n >= c exp(d/2)",
+        "Remark (3) after Theorem 1.2: partial ranges do not give a converse without every n and every d"
+      ],
+      "claims": [
+        "EFFECTIVE_EVENTUAL_HYPERBOLICITY",
+        "PARTIAL_HYPERBOLICITY_NOT_A_CONVERSE_TO_RH"
+      ],
+      "status": "SOURCE_VERIFIED_NOT_FORMALIZED"
+    },
+    {
+      "id": "mathlib-4.32.0-rc1-riemann",
+      "type": "pinned_formal_library",
+      "citation": "Mathlib v4.32.0-rc1, commit 360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56, Mathlib/NumberTheory/LSeries/RiemannZeta.lean.",
+      "url": "https://github.com/leanprover-community/mathlib4/blob/360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56/Mathlib/NumberTheory/LSeries/RiemannZeta.lean",
+      "locations": [
+        "completedRiemannZeta₀",
+        "completedRiemannZeta",
+        "differentiable_completedZeta₀",
+        "completedRiemannZeta₀_one_sub",
+        "riemannZeta_eq_completedRiemannZeta₀",
+        "RiemannHypothesis"
+      ],
+      "claims": [
+        "PINNED_COMPLETED_ZETA_ENTIRE",
+        "PINNED_FUNCTIONAL_EQUATION",
+        "PINNED_RH_ROOT"
+      ],
+      "status": "FORMAL_LIBRARY_VERIFIED"
+    },
+    {
+      "id": "mathlib-4.32.0-rc1-analysis",
+      "type": "pinned_formal_library",
+      "citation": "Mathlib v4.32.0-rc1, commit 360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56, complex Taylor-series and locally-uniform-limit modules.",
+      "url": "https://github.com/leanprover-community/mathlib4/tree/360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56/Mathlib/Analysis/Complex",
+      "locations": [
+        "Complex.taylorSeries_eq_of_entire'",
+        "Differentiable.hasFPowerSeriesOnBall",
+        "TendstoLocallyUniformlyOn.differentiableOn",
+        "TendstoLocallyUniformlyOn.deriv",
+        "HasFPowerSeriesOnBall.tendstoLocallyUniformlyOn'",
+        "Polynomial.Splits",
+        "Polynomial.IsRoot",
+        "Polynomial.finsetSum_coeff"
+      ],
+      "claims": [
+        "PINNED_TAYLOR_EXPANSION",
+        "PINNED_LOCAL_UNIFORM_CONVERGENCE",
+        "PINNED_POLYNOMIAL_ROOT_INFRASTRUCTURE",
+        "NO_PINNED_REAL_ROOTEDNESS_OR_LAGUERRE_POLYA_PREDICATE_FOUND"
+      ],
+      "status": "FORMAL_LIBRARY_AUDITED"
+    }
+  ]
+}

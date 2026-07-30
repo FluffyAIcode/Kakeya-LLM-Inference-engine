@@ -1,0 +1,59 @@
+route: weil-positivity
+checked: 2026-07-30
+scope: riemann-zeta
+sources:
+  - id: bombieri-2000
+    author: Enrico Bombieri
+    title: Remarks on Weil's quadratic functional in the theory of prime numbers, I
+    venue: Rendiconti Lincei, Matematica e Applicazioni 11 (2000), 183-233
+    url: http://www.bdim.eu/item?fmt=pdf&id=RLIN_2000_9_11_3_183_0
+    authority: peer-reviewed
+    used_for:
+      - Guinand-Weil formula and normalization in section 2
+      - smooth complex C_c-infinity test space
+      - strict positivity refinement in theorem 1
+      - transpose-conjugate convolution square
+    notes: "The PDF text extraction drops some overlines; the paper's phrase
+      'transpose conjugate' fixes the complex involution."
+
+  - id: burnol-1998
+    author: Jean-Francois Burnol
+    title: The Explicit Formula in Simple Terms
+    venue: arXiv:math/9810169v2
+    url: https://arxiv.org/abs/math/9810169
+    authority: expert expository preprint
+    used_for:
+      - criterion on smooth compactly-supported multiplicative tests
+      - shifted critical-line distribution
+      - convolution/involution normalization
+      - broader explicit-formula class E and convergence caveats
+
+  - id: lagarias-survey
+    author: Jeffrey C. Lagarias
+    title: The Riemann Hypothesis - Arithmetic and Geometry
+    url: https://websites.umich.edu/~lagarias/doc/mt-holyoke-rev.pdf
+    authority: expert survey
+    used_for:
+      - nice piecewise-C2 compact-support test variant
+      - W-spec, W-arith, and W-one notation
+      - theorem 3.2 positivity equivalence
+      - distinction between explicit-formula test classes
+
+  - id: weil-1952
+    author: Andre Weil
+    title: Sur les formules explicites de la theorie des nombres premiers
+    venue: Meddelanden Fran Lunds Universitets Matematiska Seminarium (1952), 252-265
+    authority: primary source
+    used_for:
+      - original explicit formula
+      - number-field and Hecke-L-function positivity criterion
+
+formalization:
+  mathlib_revision: 360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56
+  lean_toolchain: leanprover/lean4:v4.32.0-rc1
+  module: KakeyaLeanGate/WeilPositivity.lean
+  bridge_status: unproved-proposition-only
+  prohibited_shortcuts:
+    - no axiomatized explicit formula
+    - no axiomatized RH bridge
+    - no finite certificate presented as universal positivity
