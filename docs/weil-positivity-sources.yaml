@@ -1,5 +1,5 @@
 route: weil-positivity
-checked: 2026-07-30
+checked: 2026-07-31
 scope: riemann-zeta
 sources:
   - id: bombieri-2000
@@ -48,6 +48,9 @@ sources:
       - HasCompactSupport.toSchwartzMap
       - Real.fourier_eq' normalization with the 2-pi phase
       - tendsto_atTop_ciSup and closed-order positivity limits
+      - TendstoUniformlyOn.tendsto_at and dominated-convergence interfaces
+      - riemannZetaZeros and compact-window finiteness
+      - von Mangoldt L-series summability and the negative zeta log derivative
 
   - id: lagarias-survey
     author: Jeffrey C. Lagarias
@@ -73,7 +76,7 @@ formalization:
   mathlib_revision: 360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56
   lean_toolchain: leanprover/lean4:v4.32.0-rc1
   module: KakeyaLeanGate/WeilPositivity.lean
-  bridge_status: finite-and-limit-lemmas-proved-full-bridge-unproved
+  bridge_status: typed-component-and-limit-lemmas-proved-full-bridge-unproved
   named_obligations:
     - mellin-logarithmic-change-of-variables
     - zero-sum-regularization-with-multiplicity
@@ -85,3 +88,4 @@ formalization:
     - no axiomatized explicit formula
     - no axiomatized RH bridge
     - no finite certificate presented as universal positivity
+    - no distinct-zero finset presented as a multiplicity-aware zero sum

@@ -4,8 +4,11 @@ import Mathlib.Analysis.Distribution.SchwartzSpace.Fourier
 import Mathlib.Analysis.Fourier.Convolution
 import Mathlib.Analysis.InnerProductSpace.GramMatrix
 import Mathlib.Analysis.MellinTransform
+import Mathlib.NumberTheory.LSeries.Dirichlet
 import Mathlib.NumberTheory.LSeries.RiemannZeta
+import Mathlib.NumberTheory.LSeries.ZetaZeros
 import Mathlib.Topology.Order.MonotoneConvergence
+import Mathlib.Topology.UniformSpace.UniformConvergence
 
 /-!
 # The Weil-positivity route: unconditional interface and finite lemmas
@@ -46,6 +49,39 @@ def toSchwartz (f : Test) : SchwartzTest :=
 @[simp]
 theorem toSchwartz_apply (f : Test) (x : ℝ) : toSchwartz f x = f x :=
   rfl
+
+/-! ## Pinned zeta and prime-side declarations -/
+
+/-- A compact disk contains only finitely many zeta zeros.  This is a genuine
+Mathlib theorem about the zero set, but it does not record zero multiplicity. -/
+def zetaZeroWindow (R : ℝ) : Set ℂ :=
+  Metric.closedBall 0 R ∩ riemannZetaZeros
+
+theorem zetaZeroWindow_finite (R : ℝ) : (zetaZeroWindow R).Finite :=
+  (isCompact_closedBall (0 : ℂ) R).inter_riemannZetaZeros_finite
+
+/-- The corresponding finite set of distinct zeros.  It is useful for local
+restricted statements, but cannot be substituted for a multiplicity-aware
+Guinand--Weil zero sum. -/
+def zetaZeroWindowFinset (R : ℝ) : Finset ℂ :=
+  (zetaZeroWindow_finite R).toFinset
+
+@[simp]
+theorem mem_zetaZeroWindowFinset {R : ℝ} {s : ℂ} :
+    s ∈ zetaZeroWindowFinset R ↔ s ∈ Metric.closedBall 0 R ∧ riemannZeta s = 0 := by
+  simp [zetaZeroWindowFinset, zetaZeroWindow, mem_riemannZetaZeros]
+
+/-- Mathlib's source-backed prime-side identity in the absolutely convergent
+half-plane.  This is a useful restricted explicit-formula ingredient, not a
+Guinand--Weil formula and not an RH statement. -/
+theorem vonMangoldt_lseries_eq_neg_logDeriv {s : ℂ} (hs : 1 < s.re) :
+    LSeries (fun n ↦ (ArithmeticFunction.vonMangoldt n : ℂ)) s =
+      -deriv riemannZeta s / riemannZeta s := by
+  simpa using ArithmeticFunction.LSeries_vonMangoldt_eq_deriv_riemannZeta_div hs
+
+theorem vonMangoldt_lseries_summable {s : ℂ} (hs : 1 < s.re) :
+    LSeriesSummable (fun n ↦ (ArithmeticFunction.vonMangoldt n : ℂ)) s := by
+  simpa using ArithmeticFunction.LSeriesSummable_vonMangoldt hs
 
 /-- The critical-line-centred Mellin transform in logarithmic coordinates. -/
 def transform (f : Test) (z : ℂ) : ℂ :=
@@ -265,6 +301,15 @@ the linear explicit-formula identity to a limiting distribution. -/
 def Distribution.TendsTo (Wn : ℕ → Distribution) (W : Distribution) : Prop :=
   ∀ f : Test, Tendsto (fun n ↦ (Wn n).eval f) atTop (𝓝 (W.eval f))
 
+/-- Pointwise convergence of distributions gives pointwise convergence of
+their real quadratic functionals, by continuity of `Complex.re`. -/
+theorem Distribution.TendsTo.quadratic
+    {Wn : ℕ → Distribution} {W : Distribution} (h : Distribution.TendsTo Wn W)
+    (f : Test) :
+    Tendsto (fun n ↦ quadratic (Wn n) f) atTop (𝓝 (quadratic W f)) := by
+  exact Complex.continuous_re.continuousAt.tendsto.comp
+    (h (convolution f (involution f)))
+
 theorem explicitFormula_passes_to_limit
     (stage : ℕ → FiniteExplicitStage)
     (spectral pole primePower archimedean : Distribution)
@@ -297,6 +342,51 @@ theorem positivity_passes_to_pointwise_limit
     ∀ f, 0 ≤ Qlimit f := by
   intro f
   exact nonneg_of_tendsto (fun n ↦ Q n f) (Qlimit f) (hlimit f) fun n ↦ hpos n f
+
+/-- Eventual stage positivity for each fixed test is sufficient.  The cutoff
+may depend on the test; neither one common cutoff nor uniform convergence on
+the full test space is needed. -/
+theorem positivity_passes_to_eventual_pointwise_limit
+    (Q : ℕ → Test → ℝ) (Qlimit : Test → ℝ)
+    (hlimit : ∀ f, Tendsto (fun n ↦ Q n f) atTop (𝓝 (Qlimit f)))
+    (hpos : ∀ f, ∀ᶠ n in atTop, 0 ≤ Q n f) :
+    ∀ f, 0 ≤ Qlimit f := by
+  intro f
+  exact isClosed_Ici.mem_of_tendsto (hlimit f) (hpos f)
+
+/-- Uniform convergence on a selected admissible subclass implies pointwise
+convergence there and hence preserves positivity on that subclass. -/
+theorem positivity_passes_to_uniform_limit_on
+    (Q : ℕ → Test → ℝ) (Qlimit : Test → ℝ) (S : Set Test)
+    (hlimit : TendstoUniformlyOn Q Qlimit atTop S)
+    (hpos : ∀ n f, f ∈ S → 0 ≤ Q n f) :
+    ∀ f ∈ S, 0 ≤ Qlimit f := by
+  intro f hf
+  exact nonneg_of_tendsto (fun n ↦ Q n f) (Qlimit f)
+    (hlimit.tendsto_at hf) fun n ↦ hpos n f hf
+
+/-- A convergent error envelope is a convenient quantitative sufficient
+condition for the pointwise convergence needed by positivity transfer. -/
+theorem positivity_of_error_bound
+    (q : ℕ → ℝ) (qLimit : ℝ) (ε : ℕ → ℝ)
+    (hε : Tendsto ε atTop (𝓝 0))
+    (herror : ∀ n, |q n - qLimit| ≤ ε n)
+    (hpos : ∀ n, 0 ≤ q n) :
+    0 ≤ qLimit := by
+  apply nonneg_of_tendsto q qLimit
+  · rw [tendsto_iff_norm_sub_tendsto_zero]
+    simpa only [Real.norm_eq_abs] using
+      squeeze_zero (fun n ↦ abs_nonneg (q n - qLimit)) herror hε
+  · exact hpos
+
+/-- The distribution-level form used by the Weil route. -/
+theorem Distribution.IsPositive.of_tendsTo
+    {Wn : ℕ → Distribution} {W : Distribution}
+    (hlimit : Distribution.TendsTo Wn W)
+    (hpos : ∀ n, IsPositive (Wn n)) :
+    IsPositive W := by
+  intro f
+  exact nonneg_of_tendsto _ _ (hlimit.quadratic f) fun n ↦ hpos n f
 
 /-- A bounded monotone family has the canonical pointwise supremum limit,
 using Mathlib's conditionally-complete monotone convergence theorem. -/
@@ -358,6 +448,76 @@ zero distribution, with multiplicities and ordering fixed by the caller. -/
 def ZeroRegularizationObligation
     (stage : ℕ → Distribution) (regularized : Distribution) : Prop :=
   Distribution.TendsTo stage regularized
+
+/-! ## Separately typed analytic approximants -/
+
+/-- Symmetric zero truncations.  `symmetric` records the selected
+regularization symmetry at distribution level; convergence and multiplicity
+remain separate obligations. -/
+structure SymmetricZeroApproximants where
+  stage : ℕ → Distribution
+  symmetric : ∀ n f,
+    (stage n).eval (involution f) = star ((stage n).eval f)
+
+structure ArchimedeanApproximants where
+  stage : ℕ → Distribution
+
+structure PrimePowerApproximants where
+  stage : ℕ → Distribution
+
+structure PoleApproximants where
+  stage : ℕ → Distribution
+
+def SymmetricZeroApproximants.ConvergesTo
+    (A : SymmetricZeroApproximants) (limit : Distribution) : Prop :=
+  ZeroRegularizationObligation A.stage limit
+
+def ArchimedeanApproximants.ConvergesTo
+    (A : ArchimedeanApproximants) (limit : Distribution) : Prop :=
+  ArchimedeanLimitObligation A.stage limit
+
+def PrimePowerApproximants.StabilizesTo
+    (A : PrimePowerApproximants) (limit : Distribution) : Prop :=
+  PrimePowerStabilizationObligation A.stage limit
+
+def PoleApproximants.ConvergesTo
+    (A : PoleApproximants) (limit : Distribution) : Prop :=
+  Distribution.TendsTo A.stage limit
+
+/-- A typed four-component approximation package.  The stage formula is an
+obligation rather than an assumed zeta theorem. -/
+structure TypedExplicitApproximants where
+  zeros : SymmetricZeroApproximants
+  pole : PoleApproximants
+  primePower : PrimePowerApproximants
+  archimedean : ArchimedeanApproximants
+  formula : ∀ n f, (zeros.stage n).eval f =
+    (pole.stage n).eval f - (primePower.stage n).eval f -
+      (archimedean.stage n).eval f
+
+def TypedExplicitApproximants.toFiniteStage
+    (A : TypedExplicitApproximants) (n : ℕ) : FiniteExplicitStage where
+  spectral := A.zeros.stage n
+  pole := A.pole.stage n
+  primePower := A.primePower.stage n
+  archimedean := A.archimedean.stage n
+  formula := A.formula n
+
+/-- Algebraic combination theorem for the separately typed limits. -/
+theorem TypedExplicitApproximants.explicitFormula
+    (A : TypedExplicitApproximants)
+    (zeros pole primePower archimedean : Distribution)
+    (hzero : A.zeros.ConvergesTo zeros)
+    (hpole : A.pole.ConvergesTo pole)
+    (hprime : A.primePower.StabilizesTo primePower)
+    (harch : A.archimedean.ConvergesTo archimedean) :
+    ∀ f, zeros.eval f =
+      pole.eval f - primePower.eval f - archimedean.eval f := by
+  apply explicitFormula_passes_to_limit A.toFiniteStage
+  · exact hzero
+  · exact hpole
+  · exact primePowerStabilization_tendsTo _ _ hprime
+  · exact harch
 
 /-- The finite identities and all component limits form the analytic
 explicit-formula package.  It still does not assert either RH direction. -/

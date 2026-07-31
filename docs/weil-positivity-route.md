@@ -107,11 +107,22 @@ Available and used:
 * closed-order limits and `tendsto_atTop_ciSup` for bounded monotone real
   families;
 * `riemannZeta`, `completedRiemannZeta`, the functional equation, and the
-  proposition `RiemannHypothesis`.
+  proposition `RiemannHypothesis`;
+* `riemannZetaZeros`, `isDiscrete_riemannZetaZeros`, and
+  `IsCompact.inter_riemannZetaZeros_finite`, giving finite compact windows of
+  distinct zeros (without multiplicity);
+* `ArithmeticFunction.LSeriesSummable_vonMangoldt` and
+  `ArithmeticFunction.LSeries_vonMangoldt_eq_deriv_riemannZeta_div`, giving
+  absolute convergence and
+  \(\sum_n\Lambda(n)n^{-s}=-\zeta'(s)/\zeta(s)\) for \(\Re s>1\);
+* `tendsto_integral_of_dominated_convergence` and its filter variant;
+* `TendstoUniformlyOn.tendsto_at`, reducing uniform convergence on a selected
+  test subclass to the pointwise convergence positivity needs.
 
 Absent after repository-wide API search:
 
-* a type enumerating nontrivial zeta zeros with multiplicity;
+* a type enumerating nontrivial zeta zeros with multiplicity (the pinned
+  library does have the zero set and compact-window finiteness);
 * the symmetric/regularized sum over zeros;
 * the von-Mangoldt plus archimedean Guinand--Weil explicit formula;
 * a completed-zeta zero distribution;
@@ -129,6 +140,17 @@ The critical-line Fourier normalization is proved:
 \[
  F_f(-2\pi i\xi)=\mathcal F_{\rm Mathlib}(f)(\xi).
 \]
+
+The module also exposes `zetaZeroWindowFinset R`, the finite set of distinct
+zeta zeros in a closed disk.  This is a source-backed restricted finite object,
+not the spectral explicit-formula sum: a `Finset` forgets analytic
+multiplicity, and disk truncation does not choose the classical symmetric
+regularization.
+
+On the prime side, `vonMangoldt_lseries_eq_neg_logDeriv` and
+`vonMangoldt_lseries_summable` wrap Mathlib's checked theorems on \(\Re s>1\).
+They are genuine smaller explicit-formula ingredients, but they do not cross
+the critical strip or supply zero and archimedean terms.
 
 ## Finite approximants proved exactly
 
@@ -167,6 +189,13 @@ The route proves:
 
 * a pointwise limit of nonnegative real quadratic forms is nonnegative;
 * no uniform convergence hypothesis is needed for this implication;
+* eventual positivity may have a test-dependent cutoff;
+* uniform convergence on a selected test subclass implies the required
+  pointwise convergence there;
+* an error envelope tending to zero establishes scalar convergence and
+  transfers nonnegativity;
+* pointwise convergence of linear distributions gives convergence of their
+  quadratic functionals;
 * a bounded monotone family converges pointwise to its conditional supremum
   via Mathlib's `tendsto_atTop_ciSup`;
 * the resulting supremum is nonnegative when every finite stage is;
@@ -176,6 +205,11 @@ The route proves:
 
 The last item is why zero-sum regularization cannot be omitted or replaced by
 numerical positivity at every cutoff.
+
+Thus finite positivity plus an independently declared value is insufficient;
+finite positivity plus eventual pointwise convergence for each admissible test
+is sufficient.  Uniform convergence is a stronger optional route for
+restricted subclasses, not a hidden universal requirement.
 
 ## Precise bridge decomposition
 
@@ -201,6 +235,13 @@ The remaining work is split into named propositions:
 The analytic explicit formula does not by itself discharge item 6: the
 all-test separation argument and the treatment of off-critical-line zeros
 are additional theorems.
+
+`SymmetricZeroApproximants`, `PrimePowerApproximants`,
+`ArchimedeanApproximants`, and `PoleApproximants` keep the four sequences typed
+separately.  `TypedExplicitApproximants.explicitFormula` combines their limits
+from exactly the corresponding regularization, stabilization, and convergence
+obligations.  Its stage identities are explicit fields; no zeta instance is
+assumed.
 
 ## Proved support and terminal blocker
 
@@ -230,6 +271,8 @@ The remaining blocker is mathematical: discharge the six named obligations
 above for the actual zeta zero and prime-power distributions.  In particular,
 Mathlib still has no nontrivial-zero multiset with multiplicity and no
 Guinand--Weil theorem from which the finite stages or their regularized limit
-could be instantiated.  Finite Gram/SDP certificates and the new exact finite
-energies prove only restrictions and cannot discharge universal all-test
-positivity.
+could be instantiated.  Its distinct-zero compact windows and
+right-half-plane \(-\zeta'/\zeta\) theorem reduce engineering gaps but do not
+provide symmetric zero regularization, the gamma-factor limit, or all-test
+separation.  Finite Gram/SDP certificates and finite energies prove only
+restrictions and cannot discharge universal all-test positivity.

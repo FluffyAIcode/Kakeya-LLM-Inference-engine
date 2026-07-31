@@ -81,11 +81,15 @@ Proved: the smooth compactly supported test interface, involution laws,
 convolution closure, the critical-line Fourier normalization, typed finite
 zero/prime sums and exact finite-formula stages, nonnegative finite
 critical-line energies, transfer of exact explicit-formula identities and
-positivity through pointwise limits, bounded-monotone supremum limits, a
-counterexample showing finite positivity without convergence does not control
-an independently declared limit, finite Gram positive-semidefinite
-certificates and their restrictions, and an explicit Hermitian kernel with a
-negative direction.
+positivity through pointwise, eventual-pointwise, uniform-on-subclass, and
+quantified-error limits; bounded-monotone supremum limits; separately typed
+zero, prime-power, archimedean, and pole approximants with an algebraic limit
+combination theorem; finite distinct-zeta-zero windows from Mathlib's
+discreteness theorem; the von Mangoldt \(-\zeta'/\zeta\) identity on
+\(\Re s>1\); a counterexample showing finite positivity without convergence
+does not control an independently declared limit; finite Gram
+positive-semidefinite certificates and their restrictions; and an explicit
+Hermitian kernel with a negative direction.
 
 Open: discharge the named `MellinNormalizationObligation`,
 `ZeroRegularizationObligation`, `PrimePowerStabilizationObligation`, and
@@ -94,6 +98,9 @@ obtain the actual normalized Guinand--Weil formula; and separately prove both
 directions in `AllTestPositivityObligation`. `BridgeObligation` is only the
 unproved interface; finite stages, finite PSD certificates, and limit-transfer
 lemmas without the actual zeta convergence hypotheses cannot discharge it.
+Mathlib's zero set has no multiplicities, and its right-half-plane logarithmic
+derivative theorem does not supply symmetric zero regularization or the
+archimedean explicit-formula term.
 
 ## Research priority
 
