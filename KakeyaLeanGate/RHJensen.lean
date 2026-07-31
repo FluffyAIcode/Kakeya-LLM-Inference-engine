@@ -1,5 +1,7 @@
 import KakeyaLeanGate.RiemannHypothesisRoot
 import Mathlib.Analysis.Complex.TaylorSeries
+import Mathlib.Analysis.Complex.Polynomial.GaussLucas
+import Mathlib.Analysis.Calculus.Deriv.Star
 import Mathlib.Analysis.Calculus.IteratedDeriv.Lemmas
 
 /-!
@@ -22,6 +24,7 @@ root of the scalar-extended real polynomial is real.
 noncomputable section
 
 open Complex Polynomial
+open scoped ComplexConjugate
 
 namespace Kakeya.RHJensen
 
@@ -61,11 +64,62 @@ theorem xiJensenEntire_neg (z : ℂ) :
   have harg : (1 / 2 : ℂ) + -z = 1 - (1 / 2 + z) := by ring
   rw [xiJensenEntire, xiJensenEntire, harg, riemannXi_one_sub]
 
+/-- The exact source-level conjugation fact still missing from pinned Mathlib.
+It is strictly narrower than assuming reality of all xi coefficients. -/
+def CompletedZetaConjugation : Prop :=
+  ∀ s : ℂ, completedRiemannZeta₀ (conj s) = conj (completedRiemannZeta₀ s)
+
+theorem riemannXi_conj_of_completedZetaConjugation
+    (hconj : CompletedZetaConjugation) (s : ℂ) :
+    riemannXi (conj s) = conj (riemannXi s) := by
+  rw [riemannXi, riemannXi, hconj]
+  simp only [map_div₀, map_add, map_one, map_mul, map_sub, Complex.conj_ofNat]
+
+theorem xiJensenEntire_conj_of_completedZetaConjugation
+    (hconj : CompletedZetaConjugation) (z : ℂ) :
+    xiJensenEntire (conj z) = conj (xiJensenEntire z) := by
+  rw [xiJensenEntire, xiJensenEntire]
+  simp only [map_mul, Complex.conj_ofNat]
+  rw [show (1 / 2 : ℂ) + conj z = conj (1 / 2 + z) by simp [Complex.conj_ofNat],
+    riemannXi_conj_of_completedZetaConjugation hconj]
+
+/-- Conjugation symmetry of a complex function forces every derivative at
+zero to be real.  The proof uses Mathlib's exact derivative rule for
+`conj ∘ f ∘ conj` and therefore does not assume a power-series uniqueness
+principle. -/
+theorem iteratedDeriv_im_zero_of_conj_symmetry
+    (f : ℂ → ℂ) (hf : ∀ z, f (conj z) = conj (f z)) (n : ℕ) :
+    (iteratedDeriv n f 0).im = 0 := by
+  have hsym : conj ∘ f ∘ conj = f := by
+    funext z
+    simp only [Function.comp_apply]
+    rw [hf]
+    simp
+  have hiter :
+      conj ∘ iteratedDeriv n f ∘ conj = iteratedDeriv n f := by
+    induction n with
+    | zero => simpa using hsym
+    | succ n ih =>
+        have hderiv := congrArg deriv ih
+        simpa [Nat.succ_eq_add_one, iteratedDeriv_succ] using hderiv
+  apply Complex.conj_eq_iff_im.mp
+  simpa [Function.comp_apply] using congrFun hiter 0
+
 /-- The complex derivative normalization underlying the classical real
 coefficient `γ(n)`: `n! ξ_J^(2n)(0) / (2n)!`. -/
 def xiGammaComplex (n : ℕ) : ℂ :=
   (n.factorial : ℂ) / ((2 * n).factorial : ℂ) *
     iteratedDeriv (2 * n) xiJensenEntire 0
+
+/-- Coefficient reality is reduced to the single missing conjugation theorem
+for Mathlib's pole-removed completed zeta definition. -/
+theorem xiGammaComplex_im_zero_of_completedZetaConjugation
+    (hconj : CompletedZetaConjugation) (n : ℕ) :
+    (xiGammaComplex n).im = 0 := by
+  have hderiv :=
+    iteratedDeriv_im_zero_of_conj_symmetry xiJensenEntire
+      (xiJensenEntire_conj_of_completedZetaConjugation hconj) (2 * n)
+  simp [xiGammaComplex, Complex.mul_im, hderiv]
 
 /-- Real interface to the xi coefficient sequence.  The remaining analytic
 bridge must prove that `xiGammaComplex n` is real (and agrees with the sourced
@@ -196,18 +250,89 @@ theorem hyperbolic_of_C_mul {c : ℝ} {p : ℝ[X]}
   rw [show (p.map (algebraMap ℝ ℂ)).eval z = 0 from hz]
   simp
 
-/-- The one missing project-local real-rootedness closure theorem needed to
-propagate a Jensen shift by differentiation.  Classical Rolle/interlacing
-proves this property, but pinned Mathlib has no packaged theorem for the
-project's `Hyperbolic` predicate. -/
-def HyperbolicityPreservedByDerivative : Prop :=
-  ∀ p : ℝ[X], Hyperbolic p → Hyperbolic p.derivative
+/-- The zero polynomial is not hyperbolic under the project's root predicate. -/
+theorem zero_not_hyperbolic : ¬ Hyperbolic (0 : ℝ[X]) := by
+  intro h
+  obtain ⟨x, hx⟩ := h Complex.I (by simp [Polynomial.IsRoot])
+  have him := congrArg Complex.im hx
+  norm_num at him
 
-/-- Assuming the standard derivative-closure lemma, every shift follows from
-the unshifted Jensen family.  Together with the reverse implication (shift
-zero), this reduces all-degree/all-shift control to all degrees at one shift. -/
-theorem allJensenHyperbolic_iff_unshifted
-    (a : ℕ → ℝ) (hderiv : HyperbolicityPreservedByDerivative) :
+/-- Consequently, derivative closure without a nonzero-derivative hypothesis
+is formally false: the constant polynomial `1` is a counterexample. -/
+theorem not_hyperbolicity_preserved_by_every_derivative :
+    ¬ (∀ p : ℝ[X], Hyperbolic p → Hyperbolic p.derivative) := by
+  intro h
+  have hone : Hyperbolic (1 : ℝ[X]) := by
+    intro z hz
+    simp [Polynomial.IsRoot] at hz
+  exact zero_not_hyperbolic (by simpa using h 1 hone)
+
+/-- The current `Hyperbolic` predicate deliberately excludes the zero
+polynomial: every complex number is a root of zero.  Thus derivative closure
+requires the derivative to be nonzero (the constant polynomial `1` is the
+basic counterexample without this hypothesis).
+
+Pinned Mathlib's Gauss--Lucas theorem gives exactly the required closure for a
+nonzero derivative, including repeated roots and arbitrary degree drop. -/
+theorem hyperbolic_derivative {p : ℝ[X]} (hp : Hyperbolic p)
+    (hp' : p.derivative ≠ 0) :
+    Hyperbolic p.derivative := by
+  intro z hz
+  let P : ℂ[X] := p.map (algebraMap ℝ ℂ)
+  have hP' : P.derivative ≠ 0 := by
+    change (p.map (algebraMap ℝ ℂ)).derivative ≠ 0
+    rw [Polynomial.derivative_map,
+      Polynomial.map_ne_zero_iff (FaithfulSMul.algebraMap_injective ℝ ℂ)]
+    exact hp'
+  have hPdeg : 0 < P.degree := by
+    rw [← not_le]
+    intro hdeg
+    apply hP'
+    rw [Polynomial.eq_C_of_degree_le_zero hdeg, Polynomial.derivative_C]
+  have hzroot : P.derivative.IsRoot z := by
+    simpa only [P, Polynomial.derivative_map] using hz
+  have hzset : z ∈ P.derivative.rootSet ℂ := by
+    rw [Polynomial.mem_rootSet]
+    exact ⟨hP', by simpa [Polynomial.IsRoot, Polynomial.coe_aeval_eq_eval] using hzroot⟩
+  have hroots : P.rootSet ℂ ⊆ {w : ℂ | w.im = 0} := by
+    intro w hw
+    rw [Polynomial.mem_rootSet] at hw
+    have hwroot : (p.map (algebraMap ℝ ℂ)).IsRoot w := by
+      simpa [P, Polynomial.IsRoot, Polynomial.coe_aeval_eq_eval] using hw.2
+    obtain ⟨x, rfl⟩ := hp w hwroot
+    simp
+  have hreal : Convex ℝ {w : ℂ | w.im = 0} := by
+    have h :=
+      (convex_halfSpace_im_le 0).inter (convex_halfSpace_im_ge 0)
+    convert h using 1
+    ext w
+    simp [le_antisymm_iff]
+  have hzreal : z ∈ {w : ℂ | w.im = 0} :=
+    convexHull_min hroots hreal
+      (P.rootSet_derivative_subset_convexHull_rootSet hPdeg hzset)
+  exact ⟨z.re, Complex.ext (by simp) (by simpa using hzreal)⟩
+
+/-- A simple coefficient hypothesis ensuring that no positive-degree Jensen
+polynomial degenerates to the zero polynomial. -/
+def PointwiseNonzero (a : ℕ → ℝ) : Prop :=
+  ∀ n, a n ≠ 0
+
+/-- The exact nondegeneracy needed by shift propagation. -/
+def NonzeroJensenFamily (a : ℕ → ℝ) : Prop :=
+  ∀ d n : ℕ, 1 ≤ d → jensenPolynomial a d n ≠ 0
+
+theorem jensenPolynomial_ne_zero_of_pointwiseNonzero
+    {a : ℕ → ℝ} (ha : PointwiseNonzero a) (d n : ℕ) :
+    jensenPolynomial a d n ≠ 0 := by
+  intro hzero
+  have hcoeff := congrArg (fun p : ℝ[X] ↦ p.coeff d) hzero
+  rw [coeff_jensenPolynomial, if_pos le_rfl, Polynomial.coeff_zero] at hcoeff
+  simpa using (mul_ne_zero (by simp) (ha (n + d))) hcoeff
+
+/-- Under the exact Jensen nondegeneracy hypothesis, every shift follows from
+the unshifted Jensen family. -/
+theorem allJensenHyperbolic_iff_unshifted_of_nonzeroJensen
+    (a : ℕ → ℝ) (ha : NonzeroJensenFamily a) :
     AllJensenHyperbolic a ↔
       ∀ d : ℕ, 1 ≤ d → Hyperbolic (jensenPolynomial a d 0) := by
   constructor
@@ -219,7 +344,22 @@ theorem allJensenHyperbolic_iff_unshifted
     | succ n ih =>
         apply hyperbolic_of_C_mul
         rw [← derivative_jensenPolynomial]
-        exact hderiv _ (ih (d + 1) (by omega))
+        apply hyperbolic_derivative (ih (d + 1) (by omega))
+        rw [derivative_jensenPolynomial]
+        have hc : Polynomial.C (d + 1 : ℝ) ≠ 0 :=
+          Polynomial.C_ne_zero.mpr (by positivity)
+        exact mul_ne_zero
+          hc
+          (ha d (n + 1) hd)
+
+/-- Pointwise coefficient nonvanishing is a convenient sufficient condition
+for the exact Jensen nondegeneracy hypothesis. -/
+theorem allJensenHyperbolic_iff_unshifted
+    (a : ℕ → ℝ) (ha : PointwiseNonzero a) :
+    AllJensenHyperbolic a ↔
+      ∀ d : ℕ, 1 ≤ d → Hyperbolic (jensenPolynomial a d 0) :=
+  allJensenHyperbolic_iff_unshifted_of_nonzeroJensen a fun d n _ ↦
+    jensenPolynomial_ne_zero_of_pointwiseNonzero ha d n
 
 theorem jensenPolynomial_degree_one_hyperbolic
     (a : ℕ → ℝ) (n : ℕ) (h : a (n + 1) ≠ 0) :
@@ -346,7 +486,7 @@ theorem degree_two_hyperbolic_of_positive_logConcave
 /-- These are the exact still-unproved mathematical interfaces separating the
 formalized finite algebra from RH. -/
 structure BridgeObligations : Prop where
-  coefficientReality : ∀ n, (xiGammaComplex n).im = 0
+  completedZetaConjugation : CompletedZetaConjugation
   coefficientTaylorExpansion :
     ∀ z : ℂ,
       HasSum (fun n : ℕ ↦
@@ -356,5 +496,9 @@ structure BridgeObligations : Prop where
     KakeyaRiemannHypothesisRoot → AllJensenHyperbolic xiGamma
   polyaJensenReverse :
     AllJensenHyperbolic xiGamma → KakeyaRiemannHypothesisRoot
+
+theorem BridgeObligations.coefficientReality (h : BridgeObligations) :
+    ∀ n, (xiGammaComplex n).im = 0 :=
+  xiGammaComplex_im_zero_of_completedZetaConjugation h.completedZetaConjugation
 
 end Kakeya.RHJensen

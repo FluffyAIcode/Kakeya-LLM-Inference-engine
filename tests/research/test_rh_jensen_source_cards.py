@@ -59,9 +59,14 @@ def test_polya_schur_and_derivative_shift_are_source_pinned() -> None:
     assert "d >= 1" in locations
 
 
-def test_pinned_mathlib_gap_is_explicit() -> None:
+def test_pinned_mathlib_gauss_lucas_and_remaining_gap_are_explicit() -> None:
     payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
     analysis = next(
         card for card in payload["cards"] if card["id"] == "mathlib-4.32.0-rc1-analysis"
     )
-    assert "NO_PINNED_DERIVATIVE_HYPERBOLICITY_CLOSURE_FOUND" in analysis["claims"]
+    assert {
+        "PINNED_GAUSS_LUCAS_DERIVATIVE_CLOSURE_FORMALIZED",
+        "NO_PINNED_COMPLETED_ZETA_CONJUGATION_FOUND",
+    } <= set(analysis["claims"])
+    locations = " ".join(analysis["locations"])
+    assert "rootSet_derivative_subset_convexHull_rootSet" in locations

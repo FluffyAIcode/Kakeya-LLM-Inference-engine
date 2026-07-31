@@ -102,14 +102,17 @@
         "Polynomial.IsRoot",
         "Polynomial.finsetSum_coeff",
         "Polynomial.coeff_derivative",
-        "No theorem packaging Rolle/interlacing as derivative preservation for real-rooted polynomials was found"
+        "Mathlib/Analysis/Complex/Polynomial/GaussLucas.lean: Polynomial.rootSet_derivative_subset_convexHull_rootSet",
+        "Mathlib/Analysis/Calculus/Deriv/Star.lean: deriv_conj_conj",
+        "No conjugation theorem for completedRiemannZeta₀ was found"
       ],
       "claims": [
         "PINNED_TAYLOR_EXPANSION",
         "PINNED_LOCAL_UNIFORM_CONVERGENCE",
         "PINNED_POLYNOMIAL_ROOT_INFRASTRUCTURE",
         "NO_PINNED_REAL_ROOTEDNESS_OR_LAGUERRE_POLYA_PREDICATE_FOUND",
-        "NO_PINNED_DERIVATIVE_HYPERBOLICITY_CLOSURE_FOUND"
+        "PINNED_GAUSS_LUCAS_DERIVATIVE_CLOSURE_FORMALIZED",
+        "NO_PINNED_COMPLETED_ZETA_CONJUGATION_FOUND"
       ],
       "status": "FORMAL_LIBRARY_AUDITED"
     }

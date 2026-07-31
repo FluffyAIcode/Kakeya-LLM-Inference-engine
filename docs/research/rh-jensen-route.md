@@ -44,11 +44,15 @@ with the sourced real Taylor series remain explicit obligations.
 
    `derivative (J(a,d+1,n)) = C(d+1) * J(a,d,n+1)`.
 
-   This identity is proved coefficientwise in Lean.  Consequently, conditional
-   only on the standard theorem that differentiation preserves real-rootedness,
+   This identity is proved coefficientwise in Lean. Pinned Mathlib's
+   `Polynomial.rootSet_derivative_subset_convexHull_rootSet` (Gauss–Lucas) now
+   proves `hyperbolic_derivative` whenever the derivative is nonzero. Lean also
+   proves that unconditional derivative closure is false for the current
+   predicate: `1` is hyperbolic while its zero derivative is not.
+   Consequently, under the exact `NonzeroJensenFamily` hypothesis,
    all-degree/all-shift hyperbolicity is equivalent to hyperbolicity of
-   `J(a,d,0)` for every degree `d`.  Thus the shift quantifier is not the
-   essential RH obstruction.
+   `J(a,d,0)` for every degree `d`. `PointwiseNonzero a` is a proved sufficient
+   condition for this nondegeneracy.
 8. **Nested finite obligations** — `JensenSquare a k` asks for hyperbolicity
    only when positive degree and shift are both at most `k`. Lean proves
 
@@ -90,6 +94,11 @@ Available and used:
   `Differentiable.hasFPowerSeriesOnBall`;
 - `Polynomial`, `Polynomial.IsRoot`, `Polynomial.Splits`,
   `Polynomial.finsetSum_coeff`, `Polynomial.coeff_derivative`;
+- `Polynomial.rootSet_derivative_subset_convexHull_rootSet` (Gauss–Lucas),
+  used to prove nonzero-derivative preservation for the route's exact
+  `Hyperbolic` predicate;
+- `deriv_conj_conj`, used to prove that conjugation symmetry forces all
+  iterated derivatives at zero to be real;
 - `TendstoLocallyUniformlyOn`,
   `TendstoLocallyUniformlyOn.differentiableOn`,
   `TendstoLocallyUniformlyOn.deriv`, and power-series partial-sum local
@@ -102,7 +111,8 @@ Not found in the pinned library:
 - a polynomial `IsRealRooted`/hyperbolicity predicate;
 - a Laguerre–Pólya class definition;
 - Jensen polynomials or the Pólya–Jensen criterion;
-- a compact-uniform closure theorem specialized to real-rooted polynomials.
+- a compact-uniform closure theorem specialized to real-rooted polynomials;
+- conjugation symmetry for `completedRiemannZeta₀`.
 
 The project-local definitions cover only the standard typed interfaces.
 The missing analytic theorems have not been replaced by assumptions.
@@ -128,13 +138,17 @@ the unconditional formal reduction now gives the nested family:
 
 `forall k, JensenSquare xiGamma k`.
 
-After importing/proving the classical derivative-preservation theorem, the
-same target reduces further to:
+Under `NonzeroJensenFamily xiGamma` (in particular, once sourced coefficient
+positivity/nonvanishing is bridged), the same target reduces further to:
 
 `forall d >= 1, Hyperbolic (jensenPolynomial xiGamma d 0)`.
 
-This all-degree unshifted family—not the shift quantifier—is the exact
-coefficient-side mathematical blocker. Strict positivity and log-concavity
+Lean now reduces coefficient reality to the exact analytic statement
+`CompletedZetaConjugation`; pinned Mathlib has no theorem supplying that
+symmetry for `completedRiemannZeta₀`.
+
+The all-degree unshifted family—not differentiation—is the exact
+coefficient-side mathematical blocker after nondegeneracy. Strict positivity and log-concavity
 settle only degree two; ordinary Turán inequalities do not imply all-degree
 hyperbolicity. A stronger sourced condition such as the appropriate
 all-order total-positivity/Pólya-frequency condition would still require its
