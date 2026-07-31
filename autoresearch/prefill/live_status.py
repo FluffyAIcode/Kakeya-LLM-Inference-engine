@@ -9,6 +9,11 @@ import threading
 import time
 from pathlib import Path
 
+from autoresearch.prefill.orchestration_state import (
+    load_checkpoint,
+    verified_reuse_provenance,
+)
+
 
 SCHEMA_VERSION = 2
 VALID_STATES = {
@@ -176,12 +181,19 @@ class AtomicLiveStatus:
                     )
                     if orchestration_path:
                         try:
-                            orchestration = json.loads(
-                                Path(orchestration_path).expanduser().read_text(
-                                    encoding="utf-8",
-                                ),
+                            checkpoint = load_checkpoint(
+                                Path(orchestration_path).expanduser(),
+                            )
+                            orchestration = (
+                                json.loads(
+                                    Path(orchestration_path).expanduser().read_text(
+                                        encoding="utf-8",
+                                    ),
+                                )
+                                if checkpoint is not None else {}
                             )
                         except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                            checkpoint = None
                             orchestration = {}
                         retry_counters = orchestration.get(
                             "retry_counters",
@@ -190,14 +202,18 @@ class AtomicLiveStatus:
                         current_state = _safe_text(
                             orchestration.get("state", ""),
                         )
-                        critic_ref = orchestration.get(
-                            "validated_artifacts",
-                            {},
-                        ).get("critic", {})
-                        resumed = bool(
-                            orchestration.get("strategy_reused", False)
-                            and current_state not in {"GENERATOR", "CRITIC"}
+                        reuse = (
+                            verified_reuse_provenance(checkpoint)
+                            if checkpoint is not None else {
+                                "strategy_reused": False,
+                                "generator_reused": False,
+                                "critic_reused": False,
+                                "role_reused": {},
+                                "reused_artifacts": {},
+                                "diagnostics": {},
+                            }
                         )
+                        critic_ref = reuse["reused_artifacts"].get("critic", {})
                         adapter_status = _safe_text(
                             orchestration.get("adapter_status", ""),
                         )
@@ -472,10 +488,12 @@ class AtomicLiveStatus:
                                 ).items()
                             },
                             "strategy_reused": bool(
-                                orchestration.get("strategy_reused", False),
+                                reuse["strategy_reused"],
                             ),
-                            "generator_reused": resumed,
-                            "critic_reused": resumed and bool(critic_ref),
+                            "generator_reused": reuse["generator_reused"],
+                            "critic_reused": reuse["critic_reused"],
+                            "role_reused": reuse["role_reused"],
+                            "reuse_diagnostics": reuse["diagnostics"],
                             "critic_artifact_sha256": _safe_text(
                                 critic_ref.get("sha256", ""),
                             ),

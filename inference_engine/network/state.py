@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import threading
@@ -109,7 +110,9 @@ class NetworkState:
         assert_public_safe(config)
         run = {
             "id": "br_" + secrets.token_hex(8),
+            "generation": secrets.token_hex(12),
             "schema_version": 1,
+            "report_version": 0,
             "kind": kind,
             "status": "running",
             "started_at": float(started_at or time.time()),
@@ -133,13 +136,18 @@ class NetworkState:
         status: str | None = None,
         finished_at: float | None = None,
         provenance: dict[str, Any] | None = None,
+        generation: str | None = None,
     ) -> dict[str, Any]:
-        if status not in (None, "running", "completed", "failed"):
+        if status not in (
+            None, "running", "completed", "failed", "cancelled", "canceled",
+        ):
             raise ValueError("invalid benchmark status")
         if provenance is not None:
             assert_public_safe(provenance)
         with self._lock:
             run = self._benchmark_locked(run_id)
+            if generation is not None and generation != run["generation"]:
+                raise ValueError("benchmark generation mismatch")
             if stages:
                 run["stages"].extend(normalize_stage(stage) for stage in stages)
             if provenance is not None:
@@ -149,6 +157,7 @@ class NetworkState:
             if finished_at is not None:
                 run["finished_at"] = float(finished_at)
             run["summary"] = summarize_stages(run["stages"])
+            run["report_version"] += 1
             if run["status"] != "running" and self._data["benchmark_live"] == run_id:
                 self._data["benchmark_live"] = None
             self._save()
@@ -171,7 +180,8 @@ class NetworkState:
                 {
                     key: run[key]
                     for key in (
-                        "id", "schema_version", "kind", "status",
+                        "id", "generation", "schema_version", "report_version",
+                        "kind", "status",
                         "started_at", "finished_at", "config", "summary",
                     )
                 }
@@ -367,6 +377,20 @@ class NetworkState:
                 data.setdefault("tokens", {})
                 data.setdefault("benchmark_runs", [])
                 data.setdefault("benchmark_live", None)
+                for run in data["benchmark_runs"]:
+                    run.setdefault(
+                        "generation",
+                        hashlib.sha256(
+                            (
+                                f"{run.get('id', '')}:"
+                                f"{run.get('started_at', '')}"
+                            ).encode()
+                        ).hexdigest()[:24],
+                    )
+                    run.setdefault(
+                        "report_version",
+                        0 if run.get("status") == "running" else 1,
+                    )
                 return data
             except (OSError, ValueError):
                 pass

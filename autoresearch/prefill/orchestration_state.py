@@ -381,6 +381,11 @@ class ArtifactRef:
     parent_statement_hash: str = ""
     strategy_plan_hash: str = ""
     environment_hash: str = ""
+    candidate_sha256: str = ""
+    ledger_id: str = ""
+    ledger_version: int = 0
+    reusable: bool = False
+    validation_status: str = ""
 
 
 @dataclass(frozen=True)
@@ -737,7 +742,10 @@ class OrchestrationCheckpoint:
             self.last_blocked_event_id = blocked_exit_event.event_id
             self.blocked_reason = ""
         if strategy_reused is not None:
-            self.strategy_reused = bool(strategy_reused)
+            self.strategy_reused = (
+                verified_reuse_provenance(self)["strategy_reused"]
+                if strategy_reused else False
+            )
         if source_run_id and source_run_id not in self.source_run_ids:
             self.source_run_ids.append(source_run_id)
         self.updated_at = time.time()
@@ -1157,6 +1165,9 @@ def _serialize(checkpoint: OrchestrationCheckpoint) -> dict:
 def save_checkpoint(path: Path, checkpoint: OrchestrationCheckpoint) -> None:
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    checkpoint.strategy_reused = verified_reuse_provenance(
+        checkpoint,
+    )["strategy_reused"]
     checkpoint.updated_at = time.time()
     if checkpoint.decomposition_proposals:
         persist_decomposition_novelty_manifest(path, checkpoint)
@@ -1584,11 +1595,154 @@ def persist_validated_artifact(
         parent_statement_hash=checkpoint.parent_statement_sha256,
         strategy_plan_hash=checkpoint.target_strategy_plan_hash,
         environment_hash=checkpoint.target_environment_hash,
+        candidate_sha256=checkpoint.candidate_sha256,
+        ledger_id=checkpoint.ledger_id,
+        ledger_version=checkpoint.ledger_version,
+        reusable=True,
+        validation_status="validated",
     )
     checkpoint.validated_artifacts[role] = ref
     if save:
         save_checkpoint(checkpoint_path, checkpoint)
     return ref
+
+
+def verified_reuse_provenance(
+    checkpoint: OrchestrationCheckpoint,
+) -> dict[str, Any]:
+    """Derive reuse only from current, target-bound, content-verified refs.
+
+    Historical transcript/cache strings and checkpoint booleans are
+    intentionally ignored.  Invalid references are reported but never count
+    as reuse.
+    """
+    references = checkpoint.validated_artifacts
+    reference_hashes = {ref.sha256 for ref in references.values()}
+    binding_hashes = {
+        value for value in (
+            checkpoint.candidate_sha256,
+            checkpoint.strategy_sha256,
+            checkpoint.parent_statement_sha256,
+            checkpoint.parent_signature_sha256,
+            checkpoint.root_goal_sha256,
+            checkpoint.target_context_hash,
+            checkpoint.target_strategy_plan_hash,
+            checkpoint.target_environment_hash,
+        ) if value
+    }
+    role_reused: dict[str, bool] = {}
+    verified_artifacts: dict[str, dict[str, Any]] = {}
+    diagnostics: dict[str, list[str]] = {}
+    for role, ref in sorted(references.items()):
+        reasons: list[str] = []
+        if ref.role != role:
+            reasons.append("role-mismatch")
+        if not ref.reusable or ref.validation_status != "validated":
+            reasons.append("not-marked-reusable-validated")
+        expected_pairs = (
+            ("target-obligation", ref.target_obligation_id,
+             checkpoint.target_obligation_id),
+            ("target-context", ref.target_context_hash,
+             checkpoint.target_context_hash),
+            ("parent-statement", ref.parent_statement_hash,
+             checkpoint.parent_statement_sha256),
+            ("strategy-plan", ref.strategy_plan_hash,
+             checkpoint.target_strategy_plan_hash),
+            ("environment", ref.environment_hash,
+             checkpoint.target_environment_hash),
+            ("candidate", ref.candidate_sha256,
+             checkpoint.candidate_sha256),
+            ("ledger-id", ref.ledger_id, checkpoint.ledger_id),
+        )
+        for label, actual, expected in expected_pairs:
+            if expected and actual != expected:
+                reasons.append(f"{label}-mismatch")
+        if checkpoint.ledger_version and (
+            int(ref.ledger_version) != int(checkpoint.ledger_version)
+        ):
+            reasons.append("ledger-version-mismatch")
+        if ref.schema_version < 1:
+            reasons.append("schema-version-invalid")
+        if any(
+            dependency not in reference_hashes
+            and dependency not in binding_hashes
+            for dependency in ref.dependencies
+            if dependency
+        ):
+            reasons.append("dependency-outside-current-dag")
+        encoded = b""
+        try:
+            encoded = Path(ref.path).expanduser().read_bytes()
+        except OSError:
+            reasons.append("artifact-unavailable")
+        if encoded and hashlib.sha256(encoded).hexdigest() != ref.sha256:
+            reasons.append("artifact-hash-mismatch")
+        if not reasons:
+            try:
+                payload = json.loads(encoded)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                reasons.append("artifact-json-invalid")
+            else:
+                if not isinstance(payload, dict):
+                    reasons.append("artifact-schema-invalid")
+                else:
+                    payload_role = payload.get("role")
+                    if payload_role and payload_role != role:
+                        reasons.append("payload-role-mismatch")
+                    bindings = payload.get("bindings")
+                    if isinstance(bindings, dict):
+                        payload_expectations = {
+                            "target_obligation_id": (
+                                checkpoint.target_obligation_id
+                            ),
+                            "candidate_sha256": checkpoint.candidate_sha256,
+                            "strategy_sha256": checkpoint.strategy_sha256,
+                            "parent_statement_sha256": (
+                                checkpoint.parent_statement_sha256
+                            ),
+                            "parent_signature_sha256": (
+                                checkpoint.parent_signature_sha256
+                            ),
+                            "root_goal_sha256": checkpoint.root_goal_sha256,
+                            "ledger_id": checkpoint.ledger_id,
+                            "ledger_version": checkpoint.ledger_version,
+                            "environment_sha256": (
+                                checkpoint.target_environment_hash
+                            ),
+                            "target_context_hash": (
+                                checkpoint.target_context_hash
+                            ),
+                            "strategy_plan_hash": (
+                                checkpoint.target_strategy_plan_hash
+                            ),
+                        }
+                        for name, expected in payload_expectations.items():
+                            if not expected:
+                                continue
+                            actual = bindings.get(name)
+                            if name == "ledger_version":
+                                actual = int(actual or 0)
+                                expected = int(expected)
+                            if actual != expected:
+                                reasons.append(f"payload-{name}-mismatch")
+        reused = not reasons
+        role_reused[role] = reused
+        if reused:
+            verified_artifacts[role] = asdict(ref)
+        else:
+            diagnostics[role] = reasons
+    strategy_role = (
+        "strategy_tournament"
+        if "strategy_tournament" in role_reused else "strategy"
+    )
+    return {
+        "strategy_reused": role_reused.get(strategy_role, False),
+        "generator_reused": role_reused.get("generator", False),
+        "critic_reused": role_reused.get("critic", False),
+        "role_reused": role_reused,
+        "reused_artifacts": verified_artifacts,
+        "diagnostics": diagnostics,
+    }
 
 
 _APPROACH_DEPENDENT_ROLES = frozenset({

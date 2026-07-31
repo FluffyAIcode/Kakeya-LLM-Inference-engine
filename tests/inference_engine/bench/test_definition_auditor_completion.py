@@ -59,6 +59,9 @@ def _checkpoint(state=ProofState.DECOMPOSER):
         root_goal_sha256=ROOT_HASH,
         ledger_id="rh-rigorous-obligations-v1",
         ledger_version=93,
+        target_context_hash="3" * 64,
+        target_environment_hash="2" * 64,
+        target_strategy_plan_hash="4" * 64,
         orchestration_id=f"{RUN_ID}:decomposition:dbb8725d6ba5",
         resume_origin=ProofState.DECOMPOSER.value,
     )

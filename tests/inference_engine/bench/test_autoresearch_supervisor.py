@@ -6,6 +6,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 from autoresearch.prefill.live_status import AtomicLiveStatus
+from autoresearch.prefill.prepare import ReportValidationError
 from autoresearch.prefill.orchestration_state import (
     ARCHITECTURE_VERSION,
     BlockedEventType,
@@ -30,6 +31,8 @@ from autoresearch.prefill.semantic_decompose import (
 from autoresearch.prefill.supervisor import (
     BLOCKED_HEARTBEAT_INTERVAL_S,
     RESUMABLE_ORCHESTRATION_STATES,
+    BenchmarkFinalizationTimeout,
+    BenchmarkTerminalFailure,
     BlockedIdleLogger,
     CandidateNoveltyStagnation,
     append_result,
@@ -64,6 +67,7 @@ from autoresearch.prefill.supervisor import (
     _extract_json,
     _pending_leaf_ids,
     validate_candidate,
+    wait_for_benchmark_finalization,
 )
 from pathlib import Path
 
@@ -417,7 +421,7 @@ def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
     assert live["active_role"] == "decomposer"
     assert live["resume_origin"] == "DECOMPOSER"
     assert live["retry_count"] == 1
-    assert live["strategy_reused"] is True
+    assert live["strategy_reused"] is False
     assert live["architecture_version"] == ARCHITECTURE_VERSION
     assert live["active_gate"] == "HOST_TYPED_IR_GATE"
     assert live["typed_ir_hash"] == "b" * 64
@@ -551,7 +555,7 @@ def test_semantic_proposal_archive_does_not_consume_adapter_budget(tmp_path):
     assert restarted.retry_counters == {}
     assert ("protocol_" + "attempt") not in restarted.__dataclass_fields__
     assert restarted.novel_proposals == 11
-    assert restarted.strategy_reused is True
+    assert restarted.strategy_reused is False
     assert restarted.proof_state == ProofState.DECOMPOSER
     compact = compact_decomposition_novelty_ledger(restarted)
     assert compact["count"] == 11
@@ -1811,7 +1815,7 @@ def test_host_missing_definition_backjump_continues_and_restarts_idempotently(
         assert current.validated_artifacts[
             "definition_auditor"
         ].sha256 == definition_ref.sha256
-        assert current.strategy_reused is True
+        assert current.strategy_reused is False
         if current.proof_state == ProofState.HOST_TYPED_IR_GATE:
             current.transition(
                 ProofState.SYNTHESIS,
@@ -1962,7 +1966,7 @@ def test_missing_definition_precontract_route_starts_next_run_without_strategy(
     assert sleeps == [0.25]
     persisted = load_orchestration_checkpoint(state_path)
     assert persisted.proof_state == ProofState.DECOMPOSER
-    assert persisted.strategy_reused is True
+    assert persisted.strategy_reused is False
     assert persisted.selected_move_id == "REGISTER_DEFINITION_OBLIGATION"
     assert persisted.typed_ir_hash == typed_ir_hash
     assert persisted.elaborated_theorem_id == theorem_id
@@ -2490,6 +2494,97 @@ def test_runtime_health_check_is_read_only(monkeypatch):
         ("127.0.0.1", 51051),
         ("127.0.0.1", 8090),
     ]
+
+
+def _benchmark_report(status, *, generation="generation-a", version=1):
+    return {
+        "id": "br_exact",
+        "generation": generation,
+        "status": status,
+        "report_version": version,
+        "finished_at": 2.0 if status != "running" else None,
+        "stages": [] if status == "running" else [{"name": "final"}],
+    }
+
+
+def test_benchmark_finalization_accepts_delayed_running_to_completed(
+    monkeypatch,
+):
+    reports = iter([
+        _benchmark_report("running", version=0),
+        _benchmark_report("completed"),
+    ])
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: next(reports),
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        lambda _seconds: None,
+    )
+    report = wait_for_benchmark_finalization(
+        dashboard="http://dashboard",
+        run_id="br_exact",
+        generation="generation-a",
+        process_exit_code=0,
+        timeout_s=1,
+    )
+    assert report["status"] == "completed"
+    assert report["report_version"] == 1
+
+
+def test_benchmark_finalization_running_timeout_is_typed(monkeypatch):
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: _benchmark_report("running", version=0),
+    )
+    with pytest.raises(BenchmarkFinalizationTimeout) as raised:
+        wait_for_benchmark_finalization(
+            dashboard="http://dashboard",
+            run_id="br_exact",
+            generation="generation-a",
+            process_exit_code=0,
+            timeout_s=0,
+        )
+    assert raised.value.code == "BENCHMARK_FINALIZATION_TIMEOUT"
+    assert raised.value.last_report["status"] == "running"
+    assert raised.value.process_exit_code == 0
+
+
+def test_benchmark_finalization_preserves_failed_terminal(monkeypatch):
+    failed = _benchmark_report("failed")
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: failed,
+    )
+    report = wait_for_benchmark_finalization(
+        dashboard="http://dashboard",
+        run_id="br_exact",
+        generation="generation-a",
+        process_exit_code=0,
+    )
+    error = BenchmarkTerminalFailure(report, process_exit_code=0)
+    assert error.report["status"] == "failed"
+    assert "terminal failure" in str(error)
+
+
+def test_benchmark_finalization_rejects_concurrent_run_generation(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: _benchmark_report(
+            "completed",
+            generation="generation-other",
+        ),
+    )
+    with pytest.raises(ReportValidationError, match="generation mismatch"):
+        wait_for_benchmark_finalization(
+            dashboard="http://dashboard",
+            run_id="br_exact",
+            generation="generation-a",
+            process_exit_code=0,
+        )
 
 
 def test_strategy_prefill_heartbeat_reports_delta(monkeypatch, capsys):

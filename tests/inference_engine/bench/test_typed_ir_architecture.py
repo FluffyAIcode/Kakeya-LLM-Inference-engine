@@ -350,7 +350,7 @@ def test_production_host_missing_density_routes_to_synthesis_without_budget():
 
     assert checkpoint.proof_state == ProofState.SYNTHESIS
     assert checkpoint.current_role == "synthesis"
-    assert checkpoint.strategy_reused is True
+    assert checkpoint.strategy_reused is False
     assert (
         checkpoint.mathematical_retries,
         checkpoint.retry_counters,

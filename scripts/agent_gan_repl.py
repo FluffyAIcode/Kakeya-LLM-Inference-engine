@@ -124,6 +124,7 @@ from autoresearch.prefill.orchestration_state import (
     save_checkpoint as save_orchestration_checkpoint,
     sha256_text,
     state_for_role,
+    verified_reuse_provenance,
 )
 from autoresearch.prefill.definition_registry import (
     build_definition_choice_registry,
@@ -537,16 +538,23 @@ def build_resumed_report_provenance(
     stages: list[dict],
 ) -> dict:
     """Describe a partial run without claiming unexecuted benchmark stages."""
-    critic_ref = checkpoint.validated_artifacts["critic"]
+    reuse = verified_reuse_provenance(checkpoint)
+    critic_ref = reuse["reused_artifacts"].get("critic")
+    if critic_ref is None:
+        raise ResumeValidationError(
+            "resumed report has no reusable validated Critic artifact ref"
+        )
     bindings = critic_payload["bindings"]
     return {
         "schema_version": REPORT_PROVENANCE_SCHEMA_VERSION,
         "mode": "resumed",
         "resumed_from_state": checkpoint.state,
         "resumed_from_role": checkpoint.current_role,
-        "strategy_reused": True,
-        "generator_reused": True,
-        "critic_reused": True,
+        "strategy_reused": reuse["strategy_reused"],
+        "generator_reused": reuse["generator_reused"],
+        "critic_reused": reuse["critic_reused"],
+        "role_reused": reuse["role_reused"],
+        "reuse_diagnostics": reuse["diagnostics"],
         "bindings": {
             name: bindings[name]
             for name in (
@@ -560,17 +568,7 @@ def build_resumed_report_provenance(
                 "ledger_version",
             )
         },
-        "reused_artifacts": {
-            "strategy": {
-                "sha256": bindings["strategy_sha256"],
-                "source_run_id": critic_payload["source_run_id"],
-            },
-            "generator": {
-                "sha256": bindings["generator_output_sha256"],
-                "source_run_id": critic_payload["source_run_id"],
-            },
-            "critic": asdict(critic_ref),
-        },
+        "reused_artifacts": reuse["reused_artifacts"],
         "newly_executed_stages": [
             str(stage.get("name", ""))
             for stage in stages
@@ -587,10 +585,8 @@ def build_architecture7_report_provenance(
     environment_sha256: str,
 ) -> dict:
     """Report typed continuation with exact stage and checkpoint ownership."""
-    before_artifacts = {
-        role: asdict(reference)
-        for role, reference in checkpoint_before.validated_artifacts.items()
-    }
+    reuse = verified_reuse_provenance(checkpoint_before)
+    before_artifacts = reuse["reused_artifacts"]
     after_artifacts = {
         role: asdict(reference)
         for role, reference in checkpoint_after.validated_artifacts.items()
@@ -636,6 +632,8 @@ def build_architecture7_report_provenance(
             "ledger_version": checkpoint_after.ledger_version,
             "ledger_sha256": ledger_sha256,
             "environment_sha256": environment_sha256,
+            "target_context_hash": checkpoint_after.target_context_hash,
+            "strategy_plan_hash": checkpoint_after.target_strategy_plan_hash,
             "research_contract_id": checkpoint_after.research_contract_id,
             "research_contract_hash": checkpoint_after.research_contract_hash,
         },
@@ -643,6 +641,13 @@ def build_architecture7_report_provenance(
         "reused_artifacts": before_artifacts,
         "produced_artifacts": produced_artifacts,
         "reused_stages": list(before_artifacts),
+        "reuse_flags": {
+            "strategy_reused": reuse["strategy_reused"],
+            "generator_reused": reuse["generator_reused"],
+            "critic_reused": reuse["critic_reused"],
+            "role_reused": reuse["role_reused"],
+        },
+        "reuse_diagnostics": reuse["diagnostics"],
         "newly_executed_stages": [
             str(stage.get("name", "")) for stage in stages
         ],
@@ -5973,7 +5978,12 @@ def run_certified_decomposition(
                                 orchestration_checkpoint.counterexample_objective
                             ),
                         )
-                    orchestration_checkpoint.strategy_reused = True
+                    reuse = verified_reuse_provenance(
+                        orchestration_checkpoint,
+                    )
+                    orchestration_checkpoint.strategy_reused = (
+                        reuse["strategy_reused"]
+                    )
                     if not orchestration_checkpoint.resume_origin:
                         orchestration_checkpoint.resume_origin = (
                             orchestration_checkpoint.state
@@ -5989,7 +5999,7 @@ def run_certified_decomposition(
                         "[orchestration-resumed] "
                         f"state={orchestration_checkpoint.state} "
                         f"artifacts={','.join(persisted)} "
-                        "strategy_reused=true",
+                        f"strategy_reused={str(reuse['strategy_reused']).lower()}",
                         flush=True,
                     )
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -6483,7 +6493,7 @@ def run_certified_decomposition(
                         f"semantic_iteration="
                         f"{orchestration_checkpoint.decomposition_iteration} "
                         f"viewpoint={next_viewpoint} "
-                        "strategy_reused=true",
+                        "strategy_route_retained=true",
                         flush=True,
                     )
                 break
@@ -9208,12 +9218,14 @@ def main() -> int:
             )
             remote_run = run is not None
             run_id = run["id"] if remote_run else f"local_{run_nonce[:16]}"
+            run_generation = str(run.get("generation", "")) if remote_run else ""
             live_status.set_context(run_id=run_id)
             started_at = datetime.now().astimezone().isoformat(
                 timespec="milliseconds",
             )
             print(
                 f"[inference-start] time={started_at} run={run_id} "
+                f"generation={run_generation or 'local'} "
                 f"goal={hashlib.sha256(research_goal.encode()).hexdigest()}",
                 flush=True,
             )
@@ -9336,6 +9348,7 @@ def main() -> int:
                 )
                 if resume_certified:
                     architecture7 = resume_checkpoint.architecture_version >= 7
+                    reuse = verified_reuse_provenance(resume_checkpoint)
                     critic_payload = {}
                     if not architecture7:
                         critic_ref = resume_checkpoint.validated_artifacts.get(
@@ -9418,8 +9431,9 @@ def main() -> int:
                         "[orchestration-direct-resume] "
                         f"state={resume_checkpoint.state} "
                         f"target={decomposition_target} "
-                        "generator_reused=true critic_reused=true "
-                        "strategy_reused=true",
+                        f"generator_reused={str(reuse['generator_reused']).lower()} "
+                        f"critic_reused={str(reuse['critic_reused']).lower()} "
+                        f"strategy_reused={str(reuse['strategy_reused']).lower()}",
                         flush=True,
                     )
                     certificate = run_certified_decomposition(
@@ -9466,9 +9480,11 @@ def main() -> int:
                         ],
                         "resumed": True,
                         "resume_origin": resume_checkpoint.state,
-                        "strategy_reused": not architecture7,
-                        "generator_reused": not architecture7,
-                        "critic_reused": not architecture7,
+                        "strategy_reused": reuse["strategy_reused"],
+                        "generator_reused": reuse["generator_reused"],
+                        "critic_reused": reuse["critic_reused"],
+                        "role_reused": reuse["role_reused"],
+                        "reuse_diagnostics": reuse["diagnostics"],
                     })
                     save_proof_ledger(proof_ledger_path, proof_ledger)
                     committed_checkpoint = load_orchestration_checkpoint(
@@ -9553,13 +9569,15 @@ def main() -> int:
                                 "provenance": provenance,
                                 "status": "completed",
                                 "finished_at": time.time(),
+                                "generation": run_generation,
                             },
                         )
                     print(
                         "[inference-complete] "
                         f"time={datetime.now().astimezone().isoformat(timespec='milliseconds')} "
                         f"run={run_id} resumed=true "
-                        "generator_reused=true critic_reused=true",
+                        f"generator_reused={str(reuse['generator_reused']).lower()} "
+                        f"critic_reused={str(reuse['critic_reused']).lower()}",
                         flush=True,
                     )
                     save_checkpoint(
@@ -10614,6 +10632,7 @@ def main() -> int:
                             ],
                             "status": "completed",
                             "finished_at": time.time(),
+                            "generation": run_generation,
                         },
                     )
                 summary = (
@@ -10794,7 +10813,11 @@ def main() -> int:
                         f"{args.dashboard}/v1/network/benchmarks/{run_id}",
                         api_key=api_key,
                         method="PATCH",
-                        body={"status": "failed", "finished_at": time.time()},
+                        body={
+                            "status": "failed",
+                            "finished_at": time.time(),
+                            "generation": run_generation,
+                        },
                     )
                 print(
                     f"[inference-failed] time="

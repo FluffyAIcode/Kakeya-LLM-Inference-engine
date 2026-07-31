@@ -137,6 +137,8 @@ def test_benchmark_lifecycle_persistence_and_retention(tmp_path):
         started_at=10,
     )
     assert state.live_benchmark()["id"] == run["id"]
+    assert len(run["generation"]) == 24
+    assert run["report_version"] == 0
     stage = {
         "name": "remote_compute",
         "hit_source": "remote_worker",
@@ -155,7 +157,9 @@ def test_benchmark_lifecycle_persistence_and_retention(tmp_path):
         status="completed",
         finished_at=20,
         provenance={"source": "unit_test", "candidate_count": 3},
+        generation=run["generation"],
     )
+    assert completed["report_version"] == 1
     assert completed["summary"]["decode_tok_s_p50"] == 5
     assert completed["provenance"]["candidate_count"] == 3
     assert state.live_benchmark() is None
@@ -166,6 +170,8 @@ def test_benchmark_lifecycle_persistence_and_retention(tmp_path):
         state.list_benchmarks(limit=0)
     with __import__("pytest").raises(ValueError):
         state.update_benchmark(run["id"], status="invalid")
+    with __import__("pytest").raises(ValueError, match="generation mismatch"):
+        state.update_benchmark(run["id"], generation="another-generation")
     with __import__("pytest").raises(KeyError):
         state.get_benchmark("missing")
     with __import__("pytest").raises(ValueError):

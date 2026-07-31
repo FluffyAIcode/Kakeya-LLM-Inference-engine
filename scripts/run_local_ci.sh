@@ -45,6 +45,7 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
   scripts/oprover_residency_smoke.py
 
 "$PYTHON" scripts/check_typed_role_contracts.py
+"$PYTHON" scripts/check_dynamic_runtime_provenance.py
 node --check deploy/cloudflare-worker/src/index.js
 node --check deploy/cloudflare-worker/src/page.js
 node --test deploy/cloudflare-worker/test_execution_state.mjs

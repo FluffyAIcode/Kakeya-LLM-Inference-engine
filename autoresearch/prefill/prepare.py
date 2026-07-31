@@ -81,12 +81,17 @@ def load_critic_artifact(
     """Verify hash, schema, source identity, and all checkpoint bindings."""
     required_ref = {
         "role", "sha256", "schema_version", "dependencies", "path",
-        "source_run_id",
+        "source_run_id", "reusable", "validation_status",
     }
     if not isinstance(artifact_ref, dict) or not required_ref.issubset(artifact_ref):
         raise ResumeValidationError("resumed report has no complete Critic artifact ref")
     if artifact_ref["role"] != "critic":
         raise ResumeValidationError("reused artifact role is not critic")
+    if (
+        artifact_ref["reusable"] is not True
+        or artifact_ref["validation_status"] != "validated"
+    ):
+        raise ResumeValidationError("Critic artifact is not reusable and validated")
     if int(artifact_ref["schema_version"]) != CRITIC_ARTIFACT_SCHEMA_VERSION:
         raise ResumeValidationError("reused Critic artifact schema is incompatible")
     path = Path(str(artifact_ref["path"])).expanduser()
@@ -165,7 +170,10 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
         if critic is None:
             raise ReportValidationError("fresh report has no physical Critic stage")
         return critic, {
+            "strategy_reused": False,
+            "generator_reused": False,
             "critic_reused": False,
+            "role_reused": {},
             "critic_source_run_id": report.get("id", ""),
             "critic_artifact_sha256": "",
         }
@@ -194,7 +202,8 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
             "target_obligation_id", "candidate_sha256", "strategy_sha256",
             "parent_statement_sha256", "parent_signature_sha256",
             "root_goal_sha256", "ledger_id", "ledger_version",
-            "ledger_sha256", "environment_sha256",
+            "ledger_sha256", "environment_sha256", "target_context_hash",
+            "strategy_plan_hash",
         }
         if not isinstance(bindings, dict) or not required_bindings.issubset(bindings):
             raise ResumeValidationError(
@@ -253,9 +262,19 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
             **reused_artifacts,
             **produced_artifacts,
         }.items():
+            required_ref = {
+                "role", "sha256", "source_run_id", "path",
+                "target_obligation_id", "parent_statement_hash",
+                "target_context_hash", "strategy_plan_hash", "environment_hash",
+                "candidate_sha256", "ledger_id", "ledger_version",
+                "reusable", "validation_status",
+            }
             if (
                 not isinstance(artifact_ref, dict)
-                or not {"sha256", "source_run_id"}.issubset(artifact_ref)
+                or not required_ref.issubset(artifact_ref)
+                or artifact_ref["role"] != role
+                or artifact_ref["reusable"] is not True
+                or artifact_ref["validation_status"] != "validated"
                 or source_runs.get(role) != artifact_ref["source_run_id"]
                 or len(str(artifact_ref["sha256"])) != 64
             ):
@@ -263,6 +282,26 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
                     f"typed partial report stale artifact provenance: {role}",
                     route_state="SYNTHESIS",
                 )
+            ref_bindings = {
+                "target_obligation_id": "target_obligation_id",
+                "parent_statement_hash": "parent_statement_sha256",
+                "target_context_hash": "target_context_hash",
+                "strategy_plan_hash": "strategy_plan_hash",
+                "environment_hash": "environment_sha256",
+                "candidate_sha256": "candidate_sha256",
+                "ledger_id": "ledger_id",
+                "ledger_version": "ledger_version",
+            }
+            for ref_name, binding_name in ref_bindings.items():
+                expected = bindings.get(binding_name)
+                actual = artifact_ref.get(ref_name)
+                if binding_name == "ledger_version":
+                    expected, actual = int(expected or 0), int(actual or 0)
+                if expected and actual != expected:
+                    raise ResumeValidationError(
+                        f"typed partial report {role} {ref_name} mismatch",
+                        route_state="SYNTHESIS",
+                    )
             path = artifact_ref.get("path")
             if path:
                 artifact_path = Path(str(path)).expanduser()
@@ -285,10 +324,19 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
                 "typed partial report ambiguously reuses and executes a stage",
                 route_state="SYNTHESIS",
             )
+        role_reused = {role: True for role in reused_artifacts}
+        strategy_role = (
+            "strategy_tournament"
+            if "strategy_tournament" in role_reused else "strategy"
+        )
+        critic_ref = reused_artifacts.get("critic", {})
         return None, {
-            "critic_reused": False,
-            "critic_source_run_id": "",
-            "critic_artifact_sha256": "",
+            "strategy_reused": role_reused.get(strategy_role, False),
+            "generator_reused": role_reused.get("generator", False),
+            "critic_reused": role_reused.get("critic", False),
+            "role_reused": role_reused,
+            "critic_source_run_id": critic_ref.get("source_run_id", ""),
+            "critic_artifact_sha256": critic_ref.get("sha256", ""),
             "typed_partial": True,
             "resumed_from_state": provenance["checkpoint_before"]["state"],
             "resumed_from_role": provenance["checkpoint_before"]["role"],
@@ -308,11 +356,53 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
         or provenance.get("mode") != "resumed"
     ):
         raise ResumeValidationError("resumed report provenance schema is incomplete")
-    if not all(
-        provenance.get(name) is True
-        for name in ("strategy_reused", "generator_reused", "critic_reused")
+    reused_artifacts = provenance.get("reused_artifacts")
+    if not isinstance(reused_artifacts, dict):
+        raise ResumeValidationError("resumed report reused artifacts are missing")
+    for role, artifact_ref in reused_artifacts.items():
+        required_ref = {
+            "role", "sha256", "path", "source_run_id",
+            "reusable", "validation_status",
+        }
+        if (
+            not isinstance(artifact_ref, dict)
+            or not required_ref.issubset(artifact_ref)
+            or artifact_ref["role"] != role
+            or artifact_ref["reusable"] is not True
+            or artifact_ref["validation_status"] != "validated"
+        ):
+            raise ResumeValidationError(
+                f"resumed report {role} artifact ref is not reusable/validated"
+            )
+        try:
+            encoded = Path(str(artifact_ref["path"])).expanduser().read_bytes()
+        except OSError as exc:
+            raise ResumeValidationError(
+                f"resumed report {role} artifact is unavailable"
+            ) from exc
+        if hashlib.sha256(encoded).hexdigest() != artifact_ref["sha256"]:
+            raise ResumeValidationError(
+                f"resumed report {role} artifact hash mismatch"
+            )
+    role_reused = {role: True for role in reused_artifacts}
+    strategy_role = (
+        "strategy_tournament"
+        if "strategy_tournament" in role_reused else "strategy"
+    )
+    derived_flags = {
+        "strategy_reused": role_reused.get(strategy_role, False),
+        "generator_reused": role_reused.get("generator", False),
+        "critic_reused": role_reused.get("critic", False),
+    }
+    if any(
+        provenance.get(name) is not value
+        for name, value in derived_flags.items()
     ):
-        raise ResumeValidationError("resumed report does not declare required reuse")
+        raise ResumeValidationError(
+            "resumed report reuse flags disagree with artifact provenance"
+        )
+    if not derived_flags["critic_reused"]:
+        raise ResumeValidationError("resumed report has no reusable Critic artifact")
     actual_stage_names = [str(stage.get("name", "")) for stage in stages]
     if list(provenance["newly_executed_stages"]) != actual_stage_names:
         raise ResumeValidationError("resumed report executed-stage provenance mismatch")
@@ -341,10 +431,11 @@ def _critic_for_evaluation(report: dict, candidate) -> tuple[dict, dict]:
             "resumed report candidate hash mismatch",
             route_state="GENERATOR",
         )
-    critic_ref = provenance.get("reused_artifacts", {}).get("critic")
+    critic_ref = reused_artifacts.get("critic")
     payload = load_critic_artifact(critic_ref, expected_bindings=expected)
     return payload["critic_stage"], {
-        "critic_reused": True,
+        **derived_flags,
+        "role_reused": role_reused,
         "critic_source_run_id": payload["source_run_id"],
         "critic_artifact_sha256": critic_ref["sha256"],
         "resumed_from_state": provenance["resumed_from_state"],

@@ -16,6 +16,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import asdict
 from pathlib import Path
@@ -143,6 +144,106 @@ class CandidateNoveltyStagnation(ValueError):
 def _json_request(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=10) as response:
         return json.load(response)
+
+
+BENCHMARK_TERMINAL_STATUSES = frozenset({
+    "completed", "failed", "cancelled", "canceled", "timed_out",
+})
+
+
+class BenchmarkFinalizationTimeout(TimeoutError):
+    """The exact benchmark run did not publish a final report in time."""
+
+    code = "BENCHMARK_FINALIZATION_TIMEOUT"
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        generation: str,
+        process_exit_code: int,
+        last_report: dict | None,
+        last_fetch_error: str,
+    ) -> None:
+        self.run_id = run_id
+        self.generation = generation
+        self.process_exit_code = process_exit_code
+        self.last_report = dict(last_report or {})
+        self.last_fetch_error = last_fetch_error
+        super().__init__(
+            f"{self.code}: run={run_id} generation={generation} "
+            f"process_exit={process_exit_code} "
+            f"last_status={self.last_report.get('status', 'unavailable')} "
+            f"report_version={self.last_report.get('report_version', 0)}"
+        )
+
+
+class BenchmarkTerminalFailure(RuntimeError):
+    """The exact benchmark run reached a non-success terminal state."""
+
+    def __init__(self, report: dict, *, process_exit_code: int) -> None:
+        self.report = dict(report)
+        self.process_exit_code = process_exit_code
+        super().__init__(
+            "GAN benchmark terminal failure: "
+            f"status={report.get('status')} id={report.get('id')} "
+            f"generation={report.get('generation')} "
+            f"report_version={report.get('report_version')} "
+            f"process_exit={process_exit_code}"
+        )
+
+
+def wait_for_benchmark_finalization(
+    *,
+    dashboard: str,
+    run_id: str,
+    generation: str,
+    process_exit_code: int,
+    timeout_s: float = 20.0,
+    initial_backoff_s: float = 0.05,
+    max_backoff_s: float = 1.0,
+) -> dict:
+    """Poll one immutable run generation until its final report converges."""
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    backoff = max(0.001, float(initial_backoff_s))
+    last_report: dict | None = None
+    last_fetch_error = ""
+    url = f"{dashboard.rstrip('/')}/v1/network/benchmarks/{run_id}"
+    while True:
+        try:
+            report = _json_request(url)
+            last_fetch_error = ""
+            if report.get("id") != run_id:
+                raise ReportValidationError(
+                    "benchmark finalization returned another run id"
+                )
+            if report.get("generation") != generation:
+                raise ReportValidationError(
+                    "benchmark finalization generation mismatch"
+                )
+            last_report = report
+            if (
+                report.get("status") in BENCHMARK_TERMINAL_STATUSES
+                and int(report.get("report_version", 0)) > 0
+                and report.get("finished_at") is not None
+                and isinstance(report.get("stages"), list)
+            ):
+                return report
+        except ReportValidationError:
+            raise
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            last_fetch_error = f"{type(exc).__name__}: {exc}"
+        now = time.monotonic()
+        if now >= deadline:
+            raise BenchmarkFinalizationTimeout(
+                run_id=run_id,
+                generation=generation,
+                process_exit_code=process_exit_code,
+                last_report=last_report,
+                last_fetch_error=last_fetch_error,
+            )
+        time.sleep(min(backoff, deadline - now))
+        backoff = min(max_backoff_s, backoff * 2)
 
 
 def _wait_port(host: str, port: int, timeout_s: float = 180) -> None:
@@ -1421,7 +1522,7 @@ def run_gan_experiment(
     candidate_sha256: str,
     ledger: dict,
     tokenizer_id: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str, int]:
     bench_python = os.environ.get(
         "KAKEYA_BENCH_PYTHON",
         str(Path.home() / ".venv-distwan/bin/python"),
@@ -1557,15 +1658,20 @@ def run_gan_experiment(
         raise TimeoutError(
             f"GAN experiment exceeded {timeout_s}s: {output[-4000:]}",
         )
-    if returncode != 0:
-        raise RuntimeError(
-            f"GAN experiment failed ({returncode}): {output[-4000:]}",
-        )
-    matches = re.findall(r"run=(br_[0-9a-f]+)", output)
+    matches = re.findall(
+        r"run=(br_[0-9a-f]+)\s+generation=([0-9a-f]+)",
+        output,
+    )
     if not matches:
-        raise RuntimeError("GAN experiment produced no benchmark run id")
-    run_id = matches[-1]
-    return run_id, output
+        raise RuntimeError(
+            "GAN experiment produced no benchmark run id/generation binding"
+            + (
+                f" and exited {returncode}: {output[-4000:]}"
+                if returncode else ""
+            )
+        )
+    run_id, generation = matches[-1]
+    return run_id, generation, output, returncode
 
 
 def extract_gan_failure_reason(output: str) -> str:
@@ -2533,7 +2639,7 @@ def run_iteration(args, iteration: int) -> dict:
             current_role="strategy_tournament",
             last_transition_reason="migrated-current-ledger-and-candidate",
             resume_origin="legacy-checkpoint",
-            strategy_reused=True,
+            strategy_reused=False,
             ledger_id=(
                 ledger_object.ledger_id if ledger_object is not None else ""
             ),
@@ -2690,7 +2796,7 @@ def run_iteration(args, iteration: int) -> dict:
                 f"role={orchestration_checkpoint.current_role} "
                 f"target={proposed['target_obligation_id']} "
                 f"origin={orchestration_checkpoint.resume_origin or 'checkpoint'} "
-                "strategy_reused=true",
+                "strategy_route_retained=true",
                 flush=True,
             )
         elif baseline is None and iteration == 0 and not trigger_reason:
@@ -2981,7 +3087,12 @@ def run_iteration(args, iteration: int) -> dict:
             source="proof_supervisor",
             force=True,
         )
-        run_id, gan_output = run_gan_experiment(
+        (
+            run_id,
+            run_generation,
+            gan_output,
+            process_exit_code,
+        ) = run_gan_experiment(
             repo=root,
             candidate_path=candidate_path,
             state_path=state_path,
@@ -2997,22 +3108,35 @@ def run_iteration(args, iteration: int) -> dict:
         )
         gan_completed = True
         transcript_path.write_text(gan_output)
-        report = _json_request(
-            f"http://127.0.0.1:8090/v1/network/benchmarks/{run_id}",
-        )
-        if report.get("status") != "completed":
-            failure_reason = extract_gan_failure_reason(gan_output)
-            raise RuntimeError(
-                f"GAN benchmark is not completed: {report.get('status')}"
-                + (
-                    f"; {failure_reason}"
-                    if failure_reason else ""
+        try:
+            report = wait_for_benchmark_finalization(
+                dashboard=args.dashboard,
+                run_id=run_id,
+                generation=run_generation,
+                process_exit_code=process_exit_code,
+                timeout_s=getattr(
+                    args,
+                    "benchmark_finalization_timeout_s",
+                    20.0,
                 ),
             )
+        except BenchmarkFinalizationTimeout as exc:
+            if exc.last_report:
+                report_path.write_text(json.dumps(
+                    exc.last_report,
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            raise
         transcript_provenance = extract_report_provenance(gan_output)
         if transcript_provenance is not None:
             report["provenance"] = transcript_provenance
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        if report.get("status") != "completed" or process_exit_code != 0:
+            raise BenchmarkTerminalFailure(
+                report,
+                process_exit_code=process_exit_code,
+            )
         candidate_module = _load_candidate(candidate_path)
         candidate_module.CANDIDATE_SHA256 = candidate_sha256
         result = evaluate(report, candidate_module)
@@ -3044,6 +3168,8 @@ def run_iteration(args, iteration: int) -> dict:
             f"unresolved={result['proof_obligations_unresolved']} "
             f"outcome={verdict['outcome']} "
             f"prefill_s={result['metric_cold_critic_prefill_s']:.3f} "
+            f"strategy_reused={str(evaluation_provenance.get('strategy_reused', False)).lower()} "
+            f"generator_reused={str(evaluation_provenance.get('generator_reused', False)).lower()} "
             f"critic_reused={str(evaluation_provenance['critic_reused']).lower()} "
             f"critic_source={evaluation_provenance['critic_source_run_id']} "
             f"decision={'keep' if keep else 'revert'}",
@@ -3122,14 +3248,10 @@ def run_iteration(args, iteration: int) -> dict:
                 if latest_orchestration is not None else 0
             ),
             "strategy_reused": bool(
-                resume_downstream
-                or (
-                    latest_orchestration is not None
-                    and latest_orchestration.strategy_reused
-                )
+                evaluation_provenance.get("strategy_reused"),
             ),
             "generator_reused": bool(
-                evaluation_provenance.get("critic_reused"),
+                evaluation_provenance.get("generator_reused"),
             ),
             "critic_reused": bool(
                 evaluation_provenance.get("critic_reused"),
@@ -3167,7 +3289,7 @@ def run_iteration(args, iteration: int) -> dict:
             print(
                 "[autoresearch] phase=candidate-preserved "
                 f"resume_state={latest_orchestration.state} "
-                "strategy_reused=true",
+                "strategy_route_retained=true",
                 flush=True,
             )
         else:
@@ -3642,7 +3764,7 @@ def run_supervisor_iterations(args) -> int:
                 "[autoresearch] phase=semantic-backjump-continuation "
                 f"state={continuation_checkpoint.state} "
                 f"reason={continuation_checkpoint.last_transition_reason} "
-                "strategy_reused=true",
+                "strategy_route_retained=true",
                 flush=True,
             )
         fingerprint = (
@@ -3781,6 +3903,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("--experiment-timeout-s", type=float, default=7200)
+    parser.add_argument(
+        "--benchmark-finalization-timeout-s",
+        type=float,
+        default=20.0,
+    )
     parser.add_argument(
         "--max-consecutive-infrastructure-failures",
         type=int,
