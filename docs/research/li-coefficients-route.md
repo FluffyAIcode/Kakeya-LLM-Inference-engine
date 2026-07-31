@@ -15,6 +15,11 @@
 - the corresponding Cauchy interface and completeness transfer;
 - a finite rational product whose logarithmic derivative generates the
   finite zero contributions;
+- the intrinsic zeta zero order `riemannZetaZeroOrder : ℂ → ℕ∞`;
+- locally uniform all-order derivative and logarithmic-derivative transfer;
+- normalized logarithmic-derivative Taylor coefficients of finite products;
+- an all-index finite-zero-sum transfer theorem with every analytic
+  hypothesis stated explicitly;
 - truncated generating polynomials;
 - `RiemannLiCriterionStatement`, the unproved source bridge to the canonical
   Mathlib RH root.
@@ -56,6 +61,16 @@ The route proves without `sorry`, `admit`, or `axiom`:
   `a_i = 1 - rho_i⁻¹`;
 - at `z = 0`, the finite-product logarithmic derivative is exactly the first
   finite Li sum;
+- away from `s = 1`, nonzero `analyticOrderAt` for `riemannZeta` is
+  equivalent to membership in Mathlib's `riemannZetaZeros`;
+- locally uniform limits of holomorphic functions transfer every
+  `iteratedDeriv`, by iterating Mathlib's complex Weierstrass theorem;
+- on a common open nonvanishing neighborhood, logarithmic derivatives
+  converge locally uniformly, and all their normalized Taylor coefficients
+  converge;
+- if each finite product satisfies the named all-order finite Taylor
+  identity, its multiplicity-aware Li sums converge coefficientwise to the
+  logarithmic-derivative Taylor coefficients of the product limit;
 - the one-step recurrence for truncated generating polynomials.
 
 No numerical Li value is asserted, because no interval certificate was
@@ -78,15 +93,15 @@ tautologically valid truncation recurrence.
 There are two nested blockers. The new finite and convergence-transfer
 theorems show precisely where the first one begins:
 
-1. Analytic infrastructure: construct the non-trivial zeta zeros as an
-   indexed multiset counted with analytic multiplicity; prove Cauchy estimates
-   for every symmetric-height Li truncation; construct finite xi/Hadamard
-   approximants whose logarithmic derivatives equal the finite rational
-   identities proved here; and prove those approximants converge strongly
-   enough near `z = 0` to transfer all Taylor coefficients to
-   `log (riemannXiLi (1 / (1-z)))`. This yields the derivative/zero-sum
-   identity and reality. None of these zeta-specific analytic facts is
-   currently in pinned Mathlib.
+1. Analytic infrastructure: prove the zeta-specific finite-order and
+   enumeration theorem turning `riemannZetaZeroOrder` into an indexed
+   multiset of non-trivial zeros; prove symmetric-height Cauchy/normal
+   estimates; construct the symmetric xi/Hadamard approximants; prove their
+   locally uniform convergence and common nonvanishing neighborhood after
+   the Li change of variables; and discharge the finite all-order Taylor
+   identity. The abstract theorem now transfers all coefficients once these
+   hypotheses are supplied. None of these zeta-specific product/convergence
+   facts is currently in pinned Mathlib.
 2. Mathematical criterion: formalize Li's theorem that all
    `λ_n ≥ 0` for `n ≥ 1` is equivalent to every non-trivial zeta zero lying
    on `re(s)=1/2`, then identify that statement with Mathlib's canonical

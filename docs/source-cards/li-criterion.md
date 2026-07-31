@@ -108,13 +108,24 @@ Pinned Mathlib v4.32.0-rc1 provides:
 - `completedRiemannZeta`, the entire pole-subtracted
   `completedRiemannZeta₀`, and the functional equation;
 - `iteratedDeriv` and complex analytic/logarithm machinery;
+- `analyticOrderAt : (ℂ → ℂ) → ℂ → ℕ∞`, including the characterization
+  `analyticOrderAt_ne_zero` of analytic zeros with intrinsic order;
+- `TendstoLocallyUniformlyOn.differentiableOn` and
+  `TendstoLocallyUniformlyOn.deriv` for Weierstrass convergence;
+- `logDeriv_tendsto` and `logDeriv_tprod_eq_tsum` for logarithmic
+  derivatives of locally uniform limits/products;
+- `HasProdLocallyUniformlyOn` and `MultipliableLocallyUniformlyOn`;
 - `riemannZetaZeros`, discreteness, and finiteness in compact sets;
 - the canonical `RiemannHypothesis`.
 
 It does not currently provide:
 
-- analytic zero orders/multiplicities for the zeta zero set;
-- an indexed multiset of all non-trivial zeros with multiplicity;
+- a zeta-specific indexed multiset that repeats each non-trivial zero
+  according to its finite analytic order;
+- a proof, packaged for zeta, that every such order is finite and that the
+  indexed family is complete;
+- a symmetric Hadamard/canonical product for xi with locally uniform
+  convergence on the neighborhood needed for coefficient extraction;
 - convergence of the symmetric-height Li zero sum;
 - the derivative/zero-sum identity;
 - Li's all-index positivity equivalence.
@@ -123,7 +134,14 @@ Accordingly, `RiemannLiCriterionStatement` is a typed unproved proposition,
 and `HeightSymmetricLiLimit` is only the exact convergence shape for an
 already supplied indexed multiset. Neither is inhabited by an axiom.
 
-The route additionally proves that an explicit Cauchy hypothesis produces
-such a limit by completeness of `ℂ`, and proves limit transfer through exact
-finite approximants. These are functional-analytic interfaces only; they do
-not claim that the zeta-zero truncations are Cauchy.
+The route defines `riemannZetaZeroOrder` directly from `analyticOrderAt` and
+proves, away from the pole, that nonzero order is exactly membership in
+`riemannZetaZeros`. It also proves that locally uniform convergence of
+holomorphic, nonvanishing approximants transfers every iterated derivative
+of their logarithmic derivatives. Combined with an explicit finite Taylor
+identity, this transfers every multiplicity-aware finite Li sum to the
+corresponding limit coefficient.
+
+These are functional-analytic interfaces only. They do not claim that zeta
+orders have been enumerated, that xi has the required symmetric product, or
+that zeta-zero truncations satisfy the stated Cauchy/local-uniform hypotheses.

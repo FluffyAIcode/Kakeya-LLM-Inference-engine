@@ -1,6 +1,8 @@
 import KakeyaLeanGate.RiemannHypothesisRoot
+import Mathlib.Analysis.Analytic.Order
 import Mathlib.Analysis.Calculus.LogDeriv
 import Mathlib.Analysis.Calculus.IteratedDeriv.Lemmas
+import Mathlib.Analysis.Complex.LocallyUniformLimit
 import Mathlib.Analysis.SpecialFunctions.Complex.Analytic
 import Mathlib.NumberTheory.LSeries.ZetaZeros
 
@@ -94,6 +96,22 @@ theorem liDerivativeCoefficient_one (xi : ℂ → ℂ) :
     liDerivativeCoefficient xi 1 =
       deriv (fun s ↦ Complex.log (xi s)) 1 := by
   simp [liDerivativeCoefficient]
+
+/-- Mathlib's analytic order gives the intrinsic multiplicity of a zeta zero.
+
+The value lies in `ℕ∞`: finiteness still requires ruling out local identically
+zero behavior.  This definition does not enumerate the zeros and therefore
+does not by itself provide the multiset needed by the symmetric Li sum. -/
+def riemannZetaZeroOrder (rho : ℂ) : ℕ∞ :=
+  analyticOrderAt riemannZeta rho
+
+/-- Away from zeta's pole, nonzero analytic order is exactly membership in
+Mathlib's set of zeta zeros. -/
+theorem riemannZetaZeroOrder_ne_zero_iff {rho : ℂ} (hρ : rho ≠ 1) :
+    riemannZetaZeroOrder rho ≠ 0 ↔ rho ∈ riemannZetaZeros := by
+  rw [riemannZetaZeroOrder, analyticOrderAt_ne_zero]
+  simp only [mem_riemannZetaZeros]
+  exact and_iff_right (analyticOn_riemannZeta rho hρ)
 
 /-- Exact reality obligation for the derivative formula. -/
 def LiDerivativeIsReal (xi : ℂ → ℂ) : Prop :=
@@ -323,6 +341,78 @@ theorem HeightSymmetricLiLimit.coefficient_eq_of_approximation
   apply tendsto_nhds_unique (hlimit.2.2 n)
   simpa only [hexact] using htarget n
 
+/-- Locally uniform convergence of holomorphic functions propagates through
+every iterated derivative on an open complex domain.
+
+This is the all-order form of Mathlib's
+`TendstoLocallyUniformlyOn.deriv`; the holomorphy needed at later induction
+steps follows from complex analyticity. -/
+theorem tendstoLocallyUniformlyOn_iteratedDeriv
+    {ι : Type*} {p : Filter ι} {f : ι → ℂ → ℂ} {g : ℂ → ℂ}
+    {s : Set ℂ} (hs : IsOpen s)
+    (hconv : TendstoLocallyUniformlyOn f g p s)
+    (hhol : ∀ᶠ i in p, DifferentiableOn ℂ (f i) s)
+    (k : ℕ) :
+    TendstoLocallyUniformlyOn
+      (fun i ↦ iteratedDeriv k (f i)) (iteratedDeriv k g) p s := by
+  induction k with
+  | zero =>
+      simpa only [iteratedDeriv_zero] using hconv
+  | succ k ih =>
+      rw [iteratedDeriv_succ]
+      convert ih.deriv (by
+        filter_upwards [hhol] with i hi
+        rw [iteratedDeriv_eq_iterate]
+        exact ((hi.analyticOnNhd hs).iterated_deriv k).differentiableOn) hs using 1
+      ext i z
+      simp [Function.comp_apply, iteratedDeriv_succ]
+
+/-- Explicit nonvanishing-neighborhood transfer for logarithmic derivatives.
+
+The denominator is required to be nonzero throughout `s`, not merely at the
+coefficient center.  This stronger condition is what permits a locally
+uniform quotient, which can then be differentiated to arbitrary order. -/
+theorem tendstoLocallyUniformlyOn_logDeriv
+    {ι : Type*} {p : Filter ι} [p.NeBot]
+    {f : ι → ℂ → ℂ} {g : ℂ → ℂ}
+    {s : Set ℂ} (hs : IsOpen s)
+    (hconv : TendstoLocallyUniformlyOn f g p s)
+    (hhol : ∀ᶠ i in p, DifferentiableOn ℂ (f i) s)
+    (hg0 : ∀ z ∈ s, g z ≠ 0) :
+    TendstoLocallyUniformlyOn
+      (fun i z ↦ logDeriv (f i) z) (fun z ↦ logDeriv g z) p s := by
+  have hgDiff : DifferentiableOn ℂ g s :=
+    hconv.differentiableOn hhol hs
+  have hderiv := hconv.deriv hhol hs
+  simp only [logDeriv, Pi.div_apply]
+  convert hderiv.div₀ hconv (hgDiff.deriv hs).continuousOn
+    hgDiff.continuousOn hg0 using 1
+  · ext i z
+    rfl
+  · ext z
+    rfl
+
+/-- All Taylor coefficients of logarithmic derivatives converge under local
+uniform convergence, holomorphy, and explicit nonvanishing on a common open
+neighborhood. -/
+theorem iteratedDeriv_logDeriv_tendsto
+    {ι : Type*} {p : Filter ι} [p.NeBot]
+    {f : ι → ℂ → ℂ} {g : ℂ → ℂ} {s : Set ℂ} {x : ℂ}
+    (hs : IsOpen s) (hx : x ∈ s)
+    (hconv : TendstoLocallyUniformlyOn f g p s)
+    (hhol : ∀ᶠ i in p, DifferentiableOn ℂ (f i) s)
+    (hf0 : ∀ᶠ i in p, ∀ z ∈ s, f i z ≠ 0)
+    (hg0 : ∀ z ∈ s, g z ≠ 0) (k : ℕ) :
+    Tendsto (fun i ↦ iteratedDeriv k (logDeriv (f i)) x) p
+      (𝓝 (iteratedDeriv k (logDeriv g) x)) := by
+  have hlog := tendstoLocallyUniformlyOn_logDeriv hs hconv hhol hg0
+  have hlogHol : ∀ᶠ i in p, DifferentiableOn ℂ (logDeriv (f i)) s := by
+    filter_upwards [hhol, hf0] with i hi hi0
+    change DifferentiableOn ℂ (deriv (f i) / f i) s
+    exact (hi.deriv hs).div hi hi0
+  exact (tendstoLocallyUniformlyOn_iteratedDeriv
+    hs hlog hlogHol k).tendsto_at hx
+
 /-- The finite factor whose logarithmic derivative generates one zero's Li
 summands. -/
 def liFiniteProductFactor (rho z : ℂ) : ℂ :=
@@ -387,6 +477,58 @@ theorem FiniteZeroMultiset.logDeriv_generatingProduct_zero
     logDeriv zeros.generatingProduct 0 = zeros.liSum 1 := by
   rw [zeros.logDeriv_generatingProduct 0 (by norm_num) (by simp)]
   simp [FiniteZeroMultiset.liSum]
+
+/-- The normalized Taylor coefficient of the finite product's logarithmic
+derivative at the origin. -/
+def FiniteZeroMultiset.logDerivCoefficient
+    (zeros : FiniteZeroMultiset) (k : ℕ) : ℂ :=
+  iteratedDeriv k (logDeriv zeros.generatingProduct) 0 /
+    (k.factorial : ℂ)
+
+/-- The exact finite all-order coefficient identity needed by the limit
+transfer.  Keeping it named makes clear that this is a finite algebraic
+obligation, distinct from every convergence assumption. -/
+def FiniteLiTaylorIdentity (zeros : FiniteZeroMultiset) : Prop :=
+  ∀ k : ℕ, zeros.logDerivCoefficient k = zeros.liSum (k + 1)
+
+/-- The first finite Taylor coefficient is already unconditional. -/
+theorem FiniteZeroMultiset.logDerivCoefficient_zero
+    (zeros : FiniteZeroMultiset) :
+    zeros.logDerivCoefficient 0 = zeros.liSum 1 := by
+  simp [FiniteZeroMultiset.logDerivCoefficient,
+    zeros.logDeriv_generatingProduct_zero]
+
+/-- Rigorous all-index transfer from finite multiplicity-aware zero sums to
+the Taylor coefficients of a locally uniform nonvanishing product limit.
+
+The hypotheses separate the four independent obligations:
+
+* local uniform convergence of the finite products;
+* holomorphy on one common open neighborhood of `0`;
+* nonvanishing of every approximant and the limit there;
+* the finite all-order coefficient identity.
+
+No zeta-specific product or convergence claim is hidden in this theorem. -/
+theorem finiteZeroLiSums_tendsto_of_generatingProducts
+    (zeros : ℕ → FiniteZeroMultiset) (g : ℂ → ℂ) (s : Set ℂ)
+    (hs : IsOpen s) (h0 : (0 : ℂ) ∈ s)
+    (hconv : TendstoLocallyUniformlyOn
+      (fun N ↦ (zeros N).generatingProduct) g atTop s)
+    (hhol : ∀ᶠ N in atTop,
+      DifferentiableOn ℂ (zeros N).generatingProduct s)
+    (happrox0 : ∀ᶠ N in atTop, ∀ z ∈ s,
+      (zeros N).generatingProduct z ≠ 0)
+    (hlimit0 : ∀ z ∈ s, g z ≠ 0)
+    (hexact : ∀ N, FiniteLiTaylorIdentity (zeros N))
+    (k : ℕ) :
+    Tendsto (fun N ↦ (zeros N).liSum (k + 1)) atTop
+      (𝓝 (iteratedDeriv k (logDeriv g) 0 / (k.factorial : ℂ))) := by
+  have hderiv := iteratedDeriv_logDeriv_tendsto
+    hs h0 hconv hhol happrox0 hlimit0 k
+  have hnormalized := hderiv.div_const (k.factorial : ℂ)
+  simpa only [FiniteLiTaylorIdentity,
+    FiniteZeroMultiset.logDerivCoefficient] using
+    hnormalized.congr' (Filter.Eventually.of_forall fun N ↦ hexact N k)
 
 /-- Truncated generating polynomial for any coefficient sequence. -/
 def liGeneratingPolynomial (a : ℕ → ℝ) (N : ℕ) (x : ℝ) : ℝ :=
