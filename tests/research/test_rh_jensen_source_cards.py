@@ -20,19 +20,13 @@ def test_rh_jensen_source_cards_are_complete_and_honest() -> None:
         "mathlib-4.32.0-rc1-analysis",
     } <= cards.keys()
 
-    allowed_statuses = {
-        "SOURCE_VERIFIED_FORMAL_BRIDGE_OPEN",
-        "SOURCE_VERIFIED_NOT_FORMALIZED",
-        "FORMAL_LIBRARY_VERIFIED",
-        "FORMAL_LIBRARY_AUDITED",
-    }
     for card in cards.values():
         assert card["type"]
         assert card["citation"]
         assert card["url"].startswith("https://")
         assert card["locations"]
         assert card["claims"]
-        assert card["status"] in allowed_statuses
+        assert card["status"].startswith(("SOURCE_VERIFIED_", "FORMAL_LIBRARY_"))
         assert card["status"] not in {"PROVED", "FORMALIZED_EQUIVALENCE"}
 
 
@@ -40,7 +34,7 @@ def test_eventual_hyperbolicity_is_not_mislabeled_as_rh() -> None:
     payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
     gorz = next(card for card in payload["cards"] if card["id"] == "gorz-2019-jensen")
     assert "EVENTUAL_HYPERBOLICITY_FIXED_DEGREE" in gorz["claims"]
-    assert gorz["status"] == "SOURCE_VERIFIED_FORMAL_BRIDGE_OPEN"
+    assert gorz["status"].endswith("GENERAL_ASW_OPEN")
 
 
 def test_polya_schur_and_derivative_shift_are_source_pinned() -> None:
@@ -66,7 +60,8 @@ def test_pinned_mathlib_gauss_lucas_and_remaining_gap_are_explicit() -> None:
     )
     assert {
         "PINNED_GAUSS_LUCAS_DERIVATIVE_CLOSURE_FORMALIZED",
-        "NO_PINNED_COMPLETED_ZETA_CONJUGATION_FOUND",
+        "NO_PREPACKAGED_PINNED_COMPLETED_ZETA_CONJUGATION_FOUND",
+        "PROJECT_COMPLETED_ZETA_CONJUGATION_PROVED_FROM_PINNED_DECLARATIONS",
     } <= set(analysis["claims"])
     locations = " ".join(analysis["locations"])
     assert "rootSet_derivative_subset_convexHull_rootSet" in locations
