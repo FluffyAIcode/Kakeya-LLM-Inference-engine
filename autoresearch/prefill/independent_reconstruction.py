@@ -120,7 +120,7 @@ def build_reconstruction_package(
     environment_hash: str,
     retrieval_refs: tuple[str, ...] = (),
     retrieval_context: tuple[str, ...] = (),
-    prompt_context_chars: int = 48_000,
+    prompt_context_chars: int = 12_000,
 ) -> ReconstructionPackage:
     """Preserve all declarations before the target and redact only its body."""
     source_path = Path(source_path).resolve()
