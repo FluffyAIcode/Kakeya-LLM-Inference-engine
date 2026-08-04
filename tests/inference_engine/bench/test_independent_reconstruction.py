@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -382,3 +383,59 @@ def test_rejected_candidate_cannot_be_persisted(tmp_path):
             model_revision="revision",
             quantization="q4",
         )
+
+
+def test_proof_hole_candidate_is_rejected_before_verifier(tmp_path):
+    calls = []
+
+    def verify(*args):
+        calls.append(args)
+        return LeanResult(True, "")
+
+    result = run_pass_at_k(
+        package=package(tmp_path),
+        provider=SequenceProvider((ProviderCandidate("by\n  sorry"),)),
+        project_root=tmp_path,
+        k=1,
+        lean_verify=verify,
+        artifact_store=VerifiedProofStore(tmp_path / "verified"),
+    )
+    assert result.status == ReconstructionStatus.SEARCH_EXHAUSTED.value
+    assert result.attempts[0].status == ReconstructionStatus.LEAN_REJECTED.value
+    assert result.attempts[0].lean_output == "PROOF_HOLE_TOKEN_REJECTED"
+    assert calls == []
+    assert not list((tmp_path / "verified").glob("**/*.json"))
+
+
+def test_accepted_result_with_proof_hole_cannot_be_persisted(tmp_path):
+    with pytest.raises(
+        VerifiedProofArtifactError, match="BODY_CONTAINS_HOLE",
+    ):
+        VerifiedProofStore(tmp_path / "verified").persist(
+            package=package(tmp_path),
+            candidate="by exact sorryAx _ true",
+            lean_result=LeanResult(True, ""),
+            project_root=tmp_path,
+            package_hash="package",
+            attempt_index=0,
+            seed=1,
+            model_id="model",
+            model_revision="revision",
+            quantization="q4",
+        )
+
+
+def test_lean_sorry_warning_cannot_count_as_acceptance(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        reconstruction.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="warning: declaration uses 'sorry'",
+        ),
+    )
+    result = reconstruction.verify_candidate_with_project_lean(
+        package(tmp_path), "by\n  trivial", tmp_path,
+    )
+    assert not result.accepted
+    assert "declaration uses 'sorry'" in result.output

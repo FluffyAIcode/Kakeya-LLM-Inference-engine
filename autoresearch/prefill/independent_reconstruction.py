@@ -33,6 +33,10 @@ _DECLARATION = re.compile(
 )
 _FENCE = re.compile(r"```(?:lean4?|Lean4?)?\s*(.*?)```", re.DOTALL)
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_PROOF_HOLE = re.compile(
+    r"\b(?:sorry|admit|sorryAx)\b|\bby\?",
+    re.IGNORECASE,
+)
 
 
 def _sha256(value: str | bytes) -> str:
@@ -245,6 +249,8 @@ class VerifiedProofStore:
         candidate = candidate.strip()
         if not candidate.startswith("by"):
             raise VerifiedProofArtifactError("VERIFIED_PROOF_BODY_INVALID")
+        if _PROOF_HOLE.search(candidate):
+            raise VerifiedProofArtifactError("VERIFIED_PROOF_BODY_CONTAINS_HOLE")
         reconstructed = (
             f"{package.preserved_context}{package.target_header}\n"
             f"{candidate}\n"
@@ -467,6 +473,8 @@ def verify_candidate_with_project_lean(
     timeout_seconds: int = 120,
 ) -> LeanResult:
     """Insert one candidate into one isolated theorem and run project Lean."""
+    if _PROOF_HOLE.search(candidate):
+        return LeanResult(False, "PROOF_HOLE_TOKEN_REJECTED", False)
     with tempfile.TemporaryDirectory(prefix="kakeya-reconstruct-") as raw:
         source = Path(raw) / "Reconstruction.lean"
         source.write_text(
@@ -486,7 +494,12 @@ def verify_candidate_with_project_lean(
         except subprocess.TimeoutExpired as exc:
             output = str(exc.stdout or exc.stderr or "")
             return LeanResult(False, output[-8000:], True)
-        return LeanResult(result.returncode == 0, result.stdout[-8000:], False)
+        output = result.stdout[-8000:]
+        accepted = (
+            result.returncode == 0
+            and "declaration uses 'sorry'" not in output.lower()
+        )
+        return LeanResult(accepted, output, False)
 
 
 def recompile_verified_artifact(
@@ -656,7 +669,10 @@ def run_pass_at_k(
         selected_hash = ""
         last = LeanResult(False, "")
         for option, candidate_hash in zip(options, hashes):
-            last = verifier(package, option, Path(project_root))
+            if _PROOF_HOLE.search(option):
+                last = LeanResult(False, "PROOF_HOLE_TOKEN_REJECTED", False)
+            else:
+                last = verifier(package, option, Path(project_root))
             if last.accepted:
                 selected_hash = candidate_hash
                 verified_artifact = None
