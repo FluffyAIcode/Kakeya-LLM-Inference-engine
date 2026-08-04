@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from pathlib import Path
 
+import pytest
+
+import autoresearch.prefill.independent_reconstruction as reconstruction
 from autoresearch.prefill.independent_reconstruction import (
     LeanResult,
     ProviderCandidate,
     ReconstructionStatus,
+    VerifiedProofArtifactError,
+    VerifiedProofStore,
     build_native_prompt,
     build_reconstruction_package,
     extract_lean_candidates,
+    integrate_verified_artifact,
+    recompile_verified_artifact,
     run_pass_at_k,
 )
 
@@ -182,3 +192,188 @@ def test_no_model_output_mutates_source_or_package(tmp_path):
     )
     assert source.read_bytes() == before
     assert "malicious" not in str(built.public_record())
+
+
+def _verified_store(tmp_path: Path):
+    built = package(tmp_path)
+    store = VerifiedProofStore(tmp_path / "verified")
+    lean = LeanResult(True, "")
+    package_hash = hashlib.sha256(json.dumps(
+        built.public_record(), sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    artifact = store.persist(
+        package=built,
+        candidate="by\n  simpa [localValue] using h",
+        lean_result=lean,
+        project_root=tmp_path,
+        package_hash=package_hash,
+        attempt_index=2,
+        seed=43,
+        model_id="m-a-p/OProver-8B",
+        model_revision="revision",
+        quantization="q4",
+        provenance={"role": "oprover"},
+        created_at=123.0,
+    )
+    path = (
+        store.root / artifact.artifact_hash[:2]
+        / f"{artifact.artifact_hash}.json"
+    )
+    return built, store, artifact, path
+
+
+def test_verified_candidate_persists_reloads_recompiles_and_integrates(
+    tmp_path, monkeypatch,
+):
+    built, store, artifact, path = _verified_store(tmp_path)
+    assert path.is_file()
+    assert path.stat().st_mode & 0o777 == 0o600
+    reloaded = VerifiedProofStore(store.root).load(artifact.artifact_hash)
+    assert reloaded == artifact
+    monkeypatch.setattr(
+        reconstruction, "verify_candidate_with_project_lean",
+        lambda *_args, **_kwargs: LeanResult(True, ""),
+    )
+    checked, lean = recompile_verified_artifact(
+        store=store,
+        artifact_reference=path,
+        package=built,
+        project_root=tmp_path,
+    )
+    assert lean.accepted and checked.proof_body == artifact.proof_body
+    integrated = integrate_verified_artifact(
+        store=store,
+        artifact_reference=path,
+        source_path=tmp_path / "Route.lean",
+        project_root=tmp_path,
+        theorem_id="Route.target",
+        environment_hash="environment",
+    )
+    source = (tmp_path / "Route.lean").read_text()
+    assert integrated.artifact_hash == artifact.artifact_hash
+    assert "simpa [localValue] using h" in source
+    assert "rw [h]" not in source
+
+
+def test_pass_at_k_persists_only_after_lean_acceptance(tmp_path):
+    store = VerifiedProofStore(tmp_path / "verified")
+    provider = SequenceProvider((
+        ProviderCandidate("by bad"),
+        ProviderCandidate("by exact h"),
+    ))
+
+    def verify(_package, candidate, _root):
+        return LeanResult(candidate == "by exact h", "rejected")
+
+    result = run_pass_at_k(
+        package=package(tmp_path),
+        provider=provider,
+        project_root=tmp_path,
+        k=2,
+        lean_verify=verify,
+        artifact_store=store,
+        model_id="model",
+        model_revision="revision",
+        quantization="q4",
+    )
+    assert result.verified_artifact_hash
+    artifacts = list(store.root.glob("*/*.json"))
+    assert len(artifacts) == 1
+    assert store.load(artifacts[0]).proof_body == "by exact h"
+
+
+def test_tampered_body_hash_and_environment_are_rejected(
+    tmp_path, monkeypatch,
+):
+    built, store, artifact, path = _verified_store(tmp_path)
+    body = json.loads(path.read_text())
+    body["proof_body"] = "by malicious"
+    path.write_text(json.dumps(body))
+    with pytest.raises(
+        VerifiedProofArtifactError, match="ARTIFACT_HASH_MISMATCH",
+    ):
+        store.load(path)
+
+    path.unlink()
+    _, store, artifact, path = _verified_store(tmp_path)
+    wrong = reconstruction.ReconstructionPackage(
+        **{**built.__dict__, "environment_hash": "wrong-environment"}
+    )
+    monkeypatch.setattr(
+        reconstruction, "verify_candidate_with_project_lean",
+        lambda *_args, **_kwargs: LeanResult(True, ""),
+    )
+    with pytest.raises(
+        VerifiedProofArtifactError, match="ENVIRONMENT_HASH_MISMATCH",
+    ):
+        recompile_verified_artifact(
+            store=store, artifact_reference=path,
+            package=wrong, project_root=tmp_path,
+        )
+
+
+def test_atomic_write_failure_leaves_no_artifact(tmp_path, monkeypatch):
+    built = package(tmp_path)
+    store = VerifiedProofStore(tmp_path / "verified")
+    monkeypatch.setattr(
+        os, "link",
+        lambda *_args: (_ for _ in ()).throw(OSError("disk failure")),
+    )
+    with pytest.raises(OSError, match="disk failure"):
+        store.persist(
+            package=built,
+            candidate="by exact h",
+            lean_result=LeanResult(True, ""),
+            project_root=tmp_path,
+            package_hash="package",
+            attempt_index=0,
+            seed=1,
+            model_id="model",
+            model_revision="revision",
+            quantization="q4",
+        )
+    assert not list(store.root.glob("**/*.json"))
+    assert not list(store.root.glob("**/*.tmp"))
+
+
+def test_duplicate_persist_is_idempotent_and_private_prompt_not_leaked(tmp_path):
+    built, store, first, path = _verified_store(tmp_path)
+    second = store.persist(
+        package=built,
+        candidate=first.proof_body,
+        lean_result=LeanResult(True, ""),
+        project_root=tmp_path,
+        package_hash=first.package_hash,
+        attempt_index=2,
+        seed=43,
+        model_id="m-a-p/OProver-8B",
+        model_revision="revision",
+        quantization="q4",
+        provenance={"role": "oprover"},
+        created_at=999.0,
+    )
+    assert second == first
+    encoded = path.read_text()
+    assert "Previous Failed Attempt" not in encoded
+    assert "#check Route.certifiedDependency" not in encoded
+    assert "<think>" not in encoded
+    assert len(list(store.root.glob("*/*.json"))) == 1
+
+
+def test_rejected_candidate_cannot_be_persisted(tmp_path):
+    built = package(tmp_path)
+    with pytest.raises(
+        VerifiedProofArtifactError, match="REQUIRES_ACCEPTED",
+    ):
+        VerifiedProofStore(tmp_path / "verified").persist(
+            package=built,
+            candidate="by bad",
+            lean_result=LeanResult(False, "type mismatch"),
+            project_root=tmp_path,
+            package_hash="package",
+            attempt_index=0,
+            seed=1,
+            model_id="model",
+            model_revision="revision",
+            quantization="q4",
+        )

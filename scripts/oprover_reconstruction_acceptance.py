@@ -16,6 +16,7 @@ from pathlib import Path
 from autoresearch.prefill.independent_reconstruction import (
     ProviderCandidate,
     ReconstructionStatus,
+    VerifiedProofStore,
     build_reconstruction_package,
     run_pass_at_k,
 )
@@ -97,6 +98,15 @@ CANARY_TARGETS = {
 
 def _summary(result) -> dict:
     body = asdict(result)
+    body["integration_status"] = (
+        "VERIFIED_PROOF_ARTIFACT"
+        if body.get("verified_artifact_hash")
+        else (
+            "LEGACY_HASH_ONLY_INCOMPLETE"
+            if body.get("verified_candidate_hash")
+            else "NOT_VERIFIED"
+        )
+    )
     for attempt in body["attempts"]:
         # Compiler diagnostics are required, but temporary absolute paths are not.
         attempt["lean_output"] = attempt["lean_output"].replace(
@@ -107,6 +117,7 @@ def _summary(result) -> dict:
 
 def _run_queue(args, provider: HttpOProverProvider) -> dict:
     queue = json.loads(args.queue.read_text(encoding="utf-8"))
+    artifact_store = VerifiedProofStore(args.artifact_dir)
     report = {
         "schema_version": 2,
         "started_at": time.time(),
@@ -134,6 +145,15 @@ def _run_queue(args, provider: HttpOProverProvider) -> dict:
                 k=args.canary_k,
                 base_seed=args.base_seed + index * args.seed_stride,
                 max_tokens=args.max_tokens,
+                artifact_store=artifact_store,
+                model_id="m-a-p/OProver-8B",
+                model_revision=OFFICIAL_REVISION,
+                quantization=args.quant,
+                provenance={
+                    "queue_path": str(args.queue),
+                    "entry_key": f"canary:{key}",
+                    "role": "oprover",
+                },
             )
             report["canaries"].append({"key": key, **_summary(result)})
             if result.status != ReconstructionStatus.INDEPENDENTLY_VERIFIED.value:
@@ -166,6 +186,15 @@ def _run_queue(args, provider: HttpOProverProvider) -> dict:
             k=args.k,
             base_seed=args.base_seed + (index + len(CANARIES)) * args.seed_stride,
             max_tokens=args.max_tokens,
+            artifact_store=artifact_store,
+            model_id="m-a-p/OProver-8B",
+            model_revision=OFFICIAL_REVISION,
+            quantization=args.quant,
+            provenance={
+                "queue_path": str(args.queue),
+                "entry_key": str(entry["key"]),
+                "role": "oprover",
+            },
         )
         report["entries"].append({
             "key": entry["key"],
@@ -193,6 +222,7 @@ def main() -> int:
     parser.add_argument("--queue", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--state-path", type=Path, required=True)
+    parser.add_argument("--artifact-dir", type=Path)
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--quant", choices=("q4", "q5"), default="q4")
     parser.add_argument("--k", type=int, default=4)
@@ -208,6 +238,11 @@ def main() -> int:
     args.queue = args.queue.expanduser().resolve()
     args.output = args.output.expanduser().resolve()
     args.state_path = args.state_path.expanduser().resolve()
+    args.artifact_dir = (
+        args.artifact_dir.expanduser().resolve()
+        if args.artifact_dir is not None
+        else args.output.parent / "verified-proofs"
+    )
 
     manager = LaunchctlProcessManager(
         model_dir=args.model_dir, port=args.port, quant=args.quant,
