@@ -9,6 +9,11 @@ import threading
 import time
 from pathlib import Path
 
+from autoresearch.prefill.orchestration_state import (
+    load_checkpoint,
+    verified_reuse_provenance,
+)
+
 
 SCHEMA_VERSION = 2
 VALID_STATES = {
@@ -21,6 +26,10 @@ VALID_STATES = {
     "idle",
 }
 _SAFE_TEXT = re.compile(r"[^A-Za-z0-9_.:@+\- ]")
+_HIGH_ENTROPY_TOKEN = re.compile(
+    r"(?i)(?:\b(?:cursor|sk|key|token)_[A-Za-z0-9_\-]{20,}\b"
+    r"|(?<![A-Fa-f0-9])[A-Fa-f0-9]{40,56}(?![A-Fa-f0-9]))"
+)
 
 
 def _safe_text(value, limit: int = 160) -> str:
@@ -28,7 +37,7 @@ def _safe_text(value, limit: int = 160) -> str:
     if "/" in text or re.search(
         r"(?i)(?:api[_ -]?key|secret|access[_ -]?token|prompt)\s*[:=]",
         text,
-    ):
+    ) or _HIGH_ENTROPY_TOKEN.search(text):
         return "redacted"
     return _SAFE_TEXT.sub("_", text)[:limit]
 
@@ -172,12 +181,19 @@ class AtomicLiveStatus:
                     )
                     if orchestration_path:
                         try:
-                            orchestration = json.loads(
-                                Path(orchestration_path).expanduser().read_text(
-                                    encoding="utf-8",
-                                ),
+                            checkpoint = load_checkpoint(
+                                Path(orchestration_path).expanduser(),
+                            )
+                            orchestration = (
+                                json.loads(
+                                    Path(orchestration_path).expanduser().read_text(
+                                        encoding="utf-8",
+                                    ),
+                                )
+                                if checkpoint is not None else {}
                             )
                         except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                            checkpoint = None
                             orchestration = {}
                         retry_counters = orchestration.get(
                             "retry_counters",
@@ -186,14 +202,18 @@ class AtomicLiveStatus:
                         current_state = _safe_text(
                             orchestration.get("state", ""),
                         )
-                        critic_ref = orchestration.get(
-                            "validated_artifacts",
-                            {},
-                        ).get("critic", {})
-                        resumed = bool(
-                            orchestration.get("strategy_reused", False)
-                            and current_state not in {"GENERATOR", "CRITIC"}
+                        reuse = (
+                            verified_reuse_provenance(checkpoint)
+                            if checkpoint is not None else {
+                                "strategy_reused": False,
+                                "generator_reused": False,
+                                "critic_reused": False,
+                                "role_reused": {},
+                                "reused_artifacts": {},
+                                "diagnostics": {},
+                            }
                         )
+                        critic_ref = reuse["reused_artifacts"].get("critic", {})
                         adapter_status = _safe_text(
                             orchestration.get("adapter_status", ""),
                         )
@@ -248,6 +268,88 @@ class AtomicLiveStatus:
                             "ranking_hash": _safe_text(
                                 orchestration.get("ranking_hash", ""),
                             ),
+                            "decomposition_exploration": {
+                                "contract_id": _safe_text(
+                                    orchestration.get(
+                                        "exploration_contract_id", "",
+                                    ),
+                                ),
+                                "generated": int(orchestration.get(
+                                    "candidate_count", 0,
+                                )),
+                                "surviving": (
+                                    int(orchestration.get("candidate_count", 0))
+                                    - len(orchestration.get(
+                                        "exploration_rejections", {},
+                                    ))
+                                ),
+                                "selected_candidate_ids": [
+                                    _safe_text(item, 80)
+                                    for item in orchestration.get(
+                                        "exploration_selected_candidate_ids",
+                                        [],
+                                    )
+                                ],
+                                "current_index": int(orchestration.get(
+                                    "exploration_current_index", 0,
+                                )),
+                                "current_candidate_id": _safe_text(
+                                    orchestration.get(
+                                        "exploration_current_candidate_id", "",
+                                    ),
+                                    80,
+                                ),
+                                "formalization_status": _safe_text(
+                                    orchestration.get(
+                                        "exploration_formalization_status", "",
+                                    ),
+                                ),
+                                "reduction_status": _safe_text(
+                                    orchestration.get(
+                                        "exploration_reduction_status", "",
+                                    ),
+                                ),
+                                "rejected_reason_codes": sorted({
+                                    _safe_text(reason, 80)
+                                    for reasons in orchestration.get(
+                                        "exploration_rejections", {},
+                                    ).values()
+                                    for reason in reasons
+                                }),
+                                "representation_analysis": {
+                                    "status": _safe_text(orchestration.get(
+                                        "representation_current_status", "",
+                                    )),
+                                    "missing_primitive_ids": [
+                                        _safe_text(item, 80)
+                                        for item in orchestration.get(
+                                            "representation_missing_primitive_ids",
+                                            [],
+                                        )
+                                    ],
+                                    "source_resolution": _safe_text(
+                                        orchestration.get(
+                                            "representation_source_resolution",
+                                            "",
+                                        ),
+                                    ),
+                                    "retry_state": _safe_text(
+                                        orchestration.get(
+                                            "representation_retry_state", "",
+                                        ),
+                                    ),
+                                    "report_count": len(orchestration.get(
+                                        "representation_report_refs", {},
+                                    )),
+                                    "exhaustion_hash": _safe_text(
+                                        orchestration.get(
+                                            "representation_exhaustion_hash",
+                                            "",
+                                        ),
+                                        80,
+                                    ),
+                                },
+                            },
                             "theorem_card_count": len(
                                 orchestration.get("theorem_card_ids", []),
                             ),
@@ -386,10 +488,12 @@ class AtomicLiveStatus:
                                 ).items()
                             },
                             "strategy_reused": bool(
-                                orchestration.get("strategy_reused", False),
+                                reuse["strategy_reused"],
                             ),
-                            "generator_reused": resumed,
-                            "critic_reused": resumed and bool(critic_ref),
+                            "generator_reused": reuse["generator_reused"],
+                            "critic_reused": reuse["critic_reused"],
+                            "role_reused": reuse["role_reused"],
+                            "reuse_diagnostics": reuse["diagnostics"],
                             "critic_artifact_sha256": _safe_text(
                                 critic_ref.get("sha256", ""),
                             ),
@@ -415,6 +519,45 @@ class AtomicLiveStatus:
                                     ),
                                 ),
                             },
+                            "strategy_provider": {
+                                "provider": _safe_text(orchestration.get(
+                                    "strategy_provider", "cursor-sdk",
+                                )),
+                                "configured": bool(orchestration.get(
+                                    "strategy_provider_configured", False,
+                                )),
+                                "model_id": _safe_text(orchestration.get(
+                                    "strategy_model_id", "",
+                                )),
+                                "run_status": _safe_text(orchestration.get(
+                                    "strategy_run_status",
+                                    "CONFIGURATION_REQUIRED",
+                                )),
+                                "run_id": _safe_text(orchestration.get(
+                                    "strategy_run_id", "",
+                                )),
+                            },
+                            "model_residency": {
+                                "phase": _safe_text(orchestration.get(
+                                    "residency_phase", "GEMMA_SERVING",
+                                )),
+                                "active_model": _safe_text(orchestration.get(
+                                    "active_model", "gemma",
+                                )),
+                            },
+                            "oprover_advisor": {
+                                "candidates": int(orchestration.get(
+                                    "oprover_candidate_count", 0,
+                                )),
+                                "verified": int(orchestration.get(
+                                    "oprover_verified_count", 0,
+                                )),
+                            },
+                            "critic_advisory_state": _safe_text(
+                                orchestration.get(
+                                    "critic_advisory_state", "PENDING",
+                                ),
+                            ),
                             "research_contract": {
                                 "contract_id": _safe_text(orchestration.get(
                                     "research_contract_id", "",

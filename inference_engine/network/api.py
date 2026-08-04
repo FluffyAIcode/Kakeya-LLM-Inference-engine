@@ -51,6 +51,7 @@ class BenchmarkUpdateRequest(BaseModel):
     status: Optional[str] = None
     finished_at: Optional[float] = None
     provenance: Optional[dict] = None
+    generation: Optional[str] = None
 
 
 def create_network_app(

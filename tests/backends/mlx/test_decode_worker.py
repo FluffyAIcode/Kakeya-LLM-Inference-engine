@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,6 +74,43 @@ class FakeDecodeVerifier:
 
 def build_fake_verifier(config):
     return FakeDecodeVerifier(str(config["model_id"]))
+
+
+class MLXThreadOwnedVerifier(FakeDecodeVerifier):
+    """Tiny real-MLX verifier that rejects cross-thread stream use."""
+
+    def __init__(self, model_id: str = "mlx-thread-owned") -> None:
+        super().__init__(model_id)
+        import mlx.core as mx
+
+        self.owner_thread_id = threading.get_ident()
+        self.stream = mx.new_stream(mx.gpu)
+        with mx.stream(self.stream):
+            self._value = mx.array([0], dtype=mx.int32)
+            mx.eval(self._value)
+
+    def spawn(self):
+        return type(self)(self.model_id)
+
+    def _evaluate(self, tokens) -> None:
+        assert threading.get_ident() == self.owner_thread_id
+        import mlx.core as mx
+
+        with mx.stream(self.stream):
+            self._value = self._value + sum(int(token) for token in tokens)
+            mx.eval(self._value)
+
+    def prefill(self, tokens):
+        self._evaluate(tokens)
+        super().prefill(tokens)
+
+    def append_accepted_tokens(self, tokens):
+        self._evaluate(tokens)
+        super().append_accepted_tokens(tokens)
+
+
+def build_mlx_thread_owned_verifier(config):
+    return MLXThreadOwnedVerifier(str(config["model_id"]))
 
 
 def _client(
@@ -181,6 +220,60 @@ def test_worker_matches_in_process_greedy_parity(tmp_path):
         remote = client.get("parity")
         remote.prefill([7, 8, 9])
         assert [remote.generate_step() for _ in range(6)] == baseline
+    finally:
+        client.close()
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin" or platform.machine() != "arm64",
+    reason="real MLX stream acceptance requires Apple Silicon",
+)
+def test_real_mlx_stream_stays_on_decode_owner_across_executor_restart_and_import(
+    tmp_path,
+):
+    mx = pytest.importorskip("mlx.core")
+
+    stream = mx.new_stream(mx.gpu)
+    with mx.stream(stream):
+        foreign = mx.arange(4) + 1
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        failure = executor.submit(mx.eval, foreign).exception(timeout=5)
+    assert isinstance(failure, RuntimeError)
+    assert "There is no Stream" in str(failure)
+
+    client = DecodeWorkerClient(DecodeWorkerConfig(
+        model_id="mlx-thread-owned",
+        sink_size=2,
+        window_size=6,
+        request_timeout_s=2.0,
+        startup_timeout_s=10.0,
+        socket_path=str(tmp_path / "mlx-owner.sock"),
+        verifier_factory=(
+            "tests.backends.mlx.test_decode_worker:"
+            "build_mlx_thread_owned_verifier"
+        ),
+    ))
+    try:
+        session = client.get("threaded-prefill")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(session.prefill, [1, 2, 3]).result(timeout=5)
+            executor.submit(
+                session.append_accepted_tokens, [4, 5],
+            ).result(timeout=5)
+        health = client.health()
+        assert health["compute_thread_id"] > 0
+        assert health["compute_thread_name"] == "MainThread"
+
+        snapshot = json.dumps({"tokens": [10, 11, 12]}).encode()
+        session.import_snapshot(
+            snapshot,
+            CacheCompatibility(model_id="mlx-thread-owned"),
+        )
+        old_pid = client.pid
+        client.hard_kill()
+        assert session.generate_step() == 13
+        assert client.pid != old_pid
+        assert session.cached_token_sequence == [10, 11, 12, 13]
     finally:
         client.close()
 

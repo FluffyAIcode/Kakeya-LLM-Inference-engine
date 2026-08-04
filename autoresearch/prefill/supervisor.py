@@ -16,6 +16,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import asdict
 from pathlib import Path
@@ -32,19 +33,32 @@ from autoresearch.prefill.atomic_definition import (
     record_semantic_iteration,
     verified_progress_vector,
 )
-from autoresearch.prefill.architecture_v7 import (
-    run_architecture_v7_entry,
+from autoresearch.prefill.architecture_v9 import (
+    run_architecture_v9_entry,
     run_host_definition_gate,
 )
+from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
 from autoresearch.prefill.strategy_tournament import StrategyEvent
 from autoresearch.prefill.orchestration_state import (
+    BlockedEventType,
     BlockedExitEvent,
     OrchestrationCheckpoint,
     ProofState,
     append_blocked_event_journal,
     apply_blocked_exit_event,
     load_checkpoint as load_orchestration_checkpoint,
+    reconcile_checkpoint_ledger_version,
     save_checkpoint as save_orchestration_checkpoint,
+)
+from autoresearch.prefill.resume_certificate import (
+    acquire_resume_lease,
+    build_resume_certificate,
+    build_resume_report_provenance,
+    checkpoint_hash,
+    current_runtime_binding,
+    ledger_hash,
+    persist_resume_certificate,
+    resume_requires_certificate,
 )
 from autoresearch.prefill.semantic_decompose import (
     SemanticResponseIncomplete,
@@ -68,6 +82,11 @@ RESUMABLE_ORCHESTRATION_STATES = frozenset({
     ProofState.SYNTHESIS,
     ProofState.DEFINITION_RESOLUTION,
     ProofState.DECOMPOSER,
+    ProofState.DECOMPOSITION_EXPLORATION,
+    ProofState.CANDIDATE_PREFILTER,
+    ProofState.CANDIDATE_FORMALIZATION,
+    ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+    ProofState.REDUCTION_CERTIFICATION,
     ProofState.MATH_IR_TRANSLATION,
     ProofState.HOST_TYPED_IR_GATE,
     ProofState.LEAN_ELABORATION_GATE,
@@ -125,6 +144,106 @@ class CandidateNoveltyStagnation(ValueError):
 def _json_request(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=10) as response:
         return json.load(response)
+
+
+BENCHMARK_TERMINAL_STATUSES = frozenset({
+    "completed", "failed", "cancelled", "canceled", "timed_out",
+})
+
+
+class BenchmarkFinalizationTimeout(TimeoutError):
+    """The exact benchmark run did not publish a final report in time."""
+
+    code = "BENCHMARK_FINALIZATION_TIMEOUT"
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        generation: str,
+        process_exit_code: int,
+        last_report: dict | None,
+        last_fetch_error: str,
+    ) -> None:
+        self.run_id = run_id
+        self.generation = generation
+        self.process_exit_code = process_exit_code
+        self.last_report = dict(last_report or {})
+        self.last_fetch_error = last_fetch_error
+        super().__init__(
+            f"{self.code}: run={run_id} generation={generation} "
+            f"process_exit={process_exit_code} "
+            f"last_status={self.last_report.get('status', 'unavailable')} "
+            f"report_version={self.last_report.get('report_version', 0)}"
+        )
+
+
+class BenchmarkTerminalFailure(RuntimeError):
+    """The exact benchmark run reached a non-success terminal state."""
+
+    def __init__(self, report: dict, *, process_exit_code: int) -> None:
+        self.report = dict(report)
+        self.process_exit_code = process_exit_code
+        super().__init__(
+            "GAN benchmark terminal failure: "
+            f"status={report.get('status')} id={report.get('id')} "
+            f"generation={report.get('generation')} "
+            f"report_version={report.get('report_version')} "
+            f"process_exit={process_exit_code}"
+        )
+
+
+def wait_for_benchmark_finalization(
+    *,
+    dashboard: str,
+    run_id: str,
+    generation: str,
+    process_exit_code: int,
+    timeout_s: float = 20.0,
+    initial_backoff_s: float = 0.05,
+    max_backoff_s: float = 1.0,
+) -> dict:
+    """Poll one immutable run generation until its final report converges."""
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    backoff = max(0.001, float(initial_backoff_s))
+    last_report: dict | None = None
+    last_fetch_error = ""
+    url = f"{dashboard.rstrip('/')}/v1/network/benchmarks/{run_id}"
+    while True:
+        try:
+            report = _json_request(url)
+            last_fetch_error = ""
+            if report.get("id") != run_id:
+                raise ReportValidationError(
+                    "benchmark finalization returned another run id"
+                )
+            if report.get("generation") != generation:
+                raise ReportValidationError(
+                    "benchmark finalization generation mismatch"
+                )
+            last_report = report
+            if (
+                report.get("status") in BENCHMARK_TERMINAL_STATUSES
+                and int(report.get("report_version", 0)) > 0
+                and report.get("finished_at") is not None
+                and isinstance(report.get("stages"), list)
+            ):
+                return report
+        except ReportValidationError:
+            raise
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            last_fetch_error = f"{type(exc).__name__}: {exc}"
+        now = time.monotonic()
+        if now >= deadline:
+            raise BenchmarkFinalizationTimeout(
+                run_id=run_id,
+                generation=generation,
+                process_exit_code=process_exit_code,
+                last_report=last_report,
+                last_fetch_error=last_fetch_error,
+            )
+        time.sleep(min(backoff, deadline - now))
+        backoff = min(max_backoff_s, backoff * 2)
 
 
 def _wait_port(host: str, port: int, timeout_s: float = 180) -> None:
@@ -1401,14 +1520,41 @@ def run_gan_experiment(
     iteration: int,
     orchestration_state_path: Path,
     candidate_sha256: str,
-) -> tuple[str, str]:
+    ledger: dict,
+    tokenizer_id: str,
+) -> tuple[str, str, str, int]:
+    bench_python = os.environ.get(
+        "KAKEYA_BENCH_PYTHON",
+        str(Path.home() / ".venv-distwan/bin/python"),
+    )
+    bench_model = os.environ.get(
+        "KAKEYA_BENCH_MODEL",
+        str(Path.home() / "kakeya-models/gemma-4-26B-A4B-it-mlx-4bit"),
+    )
     command = [
-        "bash", str(repo / "scripts/run_agent_gan_repl.sh"),
+        bench_python, str(repo / "scripts/agent_gan_repl.py"),
+        "--tokenizer-id", bench_model,
         "--skip-ensure", "--no-auto-loop",
         "--candidate-file", str(candidate_path),
         "--state-file", str(state_path),
         "--max-retained-tokens", str(max_retained_tokens),
     ]
+    resume_checkpoint = load_orchestration_checkpoint(
+        orchestration_state_path,
+    )
+    certified_resume = resume_requires_certificate(
+        resume_checkpoint,
+        fresh_architecture_entry=False,
+    )
+    lease_id = (
+        hashlib.sha256(
+            (
+                f"{supervisor_pid}:{iteration}:{candidate_sha256}:"
+                f"{time.time_ns()}"
+            ).encode()
+        ).hexdigest()
+        if certified_resume else ""
+    )
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -1426,8 +1572,65 @@ def run_gan_experiment(
                 orchestration_state_path,
             ),
             "KAKEYA_CANDIDATE_SHA256": candidate_sha256,
+            "KAKEYA_RESUME_LEASE_ID": lease_id,
         },
     )
+    if certified_resume:
+        assert resume_checkpoint is not None
+        if repair_research_contract_artifact_dependency(resume_checkpoint):
+            save_orchestration_checkpoint(
+                orchestration_state_path,
+                resume_checkpoint,
+            )
+        runtime_binding = current_runtime_binding(
+            repo,
+            tokenizer_id=tokenizer_id,
+            residency_path=Path.home() / ".kakeya/oprover-residency.json",
+        )
+        _report, report_hash, _report_path = build_resume_report_provenance(
+            orchestration_state_path,
+            resume_checkpoint,
+        )
+        after_hash = checkpoint_hash(resume_checkpoint)
+        lease = acquire_resume_lease(
+            orchestration_state_path,
+            resume_checkpoint,
+            lease_id=lease_id,
+            supervisor_pid=process.pid,
+            supervisor_generation=(
+                f"supervisor-{supervisor_pid}-iteration-{iteration}"
+            ),
+            ledger_sha256=ledger_hash(ledger),
+            environment_sha256=resume_checkpoint.target_environment_hash,
+            runtime_binding=runtime_binding,
+            intended_next_role=resume_checkpoint.current_role,
+            active_conflict=False,
+        )
+        certificate = build_resume_certificate(
+            resume_checkpoint,
+            ledger,
+            checkpoint_before_hash=after_hash,
+            checkpoint_after_hash=after_hash,
+            report_provenance_hash=report_hash,
+            runtime_binding=runtime_binding,
+            intended_next_role=resume_checkpoint.current_role,
+            owner_pid=process.pid,
+            lease_id=lease_id,
+            lease=lease,
+            nonce=hashlib.sha256(
+                f"{lease_id}:certificate".encode()
+            ).hexdigest(),
+        )
+        persist_resume_certificate(
+            orchestration_state_path,
+            certificate,
+        )
+        print(
+            "[proof-live] stage=resume-certificate "
+            f"role={resume_checkpoint.current_role} "
+            f"target={resume_checkpoint.target_obligation_id} issued=true",
+            flush=True,
+        )
     assert process.stdin is not None
     assert process.stdout is not None
     process.stdin.write("/continue\n/quit\n")
@@ -1455,15 +1658,20 @@ def run_gan_experiment(
         raise TimeoutError(
             f"GAN experiment exceeded {timeout_s}s: {output[-4000:]}",
         )
-    if returncode != 0:
-        raise RuntimeError(
-            f"GAN experiment failed ({returncode}): {output[-4000:]}",
-        )
-    matches = re.findall(r"run=(br_[0-9a-f]+)", output)
+    matches = re.findall(
+        r"run=(br_[0-9a-f]+)\s+generation=([0-9a-f]+)",
+        output,
+    )
     if not matches:
-        raise RuntimeError("GAN experiment produced no benchmark run id")
-    run_id = matches[-1]
-    return run_id, output
+        raise RuntimeError(
+            "GAN experiment produced no benchmark run id/generation binding"
+            + (
+                f" and exited {returncode}: {output[-4000:]}"
+                if returncode else ""
+            )
+        )
+    run_id, generation = matches[-1]
+    return run_id, generation, output, returncode
 
 
 def extract_gan_failure_reason(output: str) -> str:
@@ -1644,6 +1852,260 @@ def is_nonfatal_semantic_continuation(
     )
 
 
+def route_contract_to_subgoal_generation(
+    checkpoint: OrchestrationCheckpoint,
+) -> bool:
+    """Require a typed elaborated subgoal before any OProver residency request."""
+    if (
+        checkpoint.proof_state != ProofState.PROOF_SEARCH
+        or not checkpoint.research_contract_id
+        or checkpoint.proof_plan_id
+        or checkpoint.executable_plan_node_id
+    ):
+        return False
+    if checkpoint.adapter_status:
+        if checkpoint.blocked_reason != (
+            "PROOF_ADVISOR_UNAVAILABLE:RESIDENCY_PROCESS_MANAGER_REQUIRED"
+        ):
+            return False
+        checkpoint.clear_adapter_blocked(
+            "research-contract-awaits-elaborated-subgoal",
+        )
+    event_id = hashlib.sha256(
+        (
+            checkpoint.target_obligation_id
+            + checkpoint.research_contract_id
+            + checkpoint.proposition_hash
+        ).encode()
+    ).hexdigest()
+    if any(
+        item.get("event_type") == "RESEARCH_CONTRACT_SUBGOAL_REQUIRED"
+        and item.get("event_id") == event_id
+        for item in checkpoint.recovery_events
+    ):
+        return False
+    checkpoint.transition(
+        ProofState.DECOMPOSER,
+        "research-contract:generate-strictly-reducing-elaborated-subgoal",
+        strategy_reused=True,
+    )
+    checkpoint.recovery_events.append({
+        "event_type": "RESEARCH_CONTRACT_SUBGOAL_REQUIRED",
+        "event_id": event_id,
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "research_contract_id": checkpoint.research_contract_id,
+        "selected_strategy_plan_id": checkpoint.selected_strategy_plan_id,
+        "proposition_hash": checkpoint.proposition_hash,
+        "target_state": ProofState.DECOMPOSER.value,
+        "created_at": time.time(),
+    })
+    return True
+
+
+def reconcile_canonical_root_binding(
+    checkpoint: OrchestrationCheckpoint,
+    ledger: dict,
+    *,
+    state_path: Path,
+) -> bool:
+    """Derive mutable root caches from the formalized ledger root."""
+    obligation = next(
+        (
+            item for item in ledger.get("obligations", ())
+            if item.get("obligation_id") == checkpoint.target_obligation_id
+        ),
+        None,
+    )
+    if obligation is None:
+        raise ValueError("CANONICAL_ROOT_OBLIGATION_MISSING")
+    proposition_hash = str(obligation.get("proposition_hash", ""))
+    signature_hash = str(obligation.get("lean_signature_hash", ""))
+    canonical_hash = proposition_hash or signature_hash
+    statement = str(obligation.get("statement", ""))
+    if (
+        obligation.get("parent_id")
+        or obligation.get("formal_status") != "FORMALIZED"
+        or len(canonical_hash) != 64
+        or hashlib.sha256(statement.encode()).hexdigest() != canonical_hash
+    ):
+        raise ValueError("CANONICAL_ROOT_BINDING_INVALID")
+    protected = {
+        "proposition_hash": checkpoint.proposition_hash,
+        "parent_statement_sha256": checkpoint.parent_statement_sha256,
+        "parent_signature_sha256": checkpoint.parent_signature_sha256,
+    }
+    if any(
+        value and value != canonical_hash for value in protected.values()
+    ):
+        raise ValueError("CANONICAL_ROOT_PROPOSITION_MISMATCH")
+    try:
+        cached = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        cached = {"schema_version": 1}
+    if not isinstance(cached, dict):
+        raise ValueError("DERIVED_ROOT_GOAL_CACHE_INVALID")
+    changed = any((
+        checkpoint.root_goal_sha256 != canonical_hash,
+        checkpoint.proposition_hash != canonical_hash,
+        checkpoint.parent_statement_sha256 != canonical_hash,
+        checkpoint.parent_signature_sha256 != canonical_hash,
+        checkpoint.target_statement != statement,
+        ledger.get("root_goal_hash") != canonical_hash,
+        cached.get("research_goal") != statement,
+    ))
+    if not changed:
+        return False
+    checkpoint.root_goal_sha256 = canonical_hash
+    checkpoint.proposition_hash = canonical_hash
+    checkpoint.parent_statement_sha256 = canonical_hash
+    checkpoint.parent_signature_sha256 = canonical_hash
+    checkpoint.target_statement = statement
+    ledger["root_goal_hash"] = canonical_hash
+    cached["research_goal"] = statement
+    cached.setdefault("schema_version", 1)
+    encoded = json.dumps(cached, indent=2, ensure_ascii=False) + "\n"
+    temporary = state_path.with_name(
+        f".{state_path.name}.{os.getpid()}.canonical-root.tmp",
+    )
+    temporary.write_text(encoded, encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, state_path)
+    checkpoint.recovery_events.append({
+        "event_type": "CANONICAL_ROOT_BINDING_RECONCILED",
+        "event_id": hashlib.sha256(
+            (
+                checkpoint.target_obligation_id
+                + canonical_hash
+                + checkpoint.research_contract_id
+            ).encode()
+        ).hexdigest(),
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "proposition_hash": canonical_hash,
+        "research_contract_id": checkpoint.research_contract_id,
+        "derived_cache": str(state_path.name),
+        "created_at": time.time(),
+    })
+    return True
+
+
+def is_contract_bound_subgoal_resume(
+    checkpoint: OrchestrationCheckpoint | None,
+) -> bool:
+    """Recognize a typed decomposition resume independent of wrapper candidate."""
+    return bool(
+        checkpoint is not None
+        and checkpoint.proof_state in {
+            ProofState.DEFINITION_RESOLUTION,
+            ProofState.DECOMPOSER,
+            ProofState.DECOMPOSITION_EXPLORATION,
+            ProofState.CANDIDATE_PREFILTER,
+            ProofState.CANDIDATE_FORMALIZATION,
+            ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+            ProofState.REDUCTION_CERTIFICATION,
+        }
+        and checkpoint.target_obligation_id
+        and checkpoint.proposition_hash
+        and checkpoint.target_context_hash
+        and checkpoint.selected_strategy_plan_id
+        and (
+            checkpoint.research_contract_id
+            or (
+                checkpoint.proof_state in {
+                    ProofState.DECOMPOSITION_EXPLORATION,
+                    ProofState.CANDIDATE_PREFILTER,
+                    ProofState.CANDIDATE_FORMALIZATION,
+                    ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+                    ProofState.REDUCTION_CERTIFICATION,
+                }
+                and checkpoint.exploration_contract_id
+            )
+        )
+        and not checkpoint.adapter_status
+    )
+
+
+def repair_research_contract_artifact_dependency(
+    checkpoint: OrchestrationCheckpoint,
+) -> bool:
+    """Replace the legacy tournament content hash with its artifact hash."""
+    tournament = checkpoint.validated_artifacts.get("strategy_tournament")
+    contract = checkpoint.validated_artifacts.get("research_contract")
+    if (
+        tournament is None
+        or contract is None
+        or contract.dependencies != [checkpoint.strategy_tournament_hash]
+        or contract.dependencies == [tournament.sha256]
+    ):
+        return False
+    contract.dependencies = [tournament.sha256]
+    checkpoint.recovery_events.append({
+        "event_type": "RESEARCH_CONTRACT_ARTIFACT_DAG_REPAIRED",
+        "event_id": hashlib.sha256(
+            (
+                checkpoint.research_contract_id
+                + checkpoint.strategy_tournament_hash
+                + tournament.sha256
+            ).encode()
+        ).hexdigest(),
+        "research_contract_id": checkpoint.research_contract_id,
+        "strategy_tournament_artifact_sha256": tournament.sha256,
+        "target_obligation_id": checkpoint.target_obligation_id,
+        "created_at": time.time(),
+    })
+    return True
+
+
+def recover_contract_subgoal_duplicate_block(
+    checkpoint: OrchestrationCheckpoint | None,
+) -> BlockedExitEvent | None:
+    """Repair only the legacy novelty block on a bound decomposition resume."""
+    duplicate_reason = (
+        "Strategy proposals were duplicates; reuse the current candidate "
+        "and unresolved role."
+    )
+    if (
+        checkpoint is None
+        or checkpoint.proof_state != ProofState.BLOCKED
+        or checkpoint.blocked_reason != duplicate_reason
+        or checkpoint.proof_plan_id
+        or checkpoint.executable_plan_node_id
+        or not checkpoint.research_contract_id
+        or not checkpoint.selected_strategy_plan_id
+        or not checkpoint.target_context_hash
+    ):
+        return None
+    evidence = next(
+        (
+            str(item.get("event_id", ""))
+            for item in reversed(checkpoint.recovery_events)
+            if item.get("event_type") == "RESEARCH_CONTRACT_SUBGOAL_REQUIRED"
+            and item.get("target_obligation_id")
+            == checkpoint.target_obligation_id
+            and item.get("research_contract_id")
+            == checkpoint.research_contract_id
+        ),
+        "",
+    )
+    if not evidence:
+        return None
+    event = BlockedExitEvent(
+        event_id=hashlib.sha256(
+            (
+                "contract-subgoal-duplicate-recovery:"
+                + evidence
+                + checkpoint.target_context_hash
+            ).encode()
+        ).hexdigest(),
+        event_type=BlockedEventType.VALIDATED_EVIDENCE_BACKJUMP.value,
+        reason="target-bound decomposition bypasses candidate novelty",
+        target_state=ProofState.DECOMPOSER.value,
+        reset_role=ProofState.DECOMPOSER.value,
+        metadata={"evidence_sha256": evidence},
+    )
+    apply_blocked_exit_event(checkpoint, event)
+    return event
+
+
 def should_resume_downstream(
     checkpoint: OrchestrationCheckpoint | None,
     *,
@@ -1653,9 +2115,21 @@ def should_resume_downstream(
 ) -> bool:
     """Keep a persisted role unless an explicit Strategy policy overrides it."""
     return bool(
-        is_resumable_checkpoint(
-            checkpoint,
-            candidate_sha256=candidate_sha256,
+        (
+            is_resumable_checkpoint(
+                checkpoint,
+                candidate_sha256=candidate_sha256,
+            )
+            or is_contract_bound_subgoal_resume(checkpoint)
+        )
+        and not (
+            checkpoint is not None
+            and checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
+            and checkpoint.premise_outcome_type in {
+                "APPROACH_FAILED",
+                "PREMISE_INVALIDATED",
+                "PARENT_STATEMENT_UNDERSPECIFIED",
+            }
         )
         and not force_strategy
         and not strategy_trigger_exists
@@ -1728,8 +2202,13 @@ def candidate_novelty_rejections(
     return reasons, hypothesis_sha256, candidate_sha256
 
 
-def build_host_candidate(current: dict, ledger: dict) -> dict:
-    target_id = _select_repair_target(current, ledger)
+def build_host_candidate(
+    current: dict,
+    ledger: dict,
+    *,
+    target_id: str = "",
+) -> dict:
+    target_id = str(target_id or _select_repair_target(current, ledger))
     target = next(
         item
         for item in ledger.get("obligations", [])
@@ -2015,6 +2494,60 @@ def run_iteration(args, iteration: int) -> dict:
     orchestration_checkpoint = load_orchestration_checkpoint(
         orchestration_state_path,
     )
+    normalized_ledger = asdict(ledger_object)
+    canonical_target = next(
+        (
+            item for item in normalized_ledger.get("obligations", ())
+            if item.get("obligation_id")
+            == (
+                orchestration_checkpoint.target_obligation_id
+                if orchestration_checkpoint is not None else ""
+            )
+        ),
+        {},
+    )
+    if (
+        orchestration_checkpoint is not None
+        and canonical_target.get("proposition_hash")
+        and reconcile_canonical_root_binding(
+            orchestration_checkpoint,
+            normalized_ledger,
+            state_path=state_path,
+        )
+    ):
+        save_orchestration_checkpoint(
+            orchestration_state_path,
+            orchestration_checkpoint,
+        )
+    if (
+        orchestration_checkpoint is not None
+        and ledger_object is not None
+        and reconcile_checkpoint_ledger_version(
+            orchestration_checkpoint,
+            ledger_object.version,
+        )
+    ):
+        save_orchestration_checkpoint(
+            orchestration_state_path,
+            orchestration_checkpoint,
+        )
+    if (
+        orchestration_checkpoint is not None
+        and route_contract_to_subgoal_generation(orchestration_checkpoint)
+    ):
+        save_orchestration_checkpoint(
+            orchestration_state_path,
+            orchestration_checkpoint,
+        )
+        print(
+            "[proof-live] stage=subgoal-generation "
+            f"target={orchestration_checkpoint.target_obligation_id} "
+            f"proposition={orchestration_checkpoint.target_statement} "
+            f"plan={orchestration_checkpoint.selected_strategy_plan_id} "
+            f"contract={orchestration_checkpoint.research_contract_id} "
+            "next=DECOMPOSER reason=elaborated-subgoal-required",
+            flush=True,
+        )
     if (
         orchestration_checkpoint is not None
         and (
@@ -2106,7 +2639,7 @@ def run_iteration(args, iteration: int) -> dict:
             current_role="strategy_tournament",
             last_transition_reason="migrated-current-ledger-and-candidate",
             resume_origin="legacy-checkpoint",
-            strategy_reused=True,
+            strategy_reused=False,
             ledger_id=(
                 ledger_object.ledger_id if ledger_object is not None else ""
             ),
@@ -2118,10 +2651,16 @@ def run_iteration(args, iteration: int) -> dict:
             orchestration_state_path,
             orchestration_checkpoint,
         )
+    interface_strategy_adapter = CursorStrategyAdapter()
     orchestration_checkpoint, definition_outcome = run_host_definition_gate(
         orchestration_state_path,
         orchestration_checkpoint,
         project_root=root,
+        interface_strategy_adapter=(
+            interface_strategy_adapter
+            if interface_strategy_adapter.configured()
+            else None
+        ),
     )
     if definition_outcome:
         live_status.emit(
@@ -2208,18 +2747,56 @@ def run_iteration(args, iteration: int) -> dict:
                 trigger_file=trigger_file,
             )
         )
-        if resume_downstream:
+        if (
+            not resume_downstream
+            and orchestration_checkpoint is not None
+            and orchestration_checkpoint.proof_state
+            == ProofState.STRATEGY_TOURNAMENT
+            and orchestration_checkpoint.premise_outcome_type in {
+                "APPROACH_FAILED",
+                "PREMISE_INVALIDATED",
+                "PARENT_STATEMENT_UNDERSPECIFIED",
+            }
+        ):
+            trigger_reason = (
+                "typed-premise-"
+                + orchestration_checkpoint.premise_outcome_type.lower()
+            )
+        architecture9_strategy = bool(
+            orchestration_checkpoint is not None
+            and orchestration_checkpoint.architecture_version >= 9
+            and orchestration_checkpoint.proof_state
+            == ProofState.STRATEGY_TOURNAMENT
+        )
+        if architecture9_strategy:
+            strategy_mode = "cursor_strategy"
+            proposed = build_host_candidate(
+                current,
+                ledger_data,
+                target_id=orchestration_checkpoint.target_obligation_id,
+            )
+            print(
+                "[autoresearch] phase=strategy-proposal "
+                "mode=cursor_strategy fallback=disabled",
+                flush=True,
+            )
+        elif resume_downstream:
             strategy_mode = "resumed"
-            proposed = current
+            proposed = build_host_candidate(
+                current,
+                ledger_data,
+                target_id=orchestration_checkpoint.target_obligation_id,
+            )
             hypothesis_sha256 = hashlib.sha256(
-                current["hypothesis"].strip().lower().encode(),
+                proposed["hypothesis"].strip().lower().encode(),
             ).hexdigest()
             print(
                 "[autoresearch] phase=orchestration-resume "
                 f"state={orchestration_checkpoint.state} "
                 f"role={orchestration_checkpoint.current_role} "
+                f"target={proposed['target_obligation_id']} "
                 f"origin={orchestration_checkpoint.resume_origin or 'checkpoint'} "
-                "strategy_reused=true",
+                "strategy_route_retained=true",
                 flush=True,
             )
         elif baseline is None and iteration == 0 and not trigger_reason:
@@ -2281,9 +2858,14 @@ def run_iteration(args, iteration: int) -> dict:
                 f"target={proposed['target_obligation_id']}",
                 flush=True,
             )
-        if resume_downstream:
+        if resume_downstream or architecture9_strategy:
             used_host_fallback = False
-            candidate_sha256 = hashlib.sha256(previous_candidate).hexdigest()
+            hypothesis_sha256 = hashlib.sha256(
+                proposed["hypothesis"].strip().lower().encode()
+            ).hexdigest()
+            candidate_sha256 = hashlib.sha256(
+                render_candidate(proposed).encode()
+            ).hexdigest()
         else:
             (
                 proposed,
@@ -2316,7 +2898,13 @@ def run_iteration(args, iteration: int) -> dict:
             flush=True,
         )
         candidate_sha256 = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
-        if not resume_downstream:
+        if resume_downstream:
+            orchestration_checkpoint.candidate_sha256 = candidate_sha256
+            save_orchestration_checkpoint(
+                orchestration_state_path,
+                orchestration_checkpoint,
+            )
+        if not resume_downstream and not architecture9_strategy:
             selected_parent = next(
                 (
                     item for item in ledger_data.get("obligations", [])
@@ -2378,7 +2966,7 @@ def run_iteration(args, iteration: int) -> dict:
                     ).encode(),
                 ).hexdigest()[:20]
             )
-            orchestration_checkpoint = run_architecture_v7_entry(
+            orchestration_checkpoint = run_architecture_v9_entry(
                 orchestration_state_path,
                 orchestration_checkpoint,
                 project_root=root,
@@ -2395,7 +2983,92 @@ def run_iteration(args, iteration: int) -> dict:
                     orchestration_checkpoint.elaborated_theorem_id
                 ),
                 proposition_hash=orchestration_checkpoint.proposition_hash,
+                target_statement=str(selected_parent.get("statement", "")),
+                target_evidence={
+                    "last_evidence": str(
+                        selected_parent.get("last_evidence", "")
+                    ),
+                    "formal_status": str(
+                        selected_parent.get("formal_status", "")
+                    ),
+                    "ledger_version": int(ledger_data.get("version", 0)),
+                },
             )
+            if orchestration_checkpoint.adapter_status == "INTEGRATION_BLOCKED":
+                live_status.emit(
+                    phase="strategy_configuration_required",
+                    role="cursor_strategy",
+                    state="idle",
+                    active_obligation_id=(
+                        orchestration_checkpoint.target_obligation_id
+                    ),
+                    source="proof_supervisor",
+                    force=True,
+                )
+                return {
+                    "iteration": iteration,
+                    "research_outcome": "BLOCKED",
+                    "orchestration_state": "INTEGRATION_BLOCKED",
+                    "transition_reason": (
+                        orchestration_checkpoint.blocked_reason
+                    ),
+                    "failure_class": "",
+                    "error": "",
+                    "inference_started": False,
+                }
+            if (
+                orchestration_checkpoint.proof_state == ProofState.PROOF_SEARCH
+                and orchestration_checkpoint.research_contract_id
+            ):
+                if route_contract_to_subgoal_generation(
+                    orchestration_checkpoint,
+                ):
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                    print(
+                        "[proof-live] stage=research-contract "
+                        f"target={orchestration_checkpoint.target_obligation_id} "
+                        f"plan={orchestration_checkpoint.selected_strategy_plan_id} "
+                        f"contract={orchestration_checkpoint.research_contract_id} "
+                        "accepted=true next=DECOMPOSER "
+                        "reason=elaborated-subgoal-required",
+                        flush=True,
+                    )
+                else:
+                    # OProver residency is permitted only after both an accepted
+                    # contract and a concrete typed proof-plan node exist.
+                    orchestration_checkpoint.adapter_blocked(
+                        "PROOF_ADVISOR_UNAVAILABLE:"
+                        "RESIDENCY_PROCESS_MANAGER_REQUIRED",
+                        status="INTEGRATION_BLOCKED",
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        orchestration_checkpoint,
+                    )
+                    live_status.emit(
+                        phase="proof_advisor_unavailable",
+                        role="oprover_advisor",
+                        state="idle",
+                        active_obligation_id=(
+                            orchestration_checkpoint.target_obligation_id
+                        ),
+                        source="proof_supervisor",
+                        force=True,
+                    )
+                    return {
+                        "iteration": iteration,
+                        "research_outcome": "BLOCKED",
+                        "orchestration_state": "INTEGRATION_BLOCKED",
+                        "transition_reason": (
+                            orchestration_checkpoint.blocked_reason
+                        ),
+                        "failure_class": "",
+                        "error": "",
+                        "inference_started": False,
+                    }
         experiment_id = (
             f"ar_{int(time.time())}_{iteration}_"
             f"{hashlib.sha256(candidate_path.read_bytes()).hexdigest()[:8]}"
@@ -2414,7 +3087,12 @@ def run_iteration(args, iteration: int) -> dict:
             source="proof_supervisor",
             force=True,
         )
-        run_id, gan_output = run_gan_experiment(
+        (
+            run_id,
+            run_generation,
+            gan_output,
+            process_exit_code,
+        ) = run_gan_experiment(
             repo=root,
             candidate_path=candidate_path,
             state_path=state_path,
@@ -2425,25 +3103,40 @@ def run_iteration(args, iteration: int) -> dict:
             iteration=iteration,
             orchestration_state_path=orchestration_state_path,
             candidate_sha256=candidate_sha256,
+            ledger=asdict(ledger_object),
+            tokenizer_id=args.tokenizer_id,
         )
         gan_completed = True
         transcript_path.write_text(gan_output)
-        report = _json_request(
-            f"http://127.0.0.1:8090/v1/network/benchmarks/{run_id}",
-        )
-        if report.get("status") != "completed":
-            failure_reason = extract_gan_failure_reason(gan_output)
-            raise RuntimeError(
-                f"GAN benchmark is not completed: {report.get('status')}"
-                + (
-                    f"; {failure_reason}"
-                    if failure_reason else ""
+        try:
+            report = wait_for_benchmark_finalization(
+                dashboard=args.dashboard,
+                run_id=run_id,
+                generation=run_generation,
+                process_exit_code=process_exit_code,
+                timeout_s=getattr(
+                    args,
+                    "benchmark_finalization_timeout_s",
+                    20.0,
                 ),
             )
+        except BenchmarkFinalizationTimeout as exc:
+            if exc.last_report:
+                report_path.write_text(json.dumps(
+                    exc.last_report,
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            raise
         transcript_provenance = extract_report_provenance(gan_output)
         if transcript_provenance is not None:
             report["provenance"] = transcript_provenance
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        if report.get("status") != "completed" or process_exit_code != 0:
+            raise BenchmarkTerminalFailure(
+                report,
+                process_exit_code=process_exit_code,
+            )
         candidate_module = _load_candidate(candidate_path)
         candidate_module.CANDIDATE_SHA256 = candidate_sha256
         result = evaluate(report, candidate_module)
@@ -2475,6 +3168,8 @@ def run_iteration(args, iteration: int) -> dict:
             f"unresolved={result['proof_obligations_unresolved']} "
             f"outcome={verdict['outcome']} "
             f"prefill_s={result['metric_cold_critic_prefill_s']:.3f} "
+            f"strategy_reused={str(evaluation_provenance.get('strategy_reused', False)).lower()} "
+            f"generator_reused={str(evaluation_provenance.get('generator_reused', False)).lower()} "
             f"critic_reused={str(evaluation_provenance['critic_reused']).lower()} "
             f"critic_source={evaluation_provenance['critic_source_run_id']} "
             f"decision={'keep' if keep else 'revert'}",
@@ -2553,14 +3248,10 @@ def run_iteration(args, iteration: int) -> dict:
                 if latest_orchestration is not None else 0
             ),
             "strategy_reused": bool(
-                resume_downstream
-                or (
-                    latest_orchestration is not None
-                    and latest_orchestration.strategy_reused
-                )
+                evaluation_provenance.get("strategy_reused"),
             ),
             "generator_reused": bool(
-                evaluation_provenance.get("critic_reused"),
+                evaluation_provenance.get("generator_reused"),
             ),
             "critic_reused": bool(
                 evaluation_provenance.get("critic_reused"),
@@ -2598,7 +3289,7 @@ def run_iteration(args, iteration: int) -> dict:
             print(
                 "[autoresearch] phase=candidate-preserved "
                 f"resume_state={latest_orchestration.state} "
-                "strategy_reused=true",
+                "strategy_route_retained=true",
                 flush=True,
             )
         else:
@@ -2841,6 +3532,46 @@ def run_supervisor_iterations(args) -> int:
                 cause=event.event_type,
                 event_id=event.event_id,
             )
+        recovered_event = recover_contract_subgoal_duplicate_block(checkpoint)
+        if recovered_event is not None and orchestration_path is not None:
+            save_orchestration_checkpoint(orchestration_path, checkpoint)
+            append_blocked_event_journal(
+                orchestration_path.with_name(
+                    "proof_orchestration.journal.jsonl",
+                ),
+                recovered_event,
+                before_state=ProofState.BLOCKED.value,
+                after_state=checkpoint.state,
+            )
+            blocked_logger.transition(
+                next_state=checkpoint.state,
+                cause=recovered_event.event_type,
+                event_id=recovered_event.event_id,
+            )
+            print(
+                "[proof-live] stage=backjump "
+                "from=BLOCKED to=DECOMPOSER "
+                "reason=target-bound-candidate-novelty-bypass",
+                flush=True,
+            )
+        if (
+            checkpoint is not None
+            and route_contract_to_subgoal_generation(checkpoint)
+        ):
+            save_orchestration_checkpoint(orchestration_path, checkpoint)
+            blocked_logger.transition(
+                next_state=checkpoint.state,
+                cause="research-contract-subgoal-required",
+            )
+            print(
+                "[proof-live] stage=subgoal-generation "
+                f"target={checkpoint.target_obligation_id} "
+                f"proposition={checkpoint.target_statement} "
+                f"plan={checkpoint.selected_strategy_plan_id} "
+                f"contract={checkpoint.research_contract_id} "
+                "next=DECOMPOSER reason=elaborated-subgoal-required",
+                flush=True,
+            )
         if (
             checkpoint is not None
             and checkpoint.proof_state == ProofState.DEFINITION_AUDITOR
@@ -3033,7 +3764,7 @@ def run_supervisor_iterations(args) -> int:
                 "[autoresearch] phase=semantic-backjump-continuation "
                 f"state={continuation_checkpoint.state} "
                 f"reason={continuation_checkpoint.last_transition_reason} "
-                "strategy_reused=true",
+                "strategy_route_retained=true",
                 flush=True,
             )
         fingerprint = (
@@ -3172,6 +3903,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("--experiment-timeout-s", type=float, default=7200)
+    parser.add_argument(
+        "--benchmark-finalization-timeout-s",
+        type=float,
+        default=20.0,
+    )
     parser.add_argument(
         "--max-consecutive-infrastructure-failures",
         type=int,

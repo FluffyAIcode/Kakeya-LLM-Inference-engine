@@ -12,8 +12,10 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
 # jobs around it.
 "$PYTHON" -m py_compile \
   autoresearch/prefill/architecture_v7.py \
+  autoresearch/prefill/architecture_v9.py \
   autoresearch/prefill/atomic_definition.py \
   autoresearch/prefill/creative_decomposition.py \
+  autoresearch/prefill/cursor_strategy.py \
   autoresearch/prefill/definition_registry.py \
   autoresearch/prefill/definition_resolution.py \
   autoresearch/prefill/evidence_planner.py \
@@ -21,19 +23,29 @@ export PYTHONPATH="${PYTHONPATH:-.:sdks/python}"
   autoresearch/prefill/lean_gate.py \
   autoresearch/prefill/live_status.py \
   autoresearch/prefill/math_ir.py \
+  autoresearch/prefill/model_residency.py \
+  autoresearch/prefill/oprover_advisor.py \
   autoresearch/prefill/orchestration_state.py \
   autoresearch/prefill/research_contract.py \
+  autoresearch/prefill/root_bootstrap.py \
   autoresearch/prefill/semantic_decompose.py \
   autoresearch/prefill/stepwise_proof.py \
   autoresearch/prefill/strategy_tournament.py \
   autoresearch/prefill/supervisor.py \
   autoresearch/prefill/theorem_cards.py \
+  autoresearch/prefill/typed_interface_resolution.py \
   autoresearch/prefill/typed_transport.py \
   scripts/agent_gan_inference_demo.py \
   scripts/agent_gan_repl.py \
-  scripts/check_typed_role_contracts.py
+  scripts/check_typed_role_contracts.py \
+  scripts/bootstrap_riemann_hypothesis_root.py \
+  scripts/migrate_cursor_strategy_oprover_advisor_v1.py \
+  scripts/migrate_definition_auditor_routing_provenance_v1.py \
+  scripts/oprover_production_preflight.py \
+  scripts/oprover_residency_smoke.py
 
 "$PYTHON" scripts/check_typed_role_contracts.py
+"$PYTHON" scripts/check_dynamic_runtime_provenance.py
 node --check deploy/cloudflare-worker/src/index.js
 node --check deploy/cloudflare-worker/src/page.js
 node --test deploy/cloudflare-worker/test_execution_state.mjs

@@ -15,6 +15,7 @@ from autoresearch.prefill.lean_gate import (
     validate_lean_proof,
 )
 from autoresearch.prefill.orchestration_state import (
+    ArtifactRef,
     OrchestrationCheckpoint,
     ProofState,
     load_checkpoint as load_orchestration_checkpoint,
@@ -95,6 +96,7 @@ from scripts.agent_gan_repl import (
     format_proof_ledger,
     generator_issue_coverage,
     decide_premise_review,
+    dispatch_certified_architecture9_role,
     extract_premise_suspicions,
     load_checkpoint,
     load_decomposition_manifest,
@@ -105,6 +107,7 @@ from scripts.agent_gan_repl import (
     parse_repl_command,
     parse_premise_audit,
     parse_premise_defense,
+    quarantine_terminal_interface_target,
     parse_certified_artifact,
     recover_checkpoint_from_log,
     save_critic_issue_batch,
@@ -113,9 +116,86 @@ from scripts.agent_gan_repl import (
     save_checkpoint,
     run_isolated_premise_review,
     run_certified_decomposition,
+    retain_contract_provenance_after_artifact_failure,
     persist_verified_decomposition,
     validate_evidence_artifact,
 )
+
+
+def test_certified_definition_resolution_dispatches_host_gate(
+    tmp_path, monkeypatch,
+):
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DEFINITION_RESOLUTION.value,
+        current_role="definition_resolution",
+        target_obligation_id="ROOT",
+    )
+    calls = []
+
+    def fake_gate(
+        checkpoint_path,
+        selected,
+        *,
+        project_root,
+        interface_strategy_adapter,
+    ):
+        calls.append((
+            checkpoint_path,
+            selected,
+            project_root,
+            interface_strategy_adapter,
+        ))
+        return selected, "COMMITTED"
+
+    monkeypatch.setattr(
+        "scripts.agent_gan_repl.run_host_definition_gate",
+        fake_gate,
+    )
+    state_path = tmp_path / "orchestration.json"
+    selected, outcome = dispatch_certified_architecture9_role(
+        state_path,
+        checkpoint,
+        project_root=tmp_path,
+    )
+    assert selected is checkpoint
+    assert outcome == "COMMITTED"
+    assert calls == [(state_path, checkpoint, tmp_path, None)]
+
+    checkpoint.state = ProofState.DECOMPOSER.value
+    selected, outcome = dispatch_certified_architecture9_role(
+        state_path,
+        checkpoint,
+        project_root=tmp_path,
+    )
+    assert selected is checkpoint
+    assert outcome == ""
+    assert len(calls) == 1
+
+
+def test_terminal_interface_quarantine_is_durable_and_idempotent():
+    target = ProofObligation("RH-C1", "imperative target")
+    ledger = ProofObligationLedger("ledger", [target], version=94)
+    changed = quarantine_terminal_interface_target(
+        ledger,
+        target_id="RH-C1",
+        exhaustion_hash="e" * 64,
+        source_run_id="run-interface",
+    )
+    assert changed
+    assert ledger.version == 95
+    assert ledger.backjump_target_id == "ROOT_UNAVAILABLE"
+    assert target.status == "QUARANTINED"
+    assert target.quarantine_prior_status == "UNRESOLVED"
+    assert target.quarantine_reason == "TARGET_INTERFACE_EXHAUSTED:" + "e" * 64
+    assert target.quarantine_reversible_status == "ACTIVE"
+    assert target.quarantine_evidence_type == "CONTENT_ADDRESSED_EXHAUSTION"
+    assert not quarantine_terminal_interface_target(
+        ledger,
+        target_id="RH-C1",
+        exhaustion_hash="e" * 64,
+        source_run_id="run-interface",
+    )
+    assert ledger.version == 95
 
 
 def test_json_artifact_repairs_invalid_latex_escapes_losslessly():
@@ -3492,6 +3572,117 @@ def test_two_defense_repair_failures_block_once_and_restart_is_quiet(tmp_path):
     assert len(calls) == calls_before_restart
 
 
+def test_true_binding_mismatch_preserves_accepted_contract(tmp_path):
+    statement = "RiemannHypothesis"
+    root_hash = hashlib.sha256(statement.encode()).hexdigest()
+    ledger = ProofObligationLedger(
+        "rh",
+        [ProofObligation(
+            "RH-C0-root",
+            statement,
+            formal_status="FORMALIZED",
+            lean_signature_hash=root_hash,
+            proposition_hash=root_hash,
+        )],
+        version=96,
+    )
+    state_path = tmp_path / "orchestration.json"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id="RH-C0-root",
+        candidate_sha256="candidate-hash",
+        parent_statement_sha256=root_hash,
+        parent_signature_sha256=root_hash,
+        root_goal_sha256=root_hash,
+        proposition_hash=root_hash,
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+        ledger_id="rh",
+        ledger_version=96,
+    )
+    artifact = persist_validated_artifact(
+        state_path,
+        checkpoint,
+        role="research_contract",
+        payload={"schema_version": 1, "contract_id": "RC-root"},
+        dependencies=[],
+        source_run_id="host:contract",
+    )
+    runner, calls = _certificate_runner()
+    result = run_certified_decomposition(
+        ledger,
+        "RH-C0-root",
+        "Different proposition",
+        runner,
+        project_root=tmp_path,
+        orchestration_id="orch-mismatch",
+        signature_validator=_fake_signature_validator,
+        proof_validator=_fake_proof_validator,
+        checkpoint_path=state_path,
+        candidate_sha256="candidate-hash",
+    )
+    assert result.validation["blocked"] is True
+    assert result.validation["preserved_research_contract_id"] == "RC-root"
+    assert calls == []
+    preserved = load_orchestration_checkpoint(state_path)
+    assert preserved.research_contract_id == "RC-root"
+    assert preserved.research_contract_hash == "contract-hash"
+    assert preserved.validated_artifacts["research_contract"].sha256 == (
+        artifact.sha256
+    )
+    assert preserved.proof_state == ProofState.DECOMPOSER
+    assert preserved.adapter_status == "INTEGRATION_BLOCKED"
+
+
+def test_artifact_migration_failure_preserves_contract_provenance():
+    checkpoint = OrchestrationCheckpoint(
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+        selected_strategy_plan_id="SP-root",
+        selected_strategy_plan_hash="plan-hash",
+        target_strategy_plan_hash="plan-hash",
+    )
+    def ref(role, sha, dependencies=()):
+        return ArtifactRef(
+            role=role,
+            sha256=sha,
+            schema_version=1,
+            dependencies=list(dependencies),
+            path=f"/tmp/{sha}.json",
+            source_run_id="host:test",
+            validated_at=1.0,
+        )
+    checkpoint.validated_artifacts = {
+        "definition_auditor": ref("definition_auditor", "definition"),
+        "counterexample_worker": ref("counterexample_worker", "worker"),
+        "strategy_tournament": ref(
+            "strategy_tournament",
+            "tournament",
+            ["definition"],
+        ),
+        "research_contract": ref(
+            "research_contract",
+            "contract",
+            ["tournament"],
+        ),
+    }
+    retain_contract_provenance_after_artifact_failure(checkpoint)
+    assert set(checkpoint.validated_artifacts) == {
+        "contract_definition_auditor",
+        "strategy_tournament",
+        "research_contract",
+    }
+    contract_definition = checkpoint.validated_artifacts[
+        "contract_definition_auditor"
+    ]
+    assert contract_definition.sha256 == "definition"
+    assert contract_definition.strategy_plan_hash == "plan-hash"
+    assert checkpoint.research_contract_id == "RC-root"
+    assert checkpoint.research_contract_hash == "contract-hash"
+    assert checkpoint.selected_strategy_plan_id == "SP-root"
+
+
 @pytest.mark.skip(reason="legacy model-authored artifact execution is read-only")
 def test_resume_binding_mismatch_invalidates_cached_artifacts(tmp_path):
     state_path = tmp_path / "orchestration.json"
@@ -4124,12 +4315,16 @@ def test_host_generated_autoresearch_verdict_uses_new_child_frontier():
     assert verdict["outcome"] == "DECOMPOSED"
     assert verdict["created_obligation_ids"] == ["RH-C2-child"]
     ledger.obligations[1].decomposition_certificate_hash = ""
-    assert build_autoresearch_verdict(
+    inconclusive = build_autoresearch_verdict(
         Candidate,
         ledger,
         {"RH-C2": "UNRESOLVED"},
         [ledger.obligations[1]],
-    )["outcome"] == "INCONCLUSIVE"
+    )
+    assert inconclusive["outcome"] == "INCONCLUSIVE"
+    assert inconclusive["new_frontier"] == (
+        "Continue unresolved target RH-C2: Prove zero convergence."
+    )
 
 
 def test_critic_leaf_table_cannot_bypass_certificate():

@@ -270,7 +270,7 @@ def test_semantic_stagnation_changes_decomposition_without_global_strategy():
         ProofState.DECOMPOSER, "change-case-partition", strategy_reused=True,
     )
     assert checkpoint.proof_state == ProofState.DECOMPOSER
-    assert checkpoint.strategy_reused
+    assert checkpoint.strategy_reused is False
 
 
 def test_actual_mathlib_cards_search_elaborate_and_stale_hash_fails():
@@ -323,7 +323,7 @@ def test_atomic_v87_snapshot_and_migration_follows_dependencies(tmp_path):
     assert migrated.proof_state == ProofState.DEFINITION_AUDITOR
     assert migrated.migration_event == ARCHITECTURE_MIGRATION_EVENT
     assert migrated.migration_snapshot == str(snapshot)
-    assert migrated.strategy_reused
+    assert migrated.strategy_reused is False
 
 
 def _missing_definition_artifact(*definition_ids):

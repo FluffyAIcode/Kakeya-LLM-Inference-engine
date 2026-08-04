@@ -87,6 +87,9 @@ jobs:
           npm ci
           npm run check
 
+      - name: Reject hardcoded dynamic provenance
+        run: python scripts/check_dynamic_runtime_provenance.py
+
       - name: Run platform-neutral test suite with 100% coverage
         env:
           # sdks/python is the on-tree location of the Python SDK

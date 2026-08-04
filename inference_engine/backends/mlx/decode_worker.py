@@ -274,6 +274,8 @@ class _WorkerRuntime:
                 pass
             return {
                 "pid": os.getpid(),
+                "compute_thread_id": threading.get_ident(),
+                "compute_thread_name": threading.current_thread().name,
                 "protocol_version": PROTOCOL_VERSION,
                 "session_count": len(self.sessions),
                 "uptime_seconds": time.time() - self.started_at,

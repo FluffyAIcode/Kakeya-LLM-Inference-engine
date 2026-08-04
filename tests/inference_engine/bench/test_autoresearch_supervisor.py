@@ -1,9 +1,12 @@
+import hashlib
 import json
 import os
 import pytest
+from dataclasses import asdict
 from types import SimpleNamespace
 
 from autoresearch.prefill.live_status import AtomicLiveStatus
+from autoresearch.prefill.prepare import ReportValidationError
 from autoresearch.prefill.orchestration_state import (
     ARCHITECTURE_VERSION,
     BlockedEventType,
@@ -28,6 +31,8 @@ from autoresearch.prefill.semantic_decompose import (
 from autoresearch.prefill.supervisor import (
     BLOCKED_HEARTBEAT_INTERVAL_S,
     RESUMABLE_ORCHESTRATION_STATES,
+    BenchmarkFinalizationTimeout,
+    BenchmarkTerminalFailure,
     BlockedIdleLogger,
     CandidateNoveltyStagnation,
     append_result,
@@ -40,13 +45,18 @@ from autoresearch.prefill.supervisor import (
     extract_gan_failure_reason,
     failure_class_for_exception,
     infrastructure_failure_fingerprint,
+    is_contract_bound_subgoal_resume,
     is_resumable_checkpoint,
     is_nonfatal_semantic_continuation,
     parse_strategy_candidate_transport,
     parse_research_verdict,
     read_results,
+    reconcile_canonical_root_binding,
+    repair_research_contract_artifact_dependency,
     repair_candidate_schema,
+    recover_contract_subgoal_duplicate_block,
     render_candidate,
+    route_contract_to_subgoal_generation,
     run_supervisor_iterations,
     select_novel_candidate,
     should_resume_downstream,
@@ -57,8 +67,233 @@ from autoresearch.prefill.supervisor import (
     _extract_json,
     _pending_leaf_ids,
     validate_candidate,
+    wait_for_benchmark_finalization,
 )
 from pathlib import Path
+
+
+def test_contract_requires_elaborated_subgoal_before_oprover():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.PROOF_SEARCH.value,
+        current_role="proof_search",
+        target_obligation_id="RH-C0-root",
+        target_statement="RiemannHypothesis",
+        proposition_hash="p" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        adapter_status="INTEGRATION_BLOCKED",
+        blocked_reason=(
+            "PROOF_ADVISOR_UNAVAILABLE:"
+            "RESIDENCY_PROCESS_MANAGER_REQUIRED"
+        ),
+    )
+    assert route_contract_to_subgoal_generation(checkpoint)
+    assert checkpoint.proof_state == ProofState.DECOMPOSER
+    assert checkpoint.adapter_status == ""
+    assert checkpoint.recovery_events[-1]["event_type"] == (
+        "RESEARCH_CONTRACT_SUBGOAL_REQUIRED"
+    )
+    assert not route_contract_to_subgoal_generation(checkpoint)
+
+
+def test_contract_with_executable_subgoal_does_not_backjump():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.PROOF_SEARCH.value,
+        current_role="proof_search",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        research_contract_id="RC-root",
+        proof_plan_id="PP-child",
+        executable_plan_node_id="L1",
+    )
+    assert not route_contract_to_subgoal_generation(checkpoint)
+    assert checkpoint.proof_state == ProofState.PROOF_SEARCH
+
+
+def test_target_bound_decomposer_resume_ignores_wrapper_candidate_hash():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        target_context_hash="c" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        candidate_sha256="",
+    )
+    assert is_contract_bound_subgoal_resume(checkpoint)
+    assert should_resume_downstream(
+        checkpoint,
+        candidate_sha256="different-wrapper-hash",
+        force_strategy=False,
+        strategy_trigger_exists=False,
+    )
+
+
+def test_contract_bound_definition_resolution_preserves_provenance_on_wrapper_drift():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DEFINITION_RESOLUTION.value,
+        current_role="definition_resolution",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        target_context_hash="c" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        candidate_sha256="stale-wrapper-hash",
+        definition_audit_outcome="COMPLETE",
+    )
+    assert is_contract_bound_subgoal_resume(checkpoint)
+    assert should_resume_downstream(
+        checkpoint,
+        candidate_sha256="new-wrapper-hash",
+        force_strategy=False,
+        strategy_trigger_exists=False,
+    )
+
+
+def test_duplicate_wrapper_block_recovers_bound_decomposer():
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.BLOCKED.value,
+        current_role="blocked",
+        target_obligation_id="RH-C0-root",
+        proposition_hash="p" * 64,
+        target_context_hash="c" * 64,
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        blocked_reason=(
+            "Strategy proposals were duplicates; reuse the current candidate "
+            "and unresolved role."
+        ),
+        recovery_events=[{
+            "event_type": "RESEARCH_CONTRACT_SUBGOAL_REQUIRED",
+            "event_id": "e" * 64,
+            "target_obligation_id": "RH-C0-root",
+            "research_contract_id": "RC-root",
+        }],
+    )
+    event = recover_contract_subgoal_duplicate_block(checkpoint)
+    assert event is not None
+    assert event.event_type == (
+        BlockedEventType.VALIDATED_EVIDENCE_BACKJUMP.value
+    )
+    assert checkpoint.proof_state == ProofState.DECOMPOSER
+    assert checkpoint.blocked_reason == ""
+    assert recover_contract_subgoal_duplicate_block(checkpoint) is None
+
+
+def test_research_contract_dependency_repairs_to_artifact_hash(tmp_path):
+    checkpoint = OrchestrationCheckpoint(
+        strategy_tournament_hash="tournament-content-hash",
+        research_contract_id="RC-root",
+        target_obligation_id="RH-C0-root",
+    )
+    path = tmp_path / "orchestration.json"
+    tournament = persist_validated_artifact(
+        path,
+        checkpoint,
+        role="strategy_tournament",
+        payload={"schema_version": 1, "plans": []},
+        dependencies=[],
+        source_run_id="host:strategy",
+    )
+    contract = persist_validated_artifact(
+        path,
+        checkpoint,
+        role="research_contract",
+        payload={"schema_version": 1, "contract_id": "RC-root"},
+        dependencies=[checkpoint.strategy_tournament_hash],
+        source_run_id="host:contract",
+    )
+    assert contract.dependencies != [tournament.sha256]
+    assert repair_research_contract_artifact_dependency(checkpoint)
+    assert contract.dependencies == [tournament.sha256]
+    assert not repair_research_contract_artifact_dependency(checkpoint)
+
+
+def test_stale_root_goal_cache_reconciles_without_losing_contract(tmp_path):
+    canonical = hashlib.sha256(b"RiemannHypothesis").hexdigest()
+    state_path = tmp_path / "agent_state.json"
+    state_path.write_text(json.dumps({
+        "schema_version": 1,
+        "research_goal": "stale Hilbert-Polya cache",
+    }))
+    ledger = {
+        "ledger_id": "rh",
+        "version": 96,
+        "obligations": [{
+            "obligation_id": "RH-C0-root",
+            "statement": "RiemannHypothesis",
+            "status": "UNRESOLVED",
+            "parent_id": "",
+            "formal_status": "FORMALIZED",
+            "lean_signature_hash": canonical,
+            "proposition_hash": canonical,
+        }],
+    }
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id="RH-C0-root",
+        target_statement="RiemannHypothesis",
+        proposition_hash=canonical,
+        parent_statement_sha256=canonical,
+        parent_signature_sha256=canonical,
+        root_goal_sha256=hashlib.sha256(b"stale").hexdigest(),
+        selected_strategy_plan_id="SP-root",
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+    )
+    assert reconcile_canonical_root_binding(
+        checkpoint,
+        ledger,
+        state_path=state_path,
+    )
+    assert checkpoint.root_goal_sha256 == canonical
+    assert checkpoint.research_contract_id == "RC-root"
+    assert checkpoint.research_contract_hash == "contract-hash"
+    assert ledger["root_goal_hash"] == canonical
+    assert json.loads(state_path.read_text())["research_goal"] == (
+        "RiemannHypothesis"
+    )
+    assert not reconcile_canonical_root_binding(
+        checkpoint,
+        ledger,
+        state_path=state_path,
+    )
+
+
+def test_true_canonical_proposition_mismatch_preserves_checkpoint(tmp_path):
+    canonical = hashlib.sha256(b"RiemannHypothesis").hexdigest()
+    state_path = tmp_path / "agent_state.json"
+    state_path.write_text(json.dumps({
+        "schema_version": 1,
+        "research_goal": "stale cache",
+    }))
+    ledger = {"obligations": [{
+        "obligation_id": "RH-C0-root",
+        "statement": "RiemannHypothesis",
+        "parent_id": "",
+        "formal_status": "FORMALIZED",
+        "proposition_hash": canonical,
+    }]}
+    checkpoint = OrchestrationCheckpoint(
+        target_obligation_id="RH-C0-root",
+        proposition_hash="f" * 64,
+        research_contract_id="RC-root",
+        research_contract_hash="contract-hash",
+    )
+    before = asdict(checkpoint)
+    with pytest.raises(
+        ValueError,
+        match="CANONICAL_ROOT_PROPOSITION_MISMATCH",
+    ):
+        reconcile_canonical_root_binding(
+            checkpoint,
+            ledger,
+            state_path=state_path,
+        )
+    assert asdict(checkpoint) == before
+    assert json.loads(state_path.read_text())["research_goal"] == "stale cache"
 
 
 def test_live_status_atomic_transitions_and_permissions(tmp_path):
@@ -151,6 +386,18 @@ def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
         lean_symbol_table_id="lean-symbols-test",
         lean_symbol_table_version=1,
         formalizer_unit_hashes={"PARENT_SIGNATURE": "a" * 64},
+        candidate_count=9,
+        exploration_contract_id="DEC-test",
+        exploration_selected_candidate_ids=["XC-1", "XC-2", "XC-3"],
+        exploration_current_index=1,
+        exploration_current_candidate_id="XC-2",
+        exploration_formalization_status="PENDING",
+        exploration_reduction_status="NOT_STARTED",
+        exploration_rejections={"XC-0": ["EXACT_DUPLICATE"]},
+        exploration_candidate_refs=[{
+            "candidate_id": "XC-1",
+            "memo_sha256": "m" * 64,
+        }],
     )
     save_orchestration_checkpoint(state_path, checkpoint)
     monkeypatch.setenv(
@@ -174,7 +421,7 @@ def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
     assert live["active_role"] == "decomposer"
     assert live["resume_origin"] == "DECOMPOSER"
     assert live["retry_count"] == 1
-    assert live["strategy_reused"] is True
+    assert live["strategy_reused"] is False
     assert live["architecture_version"] == ARCHITECTURE_VERSION
     assert live["active_gate"] == "HOST_TYPED_IR_GATE"
     assert live["typed_ir_hash"] == "b" * 64
@@ -187,6 +434,12 @@ def test_live_status_reports_exact_orchestration_state(tmp_path, monkeypatch):
     assert live["validated_formalizer_unit_hashes"] == {
         "PARENT_SIGNATURE": "a" * 64,
     }
+    exploration = live["decomposition_exploration"]
+    assert exploration["generated"] == 9
+    assert exploration["selected_candidate_ids"] == ["XC-1", "XC-2", "XC-3"]
+    assert exploration["current_candidate_id"] == "XC-2"
+    assert exploration["rejected_reason_codes"] == ["EXACT_DUPLICATE"]
+    assert "memo_sha256" not in json.dumps(exploration)
 
 
 @pytest.mark.parametrize(
@@ -302,7 +555,7 @@ def test_semantic_proposal_archive_does_not_consume_adapter_budget(tmp_path):
     assert restarted.retry_counters == {}
     assert ("protocol_" + "attempt") not in restarted.__dataclass_fields__
     assert restarted.novel_proposals == 11
-    assert restarted.strategy_reused is True
+    assert restarted.strategy_reused is False
     assert restarted.proof_state == ProofState.DECOMPOSER
     compact = compact_decomposition_novelty_ledger(restarted)
     assert compact["count"] == 11
@@ -1381,6 +1634,33 @@ def test_host_candidate_rolls_back_to_nearest_valid_ancestor():
     assert candidate["target_obligation_id"] == "RH-C2-gap"
 
 
+def test_host_resume_candidate_uses_bound_root_not_quarantined_child():
+    current = {**_candidate(), "target_obligation_id": "RH-C1"}
+    ledger = {"obligations": [
+        {
+            "obligation_id": "RH-C0-root",
+            "statement": "RiemannHypothesis",
+            "status": "UNRESOLVED",
+            "formal_status": "FORMALIZED",
+            "parent_id": "",
+        },
+        {
+            "obligation_id": "RH-C1",
+            "statement": "Stale quarantined child.",
+            "status": "QUARANTINED",
+            "parent_id": "RH-C0-root",
+        },
+    ]}
+    candidate = build_host_candidate(
+        current,
+        ledger,
+        target_id="RH-C0-root",
+    )
+    assert candidate["target_obligation_id"] == "RH-C0-root"
+    assert candidate["hypothesis"] == "RiemannHypothesis"
+    assert "RH-C1" not in candidate["generator_directive"]
+
+
 def test_host_candidate_uses_recorded_premise_backjump_target():
     current = {**_candidate(), "target_obligation_id": "ROOT-bad"}
     ledger = {
@@ -1535,7 +1815,7 @@ def test_host_missing_definition_backjump_continues_and_restarts_idempotently(
         assert current.validated_artifacts[
             "definition_auditor"
         ].sha256 == definition_ref.sha256
-        assert current.strategy_reused is True
+        assert current.strategy_reused is False
         if current.proof_state == ProofState.HOST_TYPED_IR_GATE:
             current.transition(
                 ProofState.SYNTHESIS,
@@ -1686,7 +1966,7 @@ def test_missing_definition_precontract_route_starts_next_run_without_strategy(
     assert sleeps == [0.25]
     persisted = load_orchestration_checkpoint(state_path)
     assert persisted.proof_state == ProofState.DECOMPOSER
-    assert persisted.strategy_reused is True
+    assert persisted.strategy_reused is False
     assert persisted.selected_move_id == "REGISTER_DEFINITION_OBLIGATION"
     assert persisted.typed_ir_hash == typed_ir_hash
     assert persisted.elaborated_theorem_id == theorem_id
@@ -2214,6 +2494,97 @@ def test_runtime_health_check_is_read_only(monkeypatch):
         ("127.0.0.1", 51051),
         ("127.0.0.1", 8090),
     ]
+
+
+def _benchmark_report(status, *, generation="generation-a", version=1):
+    return {
+        "id": "br_exact",
+        "generation": generation,
+        "status": status,
+        "report_version": version,
+        "finished_at": 2.0 if status != "running" else None,
+        "stages": [] if status == "running" else [{"name": "final"}],
+    }
+
+
+def test_benchmark_finalization_accepts_delayed_running_to_completed(
+    monkeypatch,
+):
+    reports = iter([
+        _benchmark_report("running", version=0),
+        _benchmark_report("completed"),
+    ])
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: next(reports),
+    )
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor.time.sleep",
+        lambda _seconds: None,
+    )
+    report = wait_for_benchmark_finalization(
+        dashboard="http://dashboard",
+        run_id="br_exact",
+        generation="generation-a",
+        process_exit_code=0,
+        timeout_s=1,
+    )
+    assert report["status"] == "completed"
+    assert report["report_version"] == 1
+
+
+def test_benchmark_finalization_running_timeout_is_typed(monkeypatch):
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: _benchmark_report("running", version=0),
+    )
+    with pytest.raises(BenchmarkFinalizationTimeout) as raised:
+        wait_for_benchmark_finalization(
+            dashboard="http://dashboard",
+            run_id="br_exact",
+            generation="generation-a",
+            process_exit_code=0,
+            timeout_s=0,
+        )
+    assert raised.value.code == "BENCHMARK_FINALIZATION_TIMEOUT"
+    assert raised.value.last_report["status"] == "running"
+    assert raised.value.process_exit_code == 0
+
+
+def test_benchmark_finalization_preserves_failed_terminal(monkeypatch):
+    failed = _benchmark_report("failed")
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: failed,
+    )
+    report = wait_for_benchmark_finalization(
+        dashboard="http://dashboard",
+        run_id="br_exact",
+        generation="generation-a",
+        process_exit_code=0,
+    )
+    error = BenchmarkTerminalFailure(report, process_exit_code=0)
+    assert error.report["status"] == "failed"
+    assert "terminal failure" in str(error)
+
+
+def test_benchmark_finalization_rejects_concurrent_run_generation(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "autoresearch.prefill.supervisor._json_request",
+        lambda _url: _benchmark_report(
+            "completed",
+            generation="generation-other",
+        ),
+    )
+    with pytest.raises(ReportValidationError, match="generation mismatch"):
+        wait_for_benchmark_finalization(
+            dashboard="http://dashboard",
+            run_id="br_exact",
+            generation="generation-a",
+            process_exit_code=0,
+        )
 
 
 def test_strategy_prefill_heartbeat_reports_delta(monkeypatch, capsys):

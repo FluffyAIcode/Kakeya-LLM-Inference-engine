@@ -20,7 +20,115 @@ from autoresearch.prefill.semantic_decompose import (
 )
 
 
-def _agent_cache_gate(warm_delta: dict, actual_delta: dict) -> bool:
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(str(value).encode()).hexdigest()
+
+
+def _route_label(*, target_id: str, run_id: str, phase: str) -> str:
+    return "|".join((
+        "kakeya-route-v1",
+        _sha256_text(target_id),
+        _sha256_text(run_id),
+        str(phase),
+    ))
+
+
+def _bound_route(
+    stats: dict,
+    *,
+    session_id: str,
+    token_ids,
+    target_id: str,
+    run_id: str,
+    phase: str,
+) -> dict:
+    expected = {
+        "target_hash": _sha256_text(target_id),
+        "prompt_hash": hashlib.sha256(json.dumps(
+            [int(token) for token in token_ids],
+            separators=(",", ":"),
+        ).encode()).hexdigest(),
+        "session_hash": _sha256_text(session_id),
+        "run_hash": _sha256_text(run_id),
+        "phase": phase,
+    }
+    matches = [
+        item for item in stats.get("recent_routes", [])
+        if all(item.get(key) == value for key, value in expected.items())
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "request-scoped route evidence missing or ambiguous: "
+            f"phase={phase} matches={len(matches)}",
+        )
+    route = dict(matches[0])
+    required = {
+        "request_id", "target_hash", "prompt_hash", "model_hash",
+        "cache_hash", "session_hash", "run_hash", "started_at_ns",
+        "completed_at_ns", "requested_route", "prefill_source",
+        "kv_import_source", "cache_hit_source", "decode_source", "fallback_reason",
+        "remote_job_status",
+    }
+    if route.get("schema_version") != 1 or any(
+        key not in route or route[key] in (None, "")
+        for key in required - {"fallback_reason"}
+    ):
+        raise RuntimeError("request-scoped route evidence is incomplete")
+    if int(route["completed_at_ns"]) < int(route["started_at_ns"]):
+        raise RuntimeError("request-scoped route timestamps are invalid")
+    return route
+
+
+def _agent_cache_gate(
+    warm_delta: dict,
+    actual_delta: dict,
+    *,
+    warm_route: dict | None = None,
+    actual_route: dict | None = None,
+) -> bool:
+    if warm_route is not None or actual_route is not None:
+        if warm_route is None or actual_route is None:
+            return False
+        bindings = ("target_hash", "prompt_hash", "model_hash", "cache_hash", "run_hash")
+        warm_verified = (
+            (
+                warm_route.get("prefill_source") == "allens_remote_compute"
+                and warm_route.get("kv_import_source")
+                == "allens_remote_snapshot"
+                and warm_route.get("cache_hit_source") == "allens_remote"
+                and warm_route.get("remote_job_status") == "completed"
+            )
+            or (
+                warm_route.get("prefill_source") == "allens_remote_cache"
+                and warm_route.get("kv_import_source")
+                == "allens_remote_snapshot"
+                and warm_route.get("cache_hit_source") == "allens_remote"
+                and warm_route.get("remote_job_status")
+                == "verified_remote_cache"
+            )
+            or (
+                warm_route.get("prefill_source") == "allens_remote_compute"
+                and warm_route.get("kv_import_source")
+                == "primary_local_snapshot"
+                and warm_route.get("cache_hit_source") == "primary_local_hot"
+                and warm_route.get("remote_job_status")
+                == "verified_prior_remote"
+            )
+        )
+        return (
+            all(warm_route.get(key) == actual_route.get(key) for key in bindings)
+            and warm_route.get("requested_route") == "remote_required"
+            and warm_verified
+            and warm_route.get("decode_source") == "primary"
+            and not warm_route.get("fallback_reason")
+            and actual_route.get("prefill_source") == "allens_remote_compute"
+            and actual_route.get("kv_import_source") == "primary_local_snapshot"
+            and actual_route.get("cache_hit_source") == "primary_local_hot"
+            and actual_route.get("remote_job_status") == "verified_prior_remote"
+            and actual_route.get("decode_source") == "primary"
+            and not actual_route.get("fallback_reason")
+            and warm_route.get("session_hash") != actual_route.get("session_hash")
+        )
     return (
         (
             warm_delta.get("remote_hits", 0) >= 1
@@ -93,6 +201,8 @@ def _infer(
     max_semantic_stall_chunks: int = 3,
     client_label: str = "agent-gan",
     max_retained_tokens: int = 0,
+    route_binding: dict[str, str] | None = None,
+    route_phase: str = "",
 ):
     if max_semantic_stall_chunks <= 0:
         raise ValueError("max_semantic_stall_chunks must be > 0")
@@ -106,10 +216,19 @@ def _infer(
         )
     before = get_stats()
     started = time.perf_counter()
+    binding = dict(route_binding or {})
+    if binding:
+        client_label = _route_label(
+            target_id=binding["target_id"],
+            run_id=binding["run_id"],
+            phase=route_phase,
+        )
+    session_id = ""
     with client.create_session(
         eos_token_ids=eos_ids,
         client_label=client_label,
     ) as s:
+        session_id = str(getattr(s, "session_id", ""))
         append_started = time.perf_counter()
         s.append(token_ids)
         append_done = time.perf_counter()
@@ -171,6 +290,16 @@ def _infer(
         response_cap_exhausted = stop_reason == "client_safety_limit"
         done = time.perf_counter()
     after = get_stats()
+    route_provenance = None
+    if binding:
+        route_provenance = _bound_route(
+            after,
+            session_id=session_id,
+            token_ids=token_ids,
+            target_id=binding["target_id"],
+            run_id=binding["run_id"],
+            phase=route_phase,
+        )
     first_at = first_at or done
     return generated, {
         "prefix_tokens": len(token_ids),
@@ -180,6 +309,7 @@ def _infer(
         "decode_s": done - append_done,
         "e2e_s": done - started,
         "delta": _delta(before, after),
+        "route_provenance": route_provenance,
         "stop_reason": stop_reason,
         "complete": stop_reason in {"eos", "semantic_complete"},
         "eos_reached": stop_reason == "eos",

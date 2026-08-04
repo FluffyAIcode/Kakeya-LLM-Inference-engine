@@ -103,9 +103,30 @@ def _resumed_report(tmp_path, stages):
         "path": str(artifact_path),
         "source_run_id": "br_source",
         "validated_at": 1,
+        "reusable": True,
+        "validation_status": "validated",
     }
+    reused_refs = {}
+    for role, sha in (
+        ("strategy", candidate_sha),
+        ("generator", generator_sha),
+    ):
+        role_path = tmp_path / f"{role}.json"
+        role_path.write_text(json.dumps({"role": role, "sha256": sha}))
+        role_encoded = role_path.read_bytes()
+        reused_refs[role] = {
+            "role": role,
+            "sha256": hashlib.sha256(role_encoded).hexdigest(),
+            "schema_version": 1,
+            "dependencies": [],
+            "path": str(role_path),
+            "source_run_id": "br_source",
+            "validated_at": 1,
+            "reusable": True,
+            "validation_status": "validated",
+        }
     provenance = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "resumed",
         "resumed_from_state": "DECOMPOSER",
         "resumed_from_role": "decomposer",
@@ -114,8 +135,7 @@ def _resumed_report(tmp_path, stages):
         "critic_reused": True,
         "bindings": payload["bindings"],
         "reused_artifacts": {
-            "strategy": {"sha256": candidate_sha, "source_run_id": "br_source"},
-            "generator": {"sha256": generator_sha, "source_run_id": "br_source"},
+            **reused_refs,
             "critic": critic_ref,
         },
         "newly_executed_stages": [

@@ -168,6 +168,8 @@ def test_benchmark_api_create_update_list_detail_and_pagination(tmp_path):
         headers={"X-API-Key": "secret"},
     ).json()
     run_id = created["id"]
+    generation = created["generation"]
+    assert created["report_version"] == 0
     assert client.get("/v1/network/benchmarks/live").json()["id"] == run_id
     stage = {
         "name": "remote_compute",
@@ -183,10 +185,16 @@ def test_benchmark_api_create_update_list_detail_and_pagination(tmp_path):
     }
     updated = client.patch(
         f"/v1/network/benchmarks/{run_id}",
-        json={"stages": [stage], "status": "completed", "finished_at": 2},
+        json={
+            "stages": [stage],
+            "status": "completed",
+            "finished_at": 2,
+            "generation": generation,
+        },
         headers={"X-API-Key": "secret"},
     )
     assert updated.status_code == 200
+    assert updated.json()["report_version"] == 1
     assert client.get("/v1/network/benchmarks/live").json() is None
     assert client.get("/v1/network/benchmarks").json()[0]["id"] == run_id
     assert client.get(f"/v1/network/benchmarks/{run_id}").json()["stages"][0]["ok"]
@@ -204,6 +212,11 @@ def test_benchmark_api_create_update_list_detail_and_pagination(tmp_path):
     assert client.patch(
         f"/v1/network/benchmarks/{run_id}",
         json={"status": "invalid"},
+        headers={"X-API-Key": "secret"},
+    ).status_code == 400
+    assert client.patch(
+        f"/v1/network/benchmarks/{run_id}",
+        json={"generation": "concurrent-generation"},
         headers={"X-API-Key": "secret"},
     ).status_code == 400
     assert client.post(

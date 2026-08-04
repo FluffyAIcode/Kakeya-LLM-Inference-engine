@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -55,8 +55,27 @@ from autoresearch.prefill.lean_gate import (
 )
 from autoresearch.prefill.live_status import AtomicLiveStatus
 from autoresearch.prefill.host_compiler import run_host_gates
-from autoresearch.prefill.architecture_v7 import run_architecture_v7_entry
-from autoresearch.prefill.strategy_tournament import StrategyEvent
+from autoresearch.prefill.architecture_v9 import (
+    run_architecture_v9_entry,
+    run_host_definition_gate,
+)
+from autoresearch.prefill.cursor_strategy import CursorStrategyAdapter
+from autoresearch.prefill.strategy_tournament import (
+    StrategyEvent,
+    build_decomposition_exploration_plan,
+)
+from autoresearch.prefill.decomposition_exploration import (
+    gate_decomposition_exploration,
+    generate_private_candidate_refs,
+    next_formalization_candidate,
+    prefilter_private_candidates,
+    rank_private_candidates,
+)
+from autoresearch.prefill.candidate_representation import (
+    RepresentationOutcome,
+    analyze_private_candidate_representation,
+    persist_representation_gap_report,
+)
 from autoresearch.prefill.stepwise_proof import (
     ActionSelection,
     LeanExecutionContext,
@@ -87,8 +106,11 @@ from autoresearch.prefill.math_ir import (
     GateStatus,
 )
 from autoresearch.prefill.orchestration_state import (
+    DefinitionAuditOutcomeType,
     OrchestrationCheckpoint,
+    PremiseAuditOutcomeType,
     ProofState,
+    apply_typed_premise_outcome,
     archive_decomposition_rejection,
     binding_mismatch,
     classify_failure,
@@ -96,10 +118,13 @@ from autoresearch.prefill.orchestration_state import (
     load_checkpoint as load_orchestration_checkpoint,
     load_validated_artifacts,
     persist_validated_artifact,
+    reconcile_checkpoint_ledger_version,
     require_typed_dispatch,
+    route_definition_audit_outcome,
     save_checkpoint as save_orchestration_checkpoint,
     sha256_text,
     state_for_role,
+    verified_reuse_provenance,
 )
 from autoresearch.prefill.definition_registry import (
     build_definition_choice_registry,
@@ -107,7 +132,15 @@ from autoresearch.prefill.definition_registry import (
 )
 from autoresearch.prefill.theorem_cards import (
     build_theorem_card_index,
+    pinned_environment_hash,
     search_theorem_cards,
+)
+from autoresearch.prefill.target_context import mathematical_state_fingerprint
+from autoresearch.prefill.resume_certificate import (
+    ResumeCertificateError,
+    consume_resume_certificate,
+    current_runtime_binding,
+    resume_requires_certificate,
 )
 from autoresearch.prefill.semantic_decompose import (
     SemanticResponseIncomplete,
@@ -225,6 +258,24 @@ def _telemetry_request(url: str, **kwargs):
         return None
 
 
+def dispatch_certified_architecture9_role(
+    checkpoint_path: Path,
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    project_root: Path,
+    interface_strategy_adapter: CursorStrategyAdapter | None = None,
+) -> tuple[OrchestrationCheckpoint, str]:
+    """Dispatch a consumed certificate to its host-owned role."""
+    if checkpoint.proof_state != ProofState.DEFINITION_RESOLUTION:
+        return checkpoint, ""
+    return run_host_definition_gate(
+        checkpoint_path,
+        checkpoint,
+        project_root=project_root,
+        interface_strategy_adapter=interface_strategy_adapter,
+    )
+
+
 _RUNTIME_ARTIFACT = re.compile(
     r"^\s*(?:generator>|critic>|prompt>|\[(?:metrics|allens|error|"
     r"telemetry-warning|protected|supervisor)\]|Traceback\b)",
@@ -309,6 +360,10 @@ class ProofObligation:
     dependency_ids: list[str] = field(default_factory=list)
     certificate_reversible_status: str = ""
     public_assumptions: list[str] = field(default_factory=list)
+    source_card_ids: list[str] = field(default_factory=list)
+    root_candidate_ids: list[str] = field(default_factory=list)
+    proposition_hash: str = ""
+    root_bootstrap_certificate_hash: str = ""
 
 
 @dataclass
@@ -382,6 +437,7 @@ class DefinitionAudit:
     upstream_artifact_hashes: list[str]
     definitions: list[dict]
     missing_definitions: list[dict]
+    audit_outcome: str = ""
 
 
 @dataclass(frozen=True)
@@ -482,16 +538,23 @@ def build_resumed_report_provenance(
     stages: list[dict],
 ) -> dict:
     """Describe a partial run without claiming unexecuted benchmark stages."""
-    critic_ref = checkpoint.validated_artifacts["critic"]
+    reuse = verified_reuse_provenance(checkpoint)
+    critic_ref = reuse["reused_artifacts"].get("critic")
+    if critic_ref is None:
+        raise ResumeValidationError(
+            "resumed report has no reusable validated Critic artifact ref"
+        )
     bindings = critic_payload["bindings"]
     return {
         "schema_version": REPORT_PROVENANCE_SCHEMA_VERSION,
         "mode": "resumed",
         "resumed_from_state": checkpoint.state,
         "resumed_from_role": checkpoint.current_role,
-        "strategy_reused": True,
-        "generator_reused": True,
-        "critic_reused": True,
+        "strategy_reused": reuse["strategy_reused"],
+        "generator_reused": reuse["generator_reused"],
+        "critic_reused": reuse["critic_reused"],
+        "role_reused": reuse["role_reused"],
+        "reuse_diagnostics": reuse["diagnostics"],
         "bindings": {
             name: bindings[name]
             for name in (
@@ -505,17 +568,7 @@ def build_resumed_report_provenance(
                 "ledger_version",
             )
         },
-        "reused_artifacts": {
-            "strategy": {
-                "sha256": bindings["strategy_sha256"],
-                "source_run_id": critic_payload["source_run_id"],
-            },
-            "generator": {
-                "sha256": bindings["generator_output_sha256"],
-                "source_run_id": critic_payload["source_run_id"],
-            },
-            "critic": asdict(critic_ref),
-        },
+        "reused_artifacts": reuse["reused_artifacts"],
         "newly_executed_stages": [
             str(stage.get("name", ""))
             for stage in stages
@@ -524,30 +577,77 @@ def build_resumed_report_provenance(
 
 
 def build_architecture7_report_provenance(
-    checkpoint: OrchestrationCheckpoint,
+    checkpoint_before: OrchestrationCheckpoint,
+    checkpoint_after: OrchestrationCheckpoint,
     stages: list[dict],
+    *,
+    ledger_sha256: str,
+    environment_sha256: str,
 ) -> dict:
-    """Report typed continuation without claiming legacy model stages."""
+    """Report typed continuation with exact stage and checkpoint ownership."""
+    reuse = verified_reuse_provenance(checkpoint_before)
+    before_artifacts = reuse["reused_artifacts"]
+    after_artifacts = {
+        role: asdict(reference)
+        for role, reference in checkpoint_after.validated_artifacts.items()
+    }
+    produced_artifacts = {
+        role: reference
+        for role, reference in after_artifacts.items()
+        if (
+            role not in before_artifacts
+            or before_artifacts[role]["sha256"] != reference["sha256"]
+        )
+    }
+    source_runs = {
+        role: reference["source_run_id"]
+        for role, reference in after_artifacts.items()
+    }
     return {
         "schema_version": REPORT_PROVENANCE_SCHEMA_VERSION,
-        "mode": "strategy_tournament_stepwise_generator_v1",
-        "resumed_from_state": checkpoint.state,
-        "resumed_from_role": checkpoint.current_role,
-        "strategy_reused": False,
-        "generator_reused": False,
-        "critic_reused": False,
-        "bindings": {
-            "target_obligation_id": checkpoint.target_obligation_id,
-            "candidate_sha256": checkpoint.candidate_sha256,
-            "parent_statement_sha256": checkpoint.parent_statement_sha256,
-            "parent_signature_sha256": checkpoint.parent_signature_sha256,
-            "root_goal_sha256": checkpoint.root_goal_sha256,
-            "ledger_id": checkpoint.ledger_id,
-            "ledger_version": checkpoint.ledger_version,
-            "research_contract_id": checkpoint.research_contract_id,
-            "research_contract_hash": checkpoint.research_contract_hash,
+        "mode": "typed_partial_resume_v2",
+        "checkpoint_before": {
+            "state": checkpoint_before.state,
+            "role": checkpoint_before.current_role,
         },
-        "reused_artifacts": {},
+        "checkpoint_after": {
+            "state": checkpoint_after.state,
+            "role": checkpoint_after.current_role,
+        },
+        "bindings": {
+            "target_obligation_id": checkpoint_after.target_obligation_id,
+            "candidate_sha256": checkpoint_after.candidate_sha256,
+            "strategy_sha256": (
+                checkpoint_after.strategy_sha256
+                or checkpoint_after.candidate_sha256
+            ),
+            "parent_statement_sha256": (
+                checkpoint_after.parent_statement_sha256
+            ),
+            "parent_signature_sha256": (
+                checkpoint_after.parent_signature_sha256
+            ),
+            "root_goal_sha256": checkpoint_after.root_goal_sha256,
+            "ledger_id": checkpoint_after.ledger_id,
+            "ledger_version": checkpoint_after.ledger_version,
+            "ledger_sha256": ledger_sha256,
+            "environment_sha256": environment_sha256,
+            "target_context_hash": checkpoint_after.target_context_hash,
+            "strategy_plan_hash": checkpoint_after.target_strategy_plan_hash,
+            "research_contract_id": checkpoint_after.research_contract_id,
+            "research_contract_hash": checkpoint_after.research_contract_hash,
+        },
+        "source_runs": source_runs,
+        "reused_artifacts": before_artifacts,
+        "produced_artifacts": produced_artifacts,
+        "reused_stages": list(before_artifacts),
+        "reuse_flags": {
+            "strategy_reused": reuse["strategy_reused"],
+            "generator_reused": reuse["generator_reused"],
+            "critic_reused": reuse["critic_reused"],
+            "role_reused": reuse["role_reused"],
+        },
+        "reuse_diagnostics": reuse["diagnostics"],
         "newly_executed_stages": [
             str(stage.get("name", "")) for stage in stages
         ],
@@ -688,6 +788,45 @@ def pending_obligations(
     ]
 
 
+def quarantine_terminal_interface_target(
+    ledger: ProofObligationLedger,
+    *,
+    target_id: str,
+    exhaustion_hash: str,
+    source_run_id: str,
+) -> bool:
+    """Atomically prepare one root target for durable terminal quarantine."""
+    target = next(
+        (item for item in ledger.obligations if item.obligation_id == target_id),
+        None,
+    )
+    if target is None:
+        raise ValueError("interface exhaustion target is absent from ledger")
+    reason = "TARGET_INTERFACE_EXHAUSTED:" + exhaustion_hash
+    if (
+        target.status == "QUARANTINED"
+        and target.quarantine_reason == reason
+        and target.quarantine_reversible_status == "ACTIVE"
+    ):
+        return False
+    if target.status != "UNRESOLVED":
+        raise ValueError("only an unresolved target may be quarantined")
+    target.quarantine_prior_status = target.status
+    target.status = "QUARANTINED"
+    target.quarantine_reason = reason
+    target.quarantine_root_id = target_id
+    target.quarantine_run_id = source_run_id
+    target.quarantine_confidence = 1.0
+    target.quarantine_evidence_type = "CONTENT_ADDRESSED_EXHAUSTION"
+    target.quarantine_evidence_source = exhaustion_hash
+    target.quarantine_auditor_run_id = source_run_id
+    target.quarantine_proponent_run_id = ""
+    target.quarantine_reversible_status = "ACTIVE"
+    ledger.backjump_target_id = "ROOT_UNAVAILABLE"
+    ledger.version += 1
+    return True
+
+
 def format_proof_ledger(
     ledger: ProofObligationLedger,
     obligations: list[ProofObligation] | None = None,
@@ -785,8 +924,8 @@ _ISSUE_RESPONSE = re.compile(
     re.MULTILINE,
 )
 _ISSUE_VERDICT = re.compile(
-    r"^### ISSUE_VERDICT\s+(\S+)\s*$"
-    r"(?P<body>.*?)(?=^### ISSUE_VERDICT\s+|\Z)",
+    r"^### ISSUE_VERDICT(?:[ \t]+(\S+))?[ \t]*$"
+    r"(?P<body>.*?)(?=^### ISSUE_VERDICT(?:[ \t]+\S+)?[ \t]*$|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -3867,6 +4006,10 @@ def _typed_package_text(package: dict, *, role: str) -> str:
     sections = [
         ("PARENT CLAIM REF", package.get("parent_claim_ref", "")),
         ("TARGET ID", package.get("target_obligation_id", "")),
+        ("TARGET STATEMENT", package.get("target_statement", "")),
+        ("SELECTED STRATEGY PLAN ID", package.get("strategy_plan_id", "")),
+        ("VERIFIED TARGET EVIDENCE", package.get("verified_target_evidence", "")),
+        ("CURRENT TARGET GAPS", package.get("current_target_gaps", "")),
         ("PLAIN SEMANTIC SUMMARY", package.get("plain_semantic_summary", "")),
         ("VIEWPOINT", package.get("viewpoint", "")),
     ]
@@ -3981,7 +4124,7 @@ def _run_typed_definition_auditor(
     statement_hash = hashlib.sha256(parent.statement.encode()).hexdigest()
     goal_hash = hashlib.sha256(root_goal.encode()).hexdigest()
     target_ref = f"claim:{statement_hash}"
-    registry = build_definition_choice_registry(target_ref)
+    registry = build_definition_choice_registry(target_ref, parent.statement)
     expected_run_id = f"{orchestration_id}:definition_auditor:typed-v1"
     package = {
         "target_obligation_id": parent.obligation_id,
@@ -4068,29 +4211,172 @@ def _run_typed_definition_auditor(
         dependencies=[],
         source_run_id=expected_run_id,
     )
+    route_definition_audit_outcome(
+        checkpoint,
+        outcome=str(payload["audit_outcome"]),
+        artifact_hash=ref.sha256,
+        source_run_id=expected_run_id,
+        missing_definition_ids=(
+            str(item["definition_id"])
+            for item in payload["missing_definitions"]
+        ),
+        counterexample_objective=checkpoint.counterexample_objective,
+    )
     checkpoint.recovery_events.append({
         "event_type": (
             "DEFINITION_REGISTRY_REFRAME"
             if semantic_reframe else "DEFINITION_AUDIT_HOST_SERIALIZED"
         ),
         "event_id": envelope["content_hash"],
-        "target_state": ProofState.COUNTEREXAMPLE_WORKER.value,
+        "target_state": checkpoint.state,
         "transport_hash": decoded.transport_hash,
         "registry_hash": registry.registry_hash,
         "artifact_hash": ref.sha256,
         "created_at": time.time(),
     })
-    checkpoint.transition(
-        ProofState.COUNTEREXAMPLE_WORKER,
-        (
-            "definition-registry-reframe"
-            if semantic_reframe else "typed-definition-audit-host-serialized"
-        ),
-        source_run_id=expected_run_id,
-        strategy_reused=True,
-    )
     save_orchestration_checkpoint(checkpoint_path, checkpoint)
     return artifact, ref.sha256, text, expected_run_id
+
+
+def _start_decomposition_exploration(
+    checkpoint: OrchestrationCheckpoint,
+    *,
+    checkpoint_path: Path,
+    run_role,
+    orchestration_id: str,
+    artifact_hashes: Mapping[str, str],
+) -> dict[str, object]:
+    """Generate private candidates and persist only Host-owned references."""
+    plan = build_decomposition_exploration_plan(
+        target_ref=checkpoint.target_obligation_id,
+        parent_obligation_ref=checkpoint.target_obligation_id,
+        parent_complexity=12,
+        environment_hash=checkpoint.target_environment_hash,
+        registered_definition_ids=(),
+        theorem_card_ids=checkpoint.theorem_card_ids,
+        dependency_ids=artifact_hashes.values(),
+        evidence_refs=artifact_hashes.values(),
+        known_no_go_refs=checkpoint.forbidden_semantic_fingerprints,
+        candidate_budget=9,
+    )
+    contract = gate_decomposition_exploration(
+        plan,
+        target_obligation_id=checkpoint.target_obligation_id,
+        target_context_hash=checkpoint.target_context_hash,
+        proposition_hash=checkpoint.proposition_hash,
+        evidence_refs=artifact_hashes.values(),
+        no_go_refs=checkpoint.forbidden_semantic_fingerprints,
+        theorem_card_ids=checkpoint.theorem_card_ids,
+        candidate_budget=9,
+    )
+    checkpoint.transition(
+        ProofState.DECOMPOSITION_EXPLORATION,
+        "no-registered-move:private-candidate-exploration",
+        strategy_reused=True,
+    )
+
+    def run_candidate(short_id: str, prompt: str) -> str:
+        run_id = f"{orchestration_id}:exploration:{short_id}:v1"
+        text, actual_run_id = run_role(
+            "decomposer_scratchpad",
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Write one private untrusted mathematical memo in prose "
+                        "or LaTeX. Never emit JSON, Lean, a DSL, hidden "
+                        "assumptions, secrets, or an authoritative artifact."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            run_id,
+        )
+        if actual_run_id != run_id:
+            raise RuntimeError("exploration candidate run ID mismatch")
+        return text
+
+    candidates = generate_private_candidate_refs(
+        contract,
+        memo_dir=checkpoint_path.with_suffix(".exploration_memos"),
+        run_candidate=run_candidate,
+    )
+    checkpoint.transition(
+        ProofState.CANDIDATE_PREFILTER,
+        "private-candidates-generated",
+        strategy_reused=True,
+    )
+    filtered = prefilter_private_candidates(
+        candidates,
+        target_obligation_id=checkpoint.target_obligation_id,
+        no_go_refs=contract.no_go_refs,
+    )
+    ranking = rank_private_candidates(filtered.survivors, top_k=3)
+    checkpoint.exploration_contract_id = contract.contract_id
+    checkpoint.exploration_contract_hash = contract.content_hash
+    checkpoint.exploration_candidate_refs = [
+        {
+            key: value for key, value in asdict(candidate).items()
+            if key != "memo_path"
+        }
+        for candidate in candidates
+    ]
+    checkpoint.exploration_rejections = {
+        candidate_id: list(reasons)
+        for candidate_id, reasons in filtered.rejected
+    }
+    checkpoint.candidate_set_hash = filtered.candidate_set_hash
+    checkpoint.candidate_count = len(candidates)
+    checkpoint.candidate_hashes = [
+        candidate.semantic_fingerprint for candidate in candidates
+    ]
+    checkpoint.ranking_hash = ranking.ranking_hash
+    checkpoint.ranked_candidate_ids = list(ranking.ranked_candidate_ids)
+    checkpoint.exploration_selected_candidate_ids = list(
+        ranking.selected_candidate_ids
+    )
+    checkpoint.exploration_current_index = 0
+    checkpoint.exploration_current_candidate_id = (
+        ranking.selected_candidate_ids[0]
+        if ranking.selected_candidate_ids else ""
+    )
+    checkpoint.exploration_formalization_status = (
+        "PENDING" if ranking.selected_candidate_ids else "EXHAUSTED"
+    )
+    checkpoint.recovery_events.append({
+        "event_type": "DECOMPOSITION_EXPLORATION_CANDIDATES_READY",
+        "event_id": filtered.candidate_set_hash,
+        "contract_id": contract.contract_id,
+        "candidate_count": len(candidates),
+        "survivor_count": len(filtered.survivors),
+        "selected_candidate_ids": list(ranking.selected_candidate_ids),
+        "rejected_reason_codes": sorted({
+            reason for _, reasons in filtered.rejected for reason in reasons
+        }),
+        "private_memo_text_exposed": False,
+        "ledger_mutated": False,
+        "created_at": time.time(),
+    })
+    if ranking.selected_candidate_ids:
+        checkpoint.transition(
+            ProofState.CANDIDATE_FORMALIZATION,
+            "top-k-private-candidates-selected",
+            strategy_reused=True,
+        )
+    else:
+        checkpoint.transition(
+            ProofState.DECOMPOSER,
+            "decomposition-exploration-empty-backjump",
+            strategy_reused=True,
+        )
+    save_orchestration_checkpoint(checkpoint_path, checkpoint)
+    return {
+        "exploration_contract_id": contract.contract_id,
+        "candidate_set_hash": filtered.candidate_set_hash,
+        "candidate_count": len(candidates),
+        "survivor_count": len(filtered.survivors),
+        "selected_candidate_ids": list(ranking.selected_candidate_ids),
+    }
 
 
 def _run_typed_ir_v2(
@@ -4125,17 +4411,296 @@ def _run_typed_ir_v2(
                 "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
             },
         )
+    if checkpoint.representation_exhaustion_hash:
+        return DecompositionCertificateResult(
+            False,
+            ["CANDIDATE_REPRESENTATION_EXHAUSTED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "REPRESENTATION_STAGNATION",
+                "representation_exhaustion_hash": (
+                    checkpoint.representation_exhaustion_hash
+                ),
+                "scratchpad_rerun": False,
+                "strategy_rerun": False,
+            },
+        )
+    if checkpoint.exploration_exhaustion_hash:
+        return DecompositionCertificateResult(
+            False,
+            ["DECOMPOSITION_EXPLORATION_EXHAUSTED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "MATHEMATICAL_STAGNATION",
+                "exploration_exhaustion_hash": (
+                    checkpoint.exploration_exhaustion_hash
+                ),
+                "scratchpad_rerun": False,
+                "strategy_rerun": False,
+            },
+        )
+    if checkpoint.proof_state == ProofState.CANDIDATE_REPRESENTATION_ANALYSIS:
+        index = checkpoint.exploration_current_index
+        formalization_queue = checkpoint.ranked_candidate_ids
+        candidate_id, next_candidate_id, queue_exhausted = (
+            next_formalization_candidate(
+                formalization_queue,
+                current_index=index,
+            )
+        )
+        candidate = next(
+            item for item in checkpoint.exploration_candidate_refs
+            if item.get("candidate_id") == candidate_id
+        )
+        memo_hash = str(candidate.get("memo_sha256", ""))
+        memo_path = checkpoint_path.with_suffix(
+            ".exploration_memos",
+        ) / f"{memo_hash}.private"
+        memo_bytes = memo_path.read_bytes()
+        if hashlib.sha256(memo_bytes).hexdigest() != memo_hash:
+            raise RuntimeError("PRIVATE_CANDIDATE_MEMO_HASH_MISMATCH")
+        duplicate_ids = tuple(
+            str(item.get("candidate_id", ""))
+            for item in checkpoint.exploration_candidate_refs
+            if (
+                item.get("candidate_id") != candidate_id
+                and item.get("semantic_fingerprint")
+                == candidate.get("semantic_fingerprint")
+            )
+        )
+        report = analyze_private_candidate_representation(
+            candidate_id=candidate_id,
+            candidate_hash=memo_hash,
+            category=str(candidate.get("category", "")),
+            memo_text=memo_bytes.decode("utf-8"),
+            target_obligation_id=checkpoint.target_obligation_id,
+            target_context_hash=checkpoint.target_context_hash,
+            environment_hash=checkpoint.target_environment_hash,
+            duplicate_candidate_ids=duplicate_ids,
+        )
+        report_path = persist_representation_gap_report(
+            report,
+            checkpoint_path.with_suffix(".representation_reports"),
+        )
+        checkpoint.representation_report_refs[candidate_id] = {
+            "report_id": report.report_id,
+            "sha256": report.content_hash,
+            "path": str(report_path),
+            "mapper_registry_hash": report.mapper_registry_hash,
+            "environment_hash": report.environment_hash,
+            "audit_only": True,
+        }
+        checkpoint.representation_current_status = report.outcome
+        checkpoint.representation_missing_primitive_ids = list(
+            report.missing_primitive_ids
+        )
+        checkpoint.representation_source_resolution = report.outcome
+        checkpoint.representation_retry_state = (
+            "ELIGIBLE_AFTER_HASH_CHANGE"
+            if report.retry_allowed else "NOT_ALLOWED"
+        )
+        checkpoint.recovery_events.append({
+            "event_type": "CANDIDATE_REPRESENTATION_ANALYZED",
+            "event_id": report.content_hash,
+            "candidate_id": candidate_id,
+            "candidate_index": index,
+            "report_id": report.report_id,
+            "outcome": report.outcome,
+            "missing_primitive_ids": list(report.missing_primitive_ids),
+            "semantic_issue_ids": list(report.semantic_issue_ids),
+            "hidden_assumption_ids": list(report.hidden_assumption_ids),
+            "private_text_exposed": False,
+            "lean_invoked": False,
+            "ledger_mutated": False,
+            "created_at": time.time(),
+        })
+        if report.outcome in {
+            RepresentationOutcome.MAPPER_EXTENSION_REQUIRED.value,
+            RepresentationOutcome.REGISTRY_RESOLUTION.value,
+        }:
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                [report.outcome],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": "ENGINEERING_REPRESENTATION_GAP",
+                    "candidate_id": candidate_id,
+                    "representation_report_hash": report.content_hash,
+                    "math_budget_charged": False,
+                    "ledger_mutated": False,
+                },
+            )
+        if report.outcome == RepresentationOutcome.DEFINITION_RESOLUTION.value:
+            checkpoint.transition(
+                ProofState.DEFINITION_RESOLUTION,
+                "candidate-representation:autonomous-definition-resolution",
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                ["AUTONOMOUS_DEFINITION_RESOLUTION_REQUIRED"],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": report.outcome,
+                    "candidate_id": candidate_id,
+                    "representation_report_hash": report.content_hash,
+                    "ledger_mutated": False,
+                },
+            )
+        checkpoint.exploration_rejections[candidate_id] = [
+            "UNMAPPABLE_TYPED_CANDIDATE_INTENT",
+            report.outcome,
+            *report.semantic_issue_ids,
+            *report.hidden_assumption_ids,
+        ]
+        checkpoint.exploration_formalization_status = (
+            "REJECTED_" + report.outcome
+        )
+        if not queue_exhausted:
+            checkpoint.exploration_current_index = index + 1
+            checkpoint.exploration_current_candidate_id = (
+                next_candidate_id
+            )
+            checkpoint.exploration_formalization_status = "PENDING"
+            checkpoint.transition(
+                ProofState.CANDIDATE_FORMALIZATION,
+                "candidate-representation-rejected:try-next-ranked-candidate",
+                strategy_reused=True,
+            )
+            save_orchestration_checkpoint(checkpoint_path, checkpoint)
+            return DecompositionCertificateResult(
+                False,
+                ["CANDIDATE_REPRESENTATION_REJECTED_TRY_NEXT"],
+                artifacts,
+                hashes,
+                transcripts,
+                role_run_ids,
+                {
+                    "host_gates_passed": False,
+                    "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
+                    "candidate_id": candidate_id,
+                    "next_candidate_id": next_candidate_id,
+                    "strategy_rerun": False,
+                },
+            )
+        exhaustion = _canonical_json_hash({
+            "schema_version": 1,
+            "contract_id": checkpoint.exploration_contract_id,
+            "candidate_set_hash": checkpoint.candidate_set_hash,
+            "formalization_queue_ids": formalization_queue,
+            "representation_report_hashes": sorted(
+                item["sha256"]
+                for item in checkpoint.representation_report_refs.values()
+            ),
+            "rejections": checkpoint.exploration_rejections,
+            "ledger_mutated": False,
+        })
+        checkpoint.representation_exhaustion_hash = exhaustion
+        checkpoint.exploration_current_candidate_id = ""
+        checkpoint.exploration_formalization_status = (
+            "REPRESENTATION_EXHAUSTED"
+        )
+        checkpoint.representation_current_status = (
+            RepresentationOutcome.REPRESENTATION_EXHAUSTED.value
+        )
+        checkpoint.recovery_events.append({
+            "event_type": "CANDIDATE_REPRESENTATION_EXHAUSTED",
+            "event_id": exhaustion,
+            "contract_id": checkpoint.exploration_contract_id,
+            "candidate_set_hash": checkpoint.candidate_set_hash,
+            "analyzed_candidate_ids": list(formalization_queue),
+            "representation_report_hashes": sorted(
+                item["sha256"]
+                for item in checkpoint.representation_report_refs.values()
+            ),
+            "ledger_mutated": False,
+            "oprover_invoked": False,
+            "target_state": ProofState.DECOMPOSER.value,
+            "created_at": time.time(),
+        })
+        checkpoint.transition(
+            ProofState.DECOMPOSER,
+            "candidate-representation-exhausted:typed-backjump",
+            strategy_reused=True,
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False,
+            ["CANDIDATE_REPRESENTATION_EXHAUSTED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "REPRESENTATION_STAGNATION",
+                "representation_exhaustion_hash": exhaustion,
+            },
+        )
+    if (
+        checkpoint.proof_state == ProofState.CANDIDATE_FORMALIZATION
+        and checkpoint.ranked_candidate_ids
+    ):
+        index = checkpoint.exploration_current_index
+        candidate_id, _, _ = next_formalization_candidate(
+            checkpoint.ranked_candidate_ids,
+            current_index=index,
+        )
+        checkpoint.exploration_current_candidate_id = candidate_id
+        checkpoint.exploration_formalization_status = (
+            "UNMAPPABLE_TYPED_CANDIDATE_INTENT"
+        )
+        checkpoint.representation_current_status = "PENDING_STATIC_ANALYSIS"
+        checkpoint.representation_missing_primitive_ids = []
+        checkpoint.representation_source_resolution = ""
+        checkpoint.representation_retry_state = "NOT_ANALYZED"
+        checkpoint.transition(
+            ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+            "candidate-unmappable:representation-analysis",
+            strategy_reused=True,
+        )
+        save_orchestration_checkpoint(checkpoint_path, checkpoint)
+        return DecompositionCertificateResult(
+            False,
+            ["CANDIDATE_REPRESENTATION_ANALYSIS_REQUIRED"],
+            artifacts,
+            hashes,
+            transcripts,
+            role_run_ids,
+            {
+                "host_gates_passed": False,
+                "failure_status": "REPRESENTATION_ANALYSIS_PENDING",
+                "candidate_id": candidate_id,
+                "lean_invoked": False,
+                "ledger_mutated": False,
+            },
+        )
     missing = artifacts["definition_auditor"].missing_definitions
     required_kind = "DEFINITION" if missing else "LEMMA"
     parent_claim_ref = f"claim:{statement_hash}"
     dependency_ids = (hashes["definition_auditor"],)
     theorem_index = build_theorem_card_index(project_root)
-    theorem_cards = search_theorem_cards(
-        theorem_index,
-        (
-            "locally_uniform_limit", "holomorphic_sum",
-            "removable_singularity", "identity_principle",
-        ),
+    current_card_ids = set(checkpoint.theorem_card_ids)
+    theorem_cards = tuple(
+        card for card in theorem_index if card.card_id in current_card_ids
     )
     trigger = synthesis_trigger(
         novel_rejections=checkpoint.semantic_stagnation_count,
@@ -4151,6 +4716,59 @@ def _run_typed_ir_v2(
         checkpoint.proof_state in {ProofState.SYNTHESIS, ProofState.REFRAME}
         or (trigger.invoke and not checkpoint.ranking_hash)
     )
+    candidate_registry = build_candidate_set(
+        target_ref=parent_claim_ref,
+        viewpoint=checkpoint.viewpoint or "definitions",
+        dependency_ids=dependency_ids,
+        theorem_cards=theorem_cards,
+        ancestor_hashes=(
+            *_decomposition_ancestor_hashes(ledger, parent),
+            *(
+                str(event["novelty_hash"])
+                for event in checkpoint.recovery_events
+                if (
+                    event.get("event_type")
+                    == "HOST_TYPED_MOVE_SEMANTIC_REJECTION"
+                    and event.get("novelty_hash")
+                )
+            ),
+        ),
+        satisfied_precondition_ids=host_evidence_context(
+            artifacts, artifact_hashes=hashes,
+        ).satisfied_precondition_ids,
+        satisfied_theorem_hypothesis_ids=host_evidence_context(
+            artifacts, artifact_hashes=hashes,
+        ).satisfied_theorem_hypothesis_ids,
+        available_dependency_artifact_ids=hashes.values(),
+        required_dependency_artifact_ids=dependency_ids,
+    )
+    empty_fingerprint = mathematical_state_fingerprint(
+        checkpoint,
+        failure_code="EMPTY_CANDIDATE_SET",
+        move_ids=(
+            item[0] for item in candidate_registry.ineligible
+        ),
+    )
+    if not candidate_registry.candidates:
+        if empty_fingerprint in checkpoint.scratchpad_math_fingerprints:
+            if checkpoint.exploration_exhaustion_hash:
+                return DecompositionCertificateResult(
+                    False,
+                    ["DECOMPOSITION_EXPLORATION_EXHAUSTED"],
+                    artifacts,
+                    hashes,
+                    transcripts,
+                    role_run_ids,
+                    {
+                        "host_gates_passed": False,
+                        "failure_status": "MATHEMATICAL_STAGNATION",
+                        "exploration_exhaustion_hash": (
+                            checkpoint.exploration_exhaustion_hash
+                        ),
+                    },
+                )
+        else:
+            checkpoint.scratchpad_math_fingerprints.append(empty_fingerprint)
     scratch_role = (
         "synthesis_scratchpad" if synthesis_mode else "decomposer_scratchpad"
     )
@@ -4206,55 +4824,17 @@ def _run_typed_ir_v2(
                 "failure_status": "INFRASTRUCTURE_BLOCKED",
             },
         )
-    candidate_registry = build_candidate_set(
-        target_ref=parent_claim_ref,
-        viewpoint=checkpoint.viewpoint or "definitions",
-        dependency_ids=dependency_ids,
-        theorem_cards=theorem_cards,
-        ancestor_hashes=(
-            *_decomposition_ancestor_hashes(ledger, parent),
-            *(
-                str(event["novelty_hash"])
-                for event in checkpoint.recovery_events
-                if (
-                    event.get("event_type")
-                    == "HOST_TYPED_MOVE_SEMANTIC_REJECTION"
-                    and event.get("novelty_hash")
-                )
-            ),
-        ),
-        satisfied_precondition_ids=host_evidence_context(
-            artifacts, artifact_hashes=hashes,
-        ).satisfied_precondition_ids,
-        satisfied_theorem_hypothesis_ids=host_evidence_context(
-            artifacts, artifact_hashes=hashes,
-        ).satisfied_theorem_hypothesis_ids,
-        available_dependency_artifact_ids=hashes.values(),
-        required_dependency_artifact_ids=dependency_ids,
-    )
     if not candidate_registry.candidates:
-        event = {
-            "event_type": "NO_REGISTERED_DECOMPOSITION_MOVE",
-            "event_id": (
-                "no-registered-decomposition-move-"
-                + candidate_registry.content_hash[:16]
-            ),
-            "target_state": ProofState.DECOMPOSER.value,
-            "viewpoint": checkpoint.viewpoint or "definitions",
-            "candidate_registry_hash": candidate_registry.content_hash,
-            "created_at": time.time(),
-        }
-        checkpoint.recovery_events.append(event)
-        checkpoint.begin_decomposition_iteration(
-            _select_decomposer_viewpoint(
-                checkpoint, artifacts["definition_auditor"],
-            ),
-            "NO_REGISTERED_DECOMPOSITION_MOVE",
+        exploration = _start_decomposition_exploration(
+            checkpoint,
+            checkpoint_path=checkpoint_path,
+            run_role=run_role,
+            orchestration_id=orchestration_id,
+            artifact_hashes=hashes,
         )
-        save_orchestration_checkpoint(checkpoint_path, checkpoint)
         return DecompositionCertificateResult(
             False,
-            ["NO_REGISTERED_DECOMPOSITION_MOVE"],
+            ["DECOMPOSITION_EXPLORATION_STARTED"],
             artifacts,
             hashes,
             transcripts,
@@ -4263,6 +4843,7 @@ def _run_typed_ir_v2(
                 "host_gates_passed": False,
                 "failure_status": GateStatus.SEMANTIC_BACKJUMP.value,
                 "candidate_registry_hash": candidate_registry.content_hash,
+                **exploration,
             },
         )
     checkpoint.candidate_set_hash = candidate_registry.content_hash
@@ -4320,6 +4901,17 @@ def _run_typed_ir_v2(
             )
         checkpoint.synthesis_iteration += 1
         synthesis_package = {
+            "target_obligation_id": parent.obligation_id,
+            "target_statement": parent.statement,
+            "strategy_plan_id": checkpoint.selected_strategy_plan_id,
+            "verified_target_evidence": json.dumps(
+                checkpoint.target_evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "current_target_gaps": " ".join(
+                checkpoint.target_gap_ids
+            ) or "none",
             "registered_output_choices": {
                 "choice_code": candidate_registry.short_choice_codes,
                 "reason_code": (
@@ -4800,7 +5392,7 @@ def _run_typed_ir_v2(
         "lean-elaboration-passed:rerun-tournament-with-proposition-hash",
         strategy_reused=False,
     )
-    checkpoint = run_architecture_v7_entry(
+    checkpoint = run_architecture_v9_entry(
         checkpoint_path,
         checkpoint,
         project_root=project_root,
@@ -5026,6 +5618,31 @@ def _run_typed_ir_v2(
     )
 
 
+def retain_contract_provenance_after_artifact_failure(
+    checkpoint: OrchestrationCheckpoint,
+) -> None:
+    """Invalidate executable role artifacts without erasing accepted strategy."""
+    prior = checkpoint.validated_artifacts
+    preserved = {
+        role: reference
+        for role, reference in prior.items()
+        if role in {"strategy_tournament", "research_contract"}
+    }
+    definition = prior.get("definition_auditor")
+    tournament = prior.get("strategy_tournament")
+    if (
+        definition is not None
+        and tournament is not None
+        and definition.sha256 in tournament.dependencies
+    ):
+        preserved["contract_definition_auditor"] = replace(
+            definition,
+            role="contract_definition_auditor",
+            strategy_plan_hash=checkpoint.target_strategy_plan_hash,
+        )
+    checkpoint.validated_artifacts = preserved
+
+
 def run_certified_decomposition(
     ledger: ProofObligationLedger,
     target_id: str,
@@ -5174,7 +5791,58 @@ def run_certified_decomposition(
                 ledger_id=ledger.ledger_id,
                 ledger_version=ledger.version,
             )
-        if orchestration_checkpoint is None or mismatch:
+        if orchestration_checkpoint is not None and mismatch:
+            orchestration_checkpoint.adapter_blocked(
+                "CANONICAL_BINDING_OWNERSHIP_REQUIRED:" + mismatch,
+                status="INTEGRATION_BLOCKED",
+            )
+            orchestration_checkpoint.recovery_events.append({
+                "event_type": "CANONICAL_BINDING_MISMATCH_REJECTED",
+                "event_id": (
+                    "canonical-binding-mismatch:"
+                    + hashlib.sha256(
+                        (
+                            mismatch
+                            + orchestration_checkpoint.target_obligation_id
+                            + orchestration_checkpoint.proposition_hash
+                        ).encode()
+                    ).hexdigest()[:20]
+                ),
+                "reason": mismatch,
+                "preserved_artifact_hashes": sorted(
+                    reference.sha256
+                    for reference
+                    in orchestration_checkpoint.validated_artifacts.values()
+                ),
+                "preserved_research_contract_id": (
+                    orchestration_checkpoint.research_contract_id
+                ),
+                "created_at": time.time(),
+            })
+            save_orchestration_checkpoint(
+                checkpoint_path,
+                orchestration_checkpoint,
+            )
+            return DecompositionCertificateResult(
+                verified=False,
+                errors=[
+                    "CANONICAL_BINDING_OWNERSHIP_REQUIRED:" + mismatch,
+                ],
+                artifacts={},
+                artifact_hashes={},
+                transcripts={},
+                role_run_ids={},
+                validation={
+                    "host_gates_passed": False,
+                    "blocked": True,
+                    "failure_status": "INTEGRATION_BLOCKED",
+                    "preserved_research_contract_id": (
+                        orchestration_checkpoint.research_contract_id
+                    ),
+                },
+            )
+        if orchestration_checkpoint is None:
+            previous_checkpoint = orchestration_checkpoint
             orchestration_checkpoint = OrchestrationCheckpoint(
                 state=ProofState.DEFINITION_AUDITOR.value,
                 target_obligation_id=target_id,
@@ -5192,6 +5860,48 @@ def run_certified_decomposition(
                 ledger_version=ledger.version,
                 orchestration_id=orchestration_id,
             )
+            if previous_checkpoint is not None:
+                for field_name in (
+                    "migration_event",
+                    "migration_snapshot",
+                    "strategy_provider",
+                    "strategy_provider_configured",
+                    "strategy_model_id",
+                    "strategy_run_status",
+                    "strategy_agent_id",
+                    "strategy_run_id",
+                    "strategy_prompt_hash",
+                    "strategy_evidence_hash",
+                    "strategy_memo_hash",
+                    "strategy_latency_ms",
+                    "residency_phase",
+                    "active_model",
+                    "oprover_candidate_count",
+                    "oprover_verified_count",
+                    "critic_advisory_state",
+                ):
+                    setattr(
+                        orchestration_checkpoint,
+                        field_name,
+                        getattr(previous_checkpoint, field_name),
+                    )
+                orchestration_checkpoint.recovery_events = [
+                    *previous_checkpoint.recovery_events,
+                    {
+                        "event_type": "BINDING_MISMATCH_RESTART",
+                        "event_id": (
+                            "binding-mismatch-restart:"
+                            + hashlib.sha256(mismatch.encode()).hexdigest()[:20]
+                        ),
+                        "reason": mismatch,
+                        "audit_only_previous_artifact_hashes": sorted(
+                            reference.sha256
+                            for reference
+                            in previous_checkpoint.validated_artifacts.values()
+                        ),
+                        "created_at": time.time(),
+                    },
+                ]
             save_orchestration_checkpoint(
                 checkpoint_path,
                 orchestration_checkpoint,
@@ -5230,10 +5940,54 @@ def run_certified_decomposition(
                         ].source_run_id
                     )
                 if persisted:
-                    orchestration_checkpoint.strategy_reused = True
-                    orchestration_checkpoint.resume_origin = (
-                        orchestration_checkpoint.state
+                    definition_artifact = artifacts.get("definition_auditor")
+                    if (
+                        definition_artifact is not None
+                        and orchestration_checkpoint.proof_state not in {
+                            ProofState.DECOMPOSITION_EXPLORATION,
+                            ProofState.CANDIDATE_PREFILTER,
+                            ProofState.CANDIDATE_FORMALIZATION,
+                            ProofState.CANDIDATE_REPRESENTATION_ANALYSIS,
+                            ProofState.REDUCTION_CERTIFICATION,
+                        }
+                    ):
+                        definition_ref = (
+                            orchestration_checkpoint.validated_artifacts[
+                                "definition_auditor"
+                            ]
+                        )
+                        route_definition_audit_outcome(
+                            orchestration_checkpoint,
+                            outcome=(
+                                definition_artifact.audit_outcome
+                                or (
+                                    DefinitionAuditOutcomeType.MISSING_DEFINITION
+                                    if definition_artifact.missing_definitions
+                                    else DefinitionAuditOutcomeType.COMPLETE
+                                )
+                            ),
+                            artifact_hash=definition_ref.sha256,
+                            source_run_id=definition_ref.source_run_id,
+                            missing_definition_ids=(
+                                str(item.get("definition_id", ""))
+                                for item in (
+                                    definition_artifact.missing_definitions
+                                )
+                            ),
+                            counterexample_objective=(
+                                orchestration_checkpoint.counterexample_objective
+                            ),
+                        )
+                    reuse = verified_reuse_provenance(
+                        orchestration_checkpoint,
                     )
+                    orchestration_checkpoint.strategy_reused = (
+                        reuse["strategy_reused"]
+                    )
+                    if not orchestration_checkpoint.resume_origin:
+                        orchestration_checkpoint.resume_origin = (
+                            orchestration_checkpoint.state
+                        )
                     orchestration_checkpoint.last_transition_reason = (
                         "loaded-validated-upstream-artifacts"
                     )
@@ -5245,11 +5999,13 @@ def run_certified_decomposition(
                         "[orchestration-resumed] "
                         f"state={orchestration_checkpoint.state} "
                         f"artifacts={','.join(persisted)} "
-                        "strategy_reused=true",
+                        f"strategy_reused={str(reuse['strategy_reused']).lower()}",
                         flush=True,
                     )
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                orchestration_checkpoint.validated_artifacts = {}
+                retain_contract_provenance_after_artifact_failure(
+                    orchestration_checkpoint,
+                )
                 orchestration_checkpoint.state = (
                     ProofState.DEFINITION_AUDITOR.value
                 )
@@ -5257,6 +6013,24 @@ def run_certified_decomposition(
                 orchestration_checkpoint.last_transition_reason = (
                     f"artifact-resume-invalidated:{type(exc).__name__}"
                 )
+                orchestration_checkpoint.recovery_events.append({
+                    "event_type": "EXECUTABLE_ARTIFACT_RESUME_INVALIDATED",
+                    "event_id": hashlib.sha256(
+                        (
+                            type(exc).__name__
+                            + orchestration_checkpoint.target_obligation_id
+                            + orchestration_checkpoint.research_contract_id
+                        ).encode()
+                    ).hexdigest(),
+                    "reason": type(exc).__name__,
+                    "preserved_artifact_roles": sorted(
+                        orchestration_checkpoint.validated_artifacts
+                    ),
+                    "research_contract_id": (
+                        orchestration_checkpoint.research_contract_id
+                    ),
+                    "created_at": time.time(),
+                })
                 save_orchestration_checkpoint(
                     checkpoint_path,
                     orchestration_checkpoint,
@@ -5285,12 +6059,17 @@ def run_certified_decomposition(
             if partial_text:
                 transcripts["definition_auditor_partial_attempt_1"] = partial_text
             failure_text = f"definition_auditor typed transport failed: {exc}"
+            infrastructure_failure = "There is no Stream(" in str(exc)
             orchestration_checkpoint.adapter_blocked(
                 failure_text,
                 status=(
-                    exc.status.value
+                    "INFRASTRUCTURE_BLOCKED"
+                    if infrastructure_failure
+                    else exc.status.value
                     if isinstance(exc, AdapterError)
-                    else "ADAPTER_BLOCKED"
+                    else (
+                        "ADAPTER_BLOCKED"
+                    )
                 ),
             )
             save_orchestration_checkpoint(
@@ -5714,7 +6493,7 @@ def run_certified_decomposition(
                         f"semantic_iteration="
                         f"{orchestration_checkpoint.decomposition_iteration} "
                         f"viewpoint={next_viewpoint} "
-                        "strategy_reused=true",
+                        "strategy_route_retained=true",
                         flush=True,
                     )
                 break
@@ -6154,9 +6933,11 @@ def _anchored_obligation_similarity(model_id: str, target_id: str) -> float:
 
 
 def _resolve_model_obligation_id(
-    model_id: str,
+    model_id: str | None,
     allowed_ids: set[str],
 ) -> str:
+    if not model_id:
+        return next(iter(allowed_ids)) if len(allowed_ids) == 1 else ""
     if model_id in allowed_ids:
         return model_id
     normalized_model = _normalized_obligation_id(model_id)
@@ -6389,6 +7170,7 @@ def apply_critic_verdicts(
         )
         if not obligation_id:
             continue
+        model_id = model_id or obligation_id
         if model_id != obligation_id and id_repairs is not None:
             id_repairs.append((model_id, obligation_id))
         body = match.group("body")
@@ -6408,11 +7190,16 @@ def apply_critic_verdicts(
             body,
             re.MULTILINE,
         )
-        if not status_match or not evidence_match or missing_match is None:
+        if not status_match or not evidence_match:
             continue
         status = status_match.group(1)
         evidence = evidence_match.group(1).strip()
-        missing = missing_match.group(1).strip().lower()
+        missing = (
+            missing_match.group(1).strip().lower()
+            if missing_match is not None else ""
+        )
+        if status == "UNRESOLVED" and not missing:
+            continue
         invalidation_match = re.search(
             r"^\*{0,2}Invalidation:\*{0,2}\s*"
             r"(APPROACH|PREMISE_SUSPECTED|PREMISE)\s*$",
@@ -7169,7 +7956,10 @@ def build_autoresearch_verdict(
             )
         )
         frontier = (
-            target.statement if target is not None else
+            (
+                f"Continue unresolved target {target.obligation_id}: "
+                f"{target.statement}"
+            ) if target is not None else
             "Construct a concrete smaller proof obligation."
         )
     return {
@@ -7649,13 +8439,20 @@ def _stage(
     extra_metrics=None,
 ) -> dict:
     delta = actual["delta"]
+    warm_route = warm.get("route_provenance")
+    actual_route = actual.get("route_provenance")
     stage = {
         **actual,
         "name": f"agent_{name}",
         "agent": name,
         "round": 1,
         "hit_source": "primary_hot" if delta["local_hits"] else "unknown",
-        "ok": _agent_cache_gate(warm["delta"], delta) and actual["complete"],
+        "ok": _agent_cache_gate(
+            warm["delta"],
+            delta,
+            warm_route=warm_route,
+            actual_route=actual_route,
+        ) and actual["complete"],
         "warmup_prefix_tokens": warm["prefix_tokens"],
         "warmup_tokens_reused": (
             warm["delta"]["tokens_reused"]
@@ -7663,6 +8460,10 @@ def _stage(
         ),
         "warmup_wall_s": warm["e2e_s"],
         "warmup_remote_jobs": warm["delta"]["remote_jobs"],
+        "route_provenance": {
+            "warm": warm_route,
+            "actual": actual_route,
+        },
         "output_chars": len(text),
         "output_hash": hashlib.sha256(text.encode()).hexdigest(),
     }
@@ -7778,7 +8579,11 @@ def _run_isolated_certified_role(
             role_ids,
             1,
             get_stats,
-            client_label=f"agent-gan-{role_name}-warm",
+            route_binding={
+                "target_id": active_obligation_id,
+                "run_id": expected_run_id,
+            },
+            route_phase="warm",
             max_retained_tokens=args.max_retained_tokens,
         )
     live_status.emit(
@@ -7834,7 +8639,11 @@ def _run_isolated_certified_role(
             tokenizer.decode(chunk, skip_special_tokens=True).strip()
         ),
         semantic_complete=semantic_complete,
-        client_label=f"agent-gan-{role_name}",
+        route_binding={
+            "target_id": active_obligation_id,
+            "run_id": expected_run_id,
+        },
+        route_phase="actual",
         max_retained_tokens=args.max_retained_tokens,
     )
     role_printer.finish()
@@ -8255,6 +9064,88 @@ def main() -> int:
             resume_checkpoint = load_orchestration_checkpoint(
                 orchestration_state_path,
             )
+            architecture9 = bool(
+                resume_checkpoint is not None
+                and resume_checkpoint.architecture_version >= 9
+            )
+            architecture9_fresh_entry = bool(
+                architecture9
+                and resume_checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
+            )
+            if architecture9:
+                if proof_ledger is None:
+                    raise RuntimeError(
+                        "ARCHITECTURE9_PROOF_LEDGER_REQUIRED",
+                    )
+                if not turn_obligations:
+                    resume_checkpoint.transition(
+                        ProofState.IDLE,
+                        "architecture9-no-unresolved-obligations",
+                        strategy_reused=True,
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        resume_checkpoint,
+                    )
+                    live_status.emit(
+                        phase="architecture9_idle",
+                        role="orchestrator",
+                        state="idle",
+                        source="agent_gan_repl",
+                        force=True,
+                    )
+                    phase = ReplPhase.READY
+                    auto_loop_active = False
+                    continue
+                host_target = turn_obligations[0].obligation_id
+                if resume_checkpoint.target_obligation_id != host_target:
+                    resume_checkpoint.recovery_events.append({
+                        "event_type": "ARCHITECTURE9_HOST_RETARGET",
+                        "event_id": (
+                            "architecture9-host-retarget:"
+                            + hashlib.sha256(host_target.encode()).hexdigest()[:20]
+                        ),
+                        "audit_only_previous_target": (
+                            resume_checkpoint.target_obligation_id
+                        ),
+                        "target_obligation_id": host_target,
+                        "created_at": time.time(),
+                    })
+                    resume_checkpoint.target_obligation_id = host_target
+                    resume_checkpoint.last_transition_reason = (
+                        "architecture9-host-retarget-unresolved-leaf"
+                    )
+                    save_orchestration_checkpoint(
+                        orchestration_state_path,
+                        resume_checkpoint,
+                    )
+                if (
+                    resume_checkpoint.proof_state
+                    == ProofState.STRATEGY_TOURNAMENT
+                ):
+                    resume_checkpoint = run_architecture_v9_entry(
+                        orchestration_state_path,
+                        resume_checkpoint,
+                        project_root=Path(__file__).resolve().parents[1],
+                        target_ref=host_target,
+                        parent_obligation_ref=(
+                            turn_obligations[0].parent_id or "ROOT"
+                        ),
+                        parent_complexity=max(
+                            5,
+                            len(turn_obligations[0].statement.split()),
+                        ),
+                        event_type=StrategyEvent.INITIAL_BRANCH,
+                        event_id=(
+                            "INITIAL_BRANCH:"
+                            + hashlib.sha256(
+                                (
+                                    host_target
+                                    + resume_checkpoint.migration_snapshot
+                                ).encode()
+                            ).hexdigest()[:20]
+                        ),
+                    )
             run = _telemetry_request(
                 f"{args.dashboard}/v1/network/benchmarks",
                 api_key=api_key,
@@ -8264,7 +9155,20 @@ def main() -> int:
                     "config": {
                         "model_id": "gemma-4-26B-A4B-it-mlx-4bit",
                         "topology": "primary-decode-allens-prefill",
-                        "agents": [
+                        "agents": ([
+                            "cursor_strategy",
+                            "gemma_critic",
+                            "premise_auditor",
+                            "definition_auditor",
+                            "counterexample_worker",
+                            "decomposer",
+                            "math_ir_translator",
+                            "host_typed_ir_gate",
+                            "lean_elaboration_gate",
+                            "proof_search",
+                            "adversarial_proponent",
+                            "judge",
+                        ] if architecture9 else [
                             "generator",
                             "critic",
                             "premise_auditor",
@@ -8277,7 +9181,7 @@ def main() -> int:
                             "proof_search",
                             "adversarial_proponent",
                             "judge",
-                        ],
+                        ]),
                         "rounds": 1,
                         "output_tokens": args.output_tokens,
                         "goal_anchor": hashlib.sha256(
@@ -8314,36 +9218,25 @@ def main() -> int:
             )
             remote_run = run is not None
             run_id = run["id"] if remote_run else f"local_{run_nonce[:16]}"
+            run_generation = str(run.get("generation", "")) if remote_run else ""
             live_status.set_context(run_id=run_id)
             started_at = datetime.now().astimezone().isoformat(
                 timespec="milliseconds",
             )
             print(
                 f"[inference-start] time={started_at} run={run_id} "
+                f"generation={run_generation or 'local'} "
                 f"goal={hashlib.sha256(research_goal.encode()).hexdigest()}",
                 flush=True,
             )
             try:
-                certified_resume_states = {
-                    ProofState.DEFINITION_AUDITOR,
-                    ProofState.COUNTEREXAMPLE_WORKER,
-                    ProofState.SYNTHESIS,
-                    ProofState.REFRAME,
-                    ProofState.DECOMPOSER,
-                    ProofState.FORMALIZER,
-                    ProofState.HOST_TYPED_IR_GATE,
-                    ProofState.LEAN_ELABORATION_GATE,
-                    ProofState.PROVER,
-                    ProofState.ADVERSARIAL_REVIEW,
-                    ProofState.JUDGE,
-                    ProofState.COMMIT,
-                    ProofState.BLOCKED,
-                }
-                resume_certified = bool(
+                resumed_architecture9_role = resume_requires_certificate(
+                    resume_checkpoint,
+                    fresh_architecture_entry=architecture9_fresh_entry,
+                )
+                resume_preconditions_hold = bool(
                     proof_ledger is not None
                     and resume_checkpoint is not None
-                    and resume_checkpoint.proof_state
-                    in certified_resume_states
                     and any(
                         item.obligation_id
                         == resume_checkpoint.target_obligation_id
@@ -8355,8 +9248,107 @@ def main() -> int:
                         == orchestration_candidate_sha256
                     )
                 )
+                resume_certificate_hash = ""
+                if resumed_architecture9_role:
+                    if not resume_preconditions_hold:
+                        raise ResumeCertificateError(
+                            "ARCHITECTURE9_RESUME_PRECONDITION_MISMATCH"
+                        )
+                    lease_id = os.environ.get("KAKEYA_RESUME_LEASE_ID", "")
+                    if not lease_id:
+                        raise ResumeCertificateError(
+                            "ARCHITECTURE9_CERTIFIED_RESUME_REQUIRED"
+                        )
+                    resume_certificate_hash = consume_resume_certificate(
+                        orchestration_state_path,
+                        resume_checkpoint,
+                        asdict(proof_ledger),
+                        runtime_binding=current_runtime_binding(
+                            Path(__file__).resolve().parents[1],
+                            tokenizer_id=args.tokenizer_id,
+                            residency_path=Path.home()
+                            / ".kakeya/oprover-residency.json",
+                        ),
+                        intended_next_role=resume_checkpoint.current_role,
+                        owner_pid=os.getpid(),
+                        lease_id=lease_id,
+                    )
+                    print(
+                        "[resume-certificate-consumed] "
+                        f"sha256={resume_certificate_hash} "
+                        f"role={resume_checkpoint.current_role}",
+                        flush=True,
+                    )
+                    if (
+                        resume_checkpoint.proof_state
+                        == ProofState.DEFINITION_RESOLUTION
+                    ):
+                        resume_checkpoint, definition_outcome = (
+                            dispatch_certified_architecture9_role(
+                                orchestration_state_path,
+                                resume_checkpoint,
+                                project_root=Path(__file__).resolve().parents[1],
+                                interface_strategy_adapter=(
+                                    CursorStrategyAdapter()
+                                ),
+                            )
+                        )
+                        print(
+                            "[definition-resolution-start] "
+                            f"outcome={definition_outcome or 'NO_OPEN_QUERY'} "
+                            f"state={resume_checkpoint.proof_state.value}",
+                            flush=True,
+                        )
+                        if (
+                            definition_outcome
+                            == ProofState.PARENT_STATEMENT_UNDERSPECIFIED.value
+                            and resume_checkpoint.definition_exhaustion_hash
+                        ):
+                            source_run_id = (
+                                resume_checkpoint.source_run_ids[-1]
+                                if resume_checkpoint.source_run_ids
+                                else "host:target-interface-exhaustion"
+                            )
+                            if quarantine_terminal_interface_target(
+                                proof_ledger,
+                                target_id=resume_checkpoint.target_obligation_id,
+                                exhaustion_hash=(
+                                    resume_checkpoint.definition_exhaustion_hash
+                                ),
+                                source_run_id=source_run_id,
+                            ):
+                                save_proof_ledger(
+                                    proof_ledger_path,
+                                    proof_ledger,
+                                )
+                                resume_checkpoint.ledger_version = (
+                                    proof_ledger.version
+                                )
+                                save_orchestration_checkpoint(
+                                    orchestration_state_path,
+                                    resume_checkpoint,
+                                )
+                            print(
+                                "[typed-interface-terminal-quarantine] "
+                                f"target={resume_checkpoint.target_obligation_id} "
+                                "backjump=ROOT_UNAVAILABLE "
+                                f"ledger_version={proof_ledger.version}",
+                                flush=True,
+                            )
+                        phase = ReplPhase.READY
+                        auto_loop_active = False
+                        continue
+                resume_certified = bool(
+                    resume_preconditions_hold
+                    and (
+                        not architecture9
+                        or not resumed_architecture9_role
+                        or resume_certificate_hash
+                    )
+                )
                 if resume_certified:
                     architecture7 = resume_checkpoint.architecture_version >= 7
+                    reuse = verified_reuse_provenance(resume_checkpoint)
                     critic_payload = {}
                     if not architecture7:
                         critic_ref = resume_checkpoint.validated_artifacts.get(
@@ -8389,6 +9381,16 @@ def main() -> int:
                         )
                     decomposition_target = (
                         resume_checkpoint.target_obligation_id
+                    )
+                    canonical_root_goal = next(
+                        item.statement for item in proof_ledger.obligations
+                        if item.obligation_id == decomposition_target
+                        and not item.parent_id
+                        and item.formal_status == "FORMALIZED"
+                        and (
+                            item.proposition_hash
+                            or item.lean_signature_hash
+                        ) == resume_checkpoint.proposition_hash
                     )
                     target_ids = {decomposition_target}
                     isolated_role_stages = []
@@ -8429,14 +9431,15 @@ def main() -> int:
                         "[orchestration-direct-resume] "
                         f"state={resume_checkpoint.state} "
                         f"target={decomposition_target} "
-                        "generator_reused=true critic_reused=true "
-                        "strategy_reused=true",
+                        f"generator_reused={str(reuse['generator_reused']).lower()} "
+                        f"critic_reused={str(reuse['critic_reused']).lower()} "
+                        f"strategy_reused={str(reuse['strategy_reused']).lower()}",
                         flush=True,
                     )
                     certificate = run_certified_decomposition(
                         proof_ledger,
                         decomposition_target,
-                        research_goal,
+                        canonical_root_goal,
                         direct_review_role,
                         project_root=Path(__file__).resolve().parents[1],
                         orchestration_id=orchestration_id,
@@ -8477,9 +9480,11 @@ def main() -> int:
                         ],
                         "resumed": True,
                         "resume_origin": resume_checkpoint.state,
-                        "strategy_reused": not architecture7,
-                        "generator_reused": not architecture7,
-                        "critic_reused": not architecture7,
+                        "strategy_reused": reuse["strategy_reused"],
+                        "generator_reused": reuse["generator_reused"],
+                        "critic_reused": reuse["critic_reused"],
+                        "role_reused": reuse["role_reused"],
+                        "reuse_diagnostics": reuse["diagnostics"],
                     })
                     save_proof_ledger(proof_ledger_path, proof_ledger)
                     committed_checkpoint = load_orchestration_checkpoint(
@@ -8521,10 +9526,23 @@ def main() -> int:
                             flush=True,
                         )
                     if remote_run:
+                        final_checkpoint = (
+                            load_orchestration_checkpoint(
+                                orchestration_state_path,
+                            )
+                            or resume_checkpoint
+                        )
                         provenance = (
                             build_architecture7_report_provenance(
                                 resume_checkpoint,
+                                final_checkpoint,
                                 isolated_role_stages,
+                                ledger_sha256=_canonical_json_hash(
+                                    asdict(proof_ledger),
+                                ),
+                                environment_sha256=pinned_environment_hash(
+                                    Path(__file__).resolve().parents[1],
+                                ),
                             )
                             if architecture7 else
                             build_resumed_report_provenance(
@@ -8551,13 +9569,15 @@ def main() -> int:
                                 "provenance": provenance,
                                 "status": "completed",
                                 "finished_at": time.time(),
+                                "generation": run_generation,
                             },
                         )
                     print(
                         "[inference-complete] "
                         f"time={datetime.now().astimezone().isoformat(timespec='milliseconds')} "
                         f"run={run_id} resumed=true "
-                        "generator_reused=true critic_reused=true",
+                        f"generator_reused={str(reuse['generator_reused']).lower()} "
+                        f"critic_reused={str(reuse['critic_reused']).lower()}",
                         flush=True,
                     )
                     save_checkpoint(
@@ -9366,6 +10386,88 @@ def main() -> int:
                         id_repairs,
                         premise_reviews,
                     )
+                    # The ledger commit is authoritative. Persist the complete
+                    # Critic/Auditor/Proponent decision before moving the
+                    # orchestration checkpoint out of PREMISE_AUDIT.
+                    save_proof_ledger(proof_ledger_path, proof_ledger)
+                    typed_checkpoint = load_orchestration_checkpoint(
+                        orchestration_state_path,
+                    )
+                    if (
+                        typed_checkpoint is not None
+                        and typed_checkpoint.proof_state
+                        == ProofState.PREMISE_AUDIT
+                    ):
+                        reconcile_checkpoint_ledger_version(
+                            typed_checkpoint,
+                            proof_ledger.version,
+                        )
+                        typed_target = next(
+                            (
+                                item for item in turn_obligations
+                                if item.obligation_id
+                                == typed_checkpoint.target_obligation_id
+                            ),
+                            None,
+                        )
+                        typed_kind = (
+                            typed_target.invalidation_kind
+                            if typed_target is not None else ""
+                        )
+                        outcome_type = {
+                            "APPROACH_FAILED": (
+                                PremiseAuditOutcomeType.APPROACH_FAILED
+                            ),
+                            "PREMISE_SUSPECTED": (
+                                PremiseAuditOutcomeType.PREMISE_SUSPECTED
+                            ),
+                            "PREMISE_INVALIDATED": (
+                                PremiseAuditOutcomeType.PREMISE_INVALIDATED
+                            ),
+                        }.get(typed_kind)
+                        if outcome_type is not None and typed_target is not None:
+                            review = premise_reviews.get(
+                                typed_target.obligation_id
+                            )
+                            apply_typed_premise_outcome(
+                                orchestration_state_path,
+                                typed_checkpoint,
+                                outcome_type=outcome_type,
+                                decision=(
+                                    review.status
+                                    if review is not None
+                                    else typed_kind
+                                ),
+                                owner=(
+                                    "adversarial_proponent"
+                                    if review is not None
+                                    and review.proponent_run_id
+                                    else (
+                                        "premise_auditor"
+                                        if review is not None
+                                        and review.auditor_run_id
+                                        else "critic"
+                                    )
+                                ),
+                                confidence=(
+                                    review.confidence
+                                    if review is not None else 1.0
+                                ),
+                                evidence={
+                                    "critic_evidence": (
+                                        typed_target.last_evidence
+                                    ),
+                                    "critic_invalidation": typed_kind,
+                                    "premise_review": (
+                                        asdict(review)
+                                        if review is not None else None
+                                    ),
+                                },
+                                source_run_id=run_id,
+                                backjump_target=(
+                                    proof_ledger.backjump_target_id
+                                ),
+                            )
                     if missing_issues:
                         rejected_frontiers.append(
                             "Generator coverage incomplete; child creation "
@@ -9530,6 +10632,7 @@ def main() -> int:
                             ],
                             "status": "completed",
                             "finished_at": time.time(),
+                            "generation": run_generation,
                         },
                     )
                 summary = (
@@ -9710,7 +10813,11 @@ def main() -> int:
                         f"{args.dashboard}/v1/network/benchmarks/{run_id}",
                         api_key=api_key,
                         method="PATCH",
-                        body={"status": "failed", "finished_at": time.time()},
+                        body={
+                            "status": "failed",
+                            "finished_at": time.time(),
+                            "generation": run_generation,
+                        },
                     )
                 print(
                     f"[inference-failed] time="

@@ -1,11 +1,17 @@
 import json
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from autoresearch.prefill.architecture_v7 import run_architecture_v7_entry
+from autoresearch.prefill.cursor_strategy import (
+    CursorStrategyAdapter,
+    _parse_registered_intent,
+)
 from autoresearch.prefill.research_contract import gate_research_contract
 from autoresearch.prefill.orchestration_state import (
     OrchestrationCheckpoint,
@@ -36,12 +42,15 @@ from autoresearch.prefill.strategy_tournament import (
     PlanClass,
     PlanExecutionStatus,
     StrategyEvent,
+    build_definition_resolution_plan,
     build_host_plans,
     evaluate_feasibility,
     review_branch,
     run_tournament,
     strategy_event_due,
 )
+from autoresearch.prefill.target_context import activate_target_context
+from autoresearch.prefill.theorem_cards import pinned_environment_hash
 from scripts.migrate_strategy_tournament_v1 import migrate
 from scripts.migrate_research_contract_preproof_v2 import (
     MIGRATION_EVENT as PREPROOF_MIGRATION_EVENT,
@@ -50,6 +59,90 @@ from scripts.migrate_research_contract_preproof_v2 import (
 
 
 ENV = "e" * 64
+
+
+class _IntentSDK:
+    def __init__(
+        self,
+        target,
+        gap_ref="",
+        *,
+        plan_class="DIRECT_PROOF",
+        move_family="MOVE_DIRECT",
+    ):
+        self.target = target
+        self.gap_ref = gap_ref
+        self.plan_class = plan_class
+        self.move_family = move_family
+        self.calls = 0
+
+    def list_models(self, api_key):
+        return [SimpleNamespace(id="gpt-5.6-sol")]
+
+    def prompt(self, prompt, *, api_key, model_id, cwd):
+        self.calls += 1
+        if self.calls == 1:
+            registered = re.search(
+                r"registered host plan IDs: ([^.]*)\.",
+                prompt,
+            )
+            selected = (
+                registered.group(1).split(",")[0].strip()
+                if registered else "DIRECT_PROOF"
+            )
+            return SimpleNamespace(
+                status="finished",
+                result=f"SELECTED_PLAN_ID: {selected}",
+                agent_id="strategy",
+                id="strategy-run",
+            )
+        gap = f"gap_ref {self.gap_ref};\n" if self.gap_ref else ""
+        return SimpleNamespace(
+            status="finished",
+            result=(
+                f"plan_class {self.plan_class};\n"
+                f"target_ref {self.target};\n"
+                f"{gap}"
+                f"move_family {self.move_family};\n"
+                "evidence_ref EVIDENCE_TARGET_STATEMENT;\n"
+                f"falsification_criterion_id FALSIFY_{self.plan_class};\n"
+                f"success_criterion_id SUCCESS_{self.plan_class};\n"
+                f"abandonment_criterion_id ABANDON_{self.plan_class};\n"
+                "END;"
+            ),
+            agent_id="intent",
+            id="intent-run",
+        )
+
+
+def test_registered_intent_accepts_doi_evidence_reference():
+    values = _parse_registered_intent(
+        "evidence_ref doi:10.1073/pnas.1902572116;\nEND;",
+        {"evidence_ref": ("doi:10.1073/pnas.1902572116",)},
+    )
+    assert values == {
+        "evidence_ref": ("doi:10.1073/pnas.1902572116",),
+    }
+
+
+def _strategy_adapter(
+    target,
+    gap_ref="",
+    *,
+    plan_class="DIRECT_PROOF",
+    move_family="MOVE_DIRECT",
+):
+    return CursorStrategyAdapter(
+        api_key="key",
+        model_id="gpt-5.6-sol",
+        sdk=_IntentSDK(
+            target,
+            gap_ref,
+            plan_class=plan_class,
+            move_family=move_family,
+        ),
+        max_attempts=1,
+    )
 
 
 def _plans():
@@ -95,14 +188,18 @@ def _contract():
     return decision.contract
 
 
-def test_four_independent_plan_classes_and_event_only_trigger():
+def test_five_independent_plan_classes_and_event_only_trigger():
     plans = _plans()
     assert {item.plan_class for item in plans} == {
         item.value for item in PlanClass
+        if item is not PlanClass.DEFINITION_RESOLUTION_PLAN
     }
-    assert len({item.source_move_id for item in plans}) == 4
+    assert len({item.source_move_id for item in plans}) == 5
     assert all(
-        item.execution_status == PlanExecutionStatus.EXECUTABLE.value
+        item.execution_status in {
+            PlanExecutionStatus.EXECUTABLE.value,
+            PlanExecutionStatus.EXPLORATION_ONLY.value,
+        }
         for item in plans
     )
     assert not strategy_event_due(
@@ -194,10 +291,20 @@ def test_production_p4_fixture_keeps_eight_unresolved_definitions_and_is_plannin
 
 def test_full_preproof_transition_sequence_and_valid_contract(tmp_path, monkeypatch):
     checkpoint_path = tmp_path / "proof_orchestration.json"
+    project_root = Path(__file__).resolve().parents[3]
+    statement = "A replacement target with one registered definition."
     checkpoint = OrchestrationCheckpoint(
         state=ProofState.DECOMPOSER.value,
         current_role="decomposer",
         target_obligation_id="replacement",
+    )
+    activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id="replacement",
+        statement=statement,
+        environment_hash=pinned_environment_hash(project_root),
+        strategy_plan_hash="STRATEGY_PENDING",
     )
     persist_validated_artifact(
         checkpoint_path,
@@ -227,14 +334,16 @@ def test_full_preproof_transition_sequence_and_valid_contract(tmp_path, monkeypa
     result = run_architecture_v7_entry(
         checkpoint_path,
         checkpoint,
-        project_root=Path(__file__).resolve().parents[3],
+        project_root=project_root,
         target_ref="replacement",
+        target_statement=statement,
         parent_obligation_ref="quarantined-parent",
         parent_complexity=20,
         event_type=StrategyEvent.TARGET_CHANGE,
         event_id="TARGET_CHANGE:typed",
         elaborated_theorem_id="hostTheorem",
         proposition_hash="p" * 64,
+        strategy_adapter=_strategy_adapter("replacement"),
     )
     assert transitions == [
         ProofState.MATH_IR_TRANSLATION,
@@ -253,11 +362,91 @@ def test_full_preproof_transition_sequence_and_valid_contract(tmp_path, monkeypa
     assert contract_payload["definition_gap_ids"] == []
 
 
+def test_strategy_exploration_plan_bypasses_proof_contract_and_search(tmp_path):
+    checkpoint_path = tmp_path / "proof_orchestration.json"
+    project_root = Path(__file__).resolve().parents[3]
+    statement = "A canonical target for private decomposition exploration."
+    target = "exploration-root"
+    checkpoint = OrchestrationCheckpoint(
+        state=ProofState.DECOMPOSER.value,
+        current_role="decomposer",
+        target_obligation_id=target,
+    )
+    activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id=target,
+        statement=statement,
+        environment_hash=pinned_environment_hash(project_root),
+        strategy_plan_hash="STRATEGY_PENDING",
+    )
+    persist_validated_artifact(
+        checkpoint_path,
+        checkpoint,
+        role="definition_auditor",
+        payload={
+            "definitions": [{"definition_id": "D1"}],
+            "missing_definitions": [],
+        },
+        dependencies=[],
+        source_run_id="audit",
+    )
+    checkpoint.transition(ProofState.MATH_IR_TRANSLATION, "decomposed")
+    checkpoint.transition(ProofState.HOST_TYPED_IR_GATE, "translated")
+    checkpoint.transition(ProofState.LEAN_ELABORATION_GATE, "host-gated")
+    checkpoint.transition(ProofState.STRATEGY_TOURNAMENT, "lean-elaborated")
+    result = run_architecture_v7_entry(
+        checkpoint_path,
+        checkpoint,
+        project_root=project_root,
+        target_ref=target,
+        target_statement=statement,
+        parent_obligation_ref=target,
+        parent_complexity=20,
+        event_type=StrategyEvent.MATHEMATICAL_STAGNATION,
+        event_id="MATHEMATICAL_STAGNATION:explore",
+        elaborated_theorem_id="hostTheorem",
+        proposition_hash="p" * 64,
+        strategy_adapter=_strategy_adapter(
+            target,
+            plan_class="DECOMPOSE_TO_SUBPROBLEMS",
+            move_family="MOVE_EXPLORE_SUBPROBLEMS",
+        ),
+    )
+    assert result.proof_state == ProofState.DECOMPOSITION_EXPLORATION, (
+        result.last_transition_reason,
+        result.adapter_status,
+        result.research_contract_rejection_codes,
+        result.selected_strategy_plan_id,
+    )
+    assert result.exploration_contract_id
+    assert result.research_contract_id == ""
+    assert "research_contract" not in result.validated_artifacts
+    payload = json.loads(Path(
+        result.validated_artifacts[
+            "decomposition_exploration_contract"
+        ].path
+    ).read_text())
+    assert payload["ledger_mutation_allowed"] is False
+    assert payload["proof_search_allowed"] is False
+    tournament = json.loads(Path(
+        result.validated_artifacts["strategy_tournament"].path
+    ).read_text())
+    selected = next(
+        item for item in tournament["plans"]
+        if item["plan_id"] == result.selected_strategy_plan_id
+    )
+    assert selected["next_gate"] == "DECOMPOSITION_EXPLORATION"
+    assert selected["proof_search_allowed"] is False
+
+
 def test_unelaborated_missing_definition_and_quarantine_route_to_decomposer(
     tmp_path,
 ):
     checkpoint_path = tmp_path / "proof_orchestration.json"
     target = "quarantined-parent"
+    project_root = Path(__file__).resolve().parents[3]
+    statement = "A quarantined target with eight missing definitions."
     checkpoint = OrchestrationCheckpoint(
         state=ProofState.STRATEGY_TOURNAMENT.value,
         current_role="strategy_tournament",
@@ -268,6 +457,14 @@ def test_unelaborated_missing_definition_and_quarantine_route_to_decomposer(
                 "evidence_ids": [target],
             },
         },
+    )
+    activate_target_context(
+        checkpoint_path,
+        checkpoint,
+        target_obligation_id=target,
+        statement=statement,
+        environment_hash=pinned_environment_hash(project_root),
+        strategy_plan_hash="STRATEGY_PENDING",
     )
     persist_validated_artifact(
         checkpoint_path,
@@ -285,26 +482,45 @@ def test_unelaborated_missing_definition_and_quarantine_route_to_decomposer(
     result = run_architecture_v7_entry(
         checkpoint_path,
         checkpoint,
-        project_root=Path(__file__).resolve().parents[3],
+        project_root=project_root,
         target_ref=target,
+        target_statement=statement,
         parent_obligation_ref="ROOT",
         parent_complexity=20,
         event_type=StrategyEvent.INITIAL_BRANCH,
         event_id="INITIAL_BRANCH:fixture",
+        strategy_adapter=_strategy_adapter(
+            target, "gap:definition:DEF_0",
+        ),
     )
-    assert result.proof_state == ProofState.DECOMPOSER
+    assert result.proof_state == ProofState.DEFINITION_RESOLUTION
     assert result.research_contract_id == ""
     assert "research_contract" not in result.validated_artifacts
+    assert "definition_auditor" in result.validated_artifacts
+    assert (
+        result.validated_artifacts["definition_auditor"].strategy_plan_hash
+        == "STRATEGY_PENDING"
+    )
+    assert (
+        result.validated_artifacts["strategy_tournament"].strategy_plan_hash
+        == result.selected_strategy_plan_hash
+    )
+    assert result.validated_artifacts["strategy_tournament"].dependencies == [
+        result.validated_artifacts["definition_auditor"].sha256,
+    ]
     assert result.research_contract_rejection_codes == []
     assert result.last_transition_reason == (
-        "precontract-semantic-routing:MISSING_DEFINITION,"
+        "typed-definition-resolution-plan:MISSING_DEFINITION,"
         "UNELABORATED_TARGET,QUARANTINED_PARENT_REQUIRES_TYPED_REFRAME"
     )
     tournament = json.loads(Path(
         result.validated_artifacts["strategy_tournament"].path
     ).read_text())
-    assert len(tournament["plans"][3]["unresolved_definition_ids"]) == 8
-    assert tournament["plans"][3]["execution_status"] == "PLANNING_ONLY"
+    assert len(tournament["plans"]) == 1
+    assert len(tournament["plans"][0]["unresolved_definition_ids"]) == 8
+    assert tournament["plans"][0]["plan_kind"] == "DEFINITION_RESOLUTION_PLAN"
+    assert tournament["plans"][0]["execution_status"] == "EXECUTABLE"
+    assert tournament["plans"][0]["proof_search_allowed"] is False
 
 
 def test_branch_kill_and_reframe_use_recorded_evidence_only():
@@ -325,6 +541,34 @@ def test_branch_kill_and_reframe_use_recorded_evidence_only():
     assert review_branch(
         stagnant, stagnation_threshold=4, failure_threshold=3,
     ).status == "REFRAME_REQUIRED"
+
+
+def test_typed_remediation_is_feasible_without_fabricated_theorem():
+    plan = build_definition_resolution_plan(
+        target_ref="RH-C1",
+        parent_obligation_ref="ROOT",
+        parent_complexity=10,
+        environment_hash=ENV,
+        registered_definition_ids=("DEF_A",),
+        unresolved_definition_ids=("DEF_B",),
+        definition_gap_ids=("gap:definition:DEF_B",),
+        definition_auditor_hash="a" * 64,
+        dependency_ids=("audit",),
+        evidence_refs=("audit",),
+    )
+    decisions = evaluate_feasibility(
+        (plan,),
+        registered_definition_ids=("DEF_A",),
+        resolved_dependency_ids=("audit",),
+        verified_theorem_card_ids=(),
+        allowed_assumption_ids=(),
+    )
+    assert plan.plan_id.startswith("DRP-")
+    assert plan.plan_class == "DEFINITION_RESOLUTION_PLAN"
+    assert plan.execution_status == "EXECUTABLE"
+    assert plan.theorem_card_ids == ()
+    assert decisions[0].feasible
+    assert "NO_PROOF_SEARCH" in plan.restriction_ids
 
 
 def test_proof_search_refuses_free_text_or_unelaborated_goal():

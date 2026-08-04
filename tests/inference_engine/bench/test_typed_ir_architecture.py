@@ -122,7 +122,10 @@ def test_host_alone_adds_version_hash_bindings_and_json_envelope():
 
 def test_definition_auditor_uses_only_registered_ids_and_host_serialization():
     target_ref = "claim:" + "a" * 64
-    registry = build_definition_choice_registry(target_ref)
+    registry = build_definition_choice_registry(
+        target_ref,
+        "A fixed genus sequence density statement.",
+    )
     text = "\n".join((
         f"target_ref {target_ref};",
         "symbol_id SYM_SEQUENCE;",
@@ -347,7 +350,7 @@ def test_production_host_missing_density_routes_to_synthesis_without_budget():
 
     assert checkpoint.proof_state == ProofState.SYNTHESIS
     assert checkpoint.current_role == "synthesis"
-    assert checkpoint.strategy_reused is True
+    assert checkpoint.strategy_reused is False
     assert (
         checkpoint.mathematical_retries,
         checkpoint.retry_counters,
@@ -661,9 +664,7 @@ def test_legacy_capability_document_migrates_to_tournament(tmp_path):
     checkpoint = load_checkpoint(path)
     assert checkpoint.adapter_status == ""
     assert checkpoint.proof_state == ProofState.STRATEGY_TOURNAMENT
-    assert checkpoint.migration_event == (
-        "strategy_tournament_stepwise_generator_v1"
-    )
+    assert checkpoint.migration_event == "cursor_strategy_oprover_advisor_v1"
 
 
 def test_host_dual_injection_preserves_malformed_assumption_bytes_and_hash():
