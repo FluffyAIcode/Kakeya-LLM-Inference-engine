@@ -439,3 +439,37 @@ def test_lean_sorry_warning_cannot_count_as_acceptance(tmp_path, monkeypatch):
     )
     assert not result.accepted
     assert "declaration uses 'sorry'" in result.output
+
+
+def test_any_lean_warning_cannot_count_as_acceptance(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        reconstruction.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="Reconstruction.lean:7:8: warning: tactic does nothing",
+        ),
+    )
+    result = reconstruction.verify_candidate_with_project_lean(
+        package(tmp_path), "by\n  trivial", tmp_path,
+    )
+    assert not result.accepted
+    assert "warning:" in result.output
+
+
+def test_warning_bearing_result_cannot_be_persisted(tmp_path):
+    with pytest.raises(
+        VerifiedProofArtifactError, match="WARNING_FREE",
+    ):
+        VerifiedProofStore(tmp_path / "verified").persist(
+            package=package(tmp_path),
+            candidate="by\n  trivial",
+            lean_result=LeanResult(True, "warning: tactic does nothing"),
+            project_root=tmp_path,
+            package_hash="package",
+            attempt_index=0,
+            seed=1,
+            model_id="model",
+            model_revision="revision",
+            quantization="q4",
+        )

@@ -37,6 +37,7 @@ _PROOF_HOLE = re.compile(
     r"\b(?:sorry|admit|sorryAx)\b|\bby\?",
     re.IGNORECASE,
 )
+_LEAN_WARNING = re.compile(r"(?mi)^.*\bwarning:")
 
 
 def _sha256(value: str | bytes) -> str:
@@ -246,6 +247,10 @@ class VerifiedProofStore:
             raise VerifiedProofArtifactError(
                 "VERIFIED_PROOF_REQUIRES_ACCEPTED_LEAN_RESULT"
             )
+        if _LEAN_WARNING.search(lean_result.output):
+            raise VerifiedProofArtifactError(
+                "VERIFIED_PROOF_REQUIRES_WARNING_FREE_LEAN_RESULT"
+            )
         candidate = candidate.strip()
         if not candidate.startswith("by"):
             raise VerifiedProofArtifactError("VERIFIED_PROOF_BODY_INVALID")
@@ -333,6 +338,10 @@ class VerifiedProofStore:
             raise VerifiedProofArtifactError("VERIFIED_PROOF_BODY_HASH_MISMATCH")
         if not body.get("lean_accepted") or body.get("lean_timed_out"):
             raise VerifiedProofArtifactError("VERIFIED_PROOF_LEAN_STATUS_INVALID")
+        if _LEAN_WARNING.search(str(body.get("lean_output", ""))):
+            raise VerifiedProofArtifactError(
+                "VERIFIED_PROOF_LEAN_WARNINGS_PRESENT"
+            )
         return VerifiedProofArtifact(
             **{
                 **body,
@@ -497,7 +506,7 @@ def verify_candidate_with_project_lean(
         output = result.stdout[-8000:]
         accepted = (
             result.returncode == 0
-            and "declaration uses 'sorry'" not in output.lower()
+            and not _LEAN_WARNING.search(output)
         )
         return LeanResult(accepted, output, False)
 
