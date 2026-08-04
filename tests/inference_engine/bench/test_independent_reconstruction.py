@@ -241,15 +241,20 @@ def test_verified_candidate_persists_reloads_recompiles_and_integrates(
         project_root=tmp_path,
     )
     assert lean.accepted and checked.proof_body == artifact.proof_body
+    route = tmp_path / "Route.lean"
+    route.write_text(route.read_text().replace(
+        "theorem target",
+        "def destinationContext : Nat := 7\n\ntheorem target",
+    ))
     integrated = integrate_verified_artifact(
         store=store,
         artifact_reference=path,
-        source_path=tmp_path / "Route.lean",
+        source_path=route,
         project_root=tmp_path,
         theorem_id="Route.target",
         environment_hash="environment",
     )
-    source = (tmp_path / "Route.lean").read_text()
+    source = route.read_text()
     assert integrated.artifact_hash == artifact.artifact_hash
     assert "simpa [localValue] using h" in source
     assert "rw [h]" not in source

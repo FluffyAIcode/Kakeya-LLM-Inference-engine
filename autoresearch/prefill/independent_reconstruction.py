@@ -495,20 +495,24 @@ def recompile_verified_artifact(
     artifact_reference: str | Path,
     package: ReconstructionPackage,
     project_root: Path,
+    strict_source_context: bool = True,
 ) -> tuple[VerifiedProofArtifact, LeanResult]:
     artifact = store.load(artifact_reference)
     checks = {
         "theorem_id": package.theorem_id,
         "theorem_statement": package.target_header,
         "theorem_hash": package.theorem_hash,
-        "source_hash": package.source_hash,
-        "source_path": package.source_path,
-        "dependency_prefix_hash": package.dependency_prefix_hash,
         "environment_hash": package.environment_hash,
         "toolchain_hash": _toolchain_hash(Path(project_root)),
-        "imports": package.imports,
         "namespace": package.namespace,
     }
+    if strict_source_context:
+        checks.update({
+            "source_hash": package.source_hash,
+            "source_path": package.source_path,
+            "dependency_prefix_hash": package.dependency_prefix_hash,
+            "imports": package.imports,
+        })
     for name, expected in checks.items():
         if getattr(artifact, name) != expected:
             raise VerifiedProofArtifactError(
@@ -516,14 +520,15 @@ def recompile_verified_artifact(
             )
     if artifact.candidate_hash != _sha256(artifact.proof_body):
         raise VerifiedProofArtifactError("VERIFIED_PROOF_CANDIDATE_HASH_MISMATCH")
-    reconstructed = (
-        f"{package.preserved_context}{package.target_header}\n"
-        f"{artifact.proof_body}\n"
-    )
-    if artifact.reconstructed_source_hash != _sha256(reconstructed):
-        raise VerifiedProofArtifactError(
-            "VERIFIED_PROOF_RECONSTRUCTED_SOURCE_HASH_MISMATCH"
+    if strict_source_context:
+        reconstructed = (
+            f"{package.preserved_context}{package.target_header}\n"
+            f"{artifact.proof_body}\n"
         )
+        if artifact.reconstructed_source_hash != _sha256(reconstructed):
+            raise VerifiedProofArtifactError(
+                "VERIFIED_PROOF_RECONSTRUCTED_SOURCE_HASH_MISMATCH"
+            )
     result = verify_candidate_with_project_lean(
         package, artifact.proof_body, Path(project_root),
     )
@@ -555,6 +560,7 @@ def integrate_verified_artifact(
         artifact_reference=artifact_reference,
         package=package,
         project_root=project_root,
+        strict_source_context=False,
     )
     source = source_path.read_text(encoding="utf-8")
     short_name = theorem_id.rsplit(".", 1)[-1]
