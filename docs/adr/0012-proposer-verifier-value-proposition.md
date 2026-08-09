@@ -18,8 +18,39 @@
   - Builds on / re-affirms ADR 0001 (proposer sizing + alignment),
     ADR 0004 (alignment data policy), ADR 0006 (local-agent-infra
     positioning), ADR 0008 §11 (dLM K/V-Restoration architecture),
-    ADR 0009 (capability exchange), ADR 0010 (full-attention low-precision
+    ADR 0009 (capability exchange),     ADR 0010 (full-attention low-precision
     KV / affine4), ADR 0011 (cross-attention coupling, falsified by R1e).
+
+## ⚠️ Revision (2026-06-13) — the Step-1 / S5-coupon result is a *validation trap*, not architecture evidence
+
+A 2026-06-13 directive supersedes the optimistic reading of "Step-1 = realised
+deliverable" below. The correction:
+
+- **Step-1 (incremental restored decode) and the native-cache path get their
+  recall from Gemma-4's *native* retained 5 full-attention layers + native
+  sliding-window eviction — they never exercise f_θ or proposer KV
+  restoration.** So "Step-1 recall 5/5 / 1.0× AR" is **Gemma-4 native
+  behaviour, not evidence that the K/V-Restoration architecture (ADR 0008 §11)
+  works.**
+- The path is structurally **incapable of failing in a way that tests the
+  architecture**: the full-attention coupon always carries recall regardless of
+  whether f_θ/restoration is correct or even present. Citing it as a deliverable
+  **corrupts the integrity assessment**.
+- Sharper: **on Gemma-4 no configuration makes proposer/f_θ restoration the
+  recall source** (the 5 full-attn layers' own exact K/V always do; f_θ only
+  touches sliding layers, which are window-masked at decode). Gemma-4 is
+  therefore the **wrong model to validate the restoration architecture**.
+- **Step-1 / native-cache bypass is forbidden for any architecture-validation
+  attempt.** The bounded-memory + recall *architecture* claim is **unvalidated
+  on a falsifiable model** and must be re-validated on a **pure sliding-window
+  model (Qwen3, the K1/K2 path)** where recall is mathematically impossible
+  without proposer/f_θ restoration. Gemma-4 may still be used as a *product*
+  model, but never as the validation vehicle for architectural integrity.
+
+The §1 "won / realised" framing below is retained for history but must be read
+through this revision: the **memory-saving numbers are real**, but they are not
+proof the *restoration mechanism* works — only that Gemma-4 + a bounded sliding
+cache works, which Gemma-4 does natively.
 
 ## Context
 
