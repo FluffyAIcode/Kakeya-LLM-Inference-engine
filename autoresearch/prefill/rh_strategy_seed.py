@@ -75,32 +75,47 @@ def rh_strategy_specs() -> tuple[RHStrategySpec, ...]:
                 "approximation distinct from zero-product approximation."
             ),
             definitions=(
-                "jensenQuadratic", "Real.sqrt",
-                "completedRiemannZeta", "completedRiemannZeta₀",
+                "Kakeya.RHJensen.riemannXi",
+                "Kakeya.RHJensen.xiJensenEntire",
+                "Kakeya.RHJensen.xiGamma",
+                "Kakeya.RHJensen.jensenPolynomial",
+                "Kakeya.RHJensen.Hyperbolic",
+                "Kakeya.RHJensen.AllJensenHyperbolic",
             ),
             first_subgoal=(
-                "For arbitrary real coefficients, validate the two explicit "
-                "real roots of the degree-two Jensen polynomial under the "
-                "nonnegative Turán discriminant condition."
+                "For arbitrary real coefficients, prove the exact "
+                "nondegenerate degree-two Jensen real-root/Turán "
+                "discriminant equivalence; retain it as finite support only."
             ),
-            first_subgoal_theorem="jensenQuadratic_has_two_real_roots",
-            theorem_cards=("rh-jensen-quadratic-two-roots",),
-            dependencies=("KakeyaLeanGate/RHJensen.lean",),
+            first_subgoal_theorem=(
+                "Kakeya.RHJensen.jensenQuadratic_has_real_roots_iff"
+            ),
+            theorem_cards=(
+                "gorz-2019-jensen",
+                "osullivan-2021-xi-lp",
+                "mathlib-4.32.0-rc1-riemann",
+            ),
+            dependencies=(
+                "KakeyaLeanGate/RHJensen.lean",
+                "docs/research/rh-jensen-source-cards.json",
+            ),
             mathlib_support=(
                 "completedRiemannZeta", "completedRiemannZeta₀",
                 "differentiable_completedZeta₀", "Real.sq_sqrt",
-                "Polynomial.IsRoot", "Polynomial.discr",
+                "Complex.taylorSeries_eq_of_entire'",
+                "Polynomial.IsRoot", "Polynomial.Splits",
+                "TendstoLocallyUniformlyOn",
             ),
             missing_interfaces=(
-                "RIEMANN_XI_NORMALIZATION",
-                "XI_CENTERED_TAYLOR_COEFFICIENTS",
+                "XI_COEFFICIENT_REALITY_AND_IDENTIFICATION",
                 "JENSEN_HYPERBOLIC_ALL_DEGREES_SHIFTS",
                 "LAGUERRE_POLYA_CLASS_AND_LIMIT_BRIDGE",
                 "JENSEN_CRITERION_IFF_MATHLIB_RH",
             ),
             success_criterion=(
-                "Lean accepts the generic quadratic root theorem; later work "
-                "must separately discharge every xi/Jensen/RH bridge."
+                "Lean accepts the sourced xi/Jensen definitions, finite "
+                "degree formulas and Turán criterion; all xi/Jensen/RH "
+                "bridges remain explicit proof obligations."
             ),
             falsification_criterion=(
                 "Lean rejects the coefficient convention or root formula, or "

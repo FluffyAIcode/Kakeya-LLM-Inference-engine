@@ -1,0 +1,203 @@
+route: weil-positivity
+checked: 2026-07-31
+scope: riemann-zeta
+sources:
+  - id: bombieri-2000
+    author: Enrico Bombieri
+    title: Remarks on Weil's quadratic functional in the theory of prime numbers, I
+    venue: Rendiconti Lincei, Matematica e Applicazioni 11 (2000), 183-233
+    url: http://www.bdim.eu/item?fmt=pdf&id=RLIN_2000_9_11_3_183_0
+    authority: peer-reviewed
+    used_for:
+      - Guinand-Weil formula and normalization in section 2
+      - smooth complex C_c-infinity test space
+      - strict positivity refinement in theorem 1
+      - transpose-conjugate convolution square
+    notes: "The PDF text extraction drops some overlines; the paper's phrase
+      'transpose conjugate' fixes the complex involution."
+
+  - id: burnol-1998
+    author: Jean-Francois Burnol
+    title: The Explicit Formula in Simple Terms
+    venue: arXiv:math/9810169v2
+    url: https://arxiv.org/abs/math/9810169
+    authority: expert expository preprint
+    used_for:
+      - criterion on smooth compactly-supported multiplicative tests
+      - shifted critical-line distribution
+      - convolution/involution normalization
+      - broader explicit-formula class E and convergence caveats
+
+  - id: edwards-1974
+    author: H. M. Edwards
+    title: Riemann's Zeta Function
+    venue: Academic Press (1974), Dover reprint (2001)
+    authority: standard monograph
+    used_for:
+      - symmetric interpretation of sums over nontrivial zeros
+      - distinction between finite truncations and the regularized zero sum
+      - critical-line parametrization of zeros
+
+  - id: mathlib-mellin-fourier-api
+    author: Mathlib contributors
+    title: Mathlib Mellin transform, Schwartz space, and Fourier transform APIs
+    url: https://leanprover-community.github.io/mathlib4_docs/
+    authority: pinned formal library API
+    used_for:
+      - MellinConvergent and mellin on the positive real axis
+      - HasCompactSupport.toSchwartzMap
+      - Real.fourier_eq' normalization with the 2-pi phase
+      - tendsto_atTop_ciSup and closed-order positivity limits
+      - TendstoUniformlyOn.tendsto_at and dominated-convergence interfaces
+      - riemannZetaZeros and compact-window finiteness
+      - von Mangoldt L-series summability and the negative zeta log derivative
+      - exact LSeries.term zero-index and n-to-the-s normalization
+      - dominated convergence for bounded smoothed prime series
+      - Complex.GammaR and Complex.digamma exact normalization
+      - Complex.deriv_Gamma_nat and Complex.Gamma_nat_eq_factorial
+      - harmonic-log convergence and explicit Euler-Mascheroni squeeze
+      - TestFunction.continuous_iff_continuous_comp LF universal property
+      - SchwartzMap.norm_pow_mul_le_seminorm rapid Fourier decay
+      - iteratedFDeriv_comp_const_smul reflection seminorm identity
+      - Real.fourier_mul_convolution_eq convolution-square factorization
+      - analyticOrderNatAt for actual local zero multiplicity
+      - isDiscrete_riemannZetaZeros for finite bounded zero windows
+      - iteratedDerivWithin_smul finite Leibniz rule
+      - Real.fourier_iteratedDeriv exact 2-pi derivative normalization
+      - Fourier norm bounded by the L1 norm
+      - derivative-of-convolution identity on compactly supported smooth functions
+      - fixed-support L1 and convolution derivative seminorm estimates
+      - support_convolution_subset for the exact K-plus-L target
+      - ContDiffMapSupportedIn.monoCLM compact-stage inclusions
+      - ContDiffMapSupportedIn.continuous_iff_comp target universal property
+      - fixed-stage bilinear difference and seminorm continuity argument
+      - explicit pair-stage final topology and one proved comparison inequality
+      - product-neighborhood rectangle characterization
+      - von Neumann boundedness via defining seminorms on fixed support stages
+      - fixed-stage bounded-set hypocontinuity estimates
+      - normalized ContDiffBump test of integral one
+      - complex exponential modulation and exact transform translation
+      - finite robust orbit-separation estimate
+      - continuous transform-evaluation functional
+      - matrix-inverse finite simultaneous interpolation
+      - normal-series residual mass and summable-majorant domination
+      - TestFunction locally-convexification of the raw final topology
+      - translation-transform identity and Vandermonde determinant
+      - exact translated-basis degeneracy characterization
+      - shell-partition residual bound and summable envelope tails
+      - finite-union avoidance for a common nonvanishing transform base
+      - complex exponential period and collision-free translated nodes
+      - arbitrary-complex convolution and involution transform laws
+      - reflection-closed convolution-square interpolation
+      - squared strip-decay bound for convolution squares
+      - stage-bounded convolution bornological closure
+      - actual zero-window weighted shell envelope and tail reduction
+      - inverse-Vandermonde coefficient-weight strip-decay estimate
+      - explicit squared decay bound for translated interpolators
+      - singleton and convolution-square fixed-stage admissibility
+      - quantitative RvM-envelope separation-to-converse assembly
+      - exact two-point translated-basis determinant and near-collision obstruction
+      - actual analytic-multiplicity shell-tail domination from the RvM envelope
+      - compact-support finite-difference spectral zero factors
+      - matrix-free local target-partner separator and exact nearby annihilation
+      - residual-only RvM shell domination
+      - elementary quadratic envelope for the published RvM main and error terms
+      - actual analytic-multiplicity transform-shell tail below any margin
+      - finite actual centered-zero neighbor windows
+      - local-square fixed-stage admissibility and formula contradiction
+      - completed-zeta/open-strip zero equivalence and functional reflection
+      - countability and exact centering equivalence for actual zero locations
+      - exact conditional actual-orbit-to-RH converse assembly
+      - analytic-continuation proof of zeta conjugation
+      - conjugation and functional-reflection multiplicity invariance
+      - unconditional nontrivial-zero critical-strip classification
+      - centered quartet closure and hypothesis-reduced RH converse
+    notes: "The pinned digamma module explicitly lists Gauss's integral
+      representation as TODO; no classical archimedean truncation theorem is
+      available to import."
+
+  - id: lagarias-survey
+    author: Jeffrey C. Lagarias
+    title: The Riemann Hypothesis - Arithmetic and Geometry
+    url: https://websites.umich.edu/~lagarias/doc/mt-holyoke-rev.pdf
+    authority: expert survey
+    used_for:
+      - nice piecewise-C2 compact-support test variant
+      - W-spec, W-arith, and W-one notation
+      - theorem 3.2 positivity equivalence
+      - distinction between explicit-formula test classes
+
+  - id: weil-1952
+    author: Andre Weil
+    title: Sur les formules explicites de la theorie des nombres premiers
+    venue: Meddelanden Fran Lunds Universitets Matematiska Seminarium (1952), 252-265
+    authority: primary source
+    used_for:
+      - original explicit formula
+      - number-field and Hecke-L-function positivity criterion
+
+  - id: hasanalizade-shen-wong-2021
+    author: Elchin Hasanalizade, Quanli Shen, and Peng-Jie Wong
+    title: Counting zeros of the Riemann zeta function
+    venue: Journal of Number Theory (2021)
+    url: https://doi.org/10.1016/j.jnt.2021.06.032
+    authority: peer-reviewed
+    used_for:
+      - explicit Riemann-von Mangoldt zero-count estimate
+      - shell-count growth sufficient for sums over zeta zeros
+    notes: "For T >= e the paper proves an explicit error bounded by
+      0.1038 log T + 0.2573 log log T + 9.3675 around the main
+      Riemann-von Mangoldt term. The Lean obligation uses only the weaker
+      resulting quadratic unit-shell count."
+
+formalization:
+  mathlib_revision: 360da6fa66c1273b76b6b2d8c5666fd5ac2e3b56
+  lean_toolchain: leanprover/lean4:v4.32.0-rc1
+  module: KakeyaLeanGate/WeilPositivity.lean
+  bridge_status: finite-weighted-xi-puncture-residue-sum-proved-boundary-growth-outer-contour-formula-unproved
+  proved_bridges:
+    - actual-positive-height-centered-zero-subtype
+    - exact-partner-involution-and-critical-line-fixed-point-classification
+    - countable-quartet-orbit-quotient-with-analytic-multiplicity
+    - complete-duplicate-free-partial-natural-enumeration
+    - finite-height-orbit-windows
+    - pole-cancelled-entire-xi-and-functional-equation
+    - xi-zeta-zero-and-multiplicity-transport
+    - xi-finite-analytic-orders
+    - local-log-derivative-residue-equals-multiplicity
+    - exact-xi-jensen-divisor-identity
+    - quantitative-jensen-bound-from-outer-circle-growth
+    - xi-divisor-coefficients-equal-analytic-multiplicities
+    - finite-xi-divisor-sums-equal-multiplicity-sums
+    - uniform-positive-radius-xi-puncture-disks
+    - exact-small-circle-log-derivative-integrals
+    - exact-weighted-local-residue-integrals
+    - finite-weighted-puncture-residue-sums
+  named_obligations:
+    - mellin-logarithmic-change-of-variables
+    - zero-sum-regularization-with-multiplicity
+    - prime-power-eventual-stabilization
+    - archimedean-regularized-limit
+    - limiting-explicit-formula
+    - both-directions-of-all-test-positivity
+    - LF-density-of-any-proposed-restricted-test-subclass
+    - LF-continuity-of-the-zeta-quadratic-functional
+    - LF-continuity-of-convolution-square-map
+    - digamma-integral-or-series-truncation-convergence
+    - actual-riemann-von-mangoldt-bound-for-exact-orbit-quotient
+    - LF-joint-convolution-continuity
+    - reverse-LF-product-to-pair-stage-final-topology-inequality
+    - strict-LF-bounded-set-regularity
+    - positive-multiplicity-convolution-square-separation-with-tail-control
+    - uniform-strip-decay-control-for-growing-finite-interpolators
+    - quantitative-lower-spacing-or-alternative-uniformly-conditioned-basis
+    - actual-local-zero-neighborhood-to-residual-tail-smallness
+    - transport-exact-orbit-quotient-rvm-to-separator-tail-model
+    - complex-gamma-stirling-and-vertical-zeta-bound-for-jensen-rvm
+    - outer-rectangle-minus-inner-circles-contour-decomposition
+    - genuine-guinand-weil-identity-and-arithmetic-positivity
+  prohibited_shortcuts:
+    - no axiomatized explicit formula
+    - no axiomatized RH bridge
+    - no finite certificate presented as universal positivity
+    - no distinct-zero finset presented as a multiplicity-aware zero sum

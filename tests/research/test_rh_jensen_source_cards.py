@@ -1,0 +1,67 @@
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CARDS_PATH = ROOT / "docs/research/rh-jensen-source-cards.json"
+
+
+def test_rh_jensen_source_cards_are_complete_and_honest() -> None:
+    payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["route_id"] == "JENSEN_LAGUERRE_POLYA"
+
+    cards = {card["id"]: card for card in payload["cards"]}
+    assert {
+        "gorz-2019-jensen",
+        "osullivan-2021-xi-lp",
+        "griffin-et-al-2022-effective",
+        "mathlib-4.32.0-rc1-riemann",
+        "mathlib-4.32.0-rc1-analysis",
+    } <= cards.keys()
+
+    for card in cards.values():
+        assert card["type"]
+        assert card["citation"]
+        assert card["url"].startswith("https://")
+        assert card["locations"]
+        assert card["claims"]
+        assert card["status"].startswith(("SOURCE_VERIFIED_", "FORMAL_LIBRARY_"))
+        assert card["status"] not in {"PROVED", "FORMALIZED_EQUIVALENCE"}
+
+
+def test_eventual_hyperbolicity_is_not_mislabeled_as_rh() -> None:
+    payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
+    gorz = next(card for card in payload["cards"] if card["id"] == "gorz-2019-jensen")
+    assert "EVENTUAL_HYPERBOLICITY_FIXED_DEGREE" in gorz["claims"]
+    assert gorz["status"].endswith("GENERAL_ASW_OPEN")
+
+
+def test_polya_schur_and_derivative_shift_are_source_pinned() -> None:
+    payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
+    osullivan = next(
+        card for card in payload["cards"] if card["id"] == "osullivan-2021-xi-lp"
+    )
+    assert {
+        "LAGUERRE_POLYA_COMPACT_UNIFORM_CRITERION",
+        "JENSEN_DERIVATIVE_SHIFT_IDENTITY",
+        "DERIVATIVE_HYPERBOLICITY_PROPAGATION",
+    } <= set(osullivan["claims"])
+    locations = " ".join(osullivan["locations"])
+    assert "Theorem 3.1" in locations
+    assert "Equation (3.1)" in locations
+    assert "d >= 1" in locations
+
+
+def test_pinned_mathlib_gauss_lucas_and_remaining_gap_are_explicit() -> None:
+    payload = json.loads(CARDS_PATH.read_text(encoding="utf-8"))
+    analysis = next(
+        card for card in payload["cards"] if card["id"] == "mathlib-4.32.0-rc1-analysis"
+    )
+    assert {
+        "PINNED_GAUSS_LUCAS_DERIVATIVE_CLOSURE_FORMALIZED",
+        "NO_PREPACKAGED_PINNED_COMPLETED_ZETA_CONJUGATION_FOUND",
+        "PROJECT_COMPLETED_ZETA_CONJUGATION_PROVED_FROM_PINNED_DECLARATIONS",
+    } <= set(analysis["claims"])
+    locations = " ".join(analysis["locations"])
+    assert "rootSet_derivative_subset_convexHull_rootSet" in locations
