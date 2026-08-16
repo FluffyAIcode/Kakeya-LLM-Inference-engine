@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "adr_0011_toy_prototype_g_x1",
+  "config": {
+    "model": "google/gemma-3-1b-it",
+    "device": "mps",
+    "cross_attn_depth": 8,
+    "sink": 4,
+    "window": 64,
+    "num_heads": 8,
+    "head_dim": 64,
+    "train_steps": 200,
+    "lr": 0.0003,
+    "n_train": 200,
+    "n_eval": 50,
+    "haystack_min_tokens": 256,
+    "haystack_max_tokens": 1024,
+    "seed": 42
+  },
+  "pre_train": {
+    "cross_attn_recall": 0.0,
+    "baseline_recall": 0.0
+  },
+  "training_history": [
+    {
+      "step": 50,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 65.85
+    },
+    {
+      "step": 100,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 31.575
+    },
+    {
+      "step": 150,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 21.975
+    },
+    {
+      "step": 200,
+      "cross_attn_recall": 0.0,
+      "baseline_recall": 0.0,
+      "loss_avg10": 23.24375
+    }
+  ],
+  "final": {
+    "cross_attn_recall": 0.0,
+    "baseline_recall": 0.0,
+    "elapsed_s": 1698.5560488329502
+  },
+  "gate_g_x1_pass": false
+}
